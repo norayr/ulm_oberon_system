@@ -1,0 +1,560 @@
+TclTk(3)                      Ulm's Oberon System                     TclTk(3)
+
+
+
+[1mNAME[0m
+       TclTk - interface to a Tcl/Tk interpreter
+
+[1mSYNOPSIS[0m
+       TYPE Interpreter = POINTER TO  InterpreterRec;
+       TYPE InterpreterRec =
+           RECORD
+               (Services.ObjectRec)
+           END;
+       (* objects used to communicate with Tcl *)
+       TYPE Record = POINTER TO RecordRec;
+       TYPE RecordRec =
+           RECORD
+               (Disciplines.ObjectRec)
+               typename: ConstStrings.String;
+           END;
+       (* lists used within a object of type Record *)
+       TYPE List = POINTER TO ListRec;
+       TYPE ListRec = RECORD (Objects.ObjectRec) END;
+       TYPE IntList = POINTER TO IntListRec;
+       TYPE IntListRec =
+           RECORD
+               (ListRec)
+               value: INTEGER;
+               next: IntList;
+           END;
+       TYPE RealList = POINTER TO RealListRec;
+       TYPE RealListRec =
+           RECORD
+               (ListRec)
+               value: REAL;
+               next: RealList;
+           END;
+       TYPE StringList = POINTER TO StringListRec;
+       TYPE StringListRec =
+           RECORD
+               (ListRec)
+               value: Streams.Stream;
+               next: StringList;
+           END;
+       TYPE BoolList = POINTER TO BoolListRec;
+       TYPE BoolListRec =
+           RECORD
+               (ListRec)
+               value: BOOLEAN;
+               next: BoolList;
+           END;
+       (* events exchanged with Tcl *)
+       TYPE EventType = ARRAY 20 OF CHAR;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+           RECORD
+               (Events.EventRec)
+               from: Interpreter;
+               record: Record;
+           END;
+       CONST
+           connectionFailed = 0;   (* unable to access the port listener *)
+           connectionRefused = 1;  (* setup failed *)
+           connectionBroken = 2;   (* connection is broken *)
+           sendFailed = 3;         (* failed to send the requested data *)
+           receiveFailed = 4;      (* failed to receive the requested data *)
+           serverExit = 5;         (* tcltk-server receives an exit-Event *)
+           protocolError = 6;      (* got an unexpected value *)
+           tkError = 7;            (* tkerror occured *)
+           callProcError = 8;      (* tclerror or no record returned by proc *)
+           errors = 9;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+           RECORD
+               (Events.EventRec);
+               errorcode: SHORTINT;
+           END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       (* handling a connection to a interpreter *)
+       PROCEDURE Open(VAR interp: Interpreter; address: Internet.Address;
+                      display, appName, className: ARRAY OF CHAR;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Close(interp: Interpreter);
+       (* evaluating Tcl scripts *)
+       PROCEDURE Eval(interp: Interpreter; script: ARRAY OF CHAR;
+                      result: Streams.Stream) : BOOLEAN;
+       PROCEDURE EvalStream(interp: Interpreter; script: Streams.Stream;
+                            result: Streams.Stream) : BOOLEAN;
+       (* event handling *)
+       PROCEDURE Define(interp: Interpreter; type: Events.EventType;
+                        VAR tcltypename: EventType);
+       PROCEDURE Handler(interp: Interpreter; type: Events.EventType;
+                         tclhandler: ARRAY OF CHAR);
+       PROCEDURE GetEventType(interp: Interpreter; tcltypename: EventType;
+                              VAR type: Events.EventType);
+       PROCEDURE CreateEventConditions(interp: Interpreter; record: Record;
+                                       slotnames: ARRAY OF ARRAY OF CHAR;
+                                       VAR conditions: ARRAY OF Conditions.Condition;
+                                       conditionset: Conditions.ConditionSet);
+       PROCEDURE DropEventConditions(conditions: ARRAY OF Conditions.Condition);
+       (* remote procedure call *)
+       PROCEDURE CallProc(interp: Interpreter; proc: ARRAY OF CHAR;
+                          arguments: Record; VAR result: Record) : BOOLEAN;
+       (* handling with objects for communication *)
+       PROCEDURE CreateRecord(VAR record: Record; interp: Interpreter;
+                              tcltypename: ARRAY OF CHAR);
+       PROCEDURE GetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+                               VAR value: ARRAY OF CHAR);
+       PROCEDURE GetStringSlotAsStream(record: Record;
+                                       slotname: ARRAY OF CHAR;
+                                       VAR value: Streams.Stream);
+       PROCEDURE GetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+                            VAR value: INTEGER);
+       PROCEDURE GetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+                             VAR value: REAL);
+       PROCEDURE GetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+                                VAR value: BOOLEAN);
+       PROCEDURE GetListSlot(record: Record; slotname: ARRAY OF CHAR;
+                             VAR value: List);
+       PROCEDURE SetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+                               value: ARRAY OF CHAR);
+       PROCEDURE SetStringSlotFromStream(record: Record;
+                                         slotname: ARRAY OF CHAR;
+                                         value: Streams.Stream);
+       PROCEDURE SetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+                            value: INTEGER);
+       PROCEDURE SetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+                             value: REAL);
+       PROCEDURE SetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+                                value: BOOLEAN);
+       PROCEDURE SetListSlot(record: Record; slotname: ARRAY OF CHAR;
+                             value: List);
+
+
+[1mDESCRIPTION[0m
+       [4mTclTk[24m  provides  access  to a Tcl interpreter which is extended with Tk
+       commands.  Therewith [4mTclTk[24m can be used to equip  a  oberon  application
+       with  a grafical user interface.  To do so, scripts can be evaluated in
+       an interpreter, in order to create the GUI and to handle events, gener-
+       ated  by  X.  Communication  between Oberon and Tcl is done in terms of
+       events and communication objects.
+
+       In order to realize access to a interpreter there is a  server,  called
+       [4mtcltks[24m.   The  server  can  run  on every machine that is connected via
+       internet to the machine, in which the Oberon application is running.
+
+[1mAccessing servers[0m
+       To be able to start servers dynamically at runtime, a port listener  is
+       used,  called [4mtcltkl[24m. Hence, [4mtcltkl[24m has to be started before the Oberon
+       application.  If started with a port number as argument,  tcltkl  binds
+       this  number  to  the  port  it  listens  to. Otherwise the port number
+       defaults to 22090.  If  the  environment  variable  [1mTCLTKS_DIR  [22mon  the
+       server  machine  is given, the listener tries to find the server there.
+       Otherwise the current working directory on the server machine is  used.
+
+       In  order  to  avoid  network traffic evoked by the X-protocol, running
+       between Tk and X, the port listener should reside in the  same  machine
+       as the X-server for the specified display does.
+
+       Due  to  security, the server checks if the connecting partie is autho-
+       rized.  To do so, there have to be a file called [4m.tcltks[24m in  the  users
+       home  directory.  This file should only be readable by the user himself
+       and it has to contain a password in the first line. This file must also
+       be  accessible  by  the  server. If the server runs on a different file
+       system the same file has to be provided there.
+
+[1mCreating a server and evaluating scripts[0m
+       [4mOpen[24m contacts the port listener, which runs a new server on  his  part.
+       The  address  is  either  given by [4maddress[24m or in case it contains 0 for
+       [4maddress.portnum[24m and [4maddress.host[24m the address is computed  from  one  of
+       the  environment  variables  [1mTCLTKSERVER  [22mor [1mDISPLAY[22m. If [1mTCLTKSERVER [22mis
+       present hostname and portnum will be taken from  there.  Otherwise  the
+       hostname  from [1mDISPLAY [22mwill be used and the port defaults to 22090.  If
+       none is given the host defaults to the local  host  with  default  port
+       number.
+
+       After  having  connected  successfully  a server, [4mOpen[24m passes the first
+       line of [4m.tcltks[24m to the server together with [4mdisplay[24m, [4mappName[24m and [4mclass-[0m
+       [4mName[24m.  The  server tries to create a main window on [4mdisplay[24m and assigns
+       [4mclassName[24m as name for the class of the main window (among  other  thing
+       the  class name is used for the resource database). [4mappName[24m is the name
+       of the application as registered by the window manager and may be  used
+       by  the  [4mtk_send[24m command. On success [4mOpen[24m returns [1mTRUE [22mand a new object
+       of type [4mInterpreter[24m is created, representing the server.
+
+       For terminating a server [4mTclTk[24m supports [4mResources[24m. [4mClose[24m terminates the
+       server immediately.
+
+       [4mEval[24m sends the [4mscript[24m to the server, in order to evaluate it.  If there
+       was no error during evaluation, [4mEval[24m returns  [1mTRUE  [22mand  the  resulting
+       string  can be found in [4mresult[24m. Otherwise [4mresult[24m contains the resulting
+       error message returned by Tcl. [4mEvalStream[24m works like [4mEval[24m  except  that
+       it reads the script from a given stream, starting at the current stream
+       position.
+
+[1mObjects for communication[0m
+       In order to exchange data between Oberon and the Tcl  programm  running
+       in  the  server,  TclTk  provides  objects  for  communication,  called
+       [4mRecords[24m. Such objects can be handled by [4mTclTk[24m and the server,  so  that
+       transmitted data can be accessed by name.
+
+       Records  have  to  be  defined  in Tcl to keep the interface clear. For
+       dealing with records in Tcl there is  a  new  command  called  Records,
+       which comes along with a few options:
+
+       [1mRecords define [4m[22mtypename[24m [4mslotname[24m [4mslottype[24m ?[4mslotname[24m [4mslottype[24m [4m...[24m?
+              defines  a  new  type  with [4mtypename[24m as name. A type has several
+              slots, each of which has a name ([4mslotname[24m)  and  a  type  ([4mslot-[0m
+              [4mtype[24m).  To form complex structured types, the type of a slot can
+              again be a list with [4mslotname[24m [4mslottype[24m  pairs.  Valid  slottypes
+              are:  [4minteger[24m, [4mreal[24m, [4mstring[24m, [4mboolean[24m, [4mlist<integer>[24m, [4mlist<real>[24m,
+              [4mlist<string>[24m and [4mlist<boolean>[24m. On success it returns  an  empty
+              string.
+
+       [1mRecords create [4m[22mtypename[24m [4mvar[24m ?[4mvar[24m [4m...[24m?
+              creates  global  objects  of  type  [4mtypename[24m.  The  names of the
+              objects are given by the [4mvar[24m  arguments.  On  success  an  empty
+              string is returned.
+
+       [1mRecords delete [4m[22mvar[24m ?[4mvar[24m [4m...[24m?
+              Deletes  the objects, that names are given by the [4mvar[24m arguments.
+              On success an empty string is returned.
+
+       [1mRecords typename [4m[22mvar[0m
+              returns the typename of object [4mvar[24m.
+
+       [1mRecords set [4m[22mvar[24m [4mslotname[24m [4mvalue[24m ?[4mslotname[24m [4mvalue[24m [4m...[24m?
+              assigns [4mvalue[24m to a slot named [4mslotname[24m of the object, that  name
+              is given by [4mva[24mr. To reference complex structured slots, the path
+              to the slot has to be constructed with the slotnames  along  the
+              way  separated  by  ".",  just  like  in  Oberon.  On success it
+              returns an empty string.  Note the value for a slot  has  to  be
+              assignment compatible to the declared type.  Checking is done by
+              one of  the  functions  [4mTcl_GetInt[24m,  [4mTcl_GetDouble[24m  or  [4mTcl_Get-[0m
+              [4mBoolean[24m.
+
+       [1mRecords get [4m[22mvar[24m ?[4mslotname[24m?
+              retrieves  the  values  of  object [4mvar[24m. If [4mslotname[24m is given the
+              value of [4mslotname[24m is returned.  Otherwise  a  list  is  returned
+              that  elements  are lists themselve containing name and value in
+              this order for every slot.
+
+       In Oberon, objects for communication are of type [4mRecord[24m.   [4mCreateRecord[0m
+       creates  a new object, that previously was defined in Tcl.  [4mtcltypename[0m
+       specifies the typename of the object, that has to be created.
+
+       For dealing with such objects, TclTk provides some procedures in  order
+       to  assign  or retrieve values ([4mGetStringSlot[24m ... [4mSetListSlot[24m).  A list
+       assigned to a slot in Tcl is converted to the coressponding  list  type
+       [4mIntList[24m,  [4mRealList[24m,  [4mStringList[24m or [4mBoolList[24m, and vice versa. The proce-
+       dure used has to match the declared type of the slot, she should  oper-
+       ate  on.  I.e.  a slot declared of type [4minteger[24m can only be accessed by
+       [4mGetIntSlot[24m or [4mSetIntSlot[24m.
+
+       Build upon these objects, [4mCallProc[24m offers a possibility to call  a  Tcl
+       procedure  from  within  Oberon.  The Tcl procedure expects a object as
+       argument that is given in [4marguments[24m and returns another object  on  her
+       part,  which is accessible in [4mresult[24m. [1mNIL [22mobjects in Tcl are denoted by
+       "" or {}. Note the object passed to  the  Tcl  procedure  gets  deleted
+       after the procedure returns.
+
+[1mEvents[0m
+       Events  generated  by  the  X-server  can  be  handled  with proper Tcl
+       scripts, that previously was uploaded into the server.  Therewith  part
+       of the events can be handled locally and only the interesting data have
+       to be transmitted back to Oberon. To do so, there are  events.   Events
+       raised  in  Tcl are delivered in Oberon by [4mEvents.Raise[24m and vice versa.
+       Beside their signaling function, events serve as carrier for communica-
+       tion objects.
+
+       For event handling there is another new Tcl command called [4mEvents[24m:
+
+       [1mEvents define [22m?[4mvar[24m?
+              Acts  like  [4mEvents.Define[24m by generating a new event type denoted
+              by a name.  If [4mvar[24m is given the name will be stored there,  oth-
+              erwise  it  is returned as result.  According to this name there
+              is a object of type [4mEvents.EventType[24m  generated,  that  will  be
+              used  as event type of an event, that is transmitted from Tcl to
+              Oberon. The reaction for this type defaults to [4mignore[24m in Tcl and
+              to [4mdefault[24m in Oberon.
+
+       [1mEvents raise [4m[22mtypename[24m [4mmessage[24m [4mrecord[0m
+              this  command  option is used to raise an event with [4mtypename[24m as
+              type. [4mmessage[24m is a short text that is delivered with  the  event
+              and  [4mrecord[24m  is  the name of the communication object, that gets
+              delivered too.  The event gets transmitted to Oberon,  where  it
+              is  read  in as event of type [4mEvent[24m and delivered with a call to
+              [4mEvents.Raise[24m. In addition, the server evaluates  the  registered
+              Tcl handlers (therefore the reaction defaults to [4mignore[24m).
+
+       [1mEvents handler [4m[22mtypename[24m [4mprocname[0m
+              is  used  to  install  the Tcl procedure [4mprocname[24m as handler for
+              events with [4mtypename[24m as type of the event type.
+
+       [1mEvents gethandlers [4m[22mtypename[0m
+              returns all the handlers for an event type of name [4mtypename[24m.
+
+       [1mEvents removehandlers [4m[22mtypename[0m
+              removes all handlers for the event type given  by  [4mtypename[24m  and
+              sets the reaction to [4mdefaul[24mt.
+
+       [1mEvents ignore [4m[22mtypename[0m
+              acts like removehandlers but sets the reaction to [4mignore[24m.
+
+       A handler for an event type is a Tcl procedure with three arguments:
+
+            proc procname {typename message record} body
+
+       The arguments equals the ones given to [4mEvents[24m [4mraise[24m.
+
+       Events  raised  in Tcl are delivered in Oberon as events of type [4mEvent[24m.
+       The transmitted communication object can be found in record.  Receiving
+       and  raising  events  in  Oberon can be done in the traditional fashion
+       with the procedures provided by the module [4mEvents[24m.
+
+       [4mGetEventType[24m retrieves the object of type [4mEvents.EventType[24m that is used
+       as event type denoted by [4mtcltypename[24m.
+
+       To  receive  an  event within a task, [4mEventConditions[24m can be used. [4mCre-[0m
+       [4mateEventConditions[24m therefore helps to create event conditions for event
+       types  transmitted  from  Tcl  to Oberon within a communication object.
+       For every slotname given in [4mslotnames[24m a event condition is produced and
+       assigned  in  the  same  order to [4mconditions[24m as the names are given. In
+       addition, every condition is included in [4mconditionset[24m.  Note each value
+       of  the slots given in [4mslotnames[24m have to contain a valid slotname which
+       was defined in Tcl by [4mEvents[24m [4mdefine[24m.  [4mDropEventConditions[24m calls  [4mEvent-[0m
+       [4mConditions.Drop[24m for every condition in [4mconditions[24m.
+
+       In addition to event types created by the [4mEvents[24m [4mdefine[24m command, exist-
+       ing event types can be prepared to  use  for  communication  with  Tcl.
+       This  is  done by [4mDefine[24m that also creates a unique [4mtcltypename[24m for the
+       given [4mtype[24m.  [4mDefine[24m can be called multiple for one type with  different
+       interpreters.
+
+       [4mHandler[24m  defines  an  additional  Tcl  procedure for handling events of
+       event type [4mtype[24m, that  previously  was  defined  by  [4mDefine[24m  or  [4mEvents[0m
+       [4mdefine[24m.
+
+[1mEXAMPLE[0m
+       Handling with communication objects looks like this:
+
+
+       Records define MyType \
+           slot1 integer \
+           slot2 string \
+           slot3 { \
+               slot31 list<string> \
+               slot32 boolean \
+           }
+
+       Records create MyType var1 var2
+
+       Records set var1 \
+           slot1 1234 \
+           slot3.slot32 1
+
+       Records get var1
+       -> {slot1 1234} {slot2 {}} {slot3 {{slot31 {}} {slot32 1}}}
+
+       Records get var1 slot1
+       -> 1234
+
+       Records typename var1
+       -> MyType
+
+
+       A  Tcl  program,  that  is  used to provide a GUI for Oberon, therefore
+       looks like this: The type definition of the objects can reside anywhere
+       in  the script, but it is a good practice to define all object types at
+       the beginning.  To get the thing started, the defined event types  must
+       be  known  to  the oberon application. To do so, a communication object
+       can be used that is returned by a procedure so that the Oberon applica-
+       tion can do a call to [4mCallProc[24m to get the object:
+
+       proc StartUp { record } {
+           Records define UsedEvents \
+               ev1 string \
+               ev2 string \
+               ev3 string
+
+           Records create UsedEvents myevents
+
+           Records set myevents \
+               ev1 [Events define] \
+               ev2 [Events define] \
+               ev3 [Events define]
+
+           # if ev3 is used for incoming events,
+           # a handler is needed
+           Events handler [Records get myevents ev3] MyHandler
+           return myevents
+       }
+
+       proc MyHandler {typename msg record} {
+           puts "it works: $msg"
+
+           # assuming, the record is of type MyType, we can write
+           puts "slot1: [Records get $record slot1]"
+       }
+
+       An event may then be raised in the following manner:
+
+       # ...
+       Events raise [Records get myevents ev1] mymessage var2
+
+
+       The text for the Oberon program may be structured like this:
+
+       TYPE Slotname = ARRAY 5 OF CHAR;
+
+       PROCEDURE Init();
+           VAR
+               cr: Coroutines.Coroutine;
+               task: Tasks.Task;
+               result: TclTk.Record;
+               interp: TclTk.Interpreter;
+       BEGIN
+           (* create a server via Open and eval the script for the GUI *)
+               (*
+                * Note a script like "source myscript.tcl" is much more
+                * faster then sending the script accross the network.
+                *
+                *)
+
+           (* start the whole thing and get the object *)
+           IF TclTk.CallProc(interp, "StartUp", NIL, result) THEN
+               MyTask(cr, interp, result);
+               Tasks.Create(task, cr);
+           END;
+       END Init;
+
+       PROCEDURE MyTask(VAR cr: Coroutines.Coroutine;
+                        interp: TclTk.Interpeter;
+                        record: TclTk.Record);
+           CONST
+               ev1 = 0; ev2 = 1;
+               events = 2;
+           VAR
+               tkeventtype: TclTk.EventType;
+               tkevent, event: TclTk.Event;
+               ev3: Events.EventType;
+               slotnames: ARRAY events OF Slotname;
+               conditions: ARRAY events OF Conditions.Condition;
+               cset: Conditions.ConditionSet;
+       BEGIN
+           (* create conditions for incoming events from Tcl *)
+           slotnames[ev1] := "ev1";
+           slotnames[ev2] := "ev2";
+           Conditions.CreateSet(cset);
+           TclTk.CreateEventConditions(interp, record,
+                   slotnames, conditions, cset);
+
+           (* create and init an event in order to send it to Tcl *)
+           NEW(event);
+           TclTk.GetStringSlot(record, "ev3", tkeventtype);
+           TclTk.GetEventType(interp, tkeventtype, event.type);
+           TclTk.CreateRecord(event.record, interp, "MyType");
+
+           SYSTEM.CRSPAWN(cr);
+
+           (* lets wait *)
+           LOOP
+               Tasks.WaitForOneOf(cset);
+
+               IF EventConditions.TestAndGet(conditions[ev1], tkevent) THEN
+                   (* do what you wonna do *)
+               ELSIF EventConditions.TestAndGet(conditions[ev2], tkevent) THEN
+                   (* assign values to event.record *)
+                   TclTk.SetIntSlot(event.record, "slot1", 12345);
+
+                   (* transmit the event to Tcl *)
+                   Events.Raise(event);
+               END;
+           END;
+
+           TclTk.DropEventConditions(conditions);
+           TclTk.Close(interp);
+           Tasks.Terminate;
+       END MyTask;
+
+
+[1mDIAGNOSTICS[0m
+       Some errors lead to events of type ErrorEvent that are passed to Relat-
+       edEvents and addresses either a object of type Interpreter or a  object
+       named errors. Following error codes are implemented:
+       [4mconnectionFailed[24m    there is no port listener at the given address.
+       [4mconnectionRefused[24m   either  the  listener  fails  to  exec  the  server
+                           [4mtcltks[24m, the transmitted password from $HOME/.tcltks
+                           is not valid or the given arguments to Open are not
+                           valid, i.e. you are not  authorized  to  the  given
+                           display.
+       [4mconnectionBroken[24m    the  connection  to  the server is closed due to an
+                           error.
+       [4msendFailed[24m          there was an error while writing in the stream that
+                           connects oberon with the server.
+       [4mreceiveFailed[24m       there  was  an  error while reading from the stream
+                           that connects oberon with the server.
+       [4mserverExit[24m          the exit command was called in the Tcl interpreter,
+                           so the connection will be closed.
+       [4mprotocolError[24m       indicates  an  internal error that was caused by an
+                           unexpected value or field, read from the stream.
+       [4mtkError[24m             a script that was asynchronously  evaluated  by  Tk
+                           causes an error.
+       [4mcallProcError[24m       the  called  Tcl  procedure  causes  an error or no
+                           valid object was returned by proc.
+
+       Several errors which results from programming mistakes are  covered  by
+       assertions:
+
+       ·      the  [4mresult[24m  argument,  given to [4mEval[24m or [4mEvalStream[24m, must not be
+              [1mNIL[22m.
+
+       ·      [4mCreateRecord[24m checks, if [4mtcltypename[24m previously was defined.
+
+       ·      Every procedure for slot handling checks, if [4mname[24m is  valid  for
+              the  given  [4mrecord[24m  and  if [4mvalue[24m match the declared type of the
+              slot.
+
+       ·      [4mGetEventType[24m checks, if [4mtcltypename[24m is an valid name for a event
+              type.
+
+       ·      [4mHandler[24m checks, if [4mtype[24m was previously defined, either by a call
+              to [4mDefine[24m or [4mEvents[24m [4mdefine[24m.
+
+       ·      [4mCreateEventConditions[24m compares the length of  [4mslotnames[24m  against
+              [4mconditions[24m  to  test, if all created conditions fits into [4mcondi-[0m
+              [4mtions[24m.  In addition, [4mconditionset[24m must not be [1mNIL[22m.
+
+[1mENVIRONMENT[0m
+       [1mTCLTKSERVER   specifies hostname and port of the port listener which is[0m
+                     [1mto  contact.  Any form of [4m[22mhostname:portno[24m [1mis valid, where[0m
+                     [4mhostname[24m [1mis a symbolic internet address  and  [4m[22mportno[24m  [1mthe[0m
+                     [1mnumber of the port.[0m
+       [1mDISPLAY       on  the local machine it is taken for computing the host-[0m
+                     [1mname where the  port  listener  resides.  On  the  server[0m
+                     [1mmachine  it specifies the display, which is to use, if an[0m
+                     [1mempty string is passed to [4m[22mOpen[24m [1mfor the [4m[22mdisplay[24m  [1margument.[0m
+       [1mTCLTKS_DIR    specifies  the  directory  where  [4m[22mtcltks[24m  [1mand  the script[0m
+                     [4mtcltks.tcl[24m [1mcan be found.  If  not  present,  the  current[0m
+                     [1mworking  directory  is  used.  Note this variable must be[0m
+                     [1mdefined on the machine the listener runs.[0m
+
+[1mFILES[0m
+       [4m$HOME/.tcltks[24m   password file for accessing a server
+
+[1mSEE ALSO[0m
+       [4mEventConditions(3)[24m   conditions which allow to wait until  a  event  is
+                            raised.
+       [4mEvents(3)[24m            global event handling
+       [4mRelatedEvents(3)[24m     relate events to objects
+       [4mResources(3)[24m         cooperative termination handling
+
+[1mAUTHOR[0m
+       Oliver Engelhardt
+
+
+
+Release 0.5                Last change: 10 July 2003                  TclTk(3)

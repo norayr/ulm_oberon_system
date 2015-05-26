@@ -1,0 +1,366 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2003 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH SysMemory 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+SysMemory \- interface to memory related system calls
+.SH SYNOPSIS
+.Pg
+(* prot parameter of Map and Protect *)
+CONST read = { 31 };         (* page can be read *)
+CONST write = { 30 };        (* page can be written *)
+CONST exec = { 29 };         (* page can be executed *)
+CONST none = {};             (* page cannot be accessed *)
+.sp 0.3
+(* flags parameter of Map *)
+CONST shared = { 31 };       (* share changes *)
+CONST private = { 30 };      (* changes are private *)
+CONST typeMask = { 28..31 }; (* allows comparisons against shared or private *)
+CONST fixed = { 27 };        (* interpret address exactly *)
+.sp 0.3
+(* flags parameter of Sync *)
+CONST async = { 31 };        (* return immediately *)
+CONST invalidate = { 30 };   (* invalidate mappings *)
+.sp 0.3
+(* advise parameter of Advise *)
+CONST normal = 0;            (* no further special treatment *)
+CONST random = 1;            (* expect random page references *)
+CONST sequential = 2;        (* expect sequential page references *)
+CONST willneed = 3;          (* will need these pages *)
+CONST dontneed = 4;          (* don't need these pages *)
+.sp 0.3
+(* mode of LockAll *)
+CONST current = 1;           (* lock all current mappings *)
+CONST future = 2;            (* lock all future mappings *)
+.sp 0.7
+PROCEDURE GetPageSize() : SysTypes.Size;
+.sp 0.2
+PROCEDURE Map(address: SysTypes.Address; len: SysTypes.Size;
+              prot: SET; flags: SET;
+              fd: SysTypes.File; off: SysTypes.Offset;
+              VAR mapaddress: SysTypes.Address;
+              VAR errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE Unmap(address: SysTypes.Address; len: SysTypes.Size;
+                errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE Protect(addr: SysTypes.Address; len: SysTypes.Size; prot: SET;
+                  VAR errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE Sync(addr: SysTypes.Address; len: SysTypes.Size;
+               flags: SET;
+               VAR errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE Advise(addr: SysTypes.Address; len: SysTypes.Size;
+                 advise: INTEGER;
+                 VAR errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE Lock(addr: SysTypes.Address; len: SysTypes.Size;
+               VAR errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE Unlock(addr: SysTypes.Address; len: SysTypes.Size;
+                 VAR errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE Lockall(mode: INTEGER;
+                  VAR errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE UnlockAll(VAR errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE InCore(addr: SysTypes.Address; len: SysTypes.Size;
+                 VAR vector: SysTypes.Address;
+                 VAR errors: RelatedEvents.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I SysMemory
+interfaces all system calls which are related to \fImmap(2)\fP.
+These system calls allow to map regular and some special files
+into arbritrary positions (on page boundaries) in the
+address space of the current process.
+They allow to replace the traditional \fIbrk(2)\fP system call.
+.LP
+.I GetPageSize
+returns the page size of the system.
+All addresses and sizes given to one of the other procedures
+should be multiples of the page size.
+The page size may differ on different kernel architectures:
+while it is safe to regard a page size constant during the
+lifetime of a process it is unsafe to assume a constant page size
+for multiple runs.
+.LP
+.I Map
+maps the range \fB[\fP\fIoff\fP, \fIoff\fP\fB+\fP\fIlen\fP\fB)\fP
+of the file referenced by \fIfd\fP
+into the address space at
+\fB[\fP\fIaddress\fP, \fIaddress\fP\fB+\fP\fIlen\fP\fB)\fP.
+Unless \fIfixed\fP has been given in \fIflags\fP,
+the system is free to choose another address instead of
+\fIaddress\fP which is returned in \fImapaddress\fP.
+\fIprot\fP specifies the protection mode of the affected
+memory region. \fIread\fP, \fIwrite\fP and \fIexec\fP may
+be given in any combination.
+Following flags may be given to \fIflags\fP:
+.Tb private
+.Tp shared
+requests the mapped file to be changed on write operations.
+.Tp private
+causes a copy to created on the first write operation onto
+a mapped page which is referenced on further operations.
+.Tp fixed
+requests the given address to be interpreted exactly (see above).
+.Te
+.LP
+.I Unmap
+removes the mappings for pages in the given memory range.
+.I Protect
+changes the protections of the mappings specified by the
+given range.
+.I Sync
+writes dirty pages of the given memory range to their
+permanent storage locations.
+Following options may be specified in \fIflags\fP:
+.Tb invalidate
+.Tp async
+requests \fISync\fP to return immediately.
+By default, \fISync\fP returns after all write operations
+are completed.
+.Tp invalidate
+causes all cached copies of the mapped range to be re-obtained
+upon the next reference.
+.Te
+.LP
+.I Advise
+allows to tell the kernel the indicated access pattern
+of a given memory range.
+This allows the kernel to parameterize its paging algorithm
+to achieve better performance.
+Following access patterns are supported:
+.Tb sequential
+.Tp normal
+return to default behaviour.
+.Tp random
+requests the kernel to expect random page references.
+.Tp sequential
+sequential page references are to be assumed.
+.Tp willneed
+tells that the given pages are needed and to be kept
+in memory, if possible.
+.Tp dontneed
+allows the kernel to swap out the pages immediately
+without performance penalties.
+.Te
+.LP
+.I Lock
+requests the given memory range to be locked into
+physical memory.
+Because the possible impact on system resources,
+this system call is restricted to the super-user.
+Alternatively, \fIAdvise\fP may be used.
+.I Unlock
+undoes the effect of \fIlock\fP for the given memory range.
+.I Lockall
+requests all pages (or optionally all pages which are
+added to the address pages or replaced by new mappings)
+to be locked up into physical memory.
+The operational mode is determined by \fImode\fP:
+.Tb current
+.Tp current
+lock all pages which are currently allocated.
+.Tp future
+lock all pages which are allocated in the future or
+replaced by new mappings.
+.Te
+.I Unlockall
+removes all locks.
+.LP
+.I InCore
+tells which pages of the given memory range are currently
+cached into physical memory.
+The status is returned as a byte-per-page array which
+is stored into area pointed to by \fIvector\fP.
+Bytes set to \fB1\fP indicate that the corresponding page
+is in physical memory.
+.SH DIAGNOSTICS
+System call failures lead to events of \fISysErrors(3)\fP.
+The \fIerrors\fP parameter is passed to \fISysErrors.Raise\fP.
+All routines return
+.B FALSE
+in error case.
+.SH FILES
+.Tb /dev/zero
+.Tp /dev/zero
+a special file of zeroes which may be mapped into memory.
+.Te
+.SH "SEE ALSO"
+.Tb getpagesizexxx
+.Tp brk(2)
+traditional memory allocation
+.Tp getpagesize(2)
+\fIGetPageSize\fP
+.Tp madvise(3)
+\fIAdvise\fP
+.Tp mctl(2)
+\fIAdvise\fP, \fILock\fP, \fILockall\fP, \fISync\fP, \fIUnlock\fP,
+\fIUnlockAll\fP
+.Tp mincore(2)
+\fIInCore\fP
+.Tp mlock(3)
+\fILock\fP, \fIUnlock\fP
+.Tp mlockall(3)
+\fILockall\fP, \fIUnlockall\fP
+.Tp mmap(2)
+\fIMap\fP
+.Tp mprotect(2)
+\fIProtect\fP
+.Tp msync(2)
+\fISync\fP
+.Tp munmap(2)
+\fIUnmap\fP
+.Tp zero(4)
+special file with zeroes for \fIMap\fP
+.Tp SysErrors(3)
+error handling
+.Tp SysIPC(3)
+shared memory operations of System V
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: SysMemory.3,v 1.2 2003/07/10 09:23:26 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: SysMemory.3,v $
+.\" Revision 1.2  2003/07/10 09:23:26  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.1  1993/01/11 08:30:54  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

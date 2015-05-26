@@ -1,0 +1,197 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Scopes.om,v 1.1 1998/04/06 14:31:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Scopes.om,v $
+   Revision 1.1  1998/04/06 14:31:41  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Scopes;
+
+   IMPORT CompilerErrors, CompilerObjects, ConstStrings, Events, Iterators,
+      NetIO, Objects, PersistentDisciplines, PersistentObjects,
+      RelatedEvents, Resources, Services, Streams;
+
+   TYPE
+      Identifier = ConstStrings.String;
+      Object = CompilerObjects.Object;
+      Location = CompilerObjects.Location;
+
+      Interface = POINTER TO InterfaceRec;
+
+      Scope = POINTER TO ScopeRec;
+      ScopeRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    if: Interface;
+	    level: INTEGER;
+	    open: BOOLEAN;
+	 END;
+
+   TYPE
+      OpenProc = PROCEDURE (scope: Scope; VAR innerScope: Scope);
+      CloseProc = PROCEDURE (scope: Scope);
+      AddProc = PROCEDURE (scope: Scope; ident: Identifier;
+			   loc: Location; object: Object);
+      UseProc = PROCEDURE (scope: Scope; ident: Identifier;
+			   loc: Location; VAR object: Object);
+      LookupProc = PROCEDURE (scope: Scope; ident: Identifier;
+                              VAR object: Object) : BOOLEAN;
+      LocalLookupProc = PROCEDURE (scope: Scope; ident: Identifier;
+                                   VAR object: Object) : BOOLEAN;
+      CutProc = PROCEDURE (scope: Scope);
+      GetIteratorProc = PROCEDURE (scope: Scope; VAR it: Iterators.Iterator);
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    open: OpenProc;
+	    close: CloseProc;
+	    add: AddProc;
+	    use: UseProc;
+	    lookup: LookupProc;
+	    localLookup: LocalLookupProc;
+	    cut: CutProc;
+	    getIterator: GetIteratorProc;
+	 END;
+
+   (* === PersistentObjects if procedures ================================== *)
+
+   PROCEDURE ReadScope(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Scope DO
+	 RETURN NetIO.ReadInteger(s, object.level) &
+	        NetIO.ReadBoolean(s, object.open)
+      END;
+   END ReadScope;
+
+   PROCEDURE WriteScope(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Scope DO
+	 RETURN NetIO.WriteInteger(s, object.level) &
+	        NetIO.WriteBoolean(s, object.open)
+      END;
+   END WriteScope;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 persif: PersistentObjects.Interface;
+	 type: Services.Type;
+   BEGIN
+      NEW(persif);
+      persif.create := NIL;
+      persif.read := ReadScope; persif.write := WriteScope;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(type,
+	 "Scopes.Scope", "CompilerObjects.Object", persif);
+   END InitModule;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Init(scope: Scope; if: Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.open # NIL) & (if.close # NIL) &
+             (if.add # NIL) & (if.use # NIL) & (if.lookup # NIL) &
+	     (if.localLookup # NIL) & (if.cut # NIL) & (if.getIterator # NIL));
+      scope.open := TRUE;
+      scope.if := if;
+      scope.loc := NIL;
+      scope.level := 0;
+   END Init;
+
+   PROCEDURE Open(scope: Scope; VAR innerScope: Scope);
+   BEGIN
+      scope.if.open(scope, innerScope);
+      ASSERT(innerScope # NIL);
+      Init(innerScope, scope.if);
+      innerScope.level := scope.level + 1;
+      RelatedEvents.Forward(innerScope, scope);
+      Resources.DependsOn(innerScope, scope);
+   END Open;
+
+   PROCEDURE Close(scope: Scope);
+   BEGIN
+      ASSERT(scope.open);
+      scope.open := FALSE;
+      scope.if.close(scope);
+   END Close;
+
+   PROCEDURE Level(scope: Scope) : INTEGER;
+      (* returns 0 for the outmost level *)
+   BEGIN
+      RETURN scope.level
+   END Level;
+
+   PROCEDURE Add(scope: Scope; ident: Identifier;
+		 loc: Location; object: Object);
+   BEGIN
+      ASSERT(scope.open & (object # NIL));
+      scope.if.add(scope, ident, loc, object);
+   END Add;
+
+   PROCEDURE Use(scope: Scope; ident: Identifier; loc: Location;
+                 VAR object: Object);
+      (* lookup the identifier in the given scope and mark it as used *)
+   BEGIN
+      scope.if.use(scope, ident, loc, object)
+   END Use;
+
+   PROCEDURE Lookup(scope: Scope; ident: Identifier;
+                    VAR object: Object) : BOOLEAN;
+      (* lookup the identifier without marking it *)
+   BEGIN
+      RETURN scope.if.lookup(scope, ident, object)
+   END Lookup;
+
+   PROCEDURE LocalLookup(scope: Scope; ident: Identifier;
+                         VAR object: Object) : BOOLEAN;
+      (* lookup the identifier in scope without considering the
+         upper scopes without marking it
+      *)
+   BEGIN
+      RETURN scope.if.localLookup(scope, ident, object)
+   END LocalLookup;
+
+   PROCEDURE Cut(scope: Scope);
+      (* cut scope from upper levels; note that this does not
+	 change Level(scope)
+      *)
+   BEGIN
+      scope.if.cut(scope);
+   END Cut;
+
+   PROCEDURE GetIterator(scope: Scope; VAR it: Iterators.Iterator);
+      (* returns tuples of type Object; must not be called as long
+	 as the given scope is open
+      *)
+   BEGIN
+      ASSERT(~scope.open);
+      scope.if.getIterator(scope, it);
+   END GetIterator;
+
+BEGIN
+   InitModule;
+END Scopes.

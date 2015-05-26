@@ -1,0 +1,95 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XAtomListPr.om,v 1.1 2005/04/10 10:17:58 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XAtomListPr.om,v $
+   Revision 1.1  2005/04/10 10:17:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XAtomListProperties;
+
+   IMPORT Streams, Texts, XAtoms, XDisplays, XObjects, XResources;
+
+   CONST
+      type = "ATOM";
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE Change(win: XResources.Window;
+                    VAR property, atom: ARRAY OF CHAR;
+		    mode: XDisplays.PropertyChangeMode) : BOOLEAN;
+      VAR
+	 p: XDisplays.Property;
+	 display: XDisplays.Display;
+	 data: Streams.Stream;
+	 atomID: XDisplays.AtomID;
+	 ok: BOOLEAN;
+
+      PROCEDURE GetAtomID(name: ARRAY OF CHAR;
+			  VAR id: XDisplays.AtomID) : BOOLEAN;
+	 VAR
+	    atom: XAtoms.Atom;
+      BEGIN
+	 IF ~XAtoms.LookupByName(display, name,
+		  (* onlyIfExists = *) FALSE, atom) THEN
+	    RETURN FALSE
+	 END;
+	 id := XObjects.GetID(atom);
+	 RETURN TRUE
+      END GetAtomID;
+
+   BEGIN (* Change *)
+      display := XResources.GetDisplay(win);
+      NEW(p);
+      IF ~GetAtomID(atom, atomID) OR
+	    ~GetAtomID(property, p.name) OR
+	    ~GetAtomID(type, p.type) THEN
+	 RETURN FALSE
+      END;
+      Texts.Open(data);
+      ok := Streams.Write(data, atomID); ASSERT(ok);
+      p.format := 32; p.len := 4; p.data := data;
+      RETURN XResources.ChangeProperty(win, p, mode)
+   END Change;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Replace(win: XResources.Window;
+                     property, atom: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, atom, XDisplays.replaceProperty)
+   END Replace;
+
+   PROCEDURE Prepend(win: XResources.Window;
+                     property, atom: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, atom, XDisplays.prependProperty)
+   END Prepend;
+
+   PROCEDURE Append(win: XResources.Window;
+                    property, atom: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, atom, XDisplays.appendProperty)
+   END Append;
+
+END XAtomListProperties.

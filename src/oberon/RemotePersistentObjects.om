@@ -1,0 +1,183 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemotePersi.om,v 1.2 2004/09/03 09:58:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemotePersi.om,v $
+   Revision 1.2  2004/09/03 09:58:54  borchert
+   bug fix: Streams.Close added in Handler to allow the local proxy
+            of the Streams object to terminate
+
+   Revision 1.1  1995/03/20  20:50:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemotePersistentObjects;
+
+   (* support operations of PersistentObjects for remote objects *)
+
+   IMPORT Messages, NetIO, PersistentObjects, RelatedEvents,
+      RemoteObjects, RemoteStreams, Services, Streams;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+      WriteMsg = POINTER TO WriteMsgRec;
+      WriteMsgRec =
+	 RECORD
+	    (MessageRec)
+	    s: Streams.Stream; (* in *)
+	    mode: PersistentObjects.Mode; (* in *)
+	 END;
+   VAR
+      writeMsgType: Services.Type;
+      persIF: PersistentObjects.Interface;
+
+   (* ==== server side ================================================== *)
+
+   PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(from, queue);
+      RelatedEvents.AppendQueue(to, queue);
+   END ForwardErrors;
+
+   PROCEDURE CreateWriteMsg(VAR object: PersistentObjects.Object);
+      VAR
+	 msg: WriteMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, writeMsgType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateWriteMsg;
+
+   PROCEDURE ReadWriteMsg(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: WriteMsg DO
+	 IF object.processed THEN
+	    (* out params *)
+	    RETURN TRUE
+	 ELSE
+	    (* in params *)
+	    RETURN RemoteObjects.Import(s, object.s) &
+		   NetIO.ReadShortInt(s, object.mode)
+	 END;
+      END;
+   END ReadWriteMsg;
+
+   PROCEDURE WriteWriteMsg(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: WriteMsg DO
+	 IF object.processed THEN
+	    (* out params *)
+	    RETURN TRUE
+	 ELSE
+	    (* in params *)
+	    RETURN RemoteObjects.Export(s, object.s) &
+		   NetIO.WriteShortInt(s, object.mode)
+	 END;
+      END;
+   END WriteWriteMsg;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+   BEGIN
+      IF msg IS Message THEN
+	 WITH object: PersistentObjects.Object DO
+	    msg.processed := TRUE;
+	    IF msg IS WriteMsg THEN
+	       WITH msg: WriteMsg DO
+		  PersistentObjects.SetMode(msg.s, msg.mode);
+		  msg.done := PersistentObjects.Write(msg.s, object) &
+		              Streams.Close(msg.s);
+		  ForwardErrors(msg.s, msg.errors);
+	       END;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   PROCEDURE Init(object: PersistentObjects.Object);
+      (* to be called by GetParams-interface procedure of RemoteObjects *)
+   BEGIN
+      Messages.InstallHandler(object, Handler);
+   END Init;
+
+   (* ==== client side ================================================== *)
+
+   PROCEDURE CreateAndRead(s: Streams.Stream; create: BOOLEAN;
+			   VAR object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      IF create THEN
+	 RETURN PersistentObjects.Read(s, object)
+      ELSE
+	 RETURN PersistentObjects.ReadInto(s, object)
+      END;
+   END CreateAndRead;
+
+   PROCEDURE Write(s: Streams.Stream;
+		   object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 msg: WriteMsg;
+   BEGIN
+      CreateWriteMsg(msg);
+      msg.s := s;
+      RemoteStreams.SetMode(s, {Streams.write}, Streams.onebuf);
+      PersistentObjects.GetMode(s, msg.mode);
+      Messages.Send(object, msg);
+      ForwardErrors(msg.errors, s);
+      RETURN msg.done
+   END Write;
+
+   PROCEDURE RegisterType(VAR type: Services.Type;
+			  name, baseName: ARRAY OF CHAR);
+      (* to be called instead of PersistentObjects.RegisterType
+	 for proxy object types
+      *)
+   BEGIN
+      PersistentObjects.RegisterType(type, name, baseName, persIF);
+   END RegisterType;
+
+   PROCEDURE InitModule;
+      VAR
+	 msgType: Services.Type;
+	 pif: PersistentObjects.Interface;
+   BEGIN
+      PersistentObjects.RegisterType(msgType,
+	 "RemotePersistentObjects.Message", "Messages.Message", NIL);
+      NEW(pif);
+      pif.create := CreateWriteMsg; pif.read := ReadWriteMsg;
+      pif.write := WriteWriteMsg; pif.createAndRead := NIL;
+      PersistentObjects.RegisterType(writeMsgType,
+	 "RemotePersistentObjects.WriteMsg",
+	 "RemotePersistentObjects.Message", pif);
+
+      NEW(persIF);
+      persIF.createAndRead := CreateAndRead; persIF.write := Write;
+      persIF.read := NIL; persIF.create := NIL;
+   END InitModule;
+
+BEGIN
+   InitModule;
+END RemotePersistentObjects.

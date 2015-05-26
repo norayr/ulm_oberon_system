@@ -1,0 +1,270 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: LargeTexts.om,v 1.2 1996/11/20 08:07:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: LargeTexts.om,v $
+   Revision 1.2  1996/11/20  08:07:46  borchert
+   - DbStrings renamed to LargeTexts
+   - error handling added
+   - MemOps used instead of internal Copy procedure
+
+   Revision 1.1  1996/11/20  08:05:02  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE LargeTexts;
+
+   (* management of texts (dynamic strings);
+      works like Texts but is more efficient for large in-memory texts;
+      note that this implementation consumes (in most cases) more
+      memory than Texts;
+      the interfaces are identical, so you are free to change
+      the import line from ``IMPORT Texts'' to ``IMPORT Texts := LargeTexts''
+      and vice versa;
+      the original version of this implementation is due to Werner Stanglow
+      and was called DbStrings
+   *)
+
+   IMPORT Events, MemOps, Priorities, RelatedEvents, Services, Streams,
+      SYS := SYSTEM, Types;
+
+   CONST
+      caps = {Streams.addrio, Streams.close, Streams.read, Streams.write,
+              Streams.seek, Streams.tell, Streams.trunc};
+   VAR
+      if: Streams.Interface; (* parameters of Streams.Init *)
+      type: Services.Type; (* LargeTexts.Text *)
+
+   CONST
+      ldMin = 8; (* minimal buffer size is 2^ldMin *)
+
+   TYPE
+      Text = POINTER TO TextRec;
+      TextRec =
+         RECORD
+            (Streams.StreamRec);
+            size: Streams.Count;      (* current size of stream, <= allocated *)
+            pos: Streams.Count;       (* current position in stream *)
+            addr: Types.Address;      (* may be NIL for allocated = 0 *)
+            allocated: Streams.Count; (* size of buffer behind addr *)
+         END;
+
+   (* === error handling =============================================== *)
+
+   CONST
+      posBeyondCurrentLength = 0;
+      invalidTruncPos = 1;
+      errors = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[posBeyondCurrentLength] :=
+	 "desired position is beyond the current length";
+      errormsg[invalidTruncPos] := "invalid trunc position";
+   END InitErrorHandling;
+
+   PROCEDURE Error(s: Streams.Stream; code: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(s, event);
+   END Error;
+
+   (* === internal stuff =============================================== *)
+
+   PROCEDURE Alloc(s: Text; size: Streams.Count);
+      VAR
+	 p: POINTER TO RECORD END;
+         addr: Types.Address;
+   BEGIN
+      IF size > 0 THEN
+         addr := s.addr;
+         SYS.NEW(p, size);
+         s.addr := SYS.VAL(Types.Address, p);
+         s.allocated := size;
+         IF s.size > 0 THEN
+            MemOps.Copy(addr, s.addr, s.size);
+         END;
+      ELSE
+         s.allocated := 0;
+         s.addr := SYS.VAL(Types.Address, NIL);
+      END;
+   END Alloc;
+
+   PROCEDURE LdSize(val: Streams.Count) : Streams.Count;
+      VAR
+	 pow: SHORTINT;
+   BEGIN
+      pow := ldMin;
+      WHILE ASH(1, pow) < val DO
+         INC(pow);
+      END;
+      RETURN ASH(1, pow)
+   END LdSize;
+
+   (* === Streams interface procedures ================================= *)
+
+   PROCEDURE AddrWrite(s: Streams.Stream; source: Streams.Address;
+                       cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: Text DO
+         IF s.pos > s.size THEN
+	    Error(s, posBeyondCurrentLength);
+            RETURN 0
+         END;
+         IF s.pos + cnt > s.allocated THEN
+            Alloc(s, LdSize(s.pos + cnt));
+         END;
+         MemOps.Copy(source, s.addr + s.pos, cnt);
+         INC(s.pos, cnt);
+         IF s.pos > s.size THEN
+            s.size := s.pos;
+         END;
+         RETURN cnt
+      END;
+   END AddrWrite;
+
+   PROCEDURE Trunc(s: Streams.Stream; cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Text DO
+         IF cnt > s.size THEN 
+	    Error(s, invalidTruncPos);
+            RETURN FALSE
+         ELSE
+            s.size := cnt;
+            Alloc(s, LdSize(cnt));
+            RETURN TRUE
+         END;
+      END;
+   END Trunc;
+
+   PROCEDURE AddrRead(s: Streams.Stream; dest: Streams.Address;
+                      cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: Text DO
+         IF s.pos >= s.size THEN
+            RETURN 0
+         END;
+         IF s.pos + cnt > s.size THEN
+            cnt := s.size-s.pos;
+         END;
+         MemOps.Copy(s.addr + s.pos, dest, cnt);
+         INC(s.pos, cnt);
+         RETURN cnt
+      END;
+   END AddrRead;
+
+   PROCEDURE ByteWrite(s: Streams.Stream; b: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN AddrWrite(s, SYS.ADR(b), 1) = 1
+   END ByteWrite;
+
+   PROCEDURE ByteRead(s: Streams.Stream; VAR b: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN AddrRead(s, SYS.ADR(b), 1) = 1
+   END ByteRead;
+
+   PROCEDURE Seek(s: Streams.Stream;
+                  offset: Streams.Count; whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Streams.Count;
+   BEGIN
+      WITH s: Text DO
+	 CASE whence OF
+	 | Streams.fromStart: newpos := offset;
+	 | Streams.fromPos:   newpos := s.pos + offset;
+	 | Streams.fromEnd:   newpos := s.size + offset;
+	 END;
+	 IF (newpos < 0) OR (newpos > s.size) THEN
+	    Error(s, posBeyondCurrentLength);
+	    RETURN FALSE
+	 ELSE
+	    s.pos := newpos;
+	    RETURN TRUE
+	 END;
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR offset: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Text DO
+	 offset := s.pos;
+	 RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Text DO
+	 s.size := 0;
+	 s.pos := 0;
+	 Alloc(s, 0);
+	 RETURN TRUE
+      END;
+   END Close;
+
+   (* === exported procedure =========================================== *)
+
+   PROCEDURE Open(VAR text: Streams.Stream);
+      (* for reading and writing (holes are not permitted);
+	 text will be of type Text
+      *)
+      VAR
+	 newtext: Text;
+   BEGIN
+      NEW(newtext);
+      newtext.allocated := 0;
+      newtext.size := 0;
+      newtext.pos := 0;
+      newtext.addr := SYS.VAL(Types.Address, NIL);
+      Services.Init(newtext, type);
+      Streams.Init(newtext, if, caps, Streams.nobuf);
+      RelatedEvents.QueueEvents(newtext);
+      text := newtext;
+   END Open;
+
+BEGIN
+   NEW(if);
+   if.addrread := AddrRead; if.addrwrite := AddrWrite;
+   if.read := ByteRead; if.write := ByteWrite;
+   if.seek := Seek; if.tell := Tell;
+   if.close := Close; if.flush := NIL;
+   if.trunc := Trunc; if.handler := NIL;
+   Services.CreateType(type, "LargeTexts.Text", "Streams.Stream");
+   InitErrorHandling;
+END LargeTexts.

@@ -1,0 +1,274 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPEngine.om,v 1.2 2001/05/21 15:49:42 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPEngine.om,v $
+   Revision 1.2  2001/05/21 15:49:42  borchert
+   - move from Jobs to PriorityJobs
+   - set network connection into asynchronous mode
+
+   Revision 1.1  2001/05/08 15:28:29  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPEngine;
+
+   IMPORT Conclusions, Conditions, Errors, EventConditions, Events,
+      FTPCommands, FTPLoggers, FTPPriorities, FTPRequests, FTPResponses,
+      FTPSessions, FTPTimerEvents, LocalSemaphores, PriorityJobs,
+      RelatedEvents, Resources, Semaphores, StreamConditions, Streams, SysIO,
+      SysSockets, SysTypes, Tasks, UnixFiles;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (PriorityJobs.JobRec)
+	    session: FTPSessions.Session;
+	 END;
+      ListenerJob = POINTER TO ListenerJobRec;
+      ListenerJobRec =
+	 RECORD
+	    (JobRec)
+	    in: Streams.Stream;
+	    requEventType: Events.EventType;
+	 END;
+      HandlerJob = POINTER TO HandlerJobRec;
+      HandlerJobRec =
+	 RECORD
+	    (JobRec)
+	    requEventCondition: Conditions.Condition;
+	    requEventType: Events.EventType;
+	    respEventType: Events.EventType;
+	 END;
+      ResponserJob = POINTER TO ResponserJobRec;
+      ResponserJobRec =
+	 RECORD
+	    (JobRec)
+	    out: Streams.Stream;
+	    respEventCondition: Conditions.Condition;
+	    respEventType: Events.EventType;
+	    log: Streams.Stream;
+	 END;
+
+   VAR
+      true: INTEGER; (* set to 1 for socket options *)
+
+   PROCEDURE Listener(job: PriorityJobs.Job);
+      VAR
+	 inputAvailable: Conditions.Condition;
+	 resourceEventType: Events.EventType;
+	 resourceCondition: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 resourceEvent: Resources.Event;
+	 event: FTPRequests.Event;
+	 request: FTPRequests.Request;
+   BEGIN
+      WITH job: ListenerJob DO
+	 StreamConditions.Create(inputAvailable, job.in, StreamConditions.read);
+	 Resources.TakeInterest(job.session, resourceEventType);
+	 EventConditions.Create(resourceCondition, resourceEventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, inputAvailable);
+	 Conditions.Incl(conditions, resourceCondition);
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    IF EventConditions.TestAndGet(resourceCondition, resourceEvent) THEN
+	       IF resourceEvent.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    ELSE
+	       IF ~FTPRequests.GetRequest(job.in, request) THEN
+		  EXIT
+	       END;
+	       FTPTimerEvents.Reset(job.session);
+	       NEW(event);
+	       event.type := job.requEventType;
+	       event.request := request;
+	       Events.Raise(event);
+	    END;
+	 END;
+	 EventConditions.Drop(resourceCondition);
+	 Resources.Notify(job.session, Resources.terminated);
+      END;
+   END Listener;
+
+   PROCEDURE Handler(job: PriorityJobs.Job);
+      VAR
+	 resourceEventType: Events.EventType;
+	 resourceCondition: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 resourceEvent: Resources.Event;
+	 response: FTPResponses.Response;
+	 inputEvent: FTPRequests.Event;
+	 outputEvent: FTPResponses.Event;
+
+   BEGIN (* Handler *)
+      WITH job: HandlerJob DO
+	 Resources.TakeInterest(job.session, resourceEventType);
+	 EventConditions.Create(resourceCondition, resourceEventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, job.requEventCondition);
+	 Conditions.Incl(conditions, resourceCondition);
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    WHILE EventConditions.TestAndGet(resourceCondition,
+		     resourceEvent) DO
+	       IF resourceEvent.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    END;
+	    WHILE EventConditions.TestAndGet(job.requEventCondition,
+		     inputEvent) DO
+	       FTPSessions.ProcessRequest(job.session,
+		     inputEvent.request, job.respEventType, response);
+	       NEW(outputEvent); outputEvent.type := job.respEventType;
+	       outputEvent.response := response;
+	       Events.Raise(outputEvent);
+	       FTPLoggers.Log(job.session, inputEvent.request, response);
+	       IF job.session.finished THEN EXIT END;
+	    END;
+	 END;
+	 EventConditions.Drop(resourceCondition);
+	 EventConditions.Drop(job.requEventCondition);
+	 Resources.Notify(job.session, Resources.terminated);
+      END;
+   END Handler;
+
+   PROCEDURE Responser(job: PriorityJobs.Job);
+      VAR
+	 resourceEventType: Events.EventType;
+	 resourceCondition: Conditions.Condition;
+	 resourceEvent: Resources.Event;
+	 conditions: Conditions.ConditionSet;
+	 response: FTPResponses.Response;
+	 event: FTPResponses.Event;
+   BEGIN
+      WITH job: ResponserJob DO
+	 Resources.TakeInterest(job.session, resourceEventType);
+	 EventConditions.Create(resourceCondition, resourceEventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, job.respEventCondition);
+	 Conditions.Incl(conditions, resourceCondition);
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    WHILE EventConditions.TestAndGet(job.respEventCondition, event) DO
+	       IF ~FTPResponses.SendResponse(job.out, event.response) THEN
+		  IF (job.log # NIL) &
+			RelatedEvents.EventsPending(job.session) THEN
+		     Conclusions.ConcludeS(job.log, job.session,
+			Errors.error, "");
+		  END;
+		  EXIT
+	       END;
+	       FTPTimerEvents.Reset(job.session);
+	    END;
+	    WHILE EventConditions.TestAndGet(resourceCondition,
+		     resourceEvent) DO
+	       IF resourceEvent.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    END;
+	 END;
+	 EventConditions.Drop(resourceCondition);
+	 EventConditions.Drop(job.respEventCondition);
+	 Resources.Notify(job.session, Resources.terminated);
+      END;
+   END Responser;
+
+   PROCEDURE Run(fd: SysIO.File; session: FTPSessions.Session;
+		 log: Streams.Stream);
+      VAR
+	 flags: SET; interrupted: BOOLEAN;
+	 in, out: Streams.Stream;
+	 ljob: ListenerJob; hjob: HandlerJob; rjob: ResponserJob;
+	 lcond, hcond, rcond: Conditions.Condition;
+	 requEventType: Events.EventType;
+	 respEventType: Events.EventType;
+
+   BEGIN (* Run *)
+      (* set fd in non-blocking mode;
+	 this increases performance as this saves calls of Tasks.WaitFor
+      *)
+      IF ~SysIO.FcntlGet(fd, SysIO.getfl, flags, session) OR
+	    ~SysIO.FcntlSet(fd, SysIO.setfl, flags + SysIO.ndelay,
+			    session, (* retry = *) TRUE, interrupted) THEN
+	 (* OK *)
+      END;
+      (* set socket options:
+	 - receive out-of-band-data in main channel to avoid
+	   parsing problems with telnet codes (IAC may come
+	   out-of-band, its associated data mark in-band)
+	 - keep connections alive to get notified if the
+	   other side does no longer respond
+      *)
+      IF ~SysSockets.SetSockOpt(fd, SysSockets.socketLevel,
+	       SysSockets.optOOBinline, true, RelatedEvents.null) OR
+	    ~SysSockets.SetSockOpt(fd, SysSockets.socketLevel,
+	       SysSockets.optKeepAlive, true, RelatedEvents.null) THEN
+	 (* ignore errors to allow tests with non-socket connections *)
+      END;
+      IF ~UnixFiles.OpenFd(in, fd, UnixFiles.read, Streams.onebuf, session) OR
+	    ~UnixFiles.OpenFd(out, fd, UnixFiles.write, Streams.linebuf,
+			      session) THEN
+	 RETURN
+      END;
+      IF log # NIL THEN
+	 RelatedEvents.QueueEvents(session);
+      END;
+      RelatedEvents.Forward(in, session);
+      RelatedEvents.Forward(out, session);
+
+      Events.Define(respEventType);
+      Events.Define(requEventType);
+
+      NEW(ljob);
+      ljob.session := session;
+      ljob.requEventType := requEventType;
+      ljob.in := in;
+
+      NEW(hjob);
+      hjob.session := session;
+      hjob.requEventType := requEventType;
+      hjob.respEventType := respEventType;
+      EventConditions.Create(hjob.requEventCondition, requEventType);
+
+      NEW(rjob);
+      rjob.session := session;
+      rjob.out := out;
+      rjob.respEventType := respEventType;
+      EventConditions.Create(rjob.respEventCondition, respEventType);
+      rjob.log := log;
+
+      PriorityJobs.Submit(rjob, session, FTPPriorities.writer, Responser);
+      PriorityJobs.Submit(hjob, session, FTPPriorities.command, Handler);
+      PriorityJobs.Submit(ljob, session, FTPPriorities.reader, Listener);
+
+      PriorityJobs.CreateCondition(lcond, ljob);
+      PriorityJobs.CreateCondition(hcond, hjob);
+      PriorityJobs.CreateCondition(rcond, rjob);
+      Tasks.WaitFor(lcond); Tasks.WaitFor(hcond); Tasks.WaitFor(rcond);
+   END Run;
+
+BEGIN
+   true := 1;
+END FTPEngine.

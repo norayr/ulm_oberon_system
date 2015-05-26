@@ -1,0 +1,402 @@
+(* Ulm's Oberon Library - I386/Linux 2.2 -  cae 02/01
+   (C) University of Ulm, SAI, 89069 Ulm
+   Note: This file is no longer auto generated.
+*)
+
+MODULE SysSignals;
+
+   IMPORT Events, Priorities, Process, RelatedEvents, Services, Sys,
+      SysConversions, SysErrors, SYSTEM, SysTypes;
+
+   TYPE
+      Handler = PROCEDURE;
+
+   TYPE
+      Signal = INTEGER; (* signal number: [1..nsigs-1] *)
+      EventType = POINTER TO EventTypeRec;
+      EventTypeRec =
+	 RECORD
+	    (Events.EventTypeRec)
+	    signo: Signal;
+	 END;
+      Name = ARRAY 12 OF CHAR; (* traditional name, e.g. "SIGHUP" *)
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    signo: Signal;
+	    (* see siginfo(5) for meaning of these fields *)
+	    sigcode: INTEGER;
+	    addr: SysTypes.UntracedAddress;
+	    (* "hard" errors need to be fixed -- else we loop endless;
+	       if event.fixed is set to TRUE by one of the handlers,
+	       continuation is allowed else the program aborts
+	    *)
+	    fixed: BOOLEAN;
+	 END;
+
+
+   CONST 
+      sigHUP    = 1;          (*  *)
+      sigINT    = 2;          (*  *)
+      sigQUIT   = 3;          (*  *)
+      sigILL    = 4;          (*  *)
+      sigTRAP   = 5;          (*  *)
+      sigABRT   = 6;          (*  *)
+      sigBUS    = 7;          (*  *)
+      sigFPE    = 8;          (*  *)
+      sigKILL   = 9;          (*  *)
+      sigUSR1   = 10;         (*  *)
+      sigSEGV   = 11;         (*  *)
+      sigUSR2   = 12;         (*  *)
+      sigPIPE   = 13;         (*  *)
+      sigALRM   = 14;         (*  *)
+      sigTERM   = 15;         (*  *)
+      sigSTKFLT = 16;         (*  *)
+      sigCHLD   = 17;         (*  *)
+      sigCONT   = 18;         (*  *)
+      sigSTOP   = 19;         (*  *)
+      sigTSTP   = 20;         (*  *)
+      sigTTIN   = 21;         (*  *)
+      sigTTOU   = 22;         (*  *)
+      sigURG    = 23;         (*  *)
+      sigXCPU   = 24;         (*  *)
+      sigXFSZ   = 25;         (*  *)
+      sigVTALRM = 26;         (*  *)
+      sigPROF   = 27;         (*  *)
+      sigWINCH  = 28;         (*  *)
+      sigIO     = 29;         (*  *)
+      sigPWR    = 30;         (*  *)
+      sigSYS    = 31;         (*  *)
+      
+      sigRTMIN  = 32;         (* first realtime signal *)
+      sigRTMAX  = 63;         (*  *)
+      allsigs   = 64;         (* number of all signals *)
+      nsigs     = 64;
+   VAR 
+      HUP    : EventType;
+      INT    : EventType;
+      QUIT   : EventType;
+      ILL    : EventType;
+      TRAP   : EventType;
+      ABRT   : EventType;
+      BUS    : EventType;
+      FPE    : EventType;
+      KILL   : EventType;
+      USR1   : EventType;
+      SEGV   : EventType;
+      USR2   : EventType;
+      PIPE   : EventType;
+      ALRM   : EventType;
+      TERM   : EventType;
+      STKFLT : EventType;
+      CHLD   : EventType;
+      CONT   : EventType;
+      STOP   : EventType;
+      TSTP   : EventType;
+      TTIN   : EventType;
+      TTOU   : EventType;
+      URG    : EventType;
+      XCPU   : EventType;
+      XFSZ   : EventType;
+      VTALRM : EventType;
+      PROF   : EventType;
+      WINCH  : EventType;
+      POLL   : EventType;
+      PWR    : EventType;
+      SYS    : EventType;
+
+   VAR
+      unknownSignal: Events.EventType;
+      text: ARRAY allsigs OF Events.Message;
+      name: ARRAY allsigs OF Name;
+      eventType: ARRAY nsigs OF EventType;
+
+
+   CONST
+      Default = 0;
+      Ignore = 1;
+
+      (* do not return from these signals if they do not get fixed *)
+      hardSignals = {sigILL, sigBUS, sigSEGV, sigSYS};
+
+      (* signals which are related to memory managment *)
+      memSignals = {sigSEGV};
+
+      (* signals which cannot be caught or ignored *)
+      voidSignals = {sigKILL, sigSTOP, sigPROF};
+
+      (* signals which are not reset when caught *)
+      againSignals = { 1..MAX(SET) };
+
+      (* signals where default reaction means ignore *)
+      defIsIgnSignals = {sigCHLD};
+   VAR
+      code2eventfields: SysConversions.Format;
+
+   PROCEDURE SignalHandler(signo: Signal; siginfo : SYSTEM.UNTRACEDADDRESS;
+                           ucontext : SYSTEM.UNTRACEDADDRESS);
+      CONST
+	 faultingSignals = {sigSEGV, sigBUS, sigILL, sigTRAP, sigFPE};
+      TYPE
+	 Code =
+	    RECORD
+	       signo: INTEGER;
+	       code: INTEGER;
+	       errno: INTEGER;
+	       (* if signo IN faultingSignals *)
+	       addr: SysTypes.UntracedAddress;
+	    END;
+      VAR
+	 code: Code;
+	 i: INTEGER;
+	 sigevent: Event;
+	 error: INTEGER;
+	 old : PROCEDURE;
+   BEGIN
+      (* close the window *)
+      IF (signo <= MAX(SET)) & ~(signo IN againSignals) &
+	    ~SYSTEM.UNIXSIGNAL(signo, SYSTEM.VAL (Handler, SignalHandler),
+	                       old, error) THEN
+	 SysErrors.Raise(NIL, error, Sys.sigaction, text[signo]);
+      END;
+      NEW(sigevent);
+      IF (signo >= 1) & (signo < nsigs) THEN
+	 sigevent.type := eventType[signo];
+	 sigevent.message := text[signo];
+      ELSE
+	 sigevent.type := unknownSignal;
+	 sigevent.message := "unknown signal";
+      END;
+      sigevent.signo := signo;
+      IF siginfo # 0 THEN
+	 SysConversions.ByFmtAndAddrFromC(siginfo, SYSTEM.ADR(code), code2eventfields);
+	 sigevent.sigcode := code.code;
+      ELSE
+	 sigevent.sigcode := 0;
+      END;
+      IF (signo <= MAX(SET)) & (signo IN faultingSignals) THEN
+	 SYSTEM.GET (ucontext + 4 * 26, sigevent.addr);   (* cr2 *)
+	 sigevent.sigcode := 1 (* XXX See SysStorage *);
+      ELSE
+	 sigevent.addr := SYSTEM.VAL(SysTypes.UntracedAddress, NIL);
+      END;
+      sigevent.fixed := FALSE;
+      Events.Raise(sigevent);
+      IF (signo <= MAX(SET)) &
+	    (sigevent.signo IN hardSignals) & ~sigevent.fixed THEN
+	 Process.Abort;
+      END;
+   END SignalHandler;
+		       
+   PROCEDURE SigManager(type: Events.EventType; reaction: Events.Reaction);
+      VAR
+	 oldproc: PROCEDURE;
+	 error: INTEGER;
+	 p: INTEGER;
+   BEGIN
+      WITH type: EventType DO
+	 IF reaction = Events.funcs THEN
+	    IF ~SYSTEM.UNIXSIGNAL(type.signo, SYSTEM.VAL (Handler, SignalHandler), oldproc, error) THEN
+	       SysErrors.Raise(NIL, error, Sys.sigaction, text[type.signo]);
+	    END;
+	 ELSE
+	    IF reaction = Events.default THEN
+	       p := Default;
+	    ELSE
+	       p := Ignore;
+	    END;
+	    IF ~SYSTEM.UNIXSIGNAL(type.signo, SYSTEM.VAL (Handler, p), oldproc, error) THEN
+	       SysErrors.Raise(NIL, error, Sys.sigaction, text[type.signo]);
+	    END;
+	 END;
+      END;
+   END SigManager;
+
+   PROCEDURE GetSigHandler(sig: Signal; VAR handler: INTEGER);
+      VAR
+	 error: INTEGER;
+	 old: Handler;
+	 hand : Handler;
+   BEGIN
+      IF ~SYSTEM.UNIXSIGNAL(sig, SYSTEM.VAL (Handler, Ignore), hand, error) OR
+	    ~SYSTEM.UNIXSIGNAL(sig, hand, old, error) THEN
+	 handler := Default;
+      ELSE
+         handler := SYSTEM.VAL (INTEGER, hand);
+      END;
+   END GetSigHandler;
+
+   PROCEDURE Init;
+      VAR
+	 sig: Signal;
+	 handler: INTEGER;
+	 eventTypeType: Services.Type;
+   BEGIN
+      Services.CreateType(eventTypeType,
+	 "SysSignals.EventType", "Events.EventType");
+      sig := 1;
+      WHILE sig < nsigs DO
+	 IF (sig <= MAX(SET)) & (sig IN voidSignals) THEN
+	    eventType[sig] := NIL;
+	 ELSE
+	    NEW(eventType[sig]);
+	    Services.Init(eventType[sig], eventTypeType);
+	    Events.Init(eventType[sig]);
+	    eventType[sig].signo := sig;
+	    IF (sig <= MAX(SET)) & (sig IN memSignals) THEN
+	       Events.SetPriority(eventType[sig], Priorities.storage);
+	    ELSIF (sig <= MAX(SET)) & (sig IN hardSignals) THEN
+	       Events.SetPriority(eventType[sig], Priorities.fatalsignals);
+	    ELSE
+	       Events.SetPriority(eventType[sig], Priorities.interrupts);
+	    END;
+	    IF (sig <= MAX(SET)) & (sig IN defIsIgnSignals) THEN
+	       Events.Ignore(eventType[sig]);
+	    ELSE
+	       GetSigHandler(sig, handler);
+	       IF handler = Ignore THEN
+		  Events.Ignore(eventType[sig]);
+	       ELSE
+		  Events.RemoveHandlers(eventType[sig]);
+	       END;
+	    END;
+	    Events.Manager(eventType[sig], SigManager);
+	 END;
+	 INC(sig);
+      END;
+      Events.Define(unknownSignal);
+      Events.SetPriority(unknownSignal, Priorities.liberrors);
+      SysConversions.Compile(code2eventfields, "ii/ii/ii/aa");
+   END Init;
+
+
+BEGIN
+   Init;
+   HUP := eventType[1]; name[1] := "SIGHUP";
+   text[1] := "hangup";
+   INT := eventType[2]; name[2] := "SIGINT";
+   text[2] := "interrupt";
+   QUIT := eventType[3]; name[3] := "SIGQUIT";
+   text[3] := "quit";
+   ILL := eventType[4]; name[4] := "SIGILL";
+   text[4] := "illegal instruction";
+   TRAP := eventType[5]; name[5] := "SIGTRAP";
+   text[5] := "trace trap";
+   ABRT := eventType[6]; name[6] := "SIGABRT";
+   text[6] := "abort";
+   BUS := eventType[7]; name[7] := "SIGBUS";
+   text[7] := "bus error";
+   FPE := eventType[8]; name[8] := "SIGFPE";
+   text[8] := "floating point exception";
+   KILL := eventType[9]; name[9] := "SIGKILL";
+   text[9] := "kill";
+   USR1 := eventType[10]; name[10] := "SIGUSR1";
+   text[10] := "user defined signal 1";
+   SEGV := eventType[11]; name[11] := "SIGSEGV";
+   text[11] := "segmentation violation";
+   USR2 := eventType[12]; name[12] := "SIGUSR2";
+   text[12] := "user defined signal 2";
+   PIPE := eventType[13]; name[13] := "SIGPIPE";
+   text[13] := "broken pipe";
+   ALRM := eventType[14]; name[14] := "SIGALRM";
+   text[14] := "alarm clock";
+   TERM := eventType[15]; name[15] := "SIGTERM";
+   text[15] := "software termination signal from kill";
+   STKFLT := eventType[16]; name[16] := "SIGSTKFLT";
+   text[16] := "coprocessor stack error";
+   CHLD := eventType[17]; name[17] := "SIGCHLD";
+   text[17] := "child status change";
+   CONT := eventType[18]; name[18] := "SIGCONT";
+   text[18] := "stopped process has been continued";
+   STOP := eventType[19]; name[19] := "SIGSTOP";
+   text[19] := "stop";
+   TSTP := eventType[20]; name[20] := "SIGTSTP";
+   text[20] := "user stop request from tty";
+   TTIN := eventType[21]; name[21] := "SIGTTIN";
+   text[21] := "background tty read attempt";
+   TTOU := eventType[22]; name[22] := "SIGTTOU";
+   text[22] := "background tty write attempt";
+   URG := eventType[23]; name[23] := "SIGURG";
+   text[23] := "urgent socket condition";
+   XCPU := eventType[24]; name[24] := "SIGXCPU";
+   text[24] := "CPU time limit exceeded";
+   XFSZ := eventType[25]; name[25] := "SIGXFSZ";
+   text[25] := "file size limit exceeded";
+   VTALRM := eventType[26]; name[26] := "SIGVTALRM";
+   text[26] := "virtual timer expired";
+   PROF := eventType[27]; name[27] := "SIGPROF";
+   text[27] := "profiling timer expired";
+   WINCH := eventType[28]; name[28] := "SIGWINCH";
+   text[28] := "window size change";
+   POLL := eventType[29]; name[29] := "SIGIO";
+   text[29] := "IO now possible";
+   PWR := eventType[30]; name[30] := "SIGPWR";
+   text[30] := "power failure";
+   SYS := eventType[31]; name[31] := "SIGUNUSED";
+   text[31] := "unused signal";
+   text[32] := "realtime signal 32";
+   text[33] := "realtime signal 33";
+   text[34] := "realtime signal 34";
+   text[35] := "realtime signal 35";
+   text[36] := "realtime signal 36";
+   text[37] := "realtime signal 37";
+   text[38] := "realtime signal 38";
+   text[39] := "realtime signal 39";
+   text[40] := "realtime signal 40";
+   text[41] := "realtime signal 41";
+   text[42] := "realtime signal 42";
+   text[43] := "realtime signal 43";
+   text[44] := "realtime signal 44";
+   text[45] := "realtime signal 45";
+   text[46] := "realtime signal 46";
+   text[47] := "realtime signal 47";
+   text[48] := "realtime signal 48";
+   text[49] := "realtime signal 49";
+   text[50] := "realtime signal 50";
+   text[51] := "realtime signal 51";
+   text[52] := "realtime signal 52";
+   text[53] := "realtime signal 53";
+   text[54] := "realtime signal 54";
+   text[55] := "realtime signal 55";
+   text[56] := "realtime signal 56";
+   text[57] := "realtime signal 57";
+   text[58] := "realtime signal 58";
+   text[59] := "realtime signal 59";
+   text[60] := "realtime signal 60";
+   text[61] := "realtime signal 61";
+   text[62] := "realtime signal 62";
+   text[63] := "realtime signal 63";
+   name[32] := "RTSIG32";
+   name[33] := "RTSIG33";
+   name[34] := "RTSIG34";
+   name[35] := "RTSIG35";
+   name[36] := "RTSIG36";
+   name[37] := "RTSIG37";
+   name[38] := "RTSIG38";
+   name[39] := "RTSIG39";
+   name[40] := "RTSIG40";
+   name[41] := "RTSIG41";
+   name[42] := "RTSIG42";
+   name[43] := "RTSIG43";
+   name[44] := "RTSIG44";
+   name[45] := "RTSIG45";
+   name[46] := "RTSIG46";
+   name[47] := "RTSIG47";
+   name[48] := "RTSIG48";
+   name[49] := "RTSIG49";
+   name[50] := "RTSIG50";
+   name[51] := "RTSIG51";
+   name[52] := "RTSIG52";
+   name[53] := "RTSIG53";
+   name[54] := "RTSIG54";
+   name[55] := "RTSIG55";
+   name[56] := "RTSIG56";
+   name[57] := "RTSIG57";
+   name[58] := "RTSIG58";
+   name[59] := "RTSIG59";
+   name[60] := "RTSIG60";
+   name[61] := "RTSIG61";
+   name[62] := "RTSIG62";
+   name[63] := "RTSIG63";
+END SysSignals.

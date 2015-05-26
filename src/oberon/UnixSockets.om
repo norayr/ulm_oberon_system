@@ -1,0 +1,472 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixSockets.om,v 1.6 2004/03/09 21:10:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixSockets.om,v $
+   Revision 1.6  2004/03/09 21:10:36  borchert
+   UnixSockets is no longer restricted to SysSockets.stream;
+   instead a type parameter has been added where necessary
+
+   Revision 1.5  2001/04/30 08:40:03  borchert
+   Open, OpenL, CreateOpenCondition, and CreateOpenConditionL extended
+   with optional specification of a non-default address the socket
+   is to be bound to locally
+   (useful for services on virtual IP addresses)
+
+   Revision 1.4  1996/11/13 17:42:25  borchert
+   socket options SysSockets.optReuseAddr and SysSockets.optKeepAlive
+   added
+
+   Revision 1.3  1996/09/18  07:55:28  borchert
+   bug fix: error tests for non-blocking open operations work now
+            (correctly) on base of SysSockets.GetSockOpt/SysSockets.optError
+            instead of tries to reopen the socket
+
+   Revision 1.2  1996/01/06  13:31:34  borchert
+   bug fix: error events of conditions created by CreateOpenConditionL
+            went to nirvana
+
+   Revision 1.1  1996/01/05  12:05:14  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixSockets;
+
+   (* common parts of Internet, UnixDomainSockets and other socket types *)
+
+   IMPORT Conditions, Events, Networks, RelatedEvents, Resources,
+      StreamConditions, Streams, Sys, SYS := SYSTEM, SysErrors, SysIO,
+      SysSockets, SysTypes, Tasks, UnixFileConditions, UnixFiles;
+
+   TYPE
+      Socket = POINTER TO SocketRec;
+      SocketRec =
+	 RECORD
+	    (Networks.SocketRec)
+	    (* private components *)
+	    fd: SysSockets.Socket;
+	    acceptCond: Conditions.Condition;
+	    exceptions: RelatedEvents.Object;
+	 END;
+
+   TYPE
+      OpenCondition = POINTER TO OpenConditionRec;
+      OpenConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    filecond: Conditions.Condition;
+	    socket: SysSockets.Socket;
+	    errors: RelatedEvents.Object;
+	    done, failed: BOOLEAN;
+	 END;
+   VAR
+      ocDomain: Conditions.Domain;
+      true: INTEGER; (* value of socket option parameter *)
+
+   PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(from, queue);
+      RelatedEvents.AppendQueue(to, queue);
+   END ForwardErrors;
+
+   PROCEDURE ReleaseSysSocket(VAR socket: SysSockets.Socket);
+      VAR
+	 interrupted: BOOLEAN;
+   BEGIN
+      IF socket >= 0 THEN
+	 IF SysIO.Close(socket, RelatedEvents.null, TRUE, interrupted) THEN END;
+	 socket := -1;
+      END;
+   END ReleaseSysSocket;
+
+   (* === interface procedures for Conditions =========================== *)
+
+   PROCEDURE TestOpenCondition(domain: Conditions.Domain;
+			       condition: Conditions.Condition;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 exceptions: RelatedEvents.Object;
+	 ign: BOOLEAN;
+	 errno: INTEGER;
+   BEGIN
+      WITH condition: OpenCondition DO
+	 IF condition.done OR condition.failed THEN
+	    RETURN TRUE
+	 END;
+	 IF Conditions.Test(condition.filecond, condition.errors) THEN
+	    IF RelatedEvents.EventsPending(condition.errors) THEN
+	       ReleaseSysSocket(condition.socket);
+	       condition.failed := TRUE;
+	    ELSE
+	       NEW(exceptions); RelatedEvents.QueueEvents(exceptions);
+	       IF SysSockets.GetSockOpt(condition.socket,
+					SysSockets.socketLevel,
+					SysSockets.optError, errno,
+					condition.errors) THEN
+		  IF errno # 0 THEN
+		     SysErrors.Raise(condition.errors, errno,
+				     Sys.socketcall, "asynchronous connect");
+		     ReleaseSysSocket(condition.socket);
+		     condition.failed := TRUE;
+		  ELSE
+		     condition.done := TRUE;
+		  END;
+	       ELSE
+		  condition.failed := TRUE;
+	       END;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END TestOpenCondition;
+
+   PROCEDURE Preconditions(domain: Conditions.Domain;
+			   condition: Conditions.Condition;
+			   VAR preconds: Conditions.ConditionSet;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: OpenCondition DO
+	 IF TestOpenCondition(domain, condition, errors) THEN
+	    RETURN FALSE
+	 END;
+	 Conditions.CreateSet(preconds);
+	 Conditions.Incl(preconds, condition.filecond);
+	 RETURN TRUE
+      END;
+   END Preconditions;
+
+   (* === private procedures ============================================ *)
+
+   PROCEDURE WouldBlock(errors: RelatedEvents.Object;
+			VAR inprogress: BOOLEAN) : BOOLEAN;
+      (* check for error messages which indicate that the operation
+	 would block (we set all our fds in non-blocking mode) and
+	 remove them
+      *)
+      VAR
+	 event: Events.Event;
+	 p, prev, queue: RelatedEvents.Queue;
+	 wouldblock: BOOLEAN; removed: BOOLEAN;
+   BEGIN
+      wouldblock := FALSE; inprogress := FALSE;
+      RelatedEvents.GetQueue(errors, queue);
+      p := queue; prev := NIL; removed := FALSE;
+      WHILE p # NIL DO
+	 IF p.event IS SysErrors.Event THEN
+	    event := p.event;
+	    WITH event: SysErrors.Event DO
+	       IF (event.errno = SysErrors.wouldblock) OR
+		     (event.errno = SysErrors.again) OR
+		     (event.errno = SysErrors.already) OR
+		     (event.errno = SysErrors.inprogress) THEN
+		  wouldblock := TRUE;
+		  inprogress := (event.errno = SysErrors.inprogress) OR
+				(event.errno = SysErrors.already);
+		  IF prev = NIL THEN
+		     queue := p.next;
+		  ELSE
+		     prev.next := p.next;
+		  END;
+		  removed := TRUE;
+	       END;
+	    END;
+	 END;
+	 IF removed THEN
+	    removed := FALSE;
+	 ELSE
+	    prev := p;
+	 END;
+	 p := p.next;
+      END;
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN wouldblock
+   END WouldBlock;
+
+   PROCEDURE SetNonBlocking(socket: SysSockets.Socket;
+			    errors: RelatedEvents.Object);
+      VAR
+	 interrupted: BOOLEAN;
+	 flags: SET;
+   BEGIN
+      IF SysIO.FcntlGet(socket, SysIO.getfl, flags, errors) &
+	    SysIO.FcntlSet(socket, SysIO.setfl, flags + SysIO.ndelay,
+			   errors, (* retry = *) TRUE, interrupted) THEN
+	 (* fd is now non-blocking, blocking system calls will
+	    now return SysErrors.wouldblock OR SysErrors.again;
+	    this mode affects Connect and is preferred by UnixFiles
+	 *)
+      END;
+   END SetNonBlocking;
+
+   PROCEDURE ^ Release(socket: Socket);
+
+   PROCEDURE NotificationHandler(event: Events.Event);
+      VAR
+	 socket: Socket;
+   BEGIN
+      IF ~(event IS Resources.Event) THEN RETURN END;
+      WITH event: Resources.Event DO
+	 IF ~(event.resource IS Socket) THEN RETURN END;
+	 socket := event.resource(Socket);
+	 IF event.change IN {Resources.unreferenced, Resources.terminated} THEN
+	    Release(socket);
+	 END;
+      END;
+   END NotificationHandler;
+
+   PROCEDURE Init;
+      VAR
+	 cif: Conditions.Interface;
+	 cd: Conditions.Description;
+   BEGIN
+      NEW(cif);
+      cif.test := TestOpenCondition;
+      cif.preconditions := Preconditions;
+      NEW(cd);
+      cd.caps := {Conditions.preconditions}; cd.internal := FALSE;
+      NEW(ocDomain);
+      Conditions.InitDomain(ocDomain, cif, cd);
+   END Init;
+
+   (* === exported procedures =========================================== *)
+
+   PROCEDURE CreateOpenConditionL(VAR condition: Conditions.Condition;
+				  addressFamily: INTEGER;
+				  type: INTEGER;
+				  address: ARRAY OF BYTE;
+				  len: SysTypes.Size;
+		                  bind: BOOLEAN; bindto: ARRAY OF BYTE;
+		                  bindtolen: SysTypes.Size);
+      VAR
+	 newcond: OpenCondition;
+	 interrupted: BOOLEAN;
+	 errors: RelatedEvents.Object;
+	 inprogress: BOOLEAN;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, ocDomain);
+      NEW(newcond.errors); RelatedEvents.QueueEvents(newcond.errors);
+      newcond.failed := FALSE; newcond.done := FALSE;
+      condition := newcond;
+
+      IF ~SysSockets.Create(newcond.socket, addressFamily, type, 0,
+			    newcond.errors) THEN
+	 newcond.failed := TRUE; RETURN
+      END;
+      SetNonBlocking(newcond.socket, newcond.errors);
+      IF bind &
+	    ~SysSockets.Bind3(newcond.socket, bindto, bindtolen,
+	       newcond.errors) THEN
+	 ReleaseSysSocket(newcond.socket);
+	 newcond.failed := TRUE; RETURN
+      END;
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF SysSockets.Connect3(newcond.socket, address, len, errors) THEN
+	 newcond.done := TRUE; RETURN
+      END;
+      IF ~WouldBlock(errors, inprogress) THEN
+	 ForwardErrors(errors, newcond.errors);
+	 ReleaseSysSocket(newcond.socket);
+	 newcond.failed := TRUE; RETURN
+      END;
+
+      UnixFileConditions.Create(newcond.filecond, NIL, newcond.socket,
+	                        StreamConditions.write);
+   END CreateOpenConditionL;
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 addressFamily: INTEGER;
+				 type: INTEGER;
+				 address: ARRAY OF BYTE;
+		                 bind: BOOLEAN; bindto: ARRAY OF BYTE);
+   BEGIN
+      CreateOpenConditionL(condition, addressFamily, type,
+	 address, LEN(address), bind, bindto, LEN(bindto));
+   END CreateOpenCondition;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF ~(condition IS OpenCondition) OR
+	    ~TestOpenCondition(ocDomain, condition, errors) THEN
+	 RETURN FALSE
+      END;
+      WITH condition: OpenCondition DO
+	 IF condition.failed THEN
+	    ForwardErrors(condition.errors, errors); RETURN FALSE
+	 END;
+	 (* condition.done = TRUE *)
+	 RETURN SysSockets.SetSockOpt(condition.socket, SysSockets.socketLevel,
+				      SysSockets.optKeepAlive, true, errors) &
+		SysSockets.SetSockOpt(condition.socket, SysSockets.socketLevel,
+				      SysSockets.optOOBinline, true, errors) &
+	        UnixFiles.OpenFd(s, condition.socket,
+				 UnixFiles.rdwr, bufmode, errors)
+      END;
+   END TestAndOpen;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+   BEGIN
+      IF condition IS OpenCondition THEN
+	 WITH condition: OpenCondition DO
+	    IF (condition.socket >= 0) & ~SYS.TAS(condition.failed) THEN
+	       ReleaseSysSocket(condition.socket);
+	       condition.failed := TRUE;
+	    END;
+	 END;
+      END;
+   END Drop;
+
+   PROCEDURE OpenL(VAR s: Streams.Stream;
+		   addressFamily: INTEGER;
+		   type: INTEGER;
+		   address: ARRAY OF BYTE;
+		   len: SysTypes.Size;
+		   bind: BOOLEAN; bindto: ARRAY OF BYTE;
+		   bindtolen: SysTypes.Size;
+		   bufmode: Streams.BufMode;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 condition: Conditions.Condition;
+   BEGIN
+      CreateOpenConditionL(condition, addressFamily, type, address, len,
+	 bind, bindto, bindtolen);
+      Tasks.WaitFor(condition);
+      RETURN TestAndOpen(s, condition, bufmode, errors)
+   END OpenL;
+
+   PROCEDURE Open(VAR s: Streams.Stream;
+		  addressFamily: INTEGER;
+		  type: INTEGER;
+		  address: ARRAY OF BYTE;
+		  bind: BOOLEAN; bindto: ARRAY OF BYTE;
+		  bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN OpenL(s, addressFamily, type, address, LEN(address),
+	       bind, bindto, LEN(bindto),
+	       bufmode, errors)
+   END Open;
+
+   PROCEDURE ListenL(VAR socket: Socket;
+		     addressFamily: INTEGER;
+		     type: INTEGER;
+		     port: ARRAY OF BYTE;
+		     len: SysTypes.Size;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 fd: SysSockets.Socket;
+	 interrupted: BOOLEAN;
+	 resEventType: Events.EventType;
+   BEGIN
+      socket := NIL;
+      IF ~SysSockets.Create(fd, addressFamily, type, 0, errors) THEN
+	 RETURN FALSE
+      END;
+      IF ~SysSockets.SetSockOpt(fd, SysSockets.socketLevel,
+                                SysSockets.optReuseAddr, true, errors) OR
+	    ~SysSockets.Bind3(fd, port, len, errors) OR
+	    ~SysSockets.Listen(fd, (* backlog = *) 5, errors) THEN
+	 IF ~SysIO.Close(fd, errors, TRUE, interrupted) THEN END;
+	 RETURN FALSE
+      END;
+      NEW(socket); socket.fd := fd;
+      Resources.TakeInterest(socket, resEventType);
+      Events.Handler(resEventType, NotificationHandler);
+      NEW(socket.exceptions); RelatedEvents.QueueEvents(socket.exceptions);
+      SetNonBlocking(fd, errors);
+      RelatedEvents.QueueEvents(socket);
+      RETURN TRUE
+   END ListenL;
+
+   PROCEDURE Listen(VAR socket: Socket;
+		    addressFamily: INTEGER;
+		    type: INTEGER;
+		    port: ARRAY OF BYTE;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN ListenL(socket, addressFamily, type, port, LEN(port), errors)
+   END Listen;
+
+   PROCEDURE Accept(socket: Socket;
+		    VAR s: Streams.Stream; bufmode: Streams.BufMode;
+		    VAR peer: ARRAY OF BYTE) : BOOLEAN;
+      VAR
+	 fd: SysTypes.File;
+	 inprogress: BOOLEAN;
+   BEGIN
+      IF socket.acceptCond = NIL THEN
+	 UnixFileConditions.Create(socket.acceptCond, NIL, socket.fd,
+				   StreamConditions.read);
+      END;
+      LOOP
+	 IF SysSockets.Accept(fd, socket.fd, peer, socket.exceptions) THEN
+	    EXIT
+	 END;
+	 IF ~WouldBlock(socket.exceptions, inprogress) THEN
+	    ForwardErrors(socket.exceptions, socket);
+	    RETURN FALSE
+	 END;
+	 Tasks.WaitFor(socket.acceptCond);
+	 IF inprogress THEN EXIT END;
+      END;
+      SetNonBlocking(fd, RelatedEvents.null);
+      RETURN SysSockets.SetSockOpt(fd, SysSockets.socketLevel,
+				   SysSockets.optKeepAlive, true, socket) &
+	     SysSockets.SetSockOpt(fd, SysSockets.socketLevel,
+				   SysSockets.optOOBinline, true, socket) &
+	     UnixFiles.OpenFd(s, fd, UnixFiles.rdwr, bufmode, socket)
+   END Accept;
+
+   PROCEDURE Release(socket: Socket);
+      VAR
+	 interrupted: BOOLEAN;
+   BEGIN
+      IF socket.fd >= 0 THEN
+	 IF ~SysIO.Close(socket.fd, socket, TRUE, interrupted) THEN END;
+	 socket.fd := -1;
+	 Resources.Notify(socket, Resources.terminated);
+      END;
+   END Release;
+
+   PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+			           socket: Socket);
+   BEGIN
+      UnixFileConditions.Create(condition, NIL, socket.fd,
+				StreamConditions.read);
+   END CreateAcceptCondition;
+
+   PROCEDURE GetName(socket: Socket; VAR address: ARRAY OF BYTE;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN SysSockets.GetName(socket.fd, address, errors)
+   END GetName;
+
+BEGIN
+   true := 1;
+   Init;
+END UnixSockets.

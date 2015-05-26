@@ -1,0 +1,126 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Conditions.od,v 1.2 1996/01/04 16:55:10 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Conditions.od,v $
+   Revision 1.2  1996/01/04  16:55:10  borchert
+   - conditions are now extensions of Disciplines.Object
+   - some renamings: timecond -> timelimit, hint -> timecond,
+     gethint -> gettime
+   - errors (deadlock variants) converted into assertions
+   - WaitForAndSelect renamed to WaitFor (old WaitFor vanished)
+
+   Revision 1.1  1994/02/22  20:06:20  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 12/91
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Conditions;
+
+   IMPORT Disciplines, Events, Objects, RelatedEvents, Times;
+
+   TYPE
+      Domain = POINTER TO DomainRec;
+      DomainRec = RECORD (Disciplines.ObjectRec) END;
+      Condition = POINTER TO ConditionRec;
+      ConditionRec = RECORD (Disciplines.ObjectRec) END;
+
+      (* disjunctive list of conditions *)
+      ConditionSet = POINTER TO ConditionSetRec;
+      ConditionSetRec = RECORD (Objects.ObjectRec) END;
+
+   CONST
+      select = 0; timelimit = 1; async = 2; timecond = 3; preconditions = 4;
+   TYPE
+      CapabilitySet = SET; (* OF [select..preconditions] *)
+   TYPE
+      SelectProc = PROCEDURE (domain: Domain; conditionSet: ConditionSet;
+			      time: Times.Time;
+			      VAR setOfTrueConditions: ConditionSet;
+			      errors: RelatedEvents.Object;
+			      retry: BOOLEAN;
+			      VAR interrupted: BOOLEAN) : BOOLEAN;
+	 (* needs only to be provided if select is in caps;
+	    if timelimit isn't in caps then time is guaranteed to
+	    be equal to NIL
+	 *)
+      TestProc = PROCEDURE (domain: Domain; condition: Condition;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      SendEventProc = PROCEDURE (domain: Domain; condition: Condition;
+				 event: Events.Event;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+	 (* sendevent needs only to be provided if async is in caps *)
+      GetTimeProc = PROCEDURE (domain: Domain; conditionSet: ConditionSet;
+			       VAR nextTime: Times.Time;
+			       VAR nextCond: Condition;
+			       errors: RelatedEvents.Object);
+	 (* needs only to be provided if timecond is in caps *)
+      PreConditionsProc = PROCEDURE (domain: Domain; condition: Condition;
+				     VAR preconds: ConditionSet;
+				     errors: RelatedEvents.Object) : BOOLEAN;
+	 (* needs only to be provided if preconditions is in caps *)
+      
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    test: TestProc;
+	    select: SelectProc;
+	    sendevent: SendEventProc;
+	    gettime: GetTimeProc;
+	    preconditions: PreConditionsProc;
+	 END;
+      Description = POINTER TO DescriptionRec;
+      DescriptionRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    caps: CapabilitySet;
+	    internal: BOOLEAN; (* value does not change during Pauses.Pause? *)
+	 END;
+   TYPE
+      GetTimeOfNextTryProc = PROCEDURE (iteration: INTEGER;
+					VAR time: Times.Time);
+	 (* return a relative time measure *)
+
+   PROCEDURE InitDomain(domain: Domain; if: Interface; desc: Description);
+   PROCEDURE Init(condition: Condition; domain: Domain);
+
+   PROCEDURE Test(condition: Condition; errors: RelatedEvents.Object) : BOOLEAN;
+   PROCEDURE WaitFor(conditionSet: ConditionSet;
+		     VAR setOfTrueConditions: ConditionSet;
+		     errors: RelatedEvents.Object);
+
+   PROCEDURE CreateSet(VAR conditionSet: ConditionSet);
+   PROCEDURE Incl(conditionSet: ConditionSet; condition: Condition);
+   PROCEDURE Excl(conditionSet: ConditionSet; condition: Condition);
+   PROCEDURE Union(result: ConditionSet; set: ConditionSet);
+   PROCEDURE Union3(VAR result: ConditionSet; set1, set2: ConditionSet);
+   PROCEDURE In(conditionSet: ConditionSet; condition: Condition) : BOOLEAN;
+   PROCEDURE Card(conditionSet: ConditionSet) : INTEGER;
+   PROCEDURE ExamineConditions(conditionSet: ConditionSet);
+   PROCEDURE GetNextCondition(conditionSet: ConditionSet;
+			      VAR condition: Condition) : BOOLEAN;
+
+   PROCEDURE SetGetTimeOfNextTryProc(p: GetTimeOfNextTryProc);
+
+END Conditions.

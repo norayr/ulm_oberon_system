@@ -1,0 +1,118 @@
+OberonLex(3)                  Ulm's Oberon System                 OberonLex(3)
+
+
+
+[1mNAME[0m
+       OberonLex - lexical analysis of Oberon sources
+
+[1mSYNOPSIS[0m
+       (* keywords *)
+       CONST array = 0; begin = 1; case = 2; const = 3; definition = 4; div = 5;
+       CONST do = 6; else = 7; elsif = 8; end = 9; exit = 10; for = 11; if = 12;
+       CONST import = 13; in = 14; is = 15; loop = 16; mod = 17; module = 18;
+       CONST nil = 19; of = 20; or = 21; pointer = 22; procedure = 23;
+       CONST record = 24; repeat = 25; return = 26; then = 27; to = 28;
+       CONST type = 29; until = 30; var = 31; while = 32; with = 33;
+       (* operators and delimiters *)
+       CONST plus = 40; minus = 41; times = 42; slash = 43; tilde = 44;
+       CONST ampersand = 45; period = 46; comma = 47; semicolon = 48; bar = 49;
+       CONST lparen = 50 (* "(" *); lbracket = 51 (* "[" *); lbrace = 52 (* "{" *);
+       CONST becomes = 53; arrow = 54;
+       CONST eql = 55; neq = 56; lst = 57; grt = 58; leq = 59; geq = 60;
+       CONST range = 61; colon = 62;
+       CONST rparen = 63 (* ")" *); rbracket = 64 (* "]" *); rbrace = 65 (* "}" *);
+       (* miscellaneous symbols *)
+       CONST ident = 70;
+       CONST intconst = 71; hexconst = 72; realconst = 73; longrealconst = 74;
+       CONST charconst = 75; string = 76; comment = 77; eop = 78;
+       symbols = 79; (* # of symbols *)
+       TYPE Symbol = SHORTINT;
+
+       TYPE Location = Streams.Count;
+       TYPE Token =
+          RECORD
+             (Objects.ObjectRec)
+             begin, end: Location;
+             sy: Symbol;
+             ident: ConstStrings.String; (* if sy = ident, NIL otherwise *)
+             text: Streams.Stream; (* constants and comments, NIL otherwise *)
+          END;
+
+       CONST ioError = 0; (* unable to read from source stream *)
+       CONST backFailed = 1; (* unable to push back look-ahead *)
+       CONST errors = 2;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             s: Streams.Stream;
+             begin, end: Location;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE GetToken(s: Streams.Stream; VAR token: Token);
+       PROCEDURE GetSymString(sy: Symbol; VAR string: ARRAY OF CHAR);
+       PROCEDURE SetStringDomain(s: Streams.Stream;
+                                 domain: ConstStrings.Domain);
+
+
+[1mDESCRIPTION[0m
+       [4mOberonLex[24m  supports  the  lexical  analysis of Oberon and Oberon-2 pro-
+       grams.
+
+       [4mGetToken[24m starts reading from the current position of [4ms[24m and returns  the
+       next  input  token in [4mtoken[24m.  Note that the stream must be buffered and
+       support tell operations.  Buffering is needed for [4mStreams.Back[24m (a look-
+       ahead  of  one  character  is needed) and the tell operation is used to
+       record the location of the token.  Stream locations  may  be  converted
+       into line/column pairs by [4mLines(3)[24m.
+
+       White  space  (as  defined  by  [4mStreamDisciplines(3)[24m)  and comments are
+       skipped.  Note that all characters, which do not belong to the  set  of
+       white  space characters or to the set of characters legal Oberon tokens
+       may  be  composed  of,  are  considered  illegal.   On  end   of   file
+       ([4mStreams.eof[24m),  or  in case of input errors, the special token [4meop[24m will
+       be returned.  To avoid an infinite amout of  error  messages  on  acci-
+       dently submitted binary files, a fatal input error will be generated if
+       the fraction of illegal characters becomes too large.
+
+       All keywords and symbols of Oberon and  Oberon-2  are  recognized.   On
+       parsing  Oberon,  the  symbol [4mfor[24m should be converted into [4mident[24m.  Con-
+       stants are accepted in conformance to the Oberon reports.  They are not
+       interpreted, however, and returned as text stream instead because their
+       interpretation could be (at least in case  of  floating  point  values)
+       machine-dependent.
+
+       [4mGetSymString[24m  converts  a  symbol into a printable string.  This may be
+       useful for error messages.
+
+       [4mSetStringDomain[24m should be preferably called before [4mGetToken[24m and  allows
+       to set the domain which all strings returned in tokens belong to.  Note
+       that even keywords are returned in the [4mstring[24m component and they belong
+       to  this domain as well.  If [4mSetStringDomain[24m has not been called for [4ms[24m,
+       [4mGetToken[24m will create a domain of [4mConstStrings[24m on its own.
+
+[1mDIAGNOSTICS[0m
+       [4mOberonLex[24m generates two kinds of errors:
+
+       ·      I/O errors resulting from problems on the input stream that  are
+              converted to error events of the type [4mEvent[24m with code [4mioError[24m or
+              [4mbackFailed[24m, and
+
+       ·      syntax errors that are detected by the lexical analysis that are
+              turned into error events of [4mCompilerErrors(3)[24m.
+
+       All error events are related to the stream.  There is an upper limit of
+       lexical errors (100) after which [4mOberonLex[24m gives up.
+
+[1mSEE ALSO[0m
+       [4mCompilerErrors(3)[24m      general compiler error events
+       [4mConstStrings(3)[24m        read-only strings of arbitrary length
+       [4mRelatedEvents(3)[24m       error handling
+       [4mStreamDisciplines(3)[24m   definition of white space
+       [4mStreams(3)[24m             abstraction for byte sequences
+
+
+
+Release 0.5               Last change: 21 August 2006             OberonLex(3)

@@ -1,0 +1,216 @@
+(* Ulm's Oberon Compiler
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Oberon Compiler.
+
+   Ulm's Oberon Compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Oberon Compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonDepen.om,v 1.2 2005/02/05 18:34:36 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: OberonDepen.om,v $
+   Revision 1.2  2005/02/05 18:34:36  borchert
+   - support of multiple base directories added
+   - language parameter removed
+
+   Revision 1.1  2004/04/04 07:05:12  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonDependencies;
+
+   IMPORT Architectures, Args := UnixArguments, BoolArgs, CDB,
+      CompilerDatabases, CompilerErrors, CompilerKeys, CompilerObjects,
+      Conclusions, ConstStrings, Errors, GenArgs := Args, IntArgs, Iterators,
+      Names, OberonBuiltIns, OberonLex, OberonSymbols, Paths,
+      PersistentObjects, PersistentTexts, Print, PrivateShards, Process,
+      RelatedEvents, RemoteCDBNames, RemoteIterators, RemoteNames, Services,
+      Shards, Sources := CompilerSources, Storage, StreamDisciplines,
+      Streams, StringArgs, StrListArgs, TranslucentNames, UniqueNames,
+      UnixEnvironment, UnixFiles, UnixNames, Write;
+
+   VAR
+      intensity: INTEGER;
+      errors: RelatedEvents.Object;
+
+      db: CompilerDatabases.Database;
+      authfile, basedir: ARRAY 512 OF CHAR;
+      modname: ConstStrings.String;
+      auth: Shards.Lid;
+      type: CompilerObjects.ObjectType;
+      arch: Architectures.Architecture;
+
+      it: Iterators.Iterator;
+      keys: CompilerKeys.Set;
+      header: CompilerObjects.Header;
+      text: PersistentTexts.Text;
+      key: CompilerKeys.Key;
+
+      lidType: Services.Type;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE CreateTranslucentDir(VAR basedir: ARRAY OF CHAR;
+                                  wdir: ARRAY OF CHAR);
+      VAR
+	 rnode, wnode, tnode: Names.Node;
+	 name: ConstStrings.String;
+   BEGIN
+      IF ~Paths.GetNode(basedir, auth, errors, rnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF ~Paths.GetNode(wdir, auth, errors, wnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      TranslucentNames.Create(tnode, rnode, wnode, auth, auth, NIL,
+	 TranslucentNames.unsorted);
+      RelatedEvents.Forward(Names.root, errors);
+      IF ~UniqueNames.Insert(Names.root, tnode, auth, name) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      ConstStrings.Extract(basedir, name);
+   END CreateTranslucentDir;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+	 archstring: ARRAY 80 OF CHAR;
+	 archcstring: ConstStrings.String;
+	 firstbd: BOOLEAN;
+	 nextbd: ARRAY 512 OF CHAR;
+   BEGIN (* ProcessArguments *)
+      firstbd := TRUE;
+      IF ~UnixEnvironment.String("CDB_BASEDIR", basedir) THEN
+	 basedir := "pub/cdb/oberon";
+      END;
+      type := CompilerObjects.public;
+      arch := NIL;
+      Args.Init("[-a auth] [-A arch] {-b basedir} [-D|-M] modname");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a": Args.FetchString(filename); CreateLid(auth, filename);
+	 | "b": IF firstbd THEN
+	           Args.FetchString(basedir);
+		   firstbd := FALSE;
+	        ELSE
+	           Args.FetchString(nextbd);
+		   CreateTranslucentDir(basedir, nextbd);
+		END;
+	 | "D": type := CompilerObjects.public;
+	 | "M": type := CompilerObjects.private;
+	 | "A": Args.FetchString(archstring);
+	        ConstStrings.Create(archcstring, archstring);
+		Architectures.GetArch(archcstring, arch);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      IF (auth = NIL) & UnixEnvironment.String("CDB_AUTH", filename) THEN
+	 CreateLid(auth, filename);
+      END;
+      Args.FetchString(filename); Args.AllArgs;
+      ConstStrings.Create(modname, filename);
+   END ProcessArguments;
+
+   PROCEDURE WriteKey(key: CompilerKeys.Key);
+      VAR
+	 string: ConstStrings.String;
+
+      PROCEDURE WriteValue(val: CompilerKeys.Value);
+	 VAR
+	    string: ConstStrings.String;
+      BEGIN
+	 CompilerKeys.ValueToString(val, string);
+	 ConstStrings.Write(Streams.stdout, string);
+      END WriteValue;
+
+   BEGIN
+      Write.Indent;
+      ConstStrings.Write(Streams.stdout, key.modname);
+      Write.Line(":");
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      Write.Indent; Write.String("defsrcid: ");
+      ConstStrings.Write(Streams.stdout, key.defsrcid); Write.Ln;
+      IF key.modsrcid # NIL THEN
+	 Write.Indent; Write.String("modsrcid: ");
+	 ConstStrings.Write(Streams.stdout, key.modsrcid); Write.Ln;
+      END;
+      Write.Indent; Write.String("genkey: "); WriteValue(key.genkey); Write.Ln;
+      IF key.arch # NIL THEN
+	 Write.Indent;
+	 Write.String("arch: ");
+	 Architectures.GetString(key.arch, string);
+	 ConstStrings.Write(Streams.stdout, string); Write.Ln;
+	 Write.Indent;
+	 Write.String("archkey: ");
+	 WriteValue(key.archkey); Write.Ln;
+      END;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+   END WriteKey;
+
+BEGIN
+   intensity := Storage.Intensity(4);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+
+   ProcessArguments;
+
+   IF ~CDB.Open(db, basedir, auth, errors) THEN
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END;
+   RelatedEvents.Forward(db, errors);
+
+   CompilerKeys.CreateSet(keys);
+   IF CompilerDatabases.Lookup(db, modname, type, arch, keys,
+                               header, text, errors) THEN
+      Write.String("module name = ");
+      ConstStrings.Write(Streams.stdout, header.modname); Write.Ln;
+      Write.String("src id = ");
+      ConstStrings.Write(Streams.stdout, header.srcid); Write.Ln;
+      Write.String("key = "); Write.Ln;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      WriteKey(header.key);
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+
+      Write.Line("dependencies");
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      CompilerKeys.GetKeys(header.dependencies, it);
+      WHILE Iterators.Get(it, key) DO
+	 WriteKey(key);
+      END;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+   END;
+   IF RelatedEvents.EventsPending(errors) THEN
+      Conclusions.Conclude(errors, Errors.error, "");
+   END;
+   Process.Exit(Process.indicateSuccess);
+END OberonDependencies.

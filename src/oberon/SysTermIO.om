@@ -1,0 +1,362 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysTermIO.om,v 1.2 1994/07/05 12:58:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysTermIO.om,v $
+   Revision 1.2  1994/07/05  12:58:28  borchert
+   bug fix: request codes for ioctl updated
+
+   Revision 1.1  1994/02/23  08:01:14  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysTermIO;
+
+   IMPORT RelatedEvents, Sys, SysErrors, SysIO, SYS := SYSTEM;
+
+   (* see termio(7) for explanations *)
+
+   CONST
+      (* input modes *)
+      ignbrk = { 0 };
+      brkint = { 1 };
+      ignpar = { 2 };
+      parmrk = { 3 };
+      inpck = { 4 };
+      istrip = { 5 };
+      inlcr = { 6 };
+      igncr = { 7 };
+      icrnl = { 8 };
+      iuclc = { 9 };
+      ixon = { 10 };
+      ixany = { 11 };
+      ixoff = { 12 };
+      imaxbel = { 13 };
+      (* output modes *)
+      opost = { 0 };
+      olcuc = { 1 };
+      onlcr = { 2 };
+      ocrnl = { 3 };
+      onocr = { 4 };
+      onlret = { 5 };
+      ofill = { 6 };
+      ofdel = { 7 };
+      (* delays for newline *)
+      nldly = { 8 };		(* mask *)
+      nl0 = { };
+      nl1 = { 8 };
+      (* delays for carriage return *)
+      crdly = { 9, 10 };	(* mask *)
+      cr0 = { };
+      cr1 = { 9 };
+      cr2 = { 10 };
+      cr3 = { 9, 10 };
+      (* delays for tabs *)
+      tabdly = { 11, 12 };	(* mask *)
+      tab0 = { };
+      tab1 = { 11 };
+      tab2 = { 12 };
+      tab3 = { 11, 12 };	(* expand tabs to spaces *)
+      xtabs = { 11, 12 };
+      (* delays for backspaces *)
+      bsdly = { 13 };		(* mask *)
+      bs0 = { };
+      bs1 = { 13 };
+      (* delays for vertical tabs *)
+      vtdly = { 14 };		(* mask *)
+      vt0 = { };
+      vt1 = { 14 };
+      (* delays for form feeds *)
+      ffdly = { 15 };
+      ff0 = { };
+      ff1 = { 15 };
+
+      (* control modes *)
+      cbaud = { 0, 1, 2, 3, 12 };	(* mask *)
+      b0 = {};
+      b50 = { 0 };
+      b75 = { 1 };
+      b110 = { 0, 1 };
+      b134 = { 2 };
+      b150 = { 0, 2 };
+      b200 = { 1, 2 };
+      b300 = { 0, 1, 2 };
+      b600 = { 3 };
+      b1200 = { 0, 3 };
+      b1800 = { 1, 3 };
+      b2400 = { 0, 1, 3 };
+      b4800 = { 2, 3 };
+      b9600 = { 0, 2, 3 };
+      b19200 = { 1, 2, 3 };
+      b38400 = { 0, 1, 2, 3 };
+      csize = { 4, 5 };	(* mask *)
+      cs5 = {};
+      cs6 = { 4 };
+      cs7 = { 5 };
+      cs8 = { 4, 5 };
+      cstopb = { 6 };
+      cread = { 7 };
+      parenb = { 8 };
+      parodd = { 9 };
+      hupcl = { 10 };
+      clocal = { 11 };
+      
+      (* line modes *)
+      isig = { 0 };
+      icanon = { 1 };
+      xcase = { 2 };
+      echo = { 3 };
+      echoe = { 4 };
+      echok = { 5 };
+      echonl = { 6 };
+      noflsh = { 7 };
+      tostop = { 8 };
+      echoctl = { 9 };
+      echoprt = { 10 };
+      echoke = { 11 };
+      flusho = { 12 };
+      pendin = { 13 };
+      iexten = { 14 };
+
+      (* control characters *)
+      vintr = 0;
+      vquit = 1;
+      verase = 2;
+      vkill = 3;
+      veof = 4;
+      vtime = 5;
+      vmin = 6;
+      vswtc = 7; vswtch = vswtc;
+      vstart = 8;
+      vstop = 9;
+      vsusp = 10;
+      veol = 11;
+      vreprint = 12;
+      vdiscard = 13;
+      vwerase = 14;
+      vlnext = 15;
+      veol2 = 16;
+      reserved1 = 17;
+      reserved2 = 18;
+      controlchars = 19;
+   TYPE
+      ControlChars = INTEGER; (* vintr..vswtch *)
+
+   TYPE
+      InputModes = SET;
+      OutputModes = SET;
+      ControlModes = SET;
+      LineModes = SET;
+      TermIO =
+	 RECORD
+	    inputmodes: InputModes;
+	    outputmodes: OutputModes;
+	    controlmodes: ControlModes;
+	    linemodes: LineModes;
+	    linedisc : CHAR;
+	    cc: ARRAY controlchars OF CHAR;
+	 END;
+
+   CONST
+      systermiolen = 17 + controlchars;
+   TYPE
+      SysTermIOArr = ARRAY systermiolen OF BYTE;
+
+   CONST
+      (* request types *)
+      tcgets		= 05401H;
+      tcsets		= 05402H;
+      tcsetsw		= 05403H;
+      tcsetsf		= 05404H;
+      tcgeta		= 05405H;
+      tcseta		= 05406H;
+      tcsetaw		= 05407H;
+      tcsetaf		= 05408H;
+      tcsbrk		= 05409H;
+      tcxonc		= 0540AH;
+      tcflsh		= 0540BH;
+      tiocexcl		= 0540CH;
+      tiocnxcl		= 0540DH;
+      tiocsctty		= 0540EH;
+      tiocgpgrp		= 0540FH;
+      tiocspgrp		= 05410H;
+      tiocoutq		= 05411H;
+      tiocsti		= 05412H;
+      tiocgwinsz	= 05413H;
+      tiocswinsz	= 05414H;
+      tiocmget		= 05415H;
+      tiocmbis		= 05416H;
+      tiocmbic		= 05417H;
+      tiocmset		= 05418H;
+      tiocgsoftcar	= 05419H;
+      tiocssoftcar	= 0541AH;
+      fionread		= 0541BH;
+      tiocinq		= fionread;
+      tioclinux		= 0541CH;
+      tioccons		= 0541DH;
+      tiocgserial	= 0541EH;
+      tiocsserial	= 0541FH;
+      tiocpkt		= 05420H;
+      fionbio		= 05421H;
+      tiocnotty		= 05422H;
+      tiocsetd		= 05423H;
+      tiocgetd		= 05424H;
+      tcsbrkp		= 05425H;
+      tiocttygstruct	= 05426H;
+      tiocsbrk		= 05427H;
+      tioccbrk		= 05428H;
+      tiocgsid		= 05429H;
+
+   TYPE
+      RequestType = INTEGER; (* tcgeta.. *)
+
+   PROCEDURE CopyTo(src: ARRAY OF BYTE; off, len: LONGINT;
+                    VAR dest: ARRAY OF BYTE);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < len DO
+         dest[off] := src[i];
+	 INC(off); INC(i);
+      END;
+   END CopyTo;
+
+   PROCEDURE CopyFrom(src: ARRAY OF BYTE; off, len: LONGINT;
+                      VAR dest: ARRAY OF BYTE);
+      VAR
+         i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < len DO
+         dest[i] := src[off];
+	 INC(off); INC(i);
+      END;
+   END CopyFrom;
+
+
+   (* check the structure to be found at /usr/include/asm/termios.h
+      which unfortunately differs from that of the regular C library
+      interface as all 32-bit flag sets have been compressed to
+      16-bit values
+   *)
+
+   PROCEDURE ConvertToSys (termio : TermIO; VAR sys : SysTermIOArr);
+   BEGIN
+      CopyTo(termio.inputmodes, 0, 2, sys);
+      CopyTo(termio.outputmodes, 2, 2, sys);
+      CopyTo(termio.controlmodes, 4, 2, sys);
+      CopyTo(termio.linemodes, 6, 2, sys);
+      sys[8] := termio.linedisc;
+      CopyTo(termio.cc, 9, 8, sys);
+   END ConvertToSys;
+
+   PROCEDURE ConvertFromSys (VAR termio : TermIO; sys : SysTermIOArr);
+   BEGIN
+      CopyFrom(sys, 0, 2, termio.inputmodes);
+      CopyFrom(sys, 2, 2, termio.outputmodes);
+      CopyFrom(sys, 4, 2, termio.controlmodes);
+      CopyFrom(sys, 6, 2, termio.linemodes);
+      termio.linedisc := SYS.VAL(CHAR, sys[8]);
+      CopyFrom(sys, 9, 8, termio.cc);
+   END ConvertFromSys;
+
+   PROCEDURE Ioctl(fd: SysIO.File; request: RequestType;
+                   VAR argp: ARRAY OF BYTE;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ioctl, d0, d1, fd, request, SYS.ADR(argp)) THEN
+         RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ioctl, "");
+         RETURN FALSE
+      END;
+   END Ioctl;
+
+   PROCEDURE SetTermIO(fd: SysIO.File; termio: TermIO;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+         sys : SysTermIOArr;
+   BEGIN
+      ConvertToSys (termio, sys);
+      RETURN Ioctl(fd, tcseta, sys, errors)
+   END SetTermIO;
+
+   PROCEDURE GetTermIO(fd: SysIO.File; VAR termio: TermIO;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+         sys : SysTermIOArr;
+
+   BEGIN
+      IF ~Ioctl(fd, tcgeta, sys, errors) THEN RETURN FALSE END;
+      ConvertFromSys (termio, sys);
+      RETURN TRUE
+   END GetTermIO;
+
+   PROCEDURE Terminal(fd: SysIO.File) : BOOLEAN;
+      (* returns TRUE if fd is associated with a terminal device *)
+      VAR
+         sys : SysTermIOArr;
+   BEGIN
+      RETURN Ioctl(fd, tcgeta, sys, NIL)
+   END Terminal;
+
+   PROCEDURE Baudrate(termio: TermIO) : INTEGER;
+      VAR
+	 baudrate: ControlModes;
+   BEGIN
+      baudrate := termio.controlmodes * cbaud;
+      IF    baudrate = b0    THEN RETURN    0
+      ELSIF baudrate = b50   THEN RETURN   50
+      ELSIF baudrate = b75   THEN RETURN   75
+      ELSIF baudrate = b110  THEN RETURN  110
+      ELSIF baudrate = b134  THEN RETURN  134
+      ELSIF baudrate = b150  THEN RETURN  150
+      ELSIF baudrate = b200  THEN RETURN  200
+      ELSIF baudrate = b300  THEN RETURN  300
+      ELSIF baudrate = b600  THEN RETURN  600
+      ELSIF baudrate = b1200 THEN RETURN 1200
+      ELSIF baudrate = b1800 THEN RETURN 1800
+      ELSIF baudrate = b2400 THEN RETURN 2400
+      ELSIF baudrate = b4800 THEN RETURN 4800
+      ELSIF baudrate = b9600 THEN RETURN 9600
+      ELSE (* exta or extb *)
+	 RETURN 0
+      END;
+   END Baudrate;
+
+   PROCEDURE GetScreenSize(fd: SysIO.File; VAR lines, columns: INTEGER;
+			   errors: RelatedEvents.Object): BOOLEAN;
+      VAR
+	 cwinsize: ARRAY 4 OF SYS.INT16;
+   BEGIN
+      IF ~Ioctl(fd, tiocgwinsz, cwinsize, errors) THEN RETURN FALSE END;
+      lines := cwinsize[0];
+      columns := cwinsize[1];
+      RETURN TRUE;
+   END GetScreenSize;
+
+END SysTermIO.

@@ -1,0 +1,195 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Arrays.om,v 1.1 2004/03/19 09:15:46 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: Arrays.om,v $
+   Revision 1.1  2004/03/19 09:15:46  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Arrays;
+
+   IMPORT AVLTrees, Iterators, Keys, Objects, RelatedEvents, Services;
+
+   CONST
+      ascending = AVLTrees.ascending;
+      descending = AVLTrees.descending;
+   
+   TYPE
+      Order = Iterators.Mode;    (* ascending, descending *)
+
+   TYPE
+      Array = POINTER TO ArrayRec;
+      ArrayRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    tree: AVLTrees.AVLTree;
+	    card: INTEGER;
+	    key: Keys.Key;
+	 END;
+   VAR
+      arrayType: Services.Type;
+
+   TYPE
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    keyval: Keys.Value;
+	    object: Objects.Object;
+	 END;
+   VAR
+      entryType: Services.Type;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE CreateEntry(VAR entry: Entry);
+   BEGIN
+      NEW(entry); Services.Init(entry, entryType);
+   END CreateEntry;
+
+   PROCEDURE IterateKeys(it: Iterators.Iterator;
+                         ref: Iterators.Reference; 
+			 mode: Iterators.Mode);
+      VAR
+	 entry: Entry;
+   BEGIN
+      WITH ref: Iterators.Iterator DO
+	 WHILE Iterators.Get(ref, entry) DO
+	    Iterators.Yield(it, entry.keyval);
+	 END;
+      END;
+   END IterateKeys;
+
+   PROCEDURE IterateValues(it: Iterators.Iterator;
+                           ref: Iterators.Reference; 
+			   mode: Iterators.Mode);
+      VAR
+	 entry: Entry;
+   BEGIN
+      WITH ref: Iterators.Iterator DO
+	 WHILE Iterators.Get(ref, entry) DO
+	    Iterators.Yield(it, entry.object);
+	 END;
+      END;
+   END IterateValues;
+
+   (* === Keys interface procedures ====================================== *)
+
+   PROCEDURE Extract(object: Services.Object; key: Keys.Key;
+                     VAR keyval: Keys.Value);
+   BEGIN
+      keyval := object(Entry).keyval;
+   END Extract;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR array: Array; key: Keys.Key);
+      VAR
+	 a: Array;
+	 service: Services.Service;
+	 entry: Entry;
+   BEGIN
+      ASSERT(key # NIL);
+      CreateEntry(entry);
+      IF ~Keys.Supported(entry, key) THEN
+	 Keys.GetService(key, service);
+	 Keys.Support(service, entryType, Extract);
+      END;
+      NEW(a); Services.Init(a, arrayType);
+      AVLTrees.Create(a.tree, key);
+      a.card := 0;
+      a.key := key;
+      RelatedEvents.Forward(a.tree, a);
+      array := a;
+   END Create;
+
+   PROCEDURE GetKey(array: Array; VAR key: Keys.Key);
+   BEGIN
+      key := array.key;
+   END GetKey;
+
+   PROCEDURE Set(array: Array; keyval: Keys.Value; object: Objects.Object);
+      VAR
+	 ok: BOOLEAN;
+	 entry: Entry;
+   BEGIN
+      ASSERT(object # NIL);
+      IF (array.card > 0) & AVLTrees.Exists(array.tree, keyval) THEN
+	 ok := AVLTrees.Remove(array.tree, keyval); ASSERT(ok);
+	 DEC(array.card);
+      END;
+      CreateEntry(entry); entry.keyval := keyval; entry.object := object;
+      ok := AVLTrees.Add(array.tree, entry); ASSERT(ok);
+      INC(array.card);
+   END Set;
+
+   PROCEDURE Get(array: Array; keyval: Keys.Value;
+                 VAR object: Objects.Object) : BOOLEAN;
+      VAR
+	 entry: Entry;
+   BEGIN
+      IF AVLTrees.Get(array.tree, keyval, entry) THEN
+	 object := entry.object; RETURN TRUE
+      END;
+      RETURN FALSE
+   END Get;
+
+   PROCEDURE Remove(array: Array; keyval: Keys.Value);
+   BEGIN
+      IF AVLTrees.Remove(array.tree, keyval) THEN
+	 DEC(array.card);
+      END;
+   END Remove;
+
+   PROCEDURE Exists(array: Array; keyval: Keys.Value) : BOOLEAN;
+   BEGIN
+      RETURN AVLTrees.Exists(array.tree, keyval)
+   END Exists;
+
+   PROCEDURE Card(array: Array) : INTEGER;
+   BEGIN
+      RETURN array.card
+   END Card;
+
+   PROCEDURE GetKeys(array: Array; order: Order;
+   	 	     from, to: Keys.Value; VAR it: Iterators.Iterator);
+      VAR
+	 innerit: Iterators.Iterator;
+   BEGIN
+      AVLTrees.GetEntries(array.tree, order, from, to, innerit);
+      Iterators.Create(it, IterateKeys, innerit, 0);
+   END GetKeys;
+
+   PROCEDURE GetEntries(array: Array; order: Order;
+   	 	        from, to: Keys.Value; VAR it: Iterators.Iterator);
+      VAR
+	 innerit: Iterators.Iterator;
+   BEGIN
+      AVLTrees.GetEntries(array.tree, order, from, to, innerit);
+      Iterators.Create(it, IterateValues, innerit, 0);
+   END GetEntries;
+
+BEGIN
+   Services.CreateType(arrayType, "Arrays.Array", "");
+   Services.CreateType(entryType, "Arrays.Entry", "");
+END Arrays.

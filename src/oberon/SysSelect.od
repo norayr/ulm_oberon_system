@@ -1,0 +1,86 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysSelect.od,v 1.2 1995/01/15 11:13:13 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysSelect.od,v $
+   Revision 1.2  1995/01/15  11:13:13  borchert
+   BOOLEAN return value added for SelectWithTimeLimit, Select and Poll
+
+   Revision 1.1  1994/02/23  08:00:12  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysSelect;
+
+   IMPORT Objects, RelatedEvents, SysTime, SysTypes;
+
+   CONST
+      setsize = MAX(SET) + 1; (* in bits *)
+      maxsetlen = MAX(INTEGER) DIV setsize;
+   TYPE
+      SetRec = ARRAY maxsetlen OF SET;
+	 (* looks very large to avoid any range check faults;
+	    the set length is determined dynamically in
+	    dependence of the maximal number of open files;
+	    we take SET for convenience but the information is
+	    translated into pollfd arrays. Thus we don't
+	    have to care about the set representations used by the
+	    kernel. 
+	 *)
+      Set = POINTER TO SetRec;
+      FileDescriptorSet =
+      	 RECORD
+	    (Objects.ObjectRec)
+	    (* private components. exported as a hack! *)
+	    set: Set;
+	    maxfd: SysTypes.File;
+	 END;
+      (* ARRAY OF SET would be an alternative; but this
+	 would enforce a fixed limit where we don't know
+	 the actual limit
+      *)
+   VAR
+      emptyset: FileDescriptorSet;
+
+   PROCEDURE SelectWithTimeLimit(
+		VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		timeout: SysTime.TimeVal; VAR ready: INTEGER;
+		errors: RelatedEvents.Object;
+		retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+
+   PROCEDURE Select(VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		    VAR ready: INTEGER;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+
+   PROCEDURE Poll(VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		  VAR ready: INTEGER;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE CreateSet(VAR fdset: FileDescriptorSet);
+   PROCEDURE Incl(VAR fdset: FileDescriptorSet; fd: SysTypes.File);
+   PROCEDURE Excl(VAR fdset: FileDescriptorSet; fd: SysTypes.File);
+   PROCEDURE In(fdset: FileDescriptorSet; fd: SysTypes.File) : BOOLEAN;
+
+END SysSelect.

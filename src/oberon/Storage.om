@@ -1,0 +1,323 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Storage.om,v 1.6 2004/09/16 13:40:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Storage.om,v $
+   Revision 1.6  2004/09/16 13:40:26  borchert
+   FirstStack & NextStack added
+   (was necessary to support SysStackTraces)
+
+   Revision 1.5  2004/09/16 09:41:31  borchert
+   switched from [next, next+left) to [end-left,end) to make
+   life easier on architectures without atomar instructions
+   that compare and set two values simultaneously
+
+   Revision 1.4  1995/11/17  13:12:49  naegele
+   interface procedure SetChunkSize (size: Size) : BOOLEAN
+   changed to          ChunkSize (size: Size) : Size
+
+   Revision 1.3  1994/07/19  12:11:59  naegele
+   intensity: SHORTINT changed to INTEGER
+
+   Revision 1.2  1994/04/05  12:00:44  naegele
+   New/Dispose moved to UntaggedStorage
+
+   Revision 1.1  1994/02/23  07:48:42  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/93
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Storage;
+
+   (* storage allocating interface for the compiler *)
+
+   IMPORT Coroutines, Errors, Events, Objects, Priorities, RelatedEvents,
+      Streams, Types, Write;
+
+   TYPE
+      Address = Types.UntracedAddress;
+      Size = Types.Size;
+
+      Status = POINTER TO StatusRec;
+      StatusRec = RECORD
+         (Objects.ObjectRec)
+         collection: INTEGER;
+            (* = 0   garbage collection is enabled
+               > 0   garbage collection is disabled
+               this value indicates how many times PROC
+               EnableGarbageCollection has to be called to enable 
+               garbage collection
+            *)
+         intensity: INTEGER;
+            (* indicator for current garbage collection intensity
+               < 0   increased intensity
+               = 0   default (normal) intensity
+               > 0   decreased intensity
+            *)
+         allocated: Size;
+            (* total number of bytes which are currently under
+               control of AllocateWithTag and GarbageCollection
+            *)
+         consumed: Size;
+            (* total number of bytes which are currently in use
+               (<= allocated)
+            *)
+         chunksize: Size;
+            (* size of new memory chunks which will be allocated from the
+               operating system when more memory is needed
+            *)
+      END;
+
+   TYPE
+      AllocProc = PROCEDURE(VAR ptr: Address; tag: Address; size: Size);
+      AllocStackProc = PROCEDURE(VAR ptr: Address; size: Size; mode: SHORTINT);
+      GarbageCollectionProc = PROCEDURE;
+      EnableProc = PROCEDURE;
+      DisableProc = PROCEDURE;
+      GetStatusProc = PROCEDURE (VAR status: Status);
+      IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
+      ChunkSizeProc = PROCEDURE (size: Size) : Size;
+      FirstStackProc = PROCEDURE;
+      NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
+
+      Interface =
+         RECORD
+            alloc: AllocProc;
+            allocStack: AllocStackProc;
+            garbageCollection: GarbageCollectionProc;
+            enable: EnableProc;
+            disable: DisableProc;
+            intensity: IntensityProc;
+            getStatus: GetStatusProc;
+            chunkSize: ChunkSizeProc;
+	    firstStack: FirstStackProc;
+	    nextStack: NextStackProc;
+         END;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+         RECORD
+            (Events.EventRec)
+            errors: RelatedEvents.Object;
+               (* if # NIL, it contains a queue of error events which
+                  were responsible for the "out of memory" event
+               *)
+         END;
+   
+   VAR
+      (* public *)
+      lock: BOOLEAN;
+      end: Address; left: Size;
+      outOfMemory: Events.EventType;
+      (* private *)
+      sif: Interface;
+      sifDefined: BOOLEAN;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE PanicExit;
+      (* to be called if we have no interface defined yet *)
+   BEGIN
+      HALT(255)
+   END PanicExit;
+
+   PROCEDURE WriteEvent(s: Streams.Stream; event: Events.Event);
+      VAR
+         queue: RelatedEvents.Queue;
+         ptr: RelatedEvents.Queue;
+
+      PROCEDURE ReverseQueue(VAR queue: RelatedEvents.Queue);
+         VAR
+            ptr, prev, next: RelatedEvents.Queue;
+      BEGIN
+         ptr := queue; prev := NIL;
+         WHILE ptr # NIL DO
+            next := ptr.next;
+            ptr.next := prev;
+            prev := ptr;
+            ptr := next;
+         END;
+         queue := prev;
+      END ReverseQueue;
+
+   BEGIN
+      WITH event: Event DO
+         Write.StringS(s, event.message);
+         IF (event.errors # NIL) &
+               RelatedEvents.EventsPending(event.errors) THEN
+            RelatedEvents.GetQueue(event.errors, queue);
+            ReverseQueue(queue);
+
+            ptr := queue;
+            WHILE ptr # NIL DO
+               Write.LnS(s); Write.IndentS(s);
+               Errors.Write(s, ptr.event);
+               ptr := ptr.next;
+            END;
+
+            ReverseQueue(queue);
+            RelatedEvents.AppendQueue(event.errors, queue);
+         END;
+      END;
+   END WriteEvent;
+
+   (* === public procedures =============================================== *)
+
+   PROCEDURE AllocateWithTag(VAR ptr: Address; tag: Address; size: Size);
+      (* allocation with tag field;
+         tag may be zero: in this case we assume SYS.NEW and put a
+         dummy tag record behind the allocated area
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.alloc(ptr, tag, size);
+   END AllocateWithTag;
+
+   PROCEDURE AllocateStack(VAR ptr: Address; size: Size; mode: SHORTINT);
+      (* allocate a stack for a coroutine with the given growing mode:
+            mode > 0: stack grows forward
+            mode < 0: stack grows backward
+         on return, ptr points to the begin of the stack (for backward
+            growing stacks this is the end address of the allocated region)
+         the calling procedure is responsible for adjusting ptr and
+            storing a tag reference to Coroutines.tag
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.allocStack(ptr, size, mode);
+   END AllocateStack;
+
+   PROCEDURE GarbageCollection;
+      (* immediate run of a garbage collection
+         this procedure has no effect if garbage collection has
+         been disabled earlier by calling DisableCollection
+
+         the event Process.startOfGarbageCollection is raised at the beginning
+         and Process.endOfGarbageCollection when it is finished
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.garbageCollection;
+   END GarbageCollection;
+
+   PROCEDURE EnableCollection;
+   (* if there were more than one calls of DisableCollection in a row
+      without calling EnableCollection between, EnableCollection must
+      be called as many times as DisableCollection before, to switch
+      on garbage collection
+   *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.enable;
+   END EnableCollection;
+
+   PROCEDURE DisableCollection;
+   (* a single call of DisableCollection guarantees that
+      garbage collection is switched off
+   *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.disable;
+   END DisableCollection;
+
+   PROCEDURE Intensity(offset: INTEGER) : INTEGER;
+      (* adds (!) offset to the current collection intensity indicator:
+         offset < 0   increase intensity
+         offset = 0   no change, just return current intensity
+         offset > 0   decrease intensity
+         Intensity returns the new collection intensity indicator
+
+         changing the current collection indicator can be interpreted as
+         manipulating the variable which defines the maximal number
+         of bytes which can be allocated before the next garbage
+         collection should run
+         initially, the current intensity is 0 which sets the maximal
+         number of bytes to the current chunk size
+
+         offset = -1 doubles current intensity and
+         offset = 1  halves it
+
+         this example sets the current intensity to a default value:
+            current_intensity := Intensity(-Intensity(0));
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      RETURN sif.intensity(offset);
+   END Intensity;
+
+   PROCEDURE GetStatus(VAR status: Status);
+      (* return storage status information *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.getStatus(status);
+   END GetStatus;
+
+   PROCEDURE ChunkSize(size: Size) : Size;
+      (* set/get the current chunk size of the memory management
+         the chunk size is the size of new memory chunks allocated from
+         the operating system when more memory is needed
+         size # 0  rounds size to the next possible value (>= size) which
+                   can be used as chunk size
+                   the new value is retuned
+         size = 0  no change, just return the current value
+         when changing the chunksize, note that the intensity of
+         garbage collections depends not only on the current
+         collection intensity indicator which can be manipulated by using
+         PROC Intensity, it also depends on the chunk size
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      RETURN sif.chunkSize(size);
+   END ChunkSize;
+
+   PROCEDURE FirstStack;
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.firstStack();
+   END FirstStack;
+
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+      (* allow to iterate through all allocated coroutines for
+	 debugging purposes
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      RETURN sif.nextStack(cr)
+   END NextStack;
+
+   PROCEDURE Init(if: Interface);
+      (* may be called only once during startup *)
+   BEGIN
+      IF ~sifDefined THEN
+         sif := if; sifDefined := TRUE;
+      END;
+   END Init;
+
+BEGIN
+   lock := FALSE;
+   sifDefined := FALSE;
+   Events.Define(outOfMemory);
+   Events.SetPriority(outOfMemory, Priorities.storage + 1);
+   Errors.AssignWriteProcedure(outOfMemory, WriteEvent);
+END Storage.

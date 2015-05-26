@@ -1,0 +1,2107 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SMStreams.om,v 1.6 2001/04/02 09:32:01 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SMStreams.om,v $
+   Revision 1.6  2001/04/02 09:32:01  borchert
+   bug fix: overhead must be of LONGINT type to accept results of SYS.SIZE
+
+   Revision 1.5  2001/04/02 09:29:00  borchert
+   bug fixes:
+      - maxRingIndex was not calculated with 8-byte-boundaries in mind
+      - SysMemory.fixed was missing in SysMemory.Map invocations
+
+   Revision 1.4  1997/07/11  08:53:21  borchert
+   adapted to changed interface of Semaphores
+
+   Revision 1.3  1995/01/16  21:47:31  borchert
+   - support of Services added
+   - open condition now in conformance to Networks
+   - better error handling
+
+   Revision 1.2  1994/05/02  14:14:28  borchert
+   shared memory region addresses should be of type SysTypes.UntracedAddress
+   instead of SysTypes.Address.
+
+   Revision 1.1  1994/02/23  07:24:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Till Franke 10/1993
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SMStreams;
+
+   IMPORT Assertions, Clocks, Conditions, Disciplines, Events,
+      LibWrite := Write, LocalSemaphores, Memory, NetIO, Networks, Objects,
+      PersistentObjects, Priorities, RelatedEvents, Semaphores, Services,
+      StreamConditions, Streams, Strings, SYS := SYSTEM, SysFile, SysIO,
+      SysMemory, SysProcess, SysSignals, SysStat, SysTypes, Tasks,
+      TimeConditions, Timers, Times, UnixTmpNames;
+
+   CONST
+      filenamelen = 1024;
+   TYPE
+      Filename = ARRAY filenamelen OF CHAR;
+   CONST		(* open modes *)
+      master = 0;
+      slave = 1;
+   CONST		(* Exchange Information *)
+      ready = 1;
+      wantToRead = 2;
+      wantToWrite = 3;
+      readyToRead = 4;
+      readyToWrite = 5;
+      closing = 6;
+      wantToBeWoken = 7;
+      commands = 7;	(* Number of Commands *)
+      wakeupCommands = { readyToRead, readyToWrite, closing };
+			   (* send signal if partner wants to be woken *)
+      alarmCommands = { closing };
+			   (* send signal in any case *)
+   CONST		(* Errorcodes for streams *)
+      MRingError = 0;
+      SRingError = 1;
+      PartnerNotAliveError = 2;
+      WriteAfterCloseError = 3;
+      DeadlockError = 4;
+      NotAloneError = 5;
+      ConnectionNotReadyError = 6;
+      errorcodes = 7;
+   CONST
+      naptime = 2;		(* just a quick nap *)
+      sleeptime = 14;	(* seconds to be waited before Wakeup *)
+      buffered = 1;	(* waiting/blocking modes *)
+      unbuffered = Streams.nobuf;
+   CONST
+      read = StreamConditions.read;   (* operation types for conditions *)
+      write = StreamConditions.write;
+      open = 3;
+      close = 4;
+   CONST
+      wordlen = SYS.SIZE(INTEGER);	(* machine dependent; used for
+				    * alignment of data
+				    *)
+   CONST
+      partners = 2;
+   TYPE
+      Index = SysTypes.Size;
+      RingbufferInfoRec = RECORD 
+	 readindex, writeindex: Index 
+      END;
+   CONST
+      ringOverhead = SYS.SIZE(RingbufferInfoRec);
+      maxint = MAX(LONGINT);
+      maxRingIndex = maxint - maxint MOD wordlen - ringOverhead - 8;
+   TYPE
+
+   (* $P- $O- *)				(* tell the compiler not to
+					    * tag these types and to
+					    * exclude them from garbage
+					    * collection
+					    *)
+	
+
+      Ringbuffer=POINTER TO RingbufferRec;
+      RingbufferRec = RECORD
+	(RingbufferInfoRec) 
+	buffer:ARRAY maxRingIndex OF BYTE;	(* this is a dummy size; the
+					    * array is only mapped and 
+					    * never allocated. Its size
+					    * is never used.
+					    *)
+      END;
+
+      RingFlags = POINTER TO RingFlagsRec;
+      RingFlagsRec = RECORD
+	 empty,full:BOOLEAN;
+      END;
+
+   (* $P= $O= *)				(* switch back to former
+					    * tagging/garbage collecting
+					    * mode
+					    *)
+
+      Ring = POINTER TO RingRec;
+      RingRec = RECORD
+	 rb:Ringbuffer;
+	 flags:RingFlags;
+	 len:Index;
+      END;
+
+   (* $P- $O- *)				(* tell the compiler not to
+					    * tag these types and to
+					    * exclude them from garbage
+					    * collection
+					    *)
+
+      Exchange = POINTER TO ExchangeType;	(* Information Exchange region
+					    * for the communicating partners
+					    * Uses the command constants.
+					    *)
+      ExchangeType = ARRAY partners OF SET;
+      Flag = POINTER TO FlagType;
+      FlagType = ARRAY partners OF BOOLEAN;
+   (* $P= $O= *)				(* switch back to former
+					    * tagging/garbage collecting
+					    * mode
+					    *)
+
+      Stream = POINTER TO StreamRec;
+      StreamRec = RECORD(Streams.StreamRec)
+	 (*         Private Parts              *)
+	 ok:BOOLEAN;		(* Connection ready *)
+	 fd:SysTypes.File;		(* file kept open during connection *)
+	 size:SysTypes.Size;	(* size of used shared memory area *)
+	 pid:SysProcess.ProcessId;
+	 addr:SysTypes.UntracedAddress; (* begin of shared memory region *)
+	 region:Memory.Region;	(* needed to deallocate used mem *)
+	 ex:Exchange;		(* Information exchange for
+				    * synchronization
+				    *)
+	 flag:Flag;		(* prevent others from joining an
+				    * already busy channel
+				    *)
+	 me,him:SHORTINT;		(* index values for flags and exchange *)
+	 WRing,RRing:Ring;   	(* Read/Write Ring *)
+	 bufmode:Streams.BufMode;
+	 next,last:Stream;		(* list chaining *)
+	 readCondEvent:Events.Event;	(* Events for asynchroneous
+					    * I/O conditions
+					    *)
+	 writeCondEvent:Events.Event;
+      END;
+
+   (* $P- $O- *)			(* this also is only mapped *)
+      OpenExchange = POINTER TO OpenExchangeType;	(* Information exchange
+						    * during connection
+						    * buildup
+						    *)
+      OpenExchangeType = RECORD
+	 pid:ARRAY partners OF SysProcess.ProcessId;
+      END;				(* this must not become larger than
+				    * the usual exchange because the
+				    * Rings are created at the same time.
+				    * This is checked by an assertion
+				    * at Initialization time
+				    *)
+   (* $P= $O= *)			(* restore former garbage collector
+				    * mode
+				    *)
+
+
+				   (* The Networks data types *)
+
+      Address = RECORD
+	 filename : Filename;
+	 size : SysTypes.Size;	(* size of used shared memory area 
+				    * this is a dummy if the addresss
+				    * is used with open
+				    *)
+      END;
+
+      Socket = POINTER TO SocketRec;
+      SocketRec = RECORD
+	 (Networks.SocketRec)
+	 address : Address;
+	 stream : Stream;
+	 errors : RelatedEvents.Object;
+      END;
+
+      NetworkAddress = POINTER TO NetworkAddressRec;
+      NetworkAddressRec = RECORD
+	 (Networks.AddressRec)
+	 SMSAddress : Address;
+      END;				(* This is the data type interface
+				    * to Networks
+				    *)
+
+
+						   (* Conditions *)
+      OpenCondition = POINTER TO OpenConditionRec;
+      OpenConditionRec = RECORD
+	 (Conditions.ConditionRec)
+	 s:Stream;
+	 operation:SHORTINT;		(* this may be open or close *)
+	 (* components which are used by CreateOpenCondition & TestAndOpen *)
+	 errors: RelatedEvents.Object;
+	 finished, failed: BOOLEAN;
+      END;
+
+      IODomain = POINTER TO IODomainRec;	(* to wait for the possibility
+					    * to start or finish an i/o
+					    * operation
+					    *)
+      IODomainRec = RECORD
+	 (Conditions.DomainRec)
+      END;
+      IOCondition = POINTER TO IOConditionRec;
+      IOConditionRec = RECORD
+	 (Conditions.ConditionRec)
+	 s:Stream;
+	 operation:StreamConditions.Operation;
+					   (* this may be read or write,
+					    * taken from StreamConditions
+					    *)
+	 bufmode:Streams.BufMode;		(* external requests may depend
+					    * on the used buffering mode.
+					    * internal requests must be
+					    * ready to write or read
+					    * without buffering
+					    *)
+      END;
+
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec = RECORD
+	  (Events.EventRec)
+	  errorcode:ErrorCode;
+      END;
+
+      Command = SHORTINT;
+
+   (* ************* Global Variables ****************** *)
+   VAR
+      OpenSig : SysSignals.EventType;	(* Signals *)
+      OpenSigNo : SysSignals.Signal;
+      CmdSig : SysSignals.EventType;
+      CmdSigNo : SysSignals.Signal;
+
+      openDomain : Conditions.Domain;		(* Conditions *)
+      openCondIF : Conditions.Interface;
+      openCondDesc : Conditions.Description;
+      ioDomain : IODomain;
+      ioCondIF : Conditions.Interface;
+      ioCondDesc : Conditions.Description;
+
+      MasterList : Stream;			(* Stream lists *)
+      SlaveList : Stream;
+      CmdList : Stream;
+				   (* flags to detect neglected
+				    * operations due to locked semaphores
+				    *)
+      checkOpenLists,checkMasterList,checkSlaveList : BOOLEAN;
+      checkCmdList : BOOLEAN;
+
+      CommandListSem : Semaphores.Semaphore;
+      SlaveListSem : Semaphores.Semaphore;
+      MasterListSem : Semaphores.Semaphore;
+
+      error : Events.EventType;
+      errormsg : ARRAY errorcodes OF Events.Message;
+
+      if : Streams.Interface;
+      capabilities : Streams.CapabilitySet;
+      type : Services.Type; (* SMStreams.Stream *)
+
+      overhead : LONGINT;		(* size of non-ring memory *)
+
+      wakeupEventType : Events.EventType;
+      wakeups : INTEGER;		(* pending wakeup events *)
+      assertExchangeSize : Events.EventType;
+      Pagesize : SysTypes.Size;	(* used for page alignment *)
+
+      SMSnet : Networks.Network;	(* the Networks identifier *)
+      addressType : Services.Type;
+
+   (* ************ State Diagrams ********************* *)
+   (*
+
+   State Diagrams for SMStreams
+
+
+
+			 
+				  +-----------+
+				  |start of   |
+				  |open ritual|
+				  +-----------+
+			     Listen     |        Open
+		      +-----------------+----------------+
+		      |                                  |
+		      |                                  |
+       stream   +-----------+                     +-----------+            
+       in       |  Master   |                     |  Slave    |          
+       master   |           |                     |           |        
+       queue    +-----------+                     +-----------+        
+		      |                                  |               
+		      |OpenSig                           |OpenSig
+		      |                                  |                 
+		      +---------------+  +---------------+                 
+				      |  |
+				      |  |
+				      |  |
+		    Read, ~empty  +-----------+  Write, ~full
+		    +-------------|  stream   |--------------+
+		    |             |  ready    |              |
+		    +------------>|           |<-------------+
+	Close called              |           | 
+     +----------------------------+-----------+
+     |                                /^  | ^\
+     |                   Read,empty  / |  | | \  Write,full
+     |                 /------------+  |  | |  +---------\
+     |    CmdSig+-----+-----+          |  | |        +----+------+ CmdSig
+     |     +----|           |          |  | |        |           |----+
+     |     |    |           |          |  | |        |           |    |
+     |     +--->+--+--+-----+          |  | |        +----+------+<---+
+     |   request   |   \               |  | |            /      |
+     |   not       |    +--------------+  | +-----------+       |
+     |   completed |     CmdSig,          |  CmdSig,            |CmdSig
+     |             |    request completed |  request completed  |and
+     |             |                      |                     |{closing}
+     |     Wakeup, |CmdSig,               |                     |
+     |     kill not|{closing}             |CmdSig and {closing} |Wakeup,
+     |   successful|                      +------+              |kill not
+     |             +------------+                |              |successful
+     |                           \               |   +----------+
+     |                            \              |   |
+     |          +-----------+      \       +-----------+ Read, ~empty 
+     +--------->|           |       +----->|           |------------+
+		|           |              |           |            |
+		+-----------+              +-----------+<-----------+
+		      |                          |   |
+	      CmdSig, |Wakeup,                   +   |Read, empty
+	     {closing}|kill not           Close /    |
+		      |successful              /     +---------+
+		+-----------+<----------------+      |   EOF   |
+		| stream    |                        |         |
+		| closed    |<-----------------------+---------+
+		+-----------+             Close
+
+
+   Control Flow: Write
+
+	  +-----------+
+	  | write     |   write N bytes
+	  | operation |
+	  +-----------+
+	       |<----------------+
+	  +-----------+          ^
+	  | write if  |    +----------+   set wantToWrite
+	  | possible  |    | wait for |   set wantToBeWoken
+	  +-----------+    |iocondition   iocondition is asynchroneous
+	       |           +----------+   and released by a CmdSig
+	  +-----------+          ^
+	  | all bytes |  no      | no
+	  | written?  |----+----------+     +-----------+
+	  +-----------+    | partner  | yes | Error     |
+	       |  yes      | closed?  |-----|           |
+	       |           +----------+     +-----------+
+	       |                                 |
+	  +-----------+                          .
+	  | partner   |  yes                     .
+	  | wants to  |----+-----------+ and set readyToRead
+	  | read?     |    | Send      | to release pending
+	  +-----------+    | CmdSig    | ioconditions on his
+	       | no        +-----------+ side
+	       |                 |
+	       |<----------------+
+	       .           
+	       .
+	       .
+	  
+				       
+   *)
+   (* ************* End of State Diagrams ************* *)
+
+   (* ************* Error Handling ******************** *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[SRingError] := "Cannot create slave ring buffer";
+      errormsg[MRingError] := "Cannot create master ring buffer";
+      errormsg[PartnerNotAliveError] := "Unable to send signal to partner";
+      errormsg[WriteAfterCloseError] := 
+	   "Attempt to write to stream after the partner closed down";
+      errormsg[DeadlockError] := "Waiting in deadlock";
+      errormsg[NotAloneError] := "File already mapped by another process";
+      errormsg[ConnectionNotReadyError] := "Server not ready: no listen";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object:Disciplines.Object; errorcode: ErrorCode);
+	   (* relates the errormessage to the given stream *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* **************** Ring Operations ******************* *)
+
+   PROCEDURE CreateRing(VAR r:Ring; a:SysTypes.UntracedAddress;
+			flags:SysTypes.UntracedAddress;
+			len:SysTypes.Size):BOOLEAN;
+	    (* create a Ring of given size and map its
+	     * ringbuffer to address a and its flags to address flags.
+	     * returns FALSE if the size is insufficient.
+	     *)
+   BEGIN
+      IF len-ringOverhead <= 1 THEN
+	 RETURN (FALSE);
+      ELSE
+	 NEW(r);
+	 r.rb := SYS.VAL(Ringbuffer,a);
+	 r.flags := SYS.VAL(RingFlags,flags);
+	 r.flags.empty := TRUE;
+	 r.flags.full := FALSE;
+	 r.rb.readindex := 0;
+	 r.rb.writeindex := 0;
+	 r.len := len-ringOverhead;
+	 RETURN (TRUE);
+      END;
+   END CreateRing;
+	 
+   PROCEDURE CheckRead(r:Ring):BOOLEAN;
+		   (* return true if at least one byte can be read
+		    * from ring r
+		    *)
+   BEGIN
+      RETURN (r.rb.readindex # r.rb.writeindex)
+	     OR (r.flags.full & ~r.flags.empty);
+   END CheckRead;
+
+   PROCEDURE CheckWrite(r:Ring):BOOLEAN;
+		   (* return true if at least one byte can be written
+		    * into ring r
+		    *)
+   BEGIN
+      RETURN (r.rb.writeindex # r.rb.readindex)
+	     OR (r.flags.empty & ~r.flags.full);
+   END CheckWrite;
+
+   PROCEDURE CopyNBytes(source, dest: SysTypes.UntracedAddress;
+			nbytes: SysTypes.Count);
+	       (* AFB 10/1993, revised *)
+      VAR
+	 byte: BYTE;
+	 srem,drem,nrem:LONGINT;
+			   (* integer division remains mod wordlen
+			    * of source, dest and nbytes;
+			    * WMOVE is effective only on word aligned 
+			    * data
+			    *)
+   BEGIN
+      srem := SYS.VAL(LONGINT,source) MOD wordlen;
+      drem := SYS.VAL(LONGINT,dest) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (drem = 0) & (srem = 0) & (nrem = 0) THEN
+	 SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSIF (srem = drem) & (nrem = wordlen-srem) & (nbytes>wordlen) THEN
+	 WHILE source MOD wordlen # 0 DO
+	    SYS.GET(source, byte); INC(source);
+	    SYS.PUT(dest, byte); INC(dest);
+	    DEC(nbytes);
+	 END;
+	 SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSE
+	 WHILE nbytes > 0 DO
+	    SYS.GET(source, byte); INC(source);
+	    SYS.PUT(dest, byte); INC(dest);
+	    DEC(nbytes);
+	 END;
+      END;
+   END CopyNBytes;
+
+   PROCEDURE PutByte(r:Ring;b:BYTE):BOOLEAN;
+	   (* insert one byte into the ring *)
+   VAR writeindex : Index;
+   BEGIN
+      IF ~CheckWrite(r) THEN
+	 RETURN(FALSE);
+      ELSE
+	 r.rb.buffer[r.rb.writeindex] := b;
+	 writeindex := (r.rb.writeindex+1) MOD r.len;
+	 IF writeindex = r.rb.readindex THEN
+	    r.flags.full := TRUE;
+	    r.flags.empty := FALSE;
+	 END;
+	 r.rb.writeindex := writeindex;
+	 RETURN TRUE;
+      END;
+   END PutByte;
+
+
+   PROCEDURE PutBytes(r:Ring;Src:SysTypes.Address;
+		   count:SysTypes.Count):SysTypes.Count;
+	   (* insert multiple bytes from buffer Src into Ring 
+	    * returns # bytes actually written
+	    *)
+   VAR
+      beforeWrap,afterWrap:Index;
+      adr:Memory.Address;		(* must be untraced! *)
+      readindex : Index;		(* must be saved to prevent
+				    * race conditions 
+				    * e.g. : writeindex < readindex
+				    *           ( interrupt: read with wrap)
+				    *        beforeWrap := read - write
+				    * => beforeWrap < 0
+				    *)
+      setflags : BOOLEAN;
+   BEGIN
+      readindex := r.rb.readindex;
+      IF ~CheckWrite(r) OR (count = 0) THEN
+	 RETURN 0;
+      END;
+      IF r.rb.writeindex >= readindex THEN
+	 afterWrap := readindex;
+	 beforeWrap := r.len - r.rb.writeindex;
+      ELSE
+	 beforeWrap := readindex - r.rb.writeindex;
+	 afterWrap := 0;
+      END;
+      IF beforeWrap > count THEN 
+	 beforeWrap := count;
+	 afterWrap := 0;
+	 setflags := FALSE;
+      ELSIF beforeWrap + afterWrap > count THEN
+	 afterWrap := count - beforeWrap;
+	 setflags := FALSE;
+      ELSE
+	 setflags := TRUE;		(* may be too early to set them now *)
+      END;
+      adr := SYS.ADR(r.rb.buffer[r.rb.writeindex]);
+      CopyNBytes(Src,adr,beforeWrap);
+      IF afterWrap > 0 THEN
+	 adr := SYS.ADR(r.rb.buffer[0]);
+	 CopyNBytes(Src+beforeWrap,adr,afterWrap);
+      END;
+      IF setflags THEN
+	 r.flags.full := TRUE;
+	 r.flags.empty := FALSE;
+      END;
+      r.rb.writeindex := (r.rb.writeindex + beforeWrap + afterWrap)
+		       MOD r.len;
+      RETURN beforeWrap+afterWrap;
+   END PutBytes;
+
+   PROCEDURE GetByte(r:Ring;VAR b:BYTE):BOOLEAN;
+	   (* reads one byte from Ring r*)
+   VAR
+      readindex : Index;
+   BEGIN
+      IF ~CheckRead(r) THEN
+	 RETURN FALSE;
+      ELSE
+	 b := r.rb.buffer[r.rb.readindex];
+	 readindex := (r.rb.readindex+1) MOD r.len;
+	 IF readindex = r.rb.writeindex THEN
+	    r.flags.empty := TRUE;
+	    r.flags.full := FALSE;
+	 END;
+	 r.rb.readindex := readindex;
+	 RETURN TRUE;
+      END;
+   END GetByte;
+    
+   PROCEDURE GetBytes(r:Ring;Dest:SysTypes.Address;
+		   count:SysTypes.Count):SysTypes.Count;
+	   (* reads several bytes from Ring r into buffer Src
+	    * returns # bytes actually read
+	    *)
+   VAR
+      beforeWrap,afterWrap:Index;
+      adr:SysTypes.Address;
+      writeindex : Index;		(* must be saved to prevent race
+				    * conditions
+				    *)
+      setflags : BOOLEAN;
+   BEGIN
+      writeindex := r.rb.writeindex;
+      IF ~CheckRead(r) OR (count = 0) THEN
+	 RETURN 0;
+      END;
+      IF writeindex <= r.rb.readindex THEN
+	 afterWrap := writeindex ;
+	 beforeWrap := r.len - r.rb.readindex;
+      ELSE
+	 beforeWrap := writeindex - r.rb.readindex;
+	 afterWrap := 0;
+      END;
+      IF beforeWrap > count THEN 
+	 beforeWrap := count;
+	 afterWrap := 0;
+	 setflags := FALSE;
+      ELSIF beforeWrap + afterWrap > count THEN
+	 afterWrap := count - beforeWrap;
+	 setflags := FALSE;
+      ELSE
+	 setflags := TRUE;
+      END;
+      adr := SYS.ADR(r.rb.buffer[r.rb.readindex]);
+      CopyNBytes(adr,Dest,beforeWrap);
+      IF afterWrap > 0 THEN
+	 adr := SYS.ADR(r.rb.buffer[0]);
+	 CopyNBytes(adr,Dest+beforeWrap,afterWrap);
+      END;
+      IF setflags THEN
+	 r.flags.empty := TRUE;
+	 r.flags.full := FALSE;
+      END;
+      r.rb.readindex := (r.rb.readindex + beforeWrap + afterWrap)
+			MOD r.len;
+      RETURN beforeWrap+afterWrap;
+   END GetBytes;
+
+   (* ****************  Alarm Clock event constructor *********** *)
+
+   PROCEDURE Wakeup(seconds:INTEGER);
+	   (* set up a wakeup event *)
+   VAR
+      wakeup:Events.Event;
+      time:Times.Time;
+   BEGIN
+      IF wakeups > 1 THEN
+	 RETURN;
+      END;
+      INC(wakeups);
+      NEW(wakeup);
+      wakeup.type := wakeupEventType;
+      Times.CreateAndSet(time,Times.relative,0,seconds,0);
+      Timers.Schedule(Clocks.system,time,wakeup);
+   END Wakeup;
+
+   (* ****************** Open-List Handlers ******************** *)
+
+   PROCEDURE MoveFromListToList(s:Stream; VAR Slist,Dlist:Stream);
+		   (* take a stream out of Slist and insert it
+		    * into Dlist
+		    *)
+   BEGIN
+      IF s = NIL THEN		(* is s valid? *)
+	 RETURN;
+      END;
+      IF Slist = s THEN		(* first Element in queue? *)
+	 Slist := s.next;
+      END;
+      IF s.last # NIL THEN		(* is there something before? *)
+	 s.last.next := s.next;
+      END;
+      IF s.next # NIL THEN		(* ist there something behind? *)
+	 s.next.last := s.last;
+      END;
+
+      IF Dlist # NIL THEN		(* already something in list? *)
+	 Dlist.last := s;
+      END;
+      s.last := NIL;
+      s.next := Dlist;
+      Dlist := s;
+   END MoveFromListToList;
+
+   PROCEDURE CheckMasterList;
+		   (* search queue of Streams opened with Listen
+		    * and finish connection buildup;
+		    * Called by OpenSigHandler.
+		    *)
+   VAR
+      s:Stream;
+      ex:OpenExchange;
+   BEGIN
+      s := MasterList;
+      WHILE s # NIL DO
+	 ex := SYS.VAL(OpenExchange,s.addr);
+	 IF (ex.pid[s.me] = -1)
+	    & (ex.pid[s.him] > 0)
+	 THEN
+					   (* other Side has completed
+					    * Open 
+					    *)
+	    s.pid := ex.pid[s.him];	(* get partner's PID *)
+
+	      (* create command exchange region *)
+
+	    s.ex := SYS.VAL(Exchange,s.addr);
+	    s.flag := SYS.VAL(Flag,s.addr
+			+SYS.SIZE(ExchangeType));
+	    s.ex[s.me] := {};
+	    IF SYS.TAS(s.flag[s.me]) THEN
+	       Error(s,NotAloneError);
+				   (* send sig for his slave-handler *)
+	    ELSIF ~SysProcess.Kill(s.pid,OpenSigNo,s) THEN
+	       Error(s,PartnerNotAliveError);
+	    ELSE
+	       s.ok := TRUE;
+	       MoveFromListToList(s,MasterList,CmdList);
+	    END;
+	    Wakeup(sleeptime);
+	 END;
+	 s := s.next;
+      END;	(* WHILE *)
+      checkMasterList := FALSE;
+   END CheckMasterList;
+
+   PROCEDURE CheckSlaveList;
+		   (* searches queue of Streams opened with Open
+		    * and finishes the connection buildup;
+		    * called by the OpenSigHandler
+		    *)
+   VAR
+      s:Stream;
+      fd:SysTypes.File;
+      Ready:BOOLEAN;
+      flag:Flag;
+   BEGIN
+      s := SlaveList;
+      WHILE s # NIL DO
+	 flag := SYS.VAL(Flag,s.addr+SYS.SIZE(ExchangeType));
+	 IF flag[s.him] THEN
+	    s.ex := SYS.VAL(Exchange,s.addr);
+	    s.flag := SYS.VAL(Flag,s.addr+SYS.SIZE(ExchangeType));
+	    s.ex[s.me] := {};
+	    IF SYS.TAS(s.flag[s.me]) THEN
+	       Error(s,NotAloneError);
+	    ELSE
+	       s.ok := TRUE;
+	       MoveFromListToList(s,SlaveList,CmdList);
+	    END;
+	 END;
+	 s := s.next;
+      END;	(* WHILE *)
+      checkSlaveList := FALSE;
+   END CheckSlaveList;
+
+   (* ******************** Communication sender ************* *)
+
+   PROCEDURE SendCommand(s:Stream;command:Command);
+   BEGIN
+      INCL(s.ex[s.me],command);
+      IF ~(closing IN s.ex[s.him]) THEN
+	 IF (command IN alarmCommands) OR
+	    ((wantToBeWoken IN s.ex[s.him]) & (command IN wakeupCommands))
+	 THEN
+	    IF ~SysProcess.Kill(s.pid,CmdSigNo,s) THEN
+	       Error(s,PartnerNotAliveError);
+	    END;
+	 END;
+      END;
+   END SendCommand;
+
+   (* ************* Master/Slave Information receiver ********* *)
+
+   PROCEDURE CommandHandler;
+   VAR
+      s:Stream;
+   BEGIN
+      s := CmdList;
+      WHILE s # NIL DO
+				   (* handle asynchroneous conditions *)
+	 IF (readyToRead IN s.ex[s.him]) &
+	    (s.readCondEvent # NIL)
+	 THEN
+	    Events.Raise(s.readCondEvent);
+	    s.readCondEvent := NIL;
+	    EXCL(s.ex[s.me],wantToBeWoken);
+	 END;
+	 IF (readyToWrite IN s.ex[s.him]) &
+	    (s.writeCondEvent # NIL)
+	 THEN
+	    Events.Raise(s.writeCondEvent);
+	    s.writeCondEvent := NIL;
+	    EXCL(s.ex[s.me],wantToBeWoken);
+	 END;
+	 IF closing IN s.ex[s.him] THEN
+	    SendCommand(s,closing);
+	 END;
+	 (*
+	   (* deadlock detection; will not work with more than
+	    * one coroutine
+	    *)
+	 IF (wantToRead IN s.ex[s.me])
+		   & (wantToRead IN s.ex[s.him]) 
+		   & ~((wantToWrite IN s.ex[s.me])
+		       OR (wantToWrite IN s.ex[s.him]))
+		   & ~CheckRead(s.RRing) & ~CheckRead(s.WRing) THEN
+	    Error(s,DeadlockError);
+	 END;
+	 IF (wantToWrite IN s.ex[s.me])
+		   & (wantToWrite IN s.ex[s.him])
+		   & ~((wantToRead IN s.ex[s.me])
+		       OR (wantToRead IN s.ex[s.him]))
+		   & ~CheckWrite(s.WRing) & ~CheckWrite(s.RRing) THEN
+	    Error(s,DeadlockError);
+	 END;
+	 *)
+	 s := s.next;
+      END;
+      checkCmdList := FALSE;
+   END CommandHandler;
+
+   (* ************* Signal Handlers ******************* *)
+
+   PROCEDURE OpenSigHandler(event:Events.Event);
+		   (* get Semaphore for queues and work them up or
+		    * mark queues for update
+		    *)
+      VAR
+	 CmdSemCond,MasterSemCond,SlaveSemCond:Conditions.Condition;
+   BEGIN
+      Semaphores.GetCondition(CommandListSem,CmdSemCond);
+      Semaphores.GetCondition(MasterListSem,MasterSemCond);
+      Semaphores.GetCondition(SlaveListSem,SlaveSemCond);
+      IF Conditions.Test(CmdSemCond,NIL) THEN
+	 IF Conditions.Test(MasterSemCond,NIL) THEN
+	    CheckMasterList;
+	 ELSE
+	    checkMasterList := TRUE;
+	 END;
+	 IF Conditions.Test(SlaveSemCond,NIL) THEN
+	    CheckSlaveList;
+	 ELSE
+	    checkSlaveList := TRUE;
+	 END;
+	 checkOpenLists := FALSE;
+	 IF checkCmdList THEN
+	    CommandHandler;
+	 END;
+      ELSE
+	 checkOpenLists := TRUE;
+      END;
+      Semaphores.Drop(MasterSemCond);
+      Semaphores.Drop(SlaveSemCond);
+      Semaphores.Drop(CmdSemCond);
+   END OpenSigHandler;
+    
+   PROCEDURE CmdSigHandler(event:Events.Event);
+      VAR
+	 CmdSemCond:Conditions.Condition;
+   BEGIN
+      Semaphores.GetCondition(CommandListSem,CmdSemCond);
+      IF Conditions.Test(CmdSemCond,NIL) THEN
+	 REPEAT
+	    CommandHandler;
+	 UNTIL ~checkCmdList;
+      ELSE
+	 checkCmdList := TRUE;
+      END;
+      Semaphores.Drop(CmdSemCond);
+   END CmdSigHandler;
+
+   (* ****************** Connection Tests **************** *)
+
+   PROCEDURE ConnectionOk(s:Stream; errors: RelatedEvents.Object):BOOLEAN;
+	   (* returns TRUE if stream is opened by partner 
+	    * or partner is not alive any more to finish waiting of 
+	    * this side.
+	    * slave tries to wake up master or vice versa
+	    * in case of failure
+	    *)
+   BEGIN
+      IF s.ok THEN
+	 RETURN TRUE;
+      END;
+      IF s.pid > 0 THEN
+	 IF ~SysProcess.Kill(s.pid,OpenSigNo,errors) THEN
+	    Error(errors,PartnerNotAliveError);
+	    RETURN TRUE; 
+	 END;
+      END;
+      RETURN s.ok;
+   END ConnectionOk;
+
+   (* ***************** Condition Tests ******************** *)
+
+   PROCEDURE OpenTest(domain:Conditions.Domain;
+		      condition:Conditions.Condition;
+		      errors:RelatedEvents.Object):BOOLEAN;
+	   (* returns TRUE if the other Side has applied the appropriate
+	    * opening or closing operation to the stream.
+	    *)
+   VAR
+      Ready:BOOLEAN;
+      finished: BOOLEAN;
+   BEGIN
+      WITH condition:OpenCondition DO
+	 IF condition.failed OR condition.finished THEN RETURN TRUE END;
+	 CASE condition.operation OF
+	    |open :
+	       finished := ConnectionOk(condition.s, condition.errors);
+	    |close :
+	       Ready := closing IN condition.s.ex[condition.s.him];  
+	       IF ~(Ready OR SysProcess.Kill(condition.s.pid,
+				   CmdSigNo,condition.errors)) THEN
+		  finished := TRUE;    (* partner not alive *)
+	       ELSE
+		  IF ~Ready & CheckRead(condition.s.WRing) THEN
+		     SendCommand(condition.s,readyToRead);
+		  END;
+		  finished := closing IN condition.s.ex[condition.s.him];  
+	       END;
+	 END;		(* case *)
+	 IF finished THEN
+	    condition.finished := TRUE;
+	 END;
+      END;
+      RETURN finished
+   END OpenTest;
+
+   PROCEDURE WouldBlock(s:Streams.Stream;
+			   operation:StreamConditions.Operation;
+			   bufmode:Streams.BufMode;
+			   errors:RelatedEvents.Object):BOOLEAN;
+   VAR Ready:BOOLEAN;
+   BEGIN
+      WITH s:Stream DO
+	 IF ~(s.ok OR ConnectionOk(s, errors)) THEN
+	    RETURN TRUE;
+	 END;
+	 CASE operation OF
+	    |read:
+	       Ready := CheckRead(s.RRing) OR (closing IN s.ex[s.him])
+		  OR ((bufmode # unbuffered) & Streams.InputInBuffer(s));
+	       IF ~Ready THEN
+		  EXCL(s.ex[s.him],readyToRead);
+		  SendCommand(s,wantToBeWoken);
+		  SendCommand(s,wantToRead);
+	       END;
+	       RETURN ~Ready;
+	    |write:
+	       IF closing IN s.ex[s.me] THEN
+		  Error(errors,WriteAfterCloseError);
+		  RETURN FALSE;
+	       END;
+	       Ready := CheckWrite(s.WRing) OR
+		((bufmode # unbuffered ) & Streams.OutputWillBeBuffered(s));
+	       IF ~Ready THEN
+		  EXCL(s.ex[s.him],readyToWrite);
+		  SendCommand(s,wantToBeWoken);
+		  SendCommand(s,wantToWrite);
+	       END;
+	       RETURN ~Ready;
+	 END;	(* CASE of operation *)
+      END;
+   END WouldBlock;
+
+   PROCEDURE IOTest(domain:Conditions.Domain;
+		      condition:Conditions.Condition;
+		      errors:RelatedEvents.Object):BOOLEAN;
+	   (* Test interface procedure for conditions *)
+   BEGIN
+      WITH condition:IOCondition DO
+	 RETURN ~WouldBlock(condition.s,condition.operation,
+				condition.bufmode,errors);
+      END;		(* WITH of condition *)
+   END IOTest;
+
+
+   PROCEDURE IOSendEvent( domain:Conditions.Domain;
+			   condition:Conditions.Condition;
+			   event:Events.Event;
+			   errors:RelatedEvents.Object):BOOLEAN;
+	   (* async interface procedure for conditions *)
+   BEGIN
+      WITH condition:IOCondition DO
+	 CASE condition.operation OF
+	    |read:
+	       IF WouldBlock(condition.s,read,condition.bufmode,
+				errors) THEN
+		  IF closing IN condition.s.ex[condition.s.him] THEN
+		     condition.s.readCondEvent := NIL;
+		     RETURN FALSE;
+		  END;
+		  INCL(condition.s.ex[condition.s.me], wantToBeWoken);
+		  Wakeup(sleeptime);
+		  condition.s.readCondEvent := event;
+	       ELSE
+		  condition.s.readCondEvent := NIL;
+		  RETURN FALSE;
+	       END;
+	    |write:
+	       IF closing IN condition.s.ex[condition.s.him] THEN
+		  RETURN FALSE;
+	       END;
+	       IF  ~WouldBlock(condition.s,write,condition.bufmode,
+				errors) THEN
+		  condition.s.writeCondEvent := NIL;
+		  RETURN FALSE;
+	       ELSE
+		  INCL(condition.s.ex[condition.s.me],wantToBeWoken);
+		  Wakeup(sleeptime);
+		  condition.s.writeCondEvent := event;
+	       END;
+	    ELSE
+	       RETURN FALSE;
+	 END;
+	 RETURN TRUE;
+      END;
+   END IOSendEvent;
+      
+   PROCEDURE CreateCloseCondition(VAR cond:Conditions.Condition;
+				   s:Stream);
+	   (* creates a condition to wait for the partner to
+	    * close the stream 
+	    *)
+   VAR
+      newcond:OpenCondition;
+   BEGIN
+      NEW(newcond);
+      newcond.s := s;
+      newcond.operation := close;
+      Conditions.Init(newcond,openDomain);
+      cond := newcond;
+   END CreateCloseCondition;
+
+   PROCEDURE CreateIOCondition(VAR cond:Conditions.Condition;
+				   s:Streams.Stream;
+				   operation:StreamConditions.Operation;
+				   bufmode:Streams.BufMode);
+	   (* creates a condition to wait for the operation to
+	    * be non-blocking ( is interfaced by StreamConditions )
+	    *)
+   VAR
+      newcond:IOCondition;
+   BEGIN
+      WITH s:Stream DO
+	 NEW(newcond);
+	 newcond.s := s;
+	 newcond.operation := operation;
+	 newcond.bufmode := bufmode;
+	 Conditions.Init(newcond,ioDomain);
+	 cond := newcond;
+      END;
+   END CreateIOCondition;
+
+   (* **************** Handler for StreamConditions ************* *)
+
+   PROCEDURE StreamMessageHandler(s: Streams.Stream;
+				   VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Stream DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+	       CreateIOCondition(msg.condition,s,msg.operation,s.bufmode);
+	       msg.stream := s;
+	       msg.msgProcessed := TRUE;
+	    END;
+	 ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       msg.wouldblock := WouldBlock(s,msg.operation,
+				   s.bufmode,msg.errors);
+	       msg.msgProcessed := TRUE;
+	    END;
+	 END;
+      END;
+   END StreamMessageHandler;
+
+   (* ************* Exported Routines ************* *)
+
+   PROCEDURE CreateAcceptCondition(s:Streams.Stream;
+			     VAR cond:Conditions.Condition);
+	   (* creates a condition to wait for the partner to
+	    * open the stream 
+	    *)
+   VAR
+      newcond:OpenCondition;
+   BEGIN
+      WITH s:Stream DO
+	 NEW(newcond);
+	 newcond.s := s;
+	 newcond.operation := open;
+	 newcond.failed := FALSE; newcond.finished := FALSE;
+	 Conditions.Init(newcond,openDomain);
+	 cond := newcond;
+      END;
+   END CreateAcceptCondition;
+
+   PROCEDURE Newstream(VAR s:Stream; filename:ARRAY OF CHAR;
+			size:SysTypes.Size;
+			errors:RelatedEvents.Object):BOOLEAN;
+   VAR
+      pid:SysProcess.ProcessId;	(* to write PID's into file *)
+      fd:SysTypes.File;
+      prefilename:Filename;	(* for temporary file *)
+      r:Streams.Stream;		(* to create filenames *)
+      intr:BOOLEAN;		(* for systemcalls *)
+      addr:Memory.Address;
+      region:Memory.Region;
+      mapaddress:Memory.Address;
+      ringsize:LONGINT;
+      newstream:Stream;
+      attr:INTEGER;	(* file attributes *)
+      d:BYTE;		(* to write at end of file *)
+      list:Stream;		(* dummy list to move into MasterList *)
+      dummy:BOOLEAN;	(* return values of non-critical operations *)
+      ringflags:Memory.Address;
+      MasterSemCond:Conditions.Condition;	(* condition for Semaphore *)
+					   (* flags for cleanup *)
+      opened,allocated,mapped,linked:BOOLEAN;
+
+      PROCEDURE Cleanup;
+      BEGIN
+	 IF linked THEN
+	    dummy := SysFile.Unlink(filename,NIL);
+	 END;
+	 IF mapped THEN
+	    dummy := SysMemory.Unmap(addr,size,errors);
+	 END;
+	 IF allocated THEN
+	    Memory.ReleaseRegion(region);
+	 END;
+	 IF opened THEN
+	    dummy := SysIO.Close(fd,errors,TRUE,intr);
+	    dummy := SysFile.Unlink(prefilename,NIL);
+	    dummy := SysFile.Unlink(filename,NIL);
+	 END;
+      END Cleanup;
+	    
+   BEGIN
+      opened := FALSE;
+      allocated := FALSE;
+      mapped := FALSE;
+      linked := FALSE;
+
+      size := ((size-1) DIV Pagesize +1) * Pagesize;
+      s := NIL;
+      prefilename[0] := 0X;
+      Strings.Open(r,prefilename);
+      LibWrite.StringS(r,filename);
+      LibWrite.IntS(r,SysProcess.Getpid(),1);
+      LibWrite.CharS(r,0X);
+      dummy := SysFile.Unlink(prefilename,NIL);
+
+	(* set up file of given length *)
+      
+      IF ~SysIO.OpenCreat(fd,prefilename,SysIO.creat+SysIO.wronly,
+		   SYS.VAL(INTEGER,{SysStat.uread,SysStat.uwrite}),
+		   errors,(*retry = *) TRUE,intr) THEN
+	 RETURN FALSE;
+      END;
+      opened := TRUE;
+      pid := SysProcess.Getpid();
+      IF SysIO.Write(fd,SYS.ADR(pid),
+	   SYS.SIZE(SysProcess.ProcessId),
+	   errors,(*retry = *)TRUE, intr) < SYS.SIZE(SysProcess.ProcessId)
+      THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      pid := -1;
+      IF SysIO.Write(fd,SYS.ADR(pid),
+	   SYS.SIZE(SysProcess.ProcessId),
+	   errors,(*retry = *)TRUE, intr) < SYS.SIZE(SysProcess.ProcessId)
+      THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      dummy := SysFile.Unlink(filename,NIL);
+      IF ~SysIO.Seek(fd,size-1,SysIO.fromStart,errors) THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      d := 0;
+      IF SysIO.Write(fd,SYS.ADR(d),SYS.SIZE(BYTE),
+			errors,(*retry = *)TRUE,intr) < 1 THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      IF ~SysIO.Close(fd,errors,(*retry = *) TRUE,intr) THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      opened := FALSE;
+      IF ~SysFile.Link(prefilename,filename,errors) OR
+	    ~SysFile.Unlink(prefilename,errors) THEN
+	 RETURN FALSE;
+      END;
+      linked := TRUE;
+      IF ~SysIO.Open(fd,filename,SysIO.rdwr,
+		   errors,(*retry = *) TRUE,intr) THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      opened := TRUE;
+	(* get memory area *)
+      IF ~Memory.AllocateRegion(size,Memory.fixed,
+				  addr,region,errors)
+      THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      allocated := TRUE;
+      IF ~SysMemory.Map(addr,size, SysMemory.read+SysMemory.write,
+			     SysMemory.shared + SysMemory.fixed,
+			     fd,(*offset=*) 0,
+			     mapaddress,errors)
+      THEN
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      mapped := TRUE;
+
+	(* setup record entries *)
+      NEW(newstream);
+      RelatedEvents.QueueEvents(newstream);
+      newstream.ok := FALSE;
+      newstream.fd := fd;
+      newstream.size := size;
+      newstream.pid := -1;
+      newstream.region := region;
+      newstream.addr := mapaddress;
+      newstream.me := master;
+      newstream.him := slave;
+      newstream.readCondEvent := NIL;
+      newstream.writeCondEvent := NIL;
+      newstream.last := NIL;
+      newstream.next := NIL;
+
+	(* create rings *)
+      ringsize := (size - overhead) DIV 2;
+      ringsize := ringsize-(ringsize MOD wordlen);
+      ringflags := newstream.addr + SYS.SIZE(ExchangeType) 
+				  + SYS.SIZE(FlagType);
+      IF ~CreateRing(newstream.WRing,
+		       newstream.addr+overhead,ringflags,ringsize) THEN
+	 Error(errors,MRingError);
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+      ringflags := newstream.addr + SYS.SIZE(ExchangeType) 
+				  + SYS.SIZE(FlagType)
+				  + SYS.SIZE(RingFlagsRec);
+      IF ~CreateRing(newstream.RRing,
+	    newstream.addr+overhead+ringsize,ringflags,ringsize) THEN
+	 Error(errors,SRingError);
+	 Cleanup;
+	 RETURN FALSE;
+      END;
+
+	 (* insert into waiting list for open *)
+
+      Semaphores.P(MasterListSem);
+      list := newstream;
+      MoveFromListToList(newstream,list,MasterList);
+      IF checkMasterList THEN
+	 CheckMasterList;
+      END;
+      Semaphores.V(MasterListSem);
+      s := newstream;
+      RETURN TRUE;
+   END Newstream;
+
+   PROCEDURE Listen(VAR socket:Networks.Socket;filename:ARRAY OF CHAR;
+		   size:SysTypes.Size;
+		   errors:RelatedEvents.Object):BOOLEAN;
+		   (* create a stream to be accepted later *)
+   VAR
+      sock:Socket;
+      s:Stream;
+      done:BOOLEAN;
+   BEGIN
+      NEW(sock);
+      sock.address.size := size;
+      COPY(filename,sock.address.filename);
+
+      NEW(sock.errors);
+      RelatedEvents.QueueEvents(sock.errors);
+
+      done := Newstream(s,sock.address.filename,sock.address.size,
+		errors);
+
+      sock.stream := s;
+      socket := sock;
+      RETURN done;
+   END Listen;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Networks.Socket;
+			      VAR address: ARRAY OF CHAR;
+			      size: SysTypes.Size;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      UnixTmpNames.Create(address);
+      RETURN Listen(socket, address, size, errors)
+   END CreateSomeSocket;
+    
+   PROCEDURE Accept(socket:Networks.Socket;VAR s:Streams.Stream;
+		    bufmode : Streams.BufMode):BOOLEAN;
+		   (* wait until connection is valid
+		    * returns FALSE if s is not a SMStreams.Socket
+		    *)
+
+   VAR
+      cond:OpenCondition;
+      done : BOOLEAN;
+   BEGIN
+      IF socket IS Socket THEN
+	 WITH socket:Socket DO
+	    s := socket.stream;
+	    WITH s:Stream DO
+	       s.bufmode := bufmode;
+	    END;
+	    Services.Init(s, type);
+	    Streams.Init(s,if,capabilities,bufmode);
+	    CreateAcceptCondition(s,cond);
+	    Tasks.WaitFor(cond);
+	    done := Newstream(socket.stream,socket.address.filename,
+		   socket.address.size, socket.errors);
+	    RETURN done;
+	 END;
+      ELSE
+	 RETURN FALSE;
+      END;
+   END Accept;
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 filename: ARRAY OF CHAR);
+   VAR
+      errors: RelatedEvents.Object;
+      cond:OpenCondition;		(* to wait for the other side
+					    * to confirm open
+					    *)
+      list:Stream;				(* dummy list to move into
+					    * SlaveList
+					    *)
+      Ready:BOOLEAN;
+      ex:OpenExchange;
+      intr:BOOLEAN;			(* System call interrupted? *)
+      addr:Memory.Address;
+      region:Memory.Region;
+      mapaddress:Memory.Address;
+      newstream:Stream;
+      ringsize:LONGINT;
+      fd:SysTypes.File;
+      dummy:BOOLEAN;			(* return values of 
+					    * non-critical operations
+					    *)
+      size:SysTypes.Size;			(* size of the memory region
+					    * to be used; is derived from
+					    * the size of the file
+					    *)
+					   (* flags for Cleanup *)
+      opened,allocated,mapped,linked:BOOLEAN;
+      SlaveSemCond:Conditions.Condition;   (* Semaphore condition *)
+      ringflags:Memory.Address;		(* Ring information exchange
+					    * area address
+					    *)
+
+      PROCEDURE Cleanup;
+      BEGIN
+	 IF linked THEN
+	    dummy := SysFile.Unlink(filename,NIL);
+	 END;
+	 IF mapped THEN
+	    dummy := SysMemory.Unmap(addr,size,errors);
+	 END;
+	 IF allocated THEN
+	    Memory.ReleaseRegion(region);
+	 END;
+	 IF opened THEN
+	    dummy := SysIO.Close(fd,errors,TRUE,intr);
+	    dummy := SysFile.Unlink(filename,NIL);
+	 END;
+      END Cleanup;
+
+      PROCEDURE GiveUp;
+      BEGIN
+	 NEW(cond); cond.errors := errors;
+	 cond.failed := TRUE; cond.finished := TRUE;
+	 Conditions.Init(cond, openDomain);
+	 condition := cond;
+      END GiveUp;
+	    
+   BEGIN
+      opened := FALSE;
+      allocated := FALSE;
+      mapped := FALSE;
+      linked := FALSE;
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+				   (* open the file to map *)
+      IF ~SysIO.Open(fd,filename,SysIO.rdwr,
+		errors,(*retry = *) TRUE,intr)
+      THEN
+	 Error(errors,ConnectionNotReadyError);
+	 GiveUp; RETURN
+      END;
+      opened := TRUE;
+				   (* get size of file *)
+      IF ~SysIO.Seek(fd,0,SysIO.fromEnd,errors) THEN
+	 Error(errors,ConnectionNotReadyError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      IF ~SysIO.Tell(fd,size,errors) THEN
+	 Error(errors,ConnectionNotReadyError);
+	 Cleanup; GiveUp; RETURN
+      END;
+				   (* get memory region *)
+      IF ~Memory.AllocateRegion(size,Memory.fixed ,addr,region,errors)
+      THEN
+	 Error(errors,ConnectionNotReadyError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      allocated := TRUE;
+      IF ~SysMemory.Map(addr,size, SysMemory.read+SysMemory.write,
+		   SysMemory.shared+SysMemory.fixed,
+		   fd,(*offset= *) 0, mapaddress,errors)
+      THEN
+	 Error(errors,ConnectionNotReadyError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      mapped := TRUE;
+      ringsize := (size - overhead) DIV 2;
+      ringsize := ringsize-(ringsize MOD wordlen);	(* word-aligning *)
+      NEW(newstream);
+      RelatedEvents.QueueEvents(newstream);
+      ringflags := mapaddress + SYS.SIZE(ExchangeType) 
+				  + SYS.SIZE(FlagType);
+      IF ~CreateRing(newstream.RRing,mapaddress+overhead,
+		     ringflags,ringsize) THEN
+	 Error(errors,MRingError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      ringflags := mapaddress + SYS.SIZE(ExchangeType) 
+				  + SYS.SIZE(FlagType)
+				  + SYS.SIZE(RingFlagsRec);
+      IF ~CreateRing(newstream.WRing,
+	    mapaddress+overhead+ringsize,ringflags,ringsize) THEN
+	 Error(errors,SRingError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      ex := SYS.VAL(OpenExchange,mapaddress);
+      ex.pid[slave] := SysProcess.Getpid();
+      newstream.ok := FALSE;
+      newstream.pid := ex.pid[master];
+      newstream.addr := mapaddress;
+      newstream.region := region;
+      newstream.fd := fd;
+      newstream.size := size;
+      newstream.me := slave;
+      newstream.him := master;
+      newstream.last := NIL;
+      newstream.next := NIL;
+      list := newstream;
+      ex.pid[master] := -1;
+      Semaphores.P(SlaveListSem);
+      MoveFromListToList(newstream,list,SlaveList);
+      IF checkSlaveList THEN
+	 CheckSlaveList;
+      END;
+      Semaphores.V(SlaveListSem);
+      IF ~SysProcess.Kill(newstream.pid,OpenSigNo,errors) THEN
+	 Error(errors,PartnerNotAliveError);
+	 Cleanup; GiveUp; RETURN
+      END;
+      dummy := SysFile.Unlink(filename,NIL);
+      CreateAcceptCondition(newstream,cond);
+
+      cond.s := newstream; cond.errors := errors;
+      condition := cond;
+      Wakeup(sleeptime);
+   END CreateOpenCondition;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(condition IS OpenCondition) THEN RETURN FALSE END;
+      WITH condition: OpenCondition DO
+	 IF condition.failed THEN
+	    RelatedEvents.GetQueue(condition.errors, queue);
+	    RelatedEvents.AppendQueue(errors, queue);
+	    RETURN FALSE
+	 END;
+	 IF Conditions.Test(condition, errors) THEN
+	    condition.s.bufmode := bufmode;
+	    Services.Init(condition.s, type);
+	    Streams.Init(condition.s,if,capabilities,bufmode);
+	    s := condition.s;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END TestAndOpen;
+
+   PROCEDURE Open(VAR s:Streams.Stream;
+		   filename:ARRAY OF CHAR;
+		   bufmode:Streams.BufMode;
+		   errors:RelatedEvents.Object):BOOLEAN;
+      VAR
+	 cond:Conditions.Condition;
+   BEGIN
+      CreateOpenCondition(cond, filename);
+      RETURN TestAndOpen(s, cond, bufmode, errors)
+   END Open;
+
+   PROCEDURE Release(socket:Networks.Socket);
+      VAR
+	 done : BOOLEAN;
+	 s : Stream;
+	 intr : BOOLEAN;
+   BEGIN
+      WITH socket : Socket DO
+	 done := SysMemory.Unmap(socket.stream.addr,
+		      socket.stream.size,socket.stream);
+	 Memory.ReleaseRegion(socket.stream.region);
+	 done := done & SysIO.Close(socket.stream.fd,
+				   socket.stream,TRUE,intr);
+	 done := done & SysFile.Unlink(socket.address.filename,NIL);
+	 s := socket.stream;
+	 socket.stream := NIL;
+      END;
+
+	 (* take stream out of the Master queue *)
+      Semaphores.P(MasterListSem);
+      IF s = MasterList THEN
+	 MasterList := s.next;
+      END;
+      IF s.last # NIL THEN
+	 s.last.next := s.next;
+      END;
+      IF s.next # NIL THEN
+	 s.next.last := s.last;
+      END;
+      IF checkMasterList THEN
+	 CheckMasterList;
+      END;
+      Semaphores.V(MasterListSem);
+   END Release;
+      
+
+   (* **************** procedures interfaced by Streams ********* *)
+
+   PROCEDURE Close(s:Streams.Stream):BOOLEAN;
+   VAR
+      done:BOOLEAN;
+      intr:BOOLEAN;
+      cond:Conditions.Condition;
+   BEGIN
+      WITH s:Stream DO
+	   
+	 (* last chance for Partner to wake up to read *)
+	 IF CheckRead(s.WRing) THEN
+	    SendCommand(s,readyToRead);
+	 END;
+	 SendCommand(s,closing);
+
+	    (* Wait for partner to confirm close *)
+	 CreateCloseCondition(cond,s);
+	 Tasks.WaitFor(cond);
+	 EXCL(s.ex[s.me],wantToBeWoken);
+
+	    (* take stream out of the command queue *)
+	 Semaphores.P(CommandListSem);
+
+	 IF s = CmdList THEN
+	    CmdList := s.next;
+	 END;
+	 IF s.last # NIL THEN
+	    s.last.next := s.next;
+	 END;
+	 IF s.next # NIL THEN
+	    s.next.last := s.last;
+	 END;
+	 IF checkCmdList THEN
+	    CommandHandler;
+	 END;
+	 Semaphores.V(CommandListSem);
+	 done := SysMemory.Unmap(s.addr,s.size,s);
+	 Memory.ReleaseRegion(s.region);
+	 done := done & SysIO.Close(s.fd,s,TRUE,intr);
+      END;
+      RETURN done;
+   END Close;
+
+   (* *************** Input/Output Routines *************** *)
+
+   PROCEDURE ReadByte(s:Streams.Stream;VAR byte:BYTE):BOOLEAN;
+	   (* read one byte; return success *)
+   VAR
+      cond:Conditions.Condition;
+      done:BOOLEAN;
+   BEGIN
+      WITH s:Stream DO
+	 IF ~(s.ok OR ConnectionOk(s, s)) THEN 
+	    CreateAcceptCondition(s,cond);
+	    Tasks.WaitFor(cond);
+	 END;
+	 done := FALSE;
+	 WHILE ~GetByte(s.RRing,byte) DO
+	    IF (closing IN s.ex[s.him])
+	       OR (closing IN s.ex[s.me]) 
+	    THEN
+	       RETURN FALSE;
+	    ELSE
+	       CreateIOCondition(cond,s,read,unbuffered);
+	       Tasks.WaitFor(cond);
+	    END;
+	 END;
+	 (* wake up partner to write *)
+	 IF wantToWrite IN s.ex[s.him] THEN
+	    EXCL(s.ex[s.him] , wantToWrite);
+	    SendCommand(s,readyToWrite);
+	 END;
+	 RETURN TRUE;
+      END;
+   END ReadByte;
+
+   PROCEDURE ReadByAddr(s:Streams.Stream;
+		   Ptr:SysTypes.Address;count:SysTypes.Count):SysTypes.Count;
+	   (* read ring region into buffer Ptr
+	    * return number ofbytes actually read
+	    *)
+   VAR
+      cond:Conditions.Condition;
+      mycount,lastcount:LONGINT;
+   BEGIN
+      mycount := 0;
+      lastcount := 0;
+      WITH s:Stream DO
+	 IF ~(s.ok OR ConnectionOk(s, s)) THEN 
+	    CreateAcceptCondition(s,cond);
+	    Tasks.WaitFor(cond);
+	 END;
+	 WHILE lastcount = 0 DO
+	    lastcount := GetBytes(s.RRing,Ptr,count);
+	    INC(mycount,lastcount);
+	    IF lastcount = 0 THEN
+	       IF (closing IN s.ex[s.him])
+		  OR (closing IN s.ex[s.me]) 
+	       THEN
+		  RETURN 0;
+	       ELSE
+		  CreateIOCondition(cond,s,read,unbuffered);
+		  Tasks.WaitFor(cond);
+	       END;
+	    END
+	 END;
+	 (* wake up partner to write *)
+	 IF wantToWrite IN s.ex[s.him] THEN
+	    EXCL(s.ex[s.him] , wantToWrite);
+	    SendCommand(s,readyToWrite);
+	 END;
+	 RETURN mycount;
+      END;
+   END ReadByAddr;
+
+   PROCEDURE WriteByte(s:Streams.Stream;byte:BYTE):BOOLEAN;
+	   (* write one byte into ring
+	    * return success
+	    *)
+   VAR
+      cond:Conditions.Condition;
+      done:BOOLEAN;
+   BEGIN
+      WITH s:Stream DO
+	 IF (closing IN s.ex[s.him]) OR (closing IN s.ex[s.me] )
+	 THEN 
+	    Error(s,WriteAfterCloseError);
+	    RETURN FALSE;
+	 END;
+	 IF ~(s.ok OR ConnectionOk(s, s)) THEN
+	    CreateAcceptCondition(s,cond);
+	    Tasks.WaitFor(cond);
+	 END;
+	 done := FALSE;
+		(* until the byte is written or partner is closing down *)
+	 WHILE ~PutByte(s.WRing,byte) DO
+	    IF closing IN s.ex[s.him] THEN
+	       Error(s,WriteAfterCloseError);
+	       RETURN FALSE;
+	    ELSE
+	       CreateIOCondition(cond,s,write,unbuffered);
+	       Tasks.WaitFor(cond);
+	    END;
+	 END;
+	 (* wake up partner to read *)
+	 IF wantToRead IN s.ex[s.him] THEN
+	    EXCL(s.ex[s.him] , wantToRead);
+	    SendCommand(s,readyToRead);
+	 END;
+	 RETURN TRUE;
+      END;
+   END WriteByte;
+
+   PROCEDURE WriteByAddr(s:Streams.Stream;
+		   Ptr:SysTypes.Address;count:SysTypes.Count):SysTypes.Count;
+	   (* write <count> bytes into stream.
+	    * if return value is less than count then some failure
+	    * occured
+	    *)
+   VAR
+      cond:Conditions.Condition;
+      mycount:LONGINT;
+      lastcount:LONGINT;
+   BEGIN
+      mycount := 0;
+      WITH s:Stream DO
+	 IF (closing IN s.ex[s.him]) OR (closing IN s.ex[s.me])
+	 THEN 
+	    Error(s,WriteAfterCloseError);
+	    RETURN 0;
+	 END;
+	 IF ~(s.ok OR ConnectionOk(s, s)) THEN
+	    CreateAcceptCondition(s,cond);
+	    Tasks.WaitFor(cond);
+	 END;
+	 WHILE mycount < count DO
+		   (* until all bytes are written
+		    * or partner is closing down *)
+	    lastcount := PutBytes(s.WRing,Ptr,
+			count-mycount);
+	    mycount := mycount+lastcount;
+	    IF mycount < count THEN
+	       IF closing IN s.ex[s.him] THEN
+		  Error(s,WriteAfterCloseError);
+		  RETURN mycount;
+	       ELSE
+		  CreateIOCondition(cond,s,write,unbuffered);
+		  Tasks.WaitFor(cond);
+	       END;
+	       INC(Ptr,lastcount);	(* and try again *)
+	    END;
+	 END;
+	 (* wake up partner to read *)
+	 IF wantToRead IN s.ex[s.him] THEN
+	    EXCL(s.ex[s.him] , wantToRead);
+	    SendCommand(s,readyToRead);
+	 END;
+	 RETURN mycount;
+      END;
+   END WriteByAddr;
+
+   (* *************** Handler for the alarm clock event ************* *)
+   PROCEDURE WakeupHandler;
+   VAR
+      s:Stream;
+   BEGIN
+      s := CmdList;
+      WHILE s # NIL DO
+	 IF s.readCondEvent # NIL THEN	(* read-condition pending *)
+	    IF ~WouldBlock(s,read,unbuffered,NIL) THEN
+	       Events.Raise(s.readCondEvent);
+	       s.readCondEvent := NIL;
+	    ELSE				(* check if partner exists *)
+	       IF ~SysProcess.Kill(s.pid,CmdSigNo,s) THEN
+		  IF ~(closing IN s.ex[s.him]) THEN
+		     Error(s,PartnerNotAliveError);
+		     INCL(s.ex[s.him],closing);
+		  END;
+		  Events.Raise(s.readCondEvent);
+		  s.readCondEvent := NIL;
+	       ELSE
+		  INCL(s.ex[s.me],wantToBeWoken);
+	       END;
+	    END;
+	 END;
+	 IF s.writeCondEvent # NIL  THEN	(* write-condition pending *)
+	    IF ~WouldBlock(s,write,unbuffered,NIL) THEN
+	       Events.Raise(s.writeCondEvent);
+	       s.writeCondEvent := NIL;
+	       EXCL( s.ex[s.me],wantToBeWoken);
+	    ELSE				(* check if partner exists *)
+	       IF ~SysProcess.Kill(s.pid,CmdSigNo,s) THEN
+		  IF ~(closing IN s.ex[s.him]) THEN
+		     Error(s,PartnerNotAliveError);
+		     INCL(s.ex[s.him],closing);
+		  END;
+		  Events.Raise(s.writeCondEvent);
+		  s.writeCondEvent := NIL;
+	       ELSE
+		  INCL(s.ex[s.me],wantToBeWoken);
+	       END;
+	    END;
+	 END;
+	 IF (closing IN s.ex[s.me]) & ~(closing IN s.ex[s.him]) THEN
+	    IF ~SysProcess.Kill(s.pid,CmdSigNo,s) 
+	       & ~(closing IN s.ex[s.him])   (* maybe the last move..*)
+	    THEN
+	       Error(s,PartnerNotAliveError);
+	       INCL(s.ex[s.him],closing);
+	    END;
+	 END;
+	 s := s.next;
+      END;
+   END WakeupHandler;
+
+   PROCEDURE WakeupEventHandler(event:Events.Event);
+      VAR
+	 CmdSemCond:Conditions.Condition;
+   BEGIN
+      Semaphores.GetCondition(CommandListSem,CmdSemCond);
+      IF Conditions.Test(CmdSemCond,NIL) THEN
+	 WakeupHandler;
+	 REPEAT
+	    CommandHandler;
+	 UNTIL ~checkCmdList;
+      ELSE
+	 checkCmdList := TRUE;
+      END;
+      Semaphores.Drop(CmdSemCond);
+      wakeups := 0;
+      IF (CmdList # NIL) OR (SlaveList # NIL) OR (MasterList # NIL) THEN
+	 Wakeup(sleeptime);
+      END;
+   END WakeupEventHandler;
+
+   (* ************* Methods for PersistentObjects  ****** *)
+
+   PROCEDURE CreateNetAddress(VAR object:PersistentObjects.Object);
+      VAR
+	 addr : NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := SMSnet;
+      PersistentObjects.Init(addr, addressType);
+      object := addr;
+   END CreateNetAddress;
+
+   PROCEDURE WriteNetAddress(s:Streams.Stream;
+			     object:PersistentObjects.Object):BOOLEAN;
+   BEGIN
+      WITH object : NetworkAddress DO
+	 RETURN NetIO.WriteString(s,object.SMSAddress.filename)
+		& NetIO.WriteLongInt(s,object.SMSAddress.size);
+      END;
+   END WriteNetAddress;
+
+   PROCEDURE ReadNetAddress(s:Streams.Stream;
+			     object:PersistentObjects.Object):BOOLEAN;
+   BEGIN
+      WITH object : NetworkAddress DO
+	 RETURN NetIO.ReadString(s,object.SMSAddress.filename)
+		& NetIO.ReadLongInt(s,object.SMSAddress.size);
+      END;
+   END ReadNetAddress;
+
+   (* ************* Address Conversion and Creation Routines
+    *               for Networks *********************** *)
+
+   PROCEDURE CreateAddress (VAR address : Networks.Address;
+			    filename : ARRAY OF CHAR;
+			    size : SysTypes.Size);
+   VAR 
+      addr : NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := SMSnet;
+      addr.SMSAddress.size := size;
+      COPY(filename,addr.SMSAddress.filename);
+      PersistentObjects.Init(addr, addressType);
+      address := addr;
+   END CreateAddress;
+
+   PROCEDURE ConvertAddress(address : Networks.Address;
+			    VAR filename : ARRAY OF CHAR;
+			    VAR size : SysTypes.Size);
+   BEGIN
+      WITH address : NetworkAddress DO
+	 COPY(address.SMSAddress.filename,filename);
+	 size := address.SMSAddress.size;
+      END;
+   END ConvertAddress;
+
+   PROCEDURE SetAddress(address : Networks.Address;
+			 filename : ARRAY OF CHAR;
+			 size : SysTypes.Size);
+   BEGIN
+      WITH address : NetworkAddress DO
+	 COPY(filename,address.SMSAddress.filename);
+	 address.SMSAddress.size := size;
+      END;
+      
+   END SetAddress;
+
+
+
+   (* ************* Interface Routines for Networks **** *)
+
+   PROCEDURE NetOpen(VAR s:Streams.Stream; address:Networks.Address;
+		     bufmode:Streams.BufMode;
+		     errors:RelatedEvents.Object):BOOLEAN;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 RETURN Open(s, address.SMSAddress.filename, bufmode,errors);
+      END;
+   END NetOpen;
+
+   PROCEDURE NetCreateOpenCondition(VAR condition: Conditions.Condition;
+				    address: Networks.Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 CreateOpenCondition(condition, address.SMSAddress.filename);
+      END;
+   END NetCreateOpenCondition;
+
+   PROCEDURE NetTestAndOpen(VAR s: Streams.Stream;
+			    condition: Conditions.Condition;
+			    bufmode: Streams.BufMode;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN TestAndOpen(s, condition, bufmode, errors)
+   END NetTestAndOpen;
+
+   PROCEDURE NetCreateSomeSocket(VAR socket: Networks.Socket;
+				 VAR address: Networks.Address;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 defaultsize = 8000;
+      VAR
+	 pathname: Filename;
+   BEGIN
+      IF CreateSomeSocket(socket, pathname, defaultsize, errors) THEN
+	 CreateAddress(address, pathname, defaultsize);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END NetCreateSomeSocket;
+
+   PROCEDURE NetListen(VAR socket: Networks.Socket; address:Networks.Address;
+		     errors:RelatedEvents.Object):BOOLEAN;
+   VAR
+      done : BOOLEAN;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 RETURN Listen(socket,address.SMSAddress.filename,
+		       address.SMSAddress.size,errors);
+      END;
+   END NetListen;
+
+   PROCEDURE NetAccept(socket:Networks.Socket; VAR s:Streams.Stream;
+		     bufmode:Streams.BufMode):BOOLEAN;
+   BEGIN
+      RETURN Accept(socket,s,bufmode);
+   END NetAccept;
+
+   PROCEDURE NetAcceptCondition(VAR condition:Conditions.Condition;
+			   socket:Networks.Socket);
+	   
+   BEGIN
+      NEW(condition);
+      WITH socket:Socket DO
+	 CreateAcceptCondition(socket.stream,condition);
+      END;
+   END NetAcceptCondition;
+
+   PROCEDURE NetRelease(socket:Networks.Socket);
+   VAR
+      dummy : BOOLEAN;
+   BEGIN
+      Release(socket);
+   END NetRelease;
+
+   (* ************* Initialization part ************* *)
+
+   PROCEDURE InitNetworks();
+      VAR
+	 netif: Networks.Interface;
+	 poif: PersistentObjects.Interface;
+   BEGIN
+      NEW(netif);
+      netif.open := NetOpen;
+      netif.createOpenCondition := NetCreateOpenCondition;
+      netif.testAndOpen := NetTestAndOpen;
+      netif.createSomeSocket := NetCreateSomeSocket;
+      netif.listen := NetListen;
+      netif.accept := NetAccept;
+      netif.acceptCondition := NetAcceptCondition;
+      netif.release := NetRelease;
+      Networks.Register(SMSnet,"SMStreams",netif);
+
+      NEW(poif);
+      poif.read := ReadNetAddress;
+      poif.write := WriteNetAddress;
+      poif.create := CreateNetAddress;
+      poif.createAndRead := NIL;
+      PersistentObjects.RegisterType(addressType,
+	    "SMStreams.NetworkAddress", "Networks.Address", poif);
+   END InitNetworks;
+
+BEGIN
+   Pagesize := Memory.GetPageSize();
+   overhead := SYS.SIZE(ExchangeType)+ SYS.SIZE(FlagType) 
+	       + 2*SYS.SIZE(RingFlagsRec);
+   					(* Word Aligning *)
+   overhead := overhead+((-overhead) MOD wordlen);
+		(* space unusable for Rings *)
+
+   InitErrorHandling;
+   Assertions.Define(assertExchangeSize,"SMStreams");
+   (*
+   IF (SYS.SIZE(ExchangeType) < SYS.SIZE(OpenExchangeType))
+   THEN
+      Assertions.Raise(NIL,assertExchangeSize,"Init",
+	  "Exchange region sizes assertion failed");
+   END;
+   *)
+				(* initialize Signal numbers *)
+   OpenSig := SysSignals.USR1;
+   OpenSigNo := SysSignals.sigUSR1;
+   CmdSig := SysSignals.USR2;
+   CmdSigNo := SysSignals.sigUSR2;
+
+   Events.Define(wakeupEventType);	(* alarm clock event *)
+   Events.SetPriority(wakeupEventType,Priorities.interrupts);
+   wakeups := 0;
+
+   Events.Handler(OpenSig,OpenSigHandler);
+   Events.Handler(CmdSig,CmdSigHandler);
+   Events.Handler(wakeupEventType,WakeupEventHandler);
+
+   LocalSemaphores.Create(MasterListSem);
+   LocalSemaphores.Create(SlaveListSem);
+   LocalSemaphores.Create(CommandListSem);
+
+   MasterList := NIL;
+   SlaveList := NIL;
+   CmdList := NIL;
+				(* generate Streams.Stream interface *)
+   NEW(if);
+   if.read := ReadByte;
+   if.write := WriteByte;
+   if.addrread := ReadByAddr;
+   if.addrwrite := WriteByAddr;
+   if.close := Close;
+   if.handler := StreamMessageHandler;
+   capabilities := {Streams.read,Streams.write,Streams.addrio,
+		  Streams.close,Streams.handler};
+   Services.CreateType(type, "SMStreams.Stream", "Streams.Stream");
+				(* generate Condition domains *)
+   NEW(openDomain);
+   NEW(openCondIF);
+   NEW(openCondDesc);
+   openCondIF.test := OpenTest;
+   openCondDesc.caps := {};
+   openCondDesc.internal := FALSE;
+   Conditions.InitDomain(openDomain,openCondIF,openCondDesc);
+
+   NEW(ioDomain);
+   NEW(ioCondIF);
+   NEW(ioCondDesc);
+   ioCondIF.test := IOTest;
+   ioCondIF.sendevent := IOSendEvent;
+   ioCondDesc.caps := {Conditions.async};
+   ioCondDesc.internal := FALSE;
+   Conditions.InitDomain(ioDomain,ioCondIF,ioCondDesc);
+
+   			(* generate Networks interface and 
+			 * PersistentObjects capabilities
+			 *)
+   InitNetworks;
+
+END SMStreams.

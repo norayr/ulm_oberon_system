@@ -1,0 +1,347 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: NamedObject.om,v 1.2 1996/11/13 17:25:17 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: NamedObject.om,v $
+   Revision 1.2  1996/11/13  17:25:17  borchert
+   NamedObjects registers now the dependency between nodes and
+   their associated objects at Forwarders
+
+   Revision 1.1  1995/12/22  15:09:00  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NamedObjects;
+
+   IMPORT
+      Disciplines, Events, Forwarders, Messages, Names, NetIO,
+      PersistentDisciplines, PersistentObjects, Priorities, Process,
+      RelatedEvents, RemoteObjects, Services, Shards, Streams,
+      VolatileShards;
+
+   TYPE
+      Object = Services.Object;
+
+   CONST
+      noObject = 0;	    (* node is not representing a named object *)
+      objectNamed = 1;	    (* object is already represented by another node *)
+      typeGuardFailure = 2; (* GuardedGet failed due to type guard violation *)
+      errorcodes = 3;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   (* ======== private definitions ======== *)
+
+   TYPE
+      NameDisc = POINTER TO NameDiscRec;
+      NameDiscRec =
+	 RECORD
+	    (PersistentDisciplines.DisciplineRec)
+	    object: Object;
+	 END;
+
+      LocalNameDisc = POINTER TO LocalNameDiscRec;
+      LocalNameDiscRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    object: Object;
+	 END;
+
+      NodePtrDisc = POINTER TO NodePtrDiscRec;
+      NodePtrDiscRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    node: Names.Node;
+	 END;
+
+   CONST
+      nodeCaps = {Names.accessCap, Names.destroyCap};
+
+   VAR
+      nameDiscId: PersistentDisciplines.Identifier;
+      nameDiscType: Services.Type;
+      localNameDiscId: Disciplines.Identifier;
+      nodePtrDiscId: Disciplines.Identifier;
+      nodeStatus: Names.Status;
+      nodeAuth: Shards.Lid;
+
+   (*
+    * node representing object:
+    *	+------------+ 
+    *	| node       |<-------------------------+
+    *	+------------+        +-------------+   |
+    *	| persistent -------->| object      |   |
+    *	| namedisc   |   +--->+-------------+   |
+    *	+------------+   |    | nodeptrdisc ----+
+    *	| local    ------+    +-------------+
+    *   | namedisc   |
+    *	+------------+
+    *
+    * node representing itself:		      node representing nothing (1):
+    *	+-------------+ 			+----------+
+    *	| node        |<-----------+		| node     |
+    *	+-------------+<--------+  |		+----------+
+    *	| persistent ----> NIL  |  |		| local    ----> NIL
+    *	| namedisc    |         |  |		| namedisc |
+    *	+-------------+         |  |		+----------+
+    *	| local    -------------+  |
+    *   | namedisc    |            |	      node representing nothing (2):
+    *	+-------------+            |		+----------+
+    *	| nodeptrdisc -------------+		| node     |
+    *	+-------------+				+----------+
+    *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[noObject] :=    "node is not representing a named object";
+      errormsg[objectNamed] := "object is already represented by another node";
+      errormsg[typeGuardFailure] := "type guard violation by named object";
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE Name(object: Object; node: Names.Node);
+      VAR
+	 disc: NodePtrDisc;
+   BEGIN
+      NEW(disc);
+      disc.id := nodePtrDiscId;
+      disc.node := node;
+      Disciplines.Add(object, disc);
+   END Name;
+
+   PROCEDURE IsNamed(object: Object; VAR node: Names.Node): BOOLEAN;
+      VAR
+	 disc: Disciplines.Discipline;
+   BEGIN
+      IF Disciplines.Seek(object, nodePtrDiscId, disc) THEN
+	 node := disc(NodePtrDisc).node;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END IsNamed;
+
+   PROCEDURE BelongsTo(node: Names.Node; VAR object: Object): BOOLEAN;
+      VAR
+	 disc: PersistentDisciplines.Discipline;
+	 ldisc: LocalNameDisc;
+   BEGIN
+      IF ~Disciplines.Seek(node, localNameDiscId, ldisc) THEN
+	 IF PersistentDisciplines.Seek(node, nameDiscId, disc) THEN
+	    object := disc(NameDisc).object;
+	    IF object = NIL THEN
+	       object := node;
+	    END;
+	 ELSE
+	    object := NIL;
+	 END;
+	 NEW(ldisc);
+	 ldisc.id := localNameDiscId;
+	 ldisc.object := object;
+	 Disciplines.Add(node, ldisc);
+      ELSE
+	 object := ldisc.object;
+      END;
+      RETURN object # NIL
+   END BelongsTo;
+
+   PROCEDURE Messenger(node: Messages.Object; VAR msg: Messages.Message);
+      VAR
+	 object: Object;
+   BEGIN
+      WITH node: Names.Node DO
+	 IF BelongsTo(node, object) THEN
+	    Messages.Send(object, msg);
+	 END;
+      END;
+   END Messenger;
+
+   PROCEDURE CreateNameDisc(VAR obj: PersistentObjects.Object);
+      VAR
+	 disc: NameDisc;
+   BEGIN
+      NEW(disc);
+      PersistentObjects.Init(disc, nameDiscType);
+      disc.id := nameDiscId;
+      disc.object := NIL;
+      obj := disc;
+   END CreateNameDisc;
+
+   PROCEDURE ReadNameDisc(s: Streams.Stream;
+			disc: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 nil: BOOLEAN;
+   BEGIN
+      WITH disc: NameDisc DO
+	 disc.object := NIL;
+	 RETURN NetIO.ReadBoolean(s, nil) &
+	    (nil OR RemoteObjects.Import(s, disc.object))
+	    (* TBD: distinguish between copy modes *)
+      END;
+   END ReadNameDisc;
+
+   PROCEDURE WriteNameDisc(s: Streams.Stream;
+			disc: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH disc: NameDisc DO
+	 IF disc.object = NIL THEN
+	    RETURN NetIO.WriteBoolean(s, TRUE)
+	 END;
+	 RETURN NetIO.WriteBoolean(s, FALSE) &
+	    RemoteObjects.Export(s, disc.object)
+	    (* TBD: distinguish between copy modes *)
+      END;
+   END WriteNameDisc;
+
+   PROCEDURE InitDatatypes;
+      VAR
+	 face: PersistentObjects.Interface;
+	 disc: NameDisc;
+   BEGIN
+      NEW(nodeStatus);
+      VolatileShards.Create(nodeStatus.perm[Names.destroy], nodeAuth);
+      NEW(face);
+      face.read := ReadNameDisc;
+      face.write := WriteNameDisc;
+      face.create := CreateNameDisc;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(nameDiscType, "NamedObjects.NameDisc",
+	 "PersistentDisciplines.Discipline", face);
+      CreateNameDisc(disc);
+      nameDiscId := PersistentDisciplines.Unique(disc);
+      localNameDiscId := Disciplines.Unique();
+      nodePtrDiscId := Disciplines.Unique();
+   END InitDatatypes;
+
+   PROCEDURE Init(node: Names.Node; object: Object);
+      VAR
+	 disc: NameDisc;
+	 ldisc: LocalNameDisc;
+   BEGIN
+      CreateNameDisc(disc);
+      disc.object := object;
+      PersistentDisciplines.Add(node, disc);
+      NEW(ldisc);
+      ldisc.id := localNameDiscId;
+      IF object # NIL THEN
+	 ldisc.object := object;
+      ELSE
+	 ldisc.object := node;
+      END;
+      Disciplines.Add(node, ldisc);
+      IF object # NIL THEN
+	 Messages.InstallHandler(node, Messenger);
+	 (* PersistentDisciplines.UseInterfaceOf(node, object); *)
+	 Name(object, node);
+	 Forwarders.Forward(node, object);
+      ELSE
+	 Name(node, node);
+      END;
+   END Init;
+
+   (* ======== exported procedures ======== *)
+
+   PROCEDURE Create(VAR node: Names.Node; object: Object);
+      (* create a node representing object *)
+      (* messages sent to node will reach object, too *)
+      (* if object = NIL node will represent itself *)
+   BEGIN
+      IF (object # NIL) & IsNamed(object, node) THEN
+	 RETURN
+      END;
+      Names.CreateNode(node, nodeStatus, nodeCaps);
+      Init(node, object);
+   END Create;
+
+   PROCEDURE Destroy(node: Names.Node): BOOLEAN;
+      (* destroy a node created by create *)
+      (* implicit authorization ensures that node belongs to us *)
+      VAR
+	 object: Object;
+   BEGIN
+      IF ~BelongsTo(node, object) THEN
+	 Error(node, noObject);
+	 RETURN FALSE
+      END;
+      RETURN Names.Destroy(node, nodeAuth)
+   END Destroy;
+
+   PROCEDURE Get(node: Names.Node; VAR object: Object;
+		 errors: RelatedEvents.Object): BOOLEAN;
+      (* assign object the object which is represented by node *)
+   BEGIN
+      IF BelongsTo(node, object) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, noObject);
+      RETURN FALSE
+   END Get;
+
+   PROCEDURE GuardedGet(node: Names.Node; guard: Services.Type;
+			VAR object: Object;
+			errors: RelatedEvents.Object): BOOLEAN;
+      (* assign object the object which is represented by node, *)
+      (* but only if its type is an extension of guard *)
+      VAR
+	 testObject: Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~BelongsTo(node, testObject) THEN
+	 Error(errors, noObject);
+	 RETURN FALSE
+      END;
+      Services.GetType(testObject, type);
+      IF ~Services.IsExtensionOf(type, guard) THEN
+	 Error(errors, typeGuardFailure);
+	 RETURN FALSE
+      END;
+      object := testObject;
+      RETURN TRUE
+   END GuardedGet;
+
+BEGIN
+   InitErrorHandling;
+   InitDatatypes;
+END NamedObjects.

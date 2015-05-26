@@ -1,0 +1,303 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonBuilt.om,v 1.1 2001/02/19 10:03:58 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonBuilt.om,v $
+   Revision 1.1  2001/02/19 10:03:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonBuiltIns;
+
+   IMPORT Args, BoolArgs, CompilerObjects, ConstStrings, Errors, Events,
+      Objects, Priorities, RelatedEvents, Scopes, Sources := CompilerSources,
+      StdScopes, Streams, StrListArgs, Sym := OberonSymbols, Write;
+
+   TYPE
+      DefArgsProc = PROCEDURE (args: Args.Arguments);
+      AddProc = PROCEDURE (scope: Scopes.Scope; args: Args.Arguments);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    defArgs: DefArgsProc;
+	    add: AddProc;
+	 END;
+
+   CONST
+      unknownSet = 0;
+      nameClash = 1;
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT; (* unknownSet .. nameClash *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    setname, name: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   TYPE
+      Set = POINTER TO SetRec;
+      SetRec =
+	 RECORD
+	    name: ConstStrings.String;
+	    if: Interface;
+	    next: Set;
+	 END;
+   VAR
+      sets: Set;
+      stdname: ConstStrings.String; (* = "std" *)
+      sysname: ConstStrings.String; (* = "sys" *)
+      SYSTEMname: ConstStrings.String; (* = "SYSTEM" *)
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   code: ErrorCode;
+		   setname, name: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error; COPY(errormsg[code], event.message);
+      event.errorcode := code;
+      event.setname := setname;
+      event.name := name;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      IF event IS ErrorEvent THEN
+	 WITH event: ErrorEvent DO
+	    CASE event.errorcode OF
+	    | unknownSet:  Write.StringS(s, event.message);
+	                   Write.StringS(s, ": ");
+			   ConstStrings.Write(s, event.setname);
+	    | nameClash:   ConstStrings.Write(s, event.setname);
+	                   Write.StringS(s, ": ");
+			   Write.StringS(s, event.message);
+	                   Write.StringS(s, ": ");
+			   ConstStrings.Write(s, event.name);
+	    END;
+	 END;
+      ELSE
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[unknownSet] := "unknown set of built-in definitions";
+      errormsg[nameClash] := "multiple defined identifier in built-in set";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   (* === misc private stuff ============================================== *)
+
+   PROCEDURE Seek(name: ConstStrings.String; VAR set: Set) : BOOLEAN;
+   BEGIN
+      set := sets;
+      WHILE set # NIL DO
+	 IF ConstStrings.Compare(name, set.name) = 0 THEN
+	    RETURN TRUE
+	 END;
+	 set := set.next;
+      END;
+      RETURN FALSE
+   END Seek;
+
+   PROCEDURE RegisterSet(name: ARRAY OF CHAR; if: Interface);
+      (* register a set of built-ins under the given name *)
+      VAR
+	 set: Set;
+	 cstring: ConstStrings.String;
+   BEGIN
+      ASSERT((name[0] # 0X) & (if # NIL) & (if.add # NIL));
+      ConstStrings.Create(cstring, name);
+      (* assert uniqueness of name *)
+      set := sets;
+      WHILE set # NIL DO
+	 ASSERT(ConstStrings.Compare(cstring, set.name) # 0);
+	 set := set.next;
+      END;
+      NEW(set);
+      set.name := cstring; set.if := if;
+      set.next := sets; sets := set;
+   END RegisterSet;
+
+   PROCEDURE AddIdent(scope: Scopes.Scope; ident: Sym.Ident;
+                      args: Args.Arguments; setname: ARRAY OF CHAR);
+      (* adds ident to scope and handles name clashes according to args *)
+
+      VAR
+	 ok: BOOLEAN;
+	 other: Sym.Ident;
+	 setstring: ConstStrings.String;
+
+      PROCEDURE Flag(flagname: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    flag: BoolArgs.Value;
+      BEGIN
+	 Args.GetValue(args, flagname, flag);
+	 RETURN (flag # NIL) & flag.bool
+      END Flag;
+
+   BEGIN
+      ok := ~Scopes.Lookup(scope, ident.name, other);
+      IF ok THEN
+	 Scopes.Add(scope, ident.name, NIL, ident);
+      ELSIF ~Flag("ignore-builtin-clashes") THEN
+	 ConstStrings.Create(setstring, setname);
+	 Error(args, nameClash, setstring, ident.name);
+      END;
+   END AddIdent;
+
+   PROCEDURE DefArgs(args: Args.Arguments);
+      VAR
+	 set: Set;
+
+      PROCEDURE Flag(name, help: ARRAY OF CHAR; default: BOOLEAN);
+	 VAR
+	    flag: BoolArgs.Value;
+      BEGIN
+	 Args.Define(args, name, 0X, BoolArgs.type, help);
+	 BoolArgs.Create(flag, default); Args.SetValue(args, name, flag);
+      END Flag;
+
+   BEGIN
+      Args.Define(args, "std", 0X, StrListArgs.type, "std identifier sets");
+      Args.Define(args, "sys", 0X, StrListArgs.type, "SYSTEM identifier sets");
+      Args.Define(args, "builtin", 0X, StrListArgs.type, "built-in modules");
+      Flag("ignore-builtin-clashes", "ignore name clashes?", FALSE);
+      set := sets;
+      WHILE set # NIL DO
+	 IF set.if.defArgs # NIL THEN
+	    set.if.defArgs(args);
+	 END;
+	 set := set.next;
+      END;
+   END DefArgs;
+
+   PROCEDURE AddBuiltInModules(scope: Scopes.Scope; args: Args.Arguments);
+      (* add all built-in modules like SYSTEM to scope *)
+      VAR
+	 set: Set;
+	 strlist: StrListArgs.Value;
+	 member: StrListArgs.Member;
+	 systemScope: Scopes.Scope;
+	 sysmodule, other: Sym.Ident;
+
+      PROCEDURE Add(set: Set);
+	 VAR
+	    module, other: Sym.Ident;
+      BEGIN
+	 IF ~Scopes.Lookup(scope, set.name, other) THEN
+	    Sym.CreateModuleIdent(module, set.name, set.name,
+	                          Sources.definition, NIL, NIL);
+	    CompilerObjects.InitBuiltInObject(module);
+	    StdScopes.Create(module.export);
+	    set.if.add(module.export, args);
+	    Scopes.Add(scope, set.name, NIL, module);
+	 END;
+      END Add;
+
+   BEGIN (* AddBuiltInModules *)
+      Args.GetValue(args, "builtin", strlist);
+      IF strlist # NIL THEN
+	 member := strlist.head;
+	 WHILE member # NIL DO
+	    IF Seek(member.string, set) THEN
+	       Add(set);
+	    ELSE
+	       Error(args, unknownSet, member.string, NIL);
+	    END;
+	    member := member.next;
+	 END;
+      END;
+
+      IF ~Scopes.Lookup(scope, SYSTEMname, other) THEN
+	 StdScopes.Create(systemScope);
+	 Args.GetValue(args, "sys", strlist);
+	 IF strlist # NIL THEN
+	    member := strlist.head;
+	    WHILE member # NIL DO
+	       IF Seek(member.string, set) THEN
+		  set.if.add(systemScope, args);
+	       ELSE
+		  Error(args, unknownSet, member.string, NIL);
+	       END;
+	       member := member.next;
+	    END;
+	 ELSIF Seek(sysname, set) THEN
+	    set.if.add(systemScope, args);
+	 ELSE
+	    Error(args, unknownSet, sysname, NIL);
+	 END;
+	 Sym.CreateModuleIdent(sysmodule, SYSTEMname, SYSTEMname,
+	                       Sources.definition, NIL, NIL);
+	 CompilerObjects.InitBuiltInObject(sysmodule);
+	 Scopes.Add(scope, SYSTEMname, NIL, sysmodule);
+	 sysmodule.export := systemScope;
+      END;
+   END AddBuiltInModules;
+
+   PROCEDURE AddStd(scope: Scopes.Scope; args: Args.Arguments);
+      (* add all standard constants, types, procedures and functions
+	 to scope in dependence of args
+      *)
+      VAR
+	 set: Set;
+	 strlist: StrListArgs.Value;
+	 member: StrListArgs.Member;
+	 ok: BOOLEAN;
+   BEGIN
+      Args.GetValue(args, "std", strlist);
+      IF strlist = NIL THEN
+	 ok := Seek(stdname, set); ASSERT(ok); (* std should always be def'd *)
+	 set.if.add(scope, args);
+      ELSE
+	 member := strlist.head;
+	 WHILE member # NIL DO
+	    IF Seek(member.string, set) THEN
+	       set.if.add(scope, args);
+	    ELSE
+	       Error(args, unknownSet, member.string, NIL);
+	    END;
+	    member := member.next;
+	 END;
+      END;
+   END AddStd;
+
+BEGIN
+   sets := NIL;
+   ConstStrings.Create(stdname, "std");
+   ConstStrings.Create(sysname, "sys");
+   ConstStrings.Create(SYSTEMname, "SYSTEM");
+   InitErrorHandling;
+END OberonBuiltIns.

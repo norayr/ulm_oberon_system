@@ -1,0 +1,103 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RTErrors.od,v 1.2 2005/04/28 08:37:16 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RTErrors.od,v $
+   Revision 1.2  2005/04/28 08:37:16  borchert
+   - assertions added
+   - additional parameters added: module and procedure name, line number
+
+   Revision 1.1  1994/02/23  07:48:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION RTErrors;
+
+   (* handling of run time errors;
+      the run time system calls one of these procedures
+      on run time errors;
+      these procedures must not return
+   *)
+
+   IMPORT Events;
+
+   CONST
+      case = 1;		(* attempt to find case failed *)
+      return = 2;	(* function does not return any value *)
+      range = 3;	(* index out of range *)
+      typeguard = 4;	(* failure of type guard *)
+      conversion = 5;	(* conversion error *)
+      crend = 6;	(* RETURN of coroutine *)
+      assertion = 7;	(* assertion failed *)
+      errorcodes = 8;
+
+   TYPE
+      Name = ARRAY 32 OF CHAR;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: INTEGER; (* one of case..crend *)
+	    val,		(* defined for range and conversion *)
+	    limit: LONGINT;	(* defined for range *)
+	    (* valid only if errorcode # crend: *)
+	    moduleName,
+	    procedureName: Name;
+	    lineNumber: LONGINT;
+	 END;
+
+   VAR
+      error: ARRAY errorcodes OF Events.EventType; (* specific runtime errors *)
+      errors: Events.EventType; (* catches all runtime errors *)
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE CaseError(moduleName, procedureName: ARRAY OF CHAR;
+		       lineNumber: LONGINT);
+      (* attempt to find case failed *)
+
+   PROCEDURE NoReturn(moduleName, procedureName: ARRAY OF CHAR;
+		      lineNumber: LONGINT);
+      (* function does not return any value *)
+
+   PROCEDURE TypeGuardFailure(moduleName, procedureName: ARRAY OF CHAR;
+		              lineNumber: LONGINT);
+
+   PROCEDURE RangeError(limit: LONGINT; val: LONGINT;
+			moduleName, procedureName: ARRAY OF CHAR;
+		        lineNumber: LONGINT);
+      (* val is outside of [0..limit] *)
+
+   PROCEDURE ConversionError(val: LONGINT;
+			     moduleName, procedureName: ARRAY OF CHAR;
+		             lineNumber: LONGINT);
+      (* SHORT(val) or ORD(val) failed *)
+
+   PROCEDURE CoroutineReturn;
+      (* coroutines must not return *)
+
+   PROCEDURE FailedAssertion(code: INTEGER;
+			     moduleName, procedureName: ARRAY OF CHAR;
+			     lineNumber: LONGINT);
+
+END RTErrors.

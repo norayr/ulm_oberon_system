@@ -1,0 +1,142 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XStringProp.om,v 1.1 2005/04/08 19:58:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XStringProp.om,v $
+   Revision 1.1  2005/04/08 19:58:56  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XStringProperties;
+
+   IMPORT MemStreams, Streams, Strings, SYS := SYSTEM, Texts, Write, XAtoms,
+      XDisplays, XObjects, XResources;
+
+   CONST
+      type = "STRING";
+   VAR
+      nullbyte: BYTE;
+      nbs: Streams.Stream;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE Change(win: XResources.Window;
+                    VAR property: ARRAY OF CHAR;
+		    data: Streams.Stream;
+		    mode: XDisplays.PropertyChangeMode) : BOOLEAN;
+      VAR
+	 p: XDisplays.Property;
+	 display: XDisplays.Display;
+
+      PROCEDURE GetAtomID(name: ARRAY OF CHAR;
+                          VAR id: XDisplays.AtomID) : BOOLEAN;
+	 VAR
+	    atom: XAtoms.Atom;
+      BEGIN
+	 IF ~XAtoms.LookupByName(display, name,
+		  (* onlyIfExists = *) FALSE, atom) THEN
+	    RETURN FALSE
+	 END;
+	 id := XObjects.GetID(atom);
+	 RETURN TRUE
+      END GetAtomID;
+
+   BEGIN (* Change *)
+      display := XResources.GetDisplay(win);
+      NEW(p);
+      IF ~GetAtomID(property, p.name) OR
+	    ~GetAtomID(type, p.type) THEN
+	 RETURN FALSE
+      END;
+      p.format := 8;
+      IF ~Streams.Seek(data, 0, Streams.fromEnd) THEN RETURN FALSE END;
+      Streams.GetPos(data, p.len); Streams.SetPos(data, 0);
+      p.data := data;
+      RETURN XResources.ChangeProperty(win, p, mode)
+   END Change;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Replace(win: XResources.Window;
+                     property, value: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 data: Streams.Stream;
+   BEGIN
+      Texts.Open(data); Write.StringS(data, value);
+      RETURN Change(win, property, data, XDisplays.replaceProperty)
+   END Replace;
+
+   PROCEDURE Prepend(win: XResources.Window;
+                     property, value: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 data: Streams.Stream;
+   BEGIN
+      Texts.Open(data); Write.StringS(data, value);
+      RETURN Change(win, property, data, XDisplays.prependProperty)
+   END Prepend;
+
+   PROCEDURE Append(win: XResources.Window;
+                    property, value: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 data: Streams.Stream;
+   BEGIN
+      Texts.Open(data); Write.StringS(data, value);
+      RETURN Change(win, property, data, XDisplays.appendProperty)
+   END Append;
+
+   PROCEDURE ReplaceS(win: XResources.Window;
+                      property: ARRAY OF CHAR;
+		      value: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, value, XDisplays.replaceProperty)
+   END ReplaceS;
+
+   PROCEDURE PrependS(win: XResources.Window;
+                      property: ARRAY OF CHAR;
+		      value: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, value, XDisplays.prependProperty)
+   END PrependS;
+
+   PROCEDURE AppendS(win: XResources.Window;
+                     property: ARRAY OF CHAR;
+		     value: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, value, XDisplays.appendProperty)
+   END AppendS;
+
+   PROCEDURE Append0(win: XResources.Window;
+                     property: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, nbs, XDisplays.appendProperty)
+   END Append0;
+
+   PROCEDURE Prepend0(win: XResources.Window;
+                      property: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Change(win, property, nbs, XDisplays.prependProperty)
+   END Prepend0;
+
+BEGIN
+   nullbyte := 0X;
+   MemStreams.Open(nbs, SYS.ADR(nullbyte), 1, MemStreams.read);
+END XStringProperties.

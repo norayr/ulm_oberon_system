@@ -1,0 +1,786 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSRequests.om,v 1.2 2004/09/13 21:09:30 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSRequests.om,v $
+   Revision 1.2  2004/09/13 21:09:30  borchert
+   - DNSRequests supports now Process.softTermination
+   - requests will no longer hung in case of terminated context objects
+
+   Revision 1.1  2004/03/09 23:30:45  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE DNSRequests;
+
+   IMPORT Clocks, Conditions, Disciplines, DNSHeaders, DNSRecords, Errors,
+      EventConditions, Events, Jobs, MemOps, MemStreams, Objects, P := Process,
+      RandomGenerators, RelatedEvents, Resources, Signals, Streams,
+      SubStreams, SYS := SYSTEM, SysSockets, SysTypes, Tasks, TimeConditions,
+      Times, Types, UnixFileConditions, UnixSeeds, Write;
+
+   TYPE
+      Name = DNSRecords.Name;
+   TYPE
+      NameServer = POINTER TO NameServerRec;
+      Context = POINTER TO ContextRec;
+      ContextRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    nameservers: NameServer; (* ring of name servers *)
+	    roundrobin: BOOLEAN;
+	    timelimit: Times.Time;
+	    retries: INTEGER;
+	    started: Signals.Signal;
+	       (* becomes true as soon the first nameserver
+	          is available
+	       *)
+	    count: INTEGER; (* number of name servers *)
+	       (* note that count can be larger than the actual
+	          number of entries within the ring as inclusion
+		  is postponed until the event queue has been set up
+	       *)
+	 END;
+      Query = POINTER TO QueryRec;
+      QueryRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name: Name;
+	    type: DNSRecords.RRType;
+	    class: DNSRecords.Class;
+	 END;
+      Record = DNSRecords.Record;
+      Response = POINTER TO ResponseRec;
+      ResponseRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    header: DNSHeaders.Header;
+	    query: Query; (* just one *)
+	    answerRecs, authRecs, addRecs: Record;
+	 END;
+
+   CONST
+      msgbuflen = 1024;
+   TYPE
+      MessageBuffer = POINTER TO ARRAY msgbuflen OF CHAR;
+	 (* must be a pointer because we open in-memory streams for it *)
+      Request = POINTER TO RequestRec;
+      QueueEvent = POINTER TO QueueEventRec;
+      QueueEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    request: Request;
+	 END;
+      RequestRec =
+	 RECORD
+	    context: Context;
+	    nameserver: NameServer;
+	    id: INTEGER; (* identical to id in header *)
+	    header: DNSHeaders.Header;
+	    query: Query;
+	    msgbuf: MessageBuffer; msgbuflen: Streams.Count;
+	    tries: INTEGER; (* number of tries left *)
+	    errors: RelatedEvents.Object;
+	    errorcnt: INTEGER; (* number of dropped answer packages *)
+	    prev, next: Request; (* in queue, prev in pending queue only *)
+	    done: BOOLEAN; (* got valid response *)
+	    toomanytries: BOOLEAN;
+	    response: Response; (* valid response if done = TRUE *)
+	    timeCondition: Conditions.Condition;
+	    finished: Signals.Signal;
+	 END;
+      NameServerRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    prev, next: NameServer;
+	       (* ring of name servers of the same context *)
+	    name: Name; (* used for error events only *)
+	    context: Context;
+	    socket: SysSockets.Socket;
+	    queueEventType: Events.EventType; (* incoming request *)
+	    timerEventType: Events.EventType; (* timeouts *)
+	    started: Signals.Signal;
+	    load: INTEGER; (* current load *)
+	    (* failure statistics, these counters get cleared
+	       as soon as we have successful responses
+	    *)
+	    timeouts: INTEGER; (* number of timeouts *)
+	    refusals: INTEGER; (* number of refusals *)
+	 END;
+      TimeCondition = POINTER TO TimeConditionRec;
+      TimeConditionRec =
+	 RECORD
+	    (TimeConditions.ConditionRec)
+	    request: Request;
+	 END;
+
+   VAR
+      timerPriority: Events.Priority;
+
+   (* === error handling ============================================= *)
+
+   CONST
+      noNameServers = 0;
+      protocolError = 1;
+      tooManyRetries = 2;
+      unexpectedResponse = 3;
+      sendFailed = 4;
+      timeout = 5;
+      formatError = 6; (* format error: ns was unable to interpret the query *)
+      serverFailure = 7; (* server failure due to internal problems *)
+      notImplemented = 8; (* ns does not support the query *)
+      refused = 9; (* ns refuses to process the query *)
+      unexpectedResponseCode = 10; (* rcode outside of [0..5] *)
+      errors = 11;
+   TYPE
+      ErrorCode = SHORTINT; (* noNameServers... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    query: Query;
+	    dnsserver: Name;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.dnsserver[0] # 0X THEN
+	    IF event.query # NIL THEN
+	       Write.StringS(s, "asking ");
+	    END;
+	    Write.StringS(s, event.dnsserver);
+	    IF event.query # NIL THEN
+	       Write.StringS(s, " for ");
+	    ELSE
+	       Write.StringS(s, ": ");
+	    END;
+	 END;
+	 IF event.query # NIL THEN
+	    Write.StringS(s, event.query.name);
+	    Write.StringS(s, " type=");
+	    Write.StringS(s, DNSRecords.rrName[event.query.type]);
+	    Write.StringS(s, " class=");
+	    Write.StringS(s, DNSRecords.className[event.query.class]);
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[noNameServers] := "list of name servers is empty";
+      errormsg[protocolError] := "protocol error";
+      errormsg[tooManyRetries] := "too many retries";
+      errormsg[unexpectedResponse] := "unexpected response packet";
+      errormsg[sendFailed] := "send of UDP packet failed";
+      errormsg[timeout] := "got no response from nameserver";
+      errormsg[formatError] := "name server was unable to interpret the query";
+      errormsg[serverFailure] := "internal name server failure";
+      errormsg[notImplemented] := "nameserver does not support the query";
+      errormsg[refused] := "nameserver refuses to process the query";
+      errormsg[unexpectedResponseCode] := "got an unexpected response code";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   query: Query;
+		   nameserver: NameServer);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.query := query;
+      IF nameserver = NIL THEN
+	 event.dnsserver[0] := 0X;
+      ELSE
+	 COPY(nameserver.name, event.dnsserver);
+      END;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === private procedures ========================================= *)
+
+   PROCEDURE Submit(request: Request);
+      VAR
+	 event: QueueEvent;
+	 ns: NameServer;
+   BEGIN
+      NEW(event); event.type := request.nameserver.queueEventType;
+      event.request := request;
+      Events.Raise(event);
+   END Submit;
+
+   PROCEDURE BetterNameServerAs(candidate, ns: NameServer) : BOOLEAN;
+   BEGIN
+      IF candidate.refusals # ns.refusals THEN
+	 RETURN candidate.refusals < ns.refusals
+      END;
+      IF candidate.timeouts # ns.timeouts THEN
+	 RETURN candidate.timeouts < ns.timeouts
+      END;
+      RETURN candidate.load < ns.load
+   END BetterNameServerAs;
+
+   PROCEDURE SelectNameServer(exclude: NameServer;
+                              candidate: NameServer) : NameServer;
+      (* exclude is the last nameserver we had, candidate is
+         the next one, the one we prefer as long as we do
+	 not find a better one
+      *)
+      VAR
+	 best: NameServer;
+   BEGIN
+      (* we have no choices if we have just one nameserver *)
+      IF exclude = candidate THEN RETURN candidate END;
+      (* look for the best nameserver but skip the to be excluded one *)
+      best := candidate;
+      LOOP
+	 candidate := candidate.next;
+	 IF candidate = best THEN EXIT END;
+	 IF candidate # exclude THEN
+	    IF BetterNameServerAs(candidate, best) THEN
+	       best := candidate;
+	    END;
+	 END;
+      END;
+      RETURN best
+   END SelectNameServer;
+
+   PROCEDURE Retry(request: Request);
+   BEGIN
+      DEC(request.tries);
+      IF request.tries <= 0 THEN
+	 request.nameserver := NIL;
+	 request.toomanytries := TRUE;
+	 Error(request.errors, tooManyRetries, request.query, NIL);
+	 Signals.Raise(request.finished);
+      ELSE
+	 request.nameserver :=
+	    SelectNameServer(request.nameserver, request.nameserver.next);
+	 Submit(request);
+      END;
+   END Retry;
+
+   PROCEDURE SocketHandler(job: Jobs.Job);
+      (* is responsible for one socket connection to one DNS server
+         within a context;
+	 job.socket must be an open socket;
+	 requests are submitted via Submit (see above) which sends
+	 an event that is handled by job.queueEventType;
+	 this job and all open requests are terminated if the
+	 context gets terminated
+      *)
+      VAR
+	 resCondition: Conditions.Condition;
+	 resEventType: Events.EventType;
+	 resEvent: Resources.Event;
+	 termCondition: Conditions.Condition;
+	 termEvent: Events.Event;
+	 queueEventType: Events.EventType;
+	 queueCondition: Conditions.Condition;
+	 queueEvent: QueueEvent;
+	 timeCondition: TimeCondition;
+	 readCondition, writeCondition: Conditions.Condition;
+	 conditions, setOfTrueConditions: Conditions.ConditionSet;
+	 condition: Conditions.Condition;
+	 incomingHead, incomingTail: Request;
+	    (* queue of incoming requests: these requests wait
+	       for being sent to the nameserver
+	    *)
+	 pendingHead, pendingTail: Request;
+	    (* queue of pending requests: here we are waiting
+	       for a response by the nameserver
+	    *)
+	 request: Request;
+	 response: Response;
+	 interrupted: BOOLEAN;
+	 ok: BOOLEAN;
+
+      PROCEDURE SelectID() : INTEGER;
+	 VAR
+	    id: INTEGER;
+	    request: Request;
+      BEGIN
+	 REPEAT
+	    id := SHORT(RandomGenerators.ValS(RandomGenerators.unpredictable,
+	       0, 65535));
+	    (* check if this id is already in use *)
+	    request := pendingHead;
+	    WHILE (request # NIL) & (request.id # id) DO
+	       request := request.next;
+	    END;
+	 UNTIL request = NIL;
+	 RETURN id
+      END SelectID;
+
+      PROCEDURE UpdateHeader(request: Request);
+      BEGIN
+	 ASSERT(request.msgbuflen > DNSHeaders.headerlen);
+	 MemOps.Copy(SYS.ADR(request.header),
+	             SYS.VAL(Types.Address, request.msgbuf),
+		     DNSHeaders.headerlen);
+      END UpdateHeader;
+
+      PROCEDURE ProcessResponse(VAR req: Request; VAR resp: Response) : BOOLEAN;
+	 VAR
+	    msgbuffer: MessageBuffer;
+	    s: Streams.Stream; (* for msgbuffer *)
+	    interrupted: BOOLEAN;
+	    nbytes: SysTypes.Count;
+	    id: INTEGER;
+	    query: Query;
+	    response: Response;
+	    name: Name;
+	    type: DNSRecords.RRType;
+	    class: DNSRecords.Class;
+	    count: INTEGER;
+
+	 PROCEDURE ReadRecords(count: INTEGER; VAR records: Record) : BOOLEAN;
+	 BEGIN
+	    IF ~DNSRecords.ReadRecords(s, count, nbytes, records) THEN
+	       IF ~s.eof THEN
+		  Error(job, protocolError, NIL, job(NameServer));
+	       END;
+	       RETURN FALSE
+	    END;
+	    RETURN TRUE
+	 END ReadRecords;
+
+      BEGIN (* ProcessResponse *)
+	 WITH job: NameServer DO
+	    req := NIL; resp := NIL;
+	    NEW(msgbuffer);
+	    nbytes := SysSockets.Receive(job.socket,
+	       SYS.VAL(Types.Address, msgbuffer), msgbuflen, 0,
+	       (* relate errors to *) job,
+	       (* retry = *) TRUE, interrupted);
+	    IF nbytes < DNSHeaders.headerlen THEN
+	       (* I/O error or a broken response packet *)
+	       IF nbytes >= 0 THEN
+		  Error(job, protocolError, NIL, job);
+	       END;
+	       RETURN FALSE
+	    END;
+	    NEW(response);
+	    MemOps.Copy(SYS.VAL(Types.Address, msgbuffer),
+	       SYS.ADR(response.header), DNSHeaders.headerlen);
+	    IF DNSHeaders.GetQR(response.header) # DNSHeaders.response THEN
+	       Error(job, protocolError, NIL, job);
+	       RETURN FALSE
+	    END;
+	    id := DNSHeaders.GetID(response.header);
+	    request := pendingHead;
+	    WHILE (request # NIL) & (request.id # id) DO
+	       request := request.next;
+	    END;
+	    IF request = NIL THEN
+	       Error(job, unexpectedResponse, NIL, job);
+	       RETURN FALSE
+	    END;
+	    (* return request and response even in case of errors
+	       so that the request can be removed from the queue
+	       of pending requests
+	    *)
+	    response.query := NIL;
+	    response.answerRecs := NIL;
+	    response.authRecs := NIL;
+	    response.addRecs := NIL;
+	    req := request;
+	    resp := response;
+	    (* check if op code remained the same *)
+	    IF DNSHeaders.GetOpCode(response.header) #
+		  DNSHeaders.GetOpCode(request.header) THEN
+	       Error(request.errors, protocolError, NIL, job);
+	       RETURN FALSE
+	    END;
+	    (* collect resource records *)
+	    MemStreams.Open(s,
+	       SYS.VAL(Types.Address, msgbuffer), nbytes, MemStreams.read);
+	    RelatedEvents.Forward(s, request.errors);
+	    count := DNSHeaders.GetQDCount(response.header);
+	    IF ~Streams.Seek(s, DNSHeaders.headerlen, Streams.fromStart) THEN
+	       RETURN FALSE
+	    END;
+	    WHILE count > 0 DO
+	       NEW(query);
+	       IF ~DNSRecords.ReadQuestion(s, query.name,
+		     query.type, query.class) THEN
+		  Error(request.errors, protocolError, NIL, job);
+		  RETURN FALSE
+	       END;
+	       IF response.query = NIL THEN
+		  response.query := query;
+	       END;
+	       DEC(count);
+	    END;
+	    IF ReadRecords(DNSHeaders.GetANCount(response.header),
+		  response.answerRecs) &
+	       ReadRecords(DNSHeaders.GetNSCount(response.header),
+		  response.authRecs) &
+	       ReadRecords(DNSHeaders.GetARCount(response.header),
+		  response.addRecs) THEN
+	       RETURN TRUE
+	    ELSE
+	       Error(request.errors, protocolError, NIL, job);
+	       RETURN FALSE
+	    END;
+	 END;
+      END ProcessResponse;
+
+      PROCEDURE RemoveFromRing(request: Request);
+      BEGIN
+	 IF request.prev = NIL THEN
+	    pendingHead := request.next;
+	 ELSE
+	    request.prev.next := request.next;
+	 END;
+	 IF request.next = NIL THEN
+	    pendingTail := request.prev;
+	 ELSE
+	    request.next.prev := request.prev;
+	 END;
+	 IF pendingHead = NIL THEN
+	    Conditions.Excl(conditions, readCondition);
+	 END;
+      END RemoveFromRing;
+
+   BEGIN (* SocketHandler *)
+      WITH job: NameServer DO
+	 Conditions.CreateSet(conditions);
+
+	 Resources.TakeInterest(job.context, resEventType);
+	 EventConditions.Create(resCondition, resEventType);
+	 Conditions.Incl(conditions, resCondition);
+
+	 EventConditions.Create(termCondition, P.softTermination);
+	 Conditions.Incl(conditions, termCondition);
+
+	 Events.Define(queueEventType);
+	 EventConditions.Create(queueCondition, queueEventType);
+	 job.queueEventType := queueEventType;
+	 Conditions.Incl(conditions, queueCondition);
+
+	 UnixFileConditions.Create(readCondition, NIL,
+	    job.socket, UnixFileConditions.read);
+	 UnixFileConditions.Create(writeCondition, NIL,
+	    job.socket, UnixFileConditions.write);
+	 incomingHead := NIL; incomingTail := NIL;
+	 pendingHead := NIL; pendingTail := NIL;
+
+	 (* put this job into the ring of nameservers;
+	    we have to postpone this until the queueCondition is ready
+	 *)
+	 IF job.context.nameservers = NIL THEN
+	    job.next := job;
+	    job.prev := job;
+	    job.context.nameservers := job;
+	    Signals.Raise(job.context.started);
+	 ELSE
+	    job.next := job.context.nameservers;
+	    job.prev := job.context.nameservers.prev;
+	    job.next.prev := job;
+	    job.prev.next := job;
+	 END;
+	 Signals.Raise(job.started);
+
+	 (* loop until the context terminates *)
+	 LOOP
+	    Tasks.Select(conditions, setOfTrueConditions);
+	    WHILE EventConditions.TestAndGet(resCondition, resEvent) DO
+	       IF resEvent.change = Resources.terminated THEN EXIT END;
+	    END;
+	    IF EventConditions.TestAndGet(termCondition, termEvent) THEN
+	       Resources.Notify(job.context, Resources.terminated);
+	       EXIT
+	    END;
+	    WHILE EventConditions.TestAndGet(queueCondition, queueEvent) DO
+	       request := queueEvent.request;
+	       IF incomingHead = NIL THEN
+		  Conditions.Incl(conditions, writeCondition);
+		  incomingHead := request;
+	       ELSE
+		  incomingTail.next := request;
+	       END;
+	       request.next := NIL;
+	       incomingTail := request;
+	       request.timeCondition := NIL;
+	    END;
+	    IF (incomingHead # NIL) &
+		  Conditions.In(setOfTrueConditions, writeCondition) THEN
+	       request := incomingHead;
+	       incomingHead := request.next;
+	       request.next := NIL;
+	       request.prev := NIL;
+	       IF incomingHead = NIL THEN
+		  incomingTail := NIL;
+		  Conditions.Excl(conditions, writeCondition);
+	       END;
+	       request.id := SelectID();
+	       DNSHeaders.SetID(request.header, request.id);
+	       UpdateHeader(request);
+	       IF SysSockets.Send(job.socket,
+			SYS.VAL(Types.Address, request.msgbuf),
+			request.msgbuflen, 0,
+			request.errors,
+			(* retry = *) TRUE, interrupted) THEN
+		  IF pendingHead = NIL THEN
+		     pendingHead := request;
+		     Conditions.Incl(conditions, readCondition);
+		  ELSE
+		     pendingTail.next := request;
+		     request.prev := pendingTail;
+		  END;
+		  pendingTail := request;
+		  NEW(timeCondition); timeCondition.request := request;
+		  TimeConditions.Init(timeCondition,
+		     Clocks.system, job.context.timelimit);
+		  request.timeCondition := timeCondition;
+		  Conditions.Incl(conditions, timeCondition);
+		  INC(job.load);
+	       ELSE
+		  Error(request.errors, sendFailed, request.query, job);
+		  Retry(request);
+	       END;
+	    END;
+	    IF (pendingHead # NIL) &
+		  Conditions.In(setOfTrueConditions, readCondition) THEN
+	       ok := ProcessResponse(request, response);
+	       IF request # NIL THEN 
+		  (* remove associated timer *)
+		  IF request.timeCondition # NIL THEN
+		     Conditions.Excl(conditions, request.timeCondition);
+		     request.timeCondition := NIL;
+		  END;
+		  (* remove request out of the queue of pending requests *)
+		  RemoveFromRing(request);
+		  job.timeouts := 0;
+		  DEC(job.load);
+		  (* check response code *)
+		  CASE DNSHeaders.GetResponseCode(response.header) OF
+		  | DNSHeaders.noError: (* ok *)
+		     job.refusals := 0;
+		  | DNSHeaders.nameError:
+		     (* not handled by this module as DNS resolvers
+		        usually work with a list of possible domain
+			suffixes
+		     *)
+		     job.refusals := 0;
+		  | DNSHeaders.formatError:
+		     Error(request.errors, formatError, request.query, job);
+		     ok := FALSE;
+		  | DNSHeaders.serverFailure:
+		     Error(request.errors, serverFailure, request.query, job);
+		     ok := FALSE;
+		  | DNSHeaders.notImplemented:
+		     Error(request.errors, notImplemented, request.query, job);
+		     ok := FALSE;
+		  | DNSHeaders.refused:
+		     Error(request.errors, refused, request.query, job);
+		     INC(job.refusals);
+		     ok := FALSE;
+		  ELSE
+		     Error(request.errors, unexpectedResponseCode,
+		        request.query, job);
+		     ok := FALSE;
+		  END;
+		  IF ok THEN
+		     request.done := TRUE;
+		     request.response := response;
+		     request.nameserver := NIL;
+		     Signals.Raise(request.finished);
+		  ELSE
+		     Retry(request);
+		  END;
+	       END;
+	    END;
+
+	    (* process possible timeouts *)
+	    Conditions.ExamineConditions(setOfTrueConditions);
+	    WHILE Conditions.GetNextCondition(setOfTrueConditions,
+		  condition) DO
+	       IF condition IS TimeCondition THEN
+		  Conditions.Excl(conditions, condition);
+		  WITH condition: TimeCondition DO
+		     request := condition.request;
+		     IF request.nameserver = job THEN
+			RemoveFromRing(request);
+			Error(request.errors, timeout, request.query, job);
+			INC(job.timeouts);
+			DEC(job.load);
+			Retry(request);
+		     END;
+		  END;
+	       END;
+	    END;
+	 END;
+	 EventConditions.Drop(resCondition);
+	 EventConditions.Drop(queueCondition);
+	 EventConditions.Drop(termCondition);
+      END;
+   END SocketHandler;
+
+   (* === exported procedures ======================================== *)
+
+   PROCEDURE CreateContext(VAR context: Context);
+      VAR
+	 con: Context;
+   BEGIN
+      NEW(con); con.nameservers := NIL; con.count := 0;
+      con.roundrobin := FALSE; con.retries := 2;
+      Signals.Create(con.started);
+      (* set default time limit of one second *)
+      Times.CreateAndSet(con.timelimit, Times.relative, 0, 1, 0);
+      RelatedEvents.QueueEvents(con);
+      context := con;
+   END CreateContext;
+
+   PROCEDURE AddNameServer(context: Context;
+                           socket: SysSockets.Socket;
+			   name: ARRAY OF CHAR);
+      VAR
+	 nameserver: NameServer;
+   BEGIN
+      ASSERT(context # NIL);
+      NEW(nameserver);
+      RelatedEvents.Forward(nameserver, context);
+      nameserver.socket := socket;
+      nameserver.context := context;
+      nameserver.load := 0;
+      nameserver.timeouts := 0;
+      nameserver.refusals := 0;
+      COPY(name, nameserver.name);
+      Events.Define(nameserver.queueEventType);
+      Signals.Create(nameserver.started);
+      INC(context.count);
+      Jobs.Submit(nameserver, SocketHandler);
+      Signals.WaitFor(nameserver.started);
+   END AddNameServer;
+
+   PROCEDURE EnableRoundRobin(context: Context);
+   BEGIN
+      context.roundrobin := TRUE;
+   END EnableRoundRobin;
+
+   PROCEDURE SetTimeout(context: Context; seconds: INTEGER);
+   BEGIN
+      ASSERT(seconds > 0);
+      Times.CreateAndSet(context.timelimit, Times.relative, 0, seconds, 0);
+   END SetTimeout;
+
+   PROCEDURE SetNumberOfRetries(context: Context; retries: INTEGER);
+   BEGIN
+      ASSERT(retries >= 0);
+      context.retries := retries;
+   END SetNumberOfRetries;
+
+   PROCEDURE Process(context: Context;
+                     name: ARRAY OF CHAR;
+		     type: DNSRecords.RRType;
+		     class: DNSRecords.Class;
+		     VAR header: DNSHeaders.Header;
+		     VAR answerRecs, authRecs, addRecs: Record;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 request: Request;
+	 condition: Conditions.Condition;
+	 s: Streams.Stream;
+	 query: Query;
+   BEGIN
+      IF Resources.Terminated(context) THEN RETURN FALSE END;
+      NEW(query);
+      COPY(name, query.name);
+      query.type := type;
+      query.class := class;
+      IF context.count = 0 THEN
+	 Error(errors, noNameServers, query, NIL);
+	 RETURN FALSE
+      END;
+      IF context.nameservers = NIL THEN
+	 Signals.WaitFor(context.started);
+	 ASSERT(context.nameservers # NIL);
+      END;
+      NEW(request);
+      request.context := context;
+      request.nameserver :=
+	 SelectNameServer((* exclude = *) NIL, context.nameservers);
+      IF context.roundrobin THEN
+	 context.nameservers := context.nameservers.next;
+      END;
+      DNSHeaders.Init(request.header);
+      DNSHeaders.SetQR(request.header, DNSHeaders.query);
+      DNSHeaders.SetOpCode(request.header, DNSHeaders.standardQuery);
+      DNSHeaders.SetTCFlag(request.header, FALSE);
+      DNSHeaders.SetRDFlag(request.header, TRUE);
+      DNSHeaders.SetQDCount(request.header, 1);
+      request.query := query;
+      NEW(request.msgbuf);
+      MemStreams.Open(s, SYS.VAL(Types.Address, request.msgbuf),
+	 msgbuflen, MemStreams.rdwr);
+      RelatedEvents.Forward(s, errors);
+      IF ~Streams.WritePart(s, request.header, 0, DNSHeaders.headerlen) OR
+	    ~DNSRecords.WriteQuestion(s, name, type, class) OR
+	    ~Streams.Tell(s, request.msgbuflen) OR
+	    ~Streams.Seek(s, 0, Streams.fromStart) OR
+	    ~Streams.Trunc(s, request.msgbuflen) THEN
+	 Streams.Release(s);
+	 RETURN FALSE
+      END;
+      request.tries := context.retries * context.count;
+      request.errors := errors;
+      request.errorcnt := 0;
+      request.prev := NIL; request.next := NIL;
+      request.done := FALSE;
+      request.toomanytries := FALSE;
+      request.response := NIL;
+      Signals.Create(request.finished);
+      Submit(request);
+      Signals.WaitFor(request.finished);
+      IF request.toomanytries THEN
+	 answerRecs := NIL; authRecs := NIL; addRecs := NIL;
+	 RETURN FALSE
+      END;
+      IF ~request.done THEN
+	 (* context died most likely *)
+	 RETURN FALSE
+      END;
+      header := request.response.header;
+      answerRecs := request.response.answerRecs;
+      authRecs := request.response.authRecs;
+      addRecs := request.response.addRecs;
+      RETURN TRUE
+   END Process;
+
+BEGIN
+   InitErrorHandling;
+   Clocks.GetPriority(Clocks.system, timerPriority); INC(timerPriority, 2);
+   ASSERT(RandomGenerators.unpredictable # NIL);
+END DNSRequests.

@@ -1,0 +1,198 @@
+
+
+
+RobustObjects(3)       Ulm's Oberon System       RobustObjects(3)
+
+
+NNAAMMEE
+       RobustObjects - proxy objects which survive their original
+       objects
+
+SSYYNNOOPPSSIISS
+       CONST typeGuardFailure = 0;
+       CONST notARobustObject = 1;
+       CONST errors = 2;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Export(object: Services.Object; status: Names.Status;
+                        path: ARRAY OF CHAR; auth: Shards.Lid;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ExportR(object: Services.Object; status: Names.Status;
+                         root: Names.Node; path: ARRAY OF CHAR;
+                         auth: Shards.Lid; errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Import(VAR object: Services.Object; path: ARRAY OF CHAR;
+                        auth: Shards.Lid; errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ImportR(VAR object: Services.Object;
+                         root: Names.Node; path: ARRAY OF CHAR;
+                         auth: Shards.Lid; errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GuardedImportR(VAR object: Services.Object; guard: Services.Type;
+                                root: Names.Node; path: ARRAY OF CHAR;
+                                auth: Shards.Lid;
+                                errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GuardedImport(VAR object: Services.Object; guard: Services.Type;
+                               path: ARRAY OF CHAR; auth: Shards.Lid;
+                               errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       By default, proxy objects of _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_) terminate if
+       the connection to their original object breaks down, or if
+       the other side terminates.  _R_o_b_u_s_t_O_b_j_e_c_t_s offers a  mecha­
+       nism (based on _N_a_m_e_s_(_3_), _P_a_t_h_C_o_n_d_i_t_i_o_n_s_(_3_) and some exten­
+       sion features of _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_)) which allows to suspend
+       the proxy object (instead of terminating it) in such cases
+       until the original object is accessible again by the  name
+       service (see _N_a_m_e_s_(_3_)).
+
+       This mechanism requires the support of both sides:
+
+       ·      The  exporting  side has to declare its object as a
+              ``robust  object''  by  calling  either  _E_x_p_o_r_t  or
+              _E_x_p_o_r_t_R   with  an  absolute  path  which  is  also
+
+
+
+Release 0.5       Last change: 15 February 2002                 1
+
+
+
+
+
+RobustObjects(3)       Ulm's Oberon System       RobustObjects(3)
+
+
+              accessible by other processes.
+
+       ·      The importing side  should  import  the  object  by
+              _I_m_p_o_r_t or _I_m_p_o_r_t_R to take advantage of the recovery
+              mechanism of _R_o_b_u_s_t_O_b_j_e_c_t_s with  usually  the  same
+              path  as  given  by  _E_x_p_o_r_t or _E_x_p_o_r_t_R on the other
+              side.  Alternatively, _G_u_a_r_d_e_d_I_m_p_o_r_t  or  _G_u_a_r_d_e_d_I_m_­
+              _p_o_r_t_R  may  be  used  to be safe against type guard
+              failures.
+
+       The paths  are  interpreted  as  described  by  _P_a_t_h_C_o_n_d_i_­
+       _t_i_o_n_s_(_3_)   and  taken  relatively  to  _r_o_o_t  (if  _E_x_p_o_r_t_R,
+       _I_m_p_o_r_t_R, or _G_u_a_r_d_e_d_I_m_p_o_r_t_R is  used).   The  authorization
+       lid _a_u_t_h is used to access all components of the parts and
+       passed to _P_a_t_h_C_o_n_d_i_t_i_o_n_s_(_3_).  _E_x_p_o_r_t and _E_x_p_o_r_t_R pass _s_t_a_­
+       _t_u_s  (just  _N_a_m_e_s_._e_x_a_m_i_n_e and _N_a_m_e_s_._c_h_a_n_g_e are to be given
+       if non-NNIILL) to the equally named parameter of _N_a_m_e_s_._C_r_e_a_t_­
+       _e_N_o_d_e.   Note  that  all  operations block until the whole
+       path becomes accessible (see _P_a_t_h_C_o_n_d_i_t_i_o_n_s_(_3_)).
+
+       The suspension and reanimation of proxy  objects  is  sig­
+       nalled by _R_e_s_o_u_r_c_e_s_(_3_): _R_e_s_o_u_r_c_e_s_._c_o_m_m_u_n_i_c_a_t_i_o_n_S_t_o_p_p_e_d and
+       _R_e_s_o_u_r_c_e_s_._c_o_m_m_u_n_i_c_a_t_i_o_n_R_e_s_u_m_e_d.  No  operations  are  pro­
+       cessed  while  the  proxy  object is suspended.  The proxy
+       object terminates if the recovery mechanism fails  due  to
+       fatal errors.
+
+       Note  that  ``robust  objects'' may be freely exported and
+       imported by using _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_) directly.  But they get
+       their special property only if _I_m_p_o_r_t, _I_m_p_o_r_t_R, _G_u_a_r_d_e_d_I_m_­
+       _p_o_r_t, or _G_u_a_r_d_e_d_I_m_p_o_r_t_R have been called on the  exporting
+       side and _E_x_p_o_r_t or _E_x_p_o_r_t_R on the importing side.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _R_o_b_u_s_t_O_b_j_e_c_t_s  relates  error  events to the _e_r_r_o_r parame­
+       ters, and, in case of  recovery  problems,  to  the  proxy
+       object.  Following error events may be generated by _R_o_b_u_s_­
+       _t_O_b_j_e_c_t_s itself:
+       _t_y_p_e_G_u_a_r_d_F_a_i_l_u_r_e   This error event is raised by  _G_u_a_r_d_e_d_­
+                          _I_m_p_o_r_t  and _G_u_a_r_d_e_d_I_m_p_o_r_t_R if the given
+                          type guard fails.
+       _n_o_t_A_R_o_b_u_s_t_O_b_j_e_c_t   All import operations of  _R_o_b_u_s_t_O_b_j_e_c_t_s
+                          will  fail  if  the object has not been
+                          exported by _E_x_p_o_r_t or _E_x_p_o_r_t_R and  gen­
+                          erate this error event instead.
+
+SSEEEE AALLSSOO
+       _P_a_t_h_C_o_n_d_i_t_i_o_n_s_(_3_)   conditions which allow to wait until a
+                           path becomes valid
+       _N_a_m_e_s_(_3_)            name hierachies of objects  which  may
+                           be shared on the base of name servers
+       _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_)    access of remote objects and interface
+                           for recovery mechanisms
+
+
+
+
+Release 0.5       Last change: 15 February 2002                 2
+
+
+
+
+
+RobustObjects(3)       Ulm's Oberon System       RobustObjects(3)
+
+
+BBUUGGSS
+       It is theoretically possible that on recovery an object is
+       imported  which was already imported before.  In this case
+       there will be two proxy objects pointing to the same orig­
+       inal object.  This problem can be avoided by the exporting
+       side if it does not make  the  original  object  available
+       before _E_x_p_o_r_t or _E_x_p_o_r_t_R is called.
+
+       Typing  errors  in  path names may cause all operations to
+       hang infinitively.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 15 February 2002                 3
+
+

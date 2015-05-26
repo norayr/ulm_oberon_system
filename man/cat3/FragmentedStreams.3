@@ -1,0 +1,269 @@
+FragmentedStreams(3)          Ulm's Oberon System         FragmentedStreams(3)
+
+
+
+[1mNAME[0m
+       FragmentedStreams - fragmented in-memory streams
+
+[1mSYNOPSIS[0m
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE StreamRec = RECORD (Streams.StreamRec) END;
+       TYPE Label = POINTER TO LabelRec;
+       TYPE LabelRec = RECORD (Disciplines.ObjectRec) END;
+
+       CONST cannotReadUnfixedObject = 0;
+       CONST cannotWriteUnfixedObject = 1;
+       CONST invalidPosition = 2;
+       CONST errors = 3;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Create(VAR s: Stream);
+       PROCEDURE Open(VAR s: Stream; base: Streams.Stream);
+
+       PROCEDURE CreateLabel(VAR label: Label);
+       PROCEDURE AttachLabel(s: Stream; label: Label);
+       PROCEDURE Attached(label: Label) : BOOLEAN;
+       PROCEDURE IncludeObject(s: Stream; object: Disciplines.Object;
+                               minsize, maxsize: Streams.Count);
+       PROCEDURE Distance(label1, label2: Label;
+                          VAR mindist, maxdist: Streams.Count);
+       PROCEDURE Difference(label1, label2: Label;
+                            VAR mindiff, maxdiff: Streams.Count);
+       PROCEDURE ObjectDistance(object: Disciplines.Object; label: Label;
+                                VAR mindist, maxdist: Streams.Count);
+       PROCEDURE ObjectDifference(object: Disciplines.Object; label: Label;
+                                  VAR mindiff, maxdiff: Streams.Count);
+       PROCEDURE GetSizeRange(object: Disciplines.Object;
+                              VAR minsize, maxsize: Streams.Count);
+       PROCEDURE SizeFixed(object: Disciplines.Object) : BOOLEAN;
+       PROCEDURE ReduceObjectSizeRange(object: Disciplines.Object;
+                                       minsize, maxsize: Streams.Count);
+       PROCEDURE SetObjectSize(object: Disciplines.Object; size: Streams.Count);
+       PROCEDURE FixObject(object: Disciplines.Object);
+       PROCEDURE Length(s: Stream; VAR minlen, maxlen: Streams.Count);
+       PROCEDURE GetUnfixedObjects(s: Stream; VAR it: Iterators.Iterator);
+       PROCEDURE NumberOfUnfixedObjects(s: Stream) : INTEGER;
+       PROCEDURE GetObjectsWithUnknownSize(s: Stream; VAR it: Iterators.Iterator);
+       PROCEDURE NumberOfObjectsWithUnknownSize(s: Stream) : INTEGER;
+
+
+[1mDESCRIPTION[0m
+       [4mFragmentedStreams[24m  works  like  [4mTexts(3)[24m  but supports the inclusion of
+       fragments whose size and contents is determined later. This is particu-
+       larly  useful  in the context of machine code generation where the code
+       size of relative jumps depends on the distance between jump instruction
+       and destination address.
+
+   [1mPrinciples of Operation[0m
+       [4mCreate[24m creates (like [4mTexts.Open[24m) an in-memory stream that is opened for
+       reading and writing and supports seek operations.  While normal  stream
+       writing  operations may be used to insert byte sequences of fixed size,
+       [4mIncludeObject[24m allows to include fragments  of  a  not  yet  known  size
+       between  [4mminsize[24m  and  [4mmaxsize[24m  bytes.  Later, the size ranges of these
+       objects may be reduced by [4mReduceObjectSizeRange[24m  or  finally  fixed  by
+       [4mFixObject[24m. Fragments of zero length are permitted.
+
+       While  [4mCreate[24m uses a stream of [4mTexts(3)[24m internally, [4mOpen[24m may be used to
+       specify another base stream that  must  behave  like  a  newly  created
+       stream  of  [4mTexts(3)[24m.  This means in particular that the base stream is
+       not expected to fail on valid operations.
+
+       As long as a fragmented stream contains objects of unknown  size,  some
+       differences in comparison to ordinary in-memory streams have to be con-
+       sidered:
+
+       ·      Stream positions are not fixed until all included  fragments  of
+              varying   size   are  fixed.  That  means  that  a  sequence  of
+              [4mStreams.GetPos[24m,  [4mStreams.Write[24m,  and  [4mStreams.SetPos[24m  using  the
+              position  returned  formerly by [4mStreams.GetPos[24m is not guaranteed
+              to return to the former position if included objects  have  been
+              fixed  or  reduced  in their size range meanwhile. Labels may be
+              used instead.
+
+       ·      Included objects of unknown size behave like holes and cannot be
+              read or written until they are fixed. Their size depends dynami-
+              cally on the minimal size specified so far.
+
+   [1mLabels[0m
+       Labels allow to remember stream positions in a way that is not  threat-
+       ened by included fragments that change their size.  [4mCreateLabel[24m creates
+       a new label that is not yet attached  to  a  stream  position.   Later,
+       labels  may be attached once but only once to the current position of a
+       stream using [4mAttachLabel[24m.  [4mAttached[24m allows to test whether  [4mAttachLabel[0m
+       has been invoked already for [4mlabel[24m.
+
+       Distances  between  labels and/or objects may be queried using [4mDistance[0m
+       and [4mObjectDistance[24m.  Both  return  the  minimal  and  maximal  distance
+       between  two  locations.   [4mDifference[24m and [4mObjectDifference[24m work similar
+       but return negative values if the second object or label  precedes  the
+       first.
+
+   [1mExamining and Fixing Objects[0m
+       [4mLength[24m returns the current minimal and maximal length of [4ms[24m.  [4mGetUnfixe-[0m
+       [4mdObjects[24m allows to iterate through all  still  unfixed  objects  passed
+       formerly  to [4mIncludeObject[24m.  [4mNumberOfUnfixedObjects[24m returns the remain-
+       ing number of unfixed objects.
+
+       [4mReduceObjectSizeRange[24m and [4mSetObjectSize[24m reduce or finally determine the
+       size  range  of an object included formerly by [4mIncludeObject[24m.  The call
+       of [4mReduceObjectSizeRange[24m with an interval of zero length is  equivalent
+       to  [4mSetObjectSize[24m.   Setting  the  size  of an object to zero length is
+       allowed.  Reducing or finally setting the size of an  object  does  not
+       turn  the  fragment's  status  to  fixed  (even  in case of zero length
+       objects).
+
+       [4mGetSizeRange[24m returns the  current  size  range  of  [4mobject[24m.   [4mSizeFixed[0m
+       returns [1mTRUE [22mif the size range is of zero length.
+
+       [4mGetObjectsWithUnknownSize[24m  allows  to iterate through all objects whose
+       size has not been fixed by know.  [4mNumberOfObjectsWithUnknownSize[24m return
+       the number of these objects.
+
+       [4mFixObject[24m sets the stream position to the current place of [4mobject[24m where
+       the representation of [4mobject[24m is to be  written  immediately  thereafter
+       (if  the object length is positive).  Note that the size of [4mobject[24m must
+       have been defined earlier using [4mReduceObjectSizeRange[24m (by giving a zero
+       length  interval)  or  [4mSetObjectSize[24m.   Fixed objects must no longer be
+       passed to any of the procedures above and they are no  longer  returned
+       by [4mGetUnfixedObjects[24m.
+
+   [1mApplication[0m
+       Generation  of  machine code with relative address references that need
+       later to be fixed works in four phases:
+
+       ·      Phase 1: Create a fragmented stream and write generated code  to
+              it.   In case of instructions of beforehand unknown size objects
+              have to be created and included that reference  the  destination
+              address by a label.
+
+       ·      Phase 2: Determine the size of all objects:
+
+              WHILE FragmentedStreams.NumberOfObjectsWithUnknownSize() > 0 DO
+                 FragmentedStreams.GetObjectsWithUnknownSize(s, it);
+                 anyObjectsChanged := FALSE;
+                 WHILE Iterators.Get(it, object) DO
+                    (* assumption: object.label is the label of the destination address *)
+                    FragmentedStreams.ObjectDistance(object, object.label,
+                       mindist, maxdist);
+                    IF (* mindist and maxdist define a range that finally
+                          resolves the size of object *) THEN
+                       size := (* final size *);
+                       FragmentedStreams.SetObjectSize(object, size);
+                       anyObjectsChanged := TRUE;
+                    ELSIF (* mindist and maxdist define a reduced range for object *) THEN
+                       minsize := (* new lower limit >= old lower limit *);
+                       maxsize := (* new upper limit <= old upper limit *);
+                       FragmentedStreams.ReduceObjectSizeRange(object, minsize, maxsize);
+                       anyObjectsChanged := TRUE;
+                    END;
+                 END;
+                 IF ~anyObjectsChanged THEN
+                    (* we have to pick one of the objects and to take the longest
+                       variant
+                    *)
+                    FragmentedStreams.GetObjectsWithUnknownSize(s, it);
+                    ok := Iterators.Get(it, object); ASSERT(ok);
+                    FragmentedStreams.ObjectDistance(object, object.label,
+                                                     mindist, maxdist);
+                    size := (* size in dependence of maxdist *);
+                    FragmentedStreams.SetObjectSize(object, size);
+                 END;
+              END;
+
+
+       ·      Phase 3: Fix all objects:
+
+              FragmentedStreams.GetUnfixedObjects(s, it);
+              WHILE Iterators.Get(it, object) DO
+                 (* retrieve distance to destination if necessary *)
+                 FragmentedStreams.ObjectDistance(object, object.label,
+                    mindist, maxdist);
+                 ASSERT(mindist = maxdist);
+                 FragmentedStreams.GetSizeRange(object, minsize, maxsize);
+                 ASSERT(minsize = maxsize);
+                 size := minsize;
+                 FragmentedStreams.FixObject(object);
+                 (* write size bytes to s representing object *)
+              END;
+
+
+       ·      Phase 4: Copy in-memory stream to output stream:
+
+              Streams.SetPos(s, 0); ok := Streams.Copy(s, out, -1);
+
+              Or, alternatively, convert it into a persistent text:
+
+              PersistentTexts.Create(ptext, s);
+
+              But  note  that in the latter case the close operation of [4ms[24m must
+              be  postponed  until  [4mptext[24m  is  written   using   [4mPersistentOb-[0m
+              [4mjects.Write[24m to its final storage.
+
+[1mDIAGNOSTICS[0m
+       By  default,  error events for fragmented streams are being queued (see
+       [4mRelatedEvents(3)[24m).  Beside error events generated by [4mStreams(3)[24m and the
+       underlying base stream, following error codes may be generated by [4mFrag-[0m
+       [4mmentedStreams[24m:
+       [4mcannotReadUnfixedObject[24m    Unfixed objects cannot be read until  [4mFixOb-[0m
+                                  [4mject[24m is called for them.
+       [4mcannotWriteUnfixedObject[24m   Likewise, [4mFragmentedStreams[24m does not support
+                                  write  operations  that  would  affect   not
+                                  unfixed objects.
+       [4minvalidPosition[24m            Negative   stream   positions  or  positions
+                                  beyond the minimal length returned by [4mLength[0m
+                                  are not supported.
+
+       A large number of preconditions is checked by assertions:
+
+       ·      [4mAttachLabel[24m must not be called more than once for a label.
+
+       ·      [4mIncludeObject[24m  expects  [4mminsize[24m  and [4mmaxsize[24m to be non-negative,
+              and [4mminsize[24m to be less or equal to [4mmaxsize[24m.
+
+       ·      [4mIncludeObject[24m requires the current stream position to be at  the
+              end  of  the  stream,  i.e.  objects  can  only be appended to a
+              stream.
+
+       ·      [4mDistance[24m and [4mDifference[24m require both labels to  be  attached  to
+              the same stream.
+
+       ·      [4mObjectDistance[24m   and   [4mObjectDifference[24m  expect  fIlabel  [4mto[24m  [4mbe[0m
+              [4mattached[24m [4mto[24m [4mthe[24m [4mstream[24m [4mobject[24m [4mis[24m [4mincluded.[0m
+
+       [4m·[24m      [4mReduceObjectSizeRange[24m and [4mFixObject[24m require size  specifications
+              to be in between the former limits.
+
+       Some assertions check that the base stream does not fail on valid oper-
+       ations.
+
+       Read and write operations are clipped by  unfixed  objects.  Operations
+       like  [4mStreams.Read[24m  and  [4mStreams.Write[24m  return [1mFALSE [22min these cases but
+       [4ms.count[24m could be positive.
+
+[1mSEE ALSO[0m
+       [4mLargeTexts(3)[24m        alternative base stream
+       [4mPersistentTexts(3)[24m   persistent texts
+       [4mRelatedEvents(3)[24m     error handling
+       [4mStreams(3)[24m           general stream operations
+       [4mTexts(3)[24m             default  implementation  of  underlying  in-memory
+                            stream
+
+[1mBUGS[0m
+       Objects must not be included in more than one fragmented stream.
+
+       If  the  base  stream  does not permit holes (as [4mTexts.Text[24m does) fixed
+       objects must be written entirely before  attempting  to  perform  other
+       write  operations.  Violations  may  cause  assertions to fail on later
+       write operations.
+
+
+
+Release 0.5               Last change: 23 April 2004      FragmentedStreams(3)

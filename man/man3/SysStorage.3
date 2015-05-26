@@ -1,0 +1,258 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH SysStorage 3 "Last change: 9 November 1995" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+SysStorage \- storage allocator with copying garbage collector
+.SH DESCRIPTION
+\fISysStorage\fP is a possible implementation of the
+interface of \fIStorage(3)\fP.
+.PP
+Additionally, this version also implements the \fIUntaggedStorage(3)\fP
+interface.
+.PP
+The current implementation utilizes \fISysMemory.Map\fP
+which allows to allocate memory at arbitrary memory locations
+and \fIMemory(3)\fP which manages the address space.
+During startup, \fISysStorage\fP initializes \fIMemory(3)\fP
+and calls \fIMemory.SetPageSize\fP.
+Further, \fISysStorage\fP examines the segments of \fISysSegments(3)\fP
+and registers them by calling \fIMemory.ReserveRegion\fP.
+.PP
+\fISysStorage\fP supports growing stacks and redzone protections.
+For this to work, it defines a handler for \fISysSignals.SIGSEGV\fP
+which checks all memory access faults for being stack extensions.
+The event component \fIfixed\fP will be set to \fBTRUE\fP if
+the address which caused the failure will be valid afterwards.
+.PP
+A copying garbage collector is available. During a garbage collection,
+all global data and coroutine stacks are scanned for pointers refering
+to dynamic storage objects.
+All objects within reach are copied into a new memory location and the
+corresponding pointer values are corrected.
+.PP
+When very large objects are requested (e.g. object size greater than the
+system's page size), \fISysStorage\fP checks if it is advantageous
+to treat them in a special way which makes it possible that such objects
+need not be copied by the garbage collector and the amount of memory
+needed for running a garbage collection is reduced.
+.PP
+For best address space utilization in case of large objects,
+it is recommended to request sizes which are (nearly) a power of 2.
+.PP
+After a garbage collection, the old memory regions are deallocated using
+\fIMemory.ReleaseRegion\fP and \fISysMemory.Unmap\fP.
+\fISysStorage\fP also looks for coroutines which can not be activated and
+is responsible for the deallocation of their stacks.
+In that case, \fISysInterrupts.interrupts\fP is updated.
+.SH DIAGNOSTICS
+\fISysStorage\fP raises \fIStorage.outOfMemory\fP short before
+running out of memory.
+.PP
+\fIProcess.endOfGarbageCollection\fP is guaranteed to be raised, if
+\fIProcess.startOfGarbageCollection\fP has been before, but it may occur
+that \fIProcess.startOfGarbageCollection\fP is raised and
+and no garbage collection can be performed. This happens when
+\fISysInterrupts.interrupts\fP is not \fB0\fP, or if there is not enough
+storage left to run a collection.
+A garbage collection is also rejected, 
+if the current priority is higher than \fIPriorities.storage\fP
+(\fIProcess.startOfGarbageCollection\fP is not raised).
+.
+.PP
+This implementation does not use \fICoroutines.tag\fP to identify coroutines.
+.SH "SEE ALSO"
+.Tb UntaggedStorage(3)
+.Tp Coroutines(3)
+exports \fICoroutines.tag\fP which marks coroutines
+.Tp Memory(3)
+address space management
+.Tp Priorities(3)
+event priority system
+.Tp Storage(3)
+storage allocating interface for the compiler
+.Tp SysInterrupts(3)
+bookkeeping about interrupted coroutines
+.Tp SysMemory(3)
+Oberon interface to \fImmap(2)\fP related calls
+.Tp SysSegments(3)
+list of reserved memory regions
+.Tp SysSignals(3)
+event manager of \fISysSignals.SIGSEGV\fP
+.Tp UntaggedStorage(3)
+interface for storage not affected by garbage collection
+.Te
+.br
+Andreas Borchert, \fIReport of Ulm's Oberon Compiler\fP,
+University of Ulm, SAI
+.SH FILES
+.Tb SysSegments(3)
+.Tp /dev/zero
+is used as memory object for \fISysMemory.Map\fP.
+\fISysStorage\fP fails completely if this file cannot
+be opened.
+.Te
+.SH ADAPTATION
+Hansj\*org N\*agele, University of Ulm
+.\" ---------------------------------------------------------------------------
+.\" $Id: SysStorage.3,v 1.6 1995/11/09 14:49:21 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: SysStorage.3,v $
+.\" Revision 1.6  1995/11/09  14:49:21  borchert
+.\" some minor changes which were necessary for the HTML conversion
+.\"
+.\" Revision 1.5  1994/07/01  09:05:55  borchert
+.\" adapted to GC by Hansjoerg Naegele
+.\" supports now interfaces of Storage & UntaggedStorage
+.\"
+.\" Revision 1.4  1993/06/10  13:14:38  borchert
+.\" completely new rewritten:
+.\" the former SysStorage has been now splitted into the
+.\" interface for the compiler Storage and a particular implementation
+.\" the new implementation now utilizes Memory and SysMemory
+.\"
+.\" Revision 1.3  1992/03/24  09:22:05  borchert
+.\" Process renamed to SysProcess
+.\"
+.\" Revision 1.2  1991/11/14  08:19:26  borchert
+.\" EventNumber -> EventType
+.\"
+.\" Revision 1.1  1990/08/31  17:02:23  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

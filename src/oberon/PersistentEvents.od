@@ -1,0 +1,96 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentE.od,v 1.1 1996/01/04 17:16:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PersistentE.od,v $
+   Revision 1.1  1996/01/04  17:16:28  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION PersistentEvents;
+
+   (* The persistence of events cannot be achieved easily: they aren't
+      extensions of PersistentObjects.Object, nor Services.Object, nor
+      Disciplines.Object but just of Objects.Object.
+
+      This module assumes a close relationship between event record
+      types and event types. The Init procedure may be called by any
+      module (which does not need to be the module which exports the
+      event type).
+
+      Just the message is preserved for unsupported events.
+   *)
+
+   IMPORT Events, Objects, RelatedEvents, Services, Streams;
+
+   TYPE
+      WriteProc = PROCEDURE (s: Streams.Stream; event: Events.Event) : BOOLEAN;
+      ReadProc = PROCEDURE (s: Streams.Stream;
+                            VAR event: Events.Event) : BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    write: WriteProc;
+	    read: ReadProc;
+	 END;
+
+   TYPE
+      Type = POINTER TO TypeRec;
+      TypeRec = RECORD (Services.ObjectRec) END;
+
+   CONST
+      bogusInput = 0;
+      unknownEventType = 1;
+      errors = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: SHORTINT;
+	    typeName: ARRAY 80 OF CHAR; (* in case of unknownEventType *)
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE CreateType(VAR type: Type; name: ARRAY OF CHAR; if: Interface);
+      (* name should be qualified with the module name equal to
+         that of the calling module
+      *)
+   PROCEDURE Init(eventType: Events.EventType; type: Type);
+
+   PROCEDURE Write(s: Streams.Stream; event: Events.Event) : BOOLEAN;
+   PROCEDURE Read(s: Streams.Stream; VAR event: Events.Event) : BOOLEAN;
+
+   PROCEDURE WriteErrors(s: Streams.Stream;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      (* is intended for queued events only; writes the list
+	 of error message which is attached to errors;
+	 the error list is not removed afterwards!
+      *)
+   PROCEDURE ReadErrors(s: Streams.Stream;
+			VAR errors: RelatedEvents.Object) : BOOLEAN;
+
+END PersistentEvents.

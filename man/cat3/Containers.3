@@ -1,0 +1,330 @@
+
+
+
+Containers(3)          Ulm's Oberon System          Containers(3)
+
+
+NNAAMMEE
+       Containers - collections of persistent objects
+
+SSYYNNOOPPSSIISS
+       TYPE Container = POINTER TO ContainerRec;
+       TYPE ContainerRec = RECORD (Services.ObjectRec) END;
+
+       TYPE Transaction = Transactions.Transaction;
+       TYPE Ident = LONGINT;
+       TYPE Object = PersistentDisciplines.Object;
+
+       CONST first = 0; last = 1; this = 2; pred = 3; succ = 4;
+       TYPE SearchDir = SHORTINT; (* first..succ *)
+
+       TYPE InsertProc = PROCEDURE (cont: Container; trans: Transaction;
+                                    VAR id: Ident; object: Object) : BOOLEAN;
+       TYPE DeleteProc = PROCEDURE (cont: Container; trans: Transaction;
+                                    id: Ident) : BOOLEAN;
+       TYPE ReplaceProc = PROCEDURE (cont: Container; trans: Transaction;
+                                     id: Ident; object: Object) : BOOLEAN;
+       TYPE ObtainProc = PROCEDURE (cont: Container; trans: Transaction;
+                                    id: Ident; VAR object: Object) : BOOLEAN;
+       TYPE ElementsProc = PROCEDURE (cont: Container; trans: Transaction;
+                                      VAR nelems: LONGINT) : BOOLEAN;
+       TYPE FindProc = PROCEDURE (cont: Container; trans: Transaction;
+                                  dir: SearchDir; VAR id: Ident) : BOOLEAN;
+       TYPE ReorganizeProc = PROCEDURE (cont: Container;
+                                        trans: Transaction) : BOOLEAN;
+       TYPE SetAnchorProc = PROCEDURE (cont: Container; trans: Transaction;
+                                       id: Ident) : BOOLEAN;
+       TYPE GetAnchorProc = PROCEDURE (cont: Container; trans: Transaction;
+                                       VAR id: Ident) : BOOLEAN;
+       TYPE CloseProc = PROCEDURE (cont: Container) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             insert: InsertProc;
+             delete: DeleteProc;
+             replace: ReplaceProc;
+             obtain: ObtainProc;
+             elements: ElementsProc;
+             find: FindProc;
+             reorganize: ReorganizeProc;
+             setAnchor: SetAnchorProc;
+             getAnchor: GetAnchorProc;
+             close: CloseProc;
+          END;
+
+       CONST insert = 0; delete = 1; replace = 2; obtain = 3;
+       CONST elements = 4; find = 5; reorganize = 6;
+       CONST setAnchor = 7; getAnchor = 8; close = 9;
+       TYPE Capability = SHORTINT; (* insert..close *)
+       TYPE Operation = SHORTINT;  (* insert..close *)
+
+
+
+Release 0.5       Last change: 28 November 1996                 1
+
+
+
+
+
+Containers(3)          Ulm's Oberon System          Containers(3)
+
+
+       TYPE CapabilitySet = SET;   (* OF Capability *)
+
+       CONST notSupported = 0;
+       CONST badParams = 1;
+       CONST alreadyClosed = 2;
+       CONST operationFailed = 3;
+       CONST errors = 4;
+       TYPE ErrorCode = SHORTINT; (* notSupported..operationFailed *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errcode: ErrorCode;
+             operation: Operation;
+             trans: Transaction;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Init(cont: Container; if: Interface);
+       PROCEDURE Close(cont: Container) : BOOLEAN;
+       PROCEDURE Capabilities(cont: Container) : CapabilitySet;
+
+       PROCEDURE Insert(cont: Container; trans: Transaction;
+                        VAR id: Ident; object: Object) : BOOLEAN;
+       PROCEDURE Delete(cont: Container; trans: Transaction;
+                        id: Ident) : BOOLEAN;
+       PROCEDURE Replace(cont: Container; trans: Transaction;
+                         id: Ident; object: Object) : BOOLEAN;
+       PROCEDURE Obtain(cont: Container; trans: Transaction;
+                        id: Ident; VAR object: Object) : BOOLEAN;
+
+       PROCEDURE Elements(cont: Container; trans: Transaction;
+                          VAR nelems: LONGINT) : BOOLEAN;
+       PROCEDURE Find(cont: Container; trans: Transaction; dir: SearchDir;
+                      VAR id: Ident) : BOOLEAN;
+
+       PROCEDURE Reorganize(cont: Container; trans: Transaction) : BOOLEAN;
+
+       PROCEDURE SetAnchor(cont: Container; trans: Transaction;
+                           id: Ident) : BOOLEAN;
+       PROCEDURE GetAnchor(cont: Container; trans: Transaction;
+                           VAR id: Ident) : BOOLEAN;
+
+       PROCEDURE Exchange(cont: Container; trans: Transaction; id: Ident;
+                          new: Object; VAR old: Object) : BOOLEAN;
+       PROCEDURE Remove(cont: Container; trans: Transaction;
+                        id: Ident; VAR object: Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _C_o_n_t_a_i_n_e_r_s  defines  an extensible abstraction for storing
+       persistent objects in collections. Members of such collec­
+       tions  are  identified  by  a  unique  number  _i_d which is
+
+
+
+Release 0.5       Last change: 28 November 1996                 2
+
+
+
+
+
+Containers(3)          Ulm's Oberon System          Containers(3)
+
+
+       generated  by  the  underlying  implementations  when  the
+       object is inserted into the container.
+
+       Implementors  of containers have to call _I_n_i_t during their
+       opening process providing their  specific  implementations
+       of the container operations in form of an interface record
+       _i_f.  _C_o_n_t_a_i_n_e_r_s expects the interface procedures  to  ful­
+       fill the following specifications:
+       _i_n_s_e_r_t: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; VVAARR
+            _i_d: _I_d_e_n_t; _o_b_j_e_c_t: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            Insert a new object _o_b_j_e_c_t into  the  container  _c_o_n_t
+            and  return  a  unique  _i_d  for  accessing the stored
+            object.
+       _d_e_l_e_t_e: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _i_d:
+            _I_d_e_n_t) : BBOOOOLLEEAANN;
+            Delete  the  object  identified  by  _i_d from the con­
+            tainer.
+       _r_e_p_l_a_c_e: PPRROOCCEEDDUURREE(_c_o_n_t:  _C_o_n_t_a_i_n_e_r;  _t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n;
+            _i_d: _I_d_e_n_t; _o_b_j_e_c_t: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            Delete the object identified by _i_d from the container
+            and replace it by _o_b_j_e_c_t.
+       _o_b_t_a_i_n: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _i_d:
+            _I_d_e_n_t; VVAARR _o_b_j_e_c_t: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            Retrieve  the  object  identified by _i_d from the con­
+            tainer.
+       _e_l_e_m_e_n_t_s: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r;  _t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n;
+            VVAARR _n_e_l_e_m_s: LLOONNGGIINNTT) : BBOOOOLLEEAANN;
+            Return  the  number  of  elements currently stored in
+            _c_o_n_t.
+       _f_i_n_d: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n;  _d_i_r:
+            _S_e_a_r_c_h_D_i_r; VVAARR _i_d: _I_d_e_n_t) : BBOOOOLLEEAANN;
+            Find  out certain object identifications dependent on
+            _d_i_r and _i_d where _d_i_r defines the direction and _i_d the
+            starting position of the search.
+            _t_h_i_s   Determine if an object with _i_d is stored.
+            _s_u_c_c   Increment  _i_d to the next greater object iden­
+                   tification used.
+            _p_r_e_d   Decrement _i_d to the next  smaller  identifica­
+                   tion used.
+            _f_i_r_s_t  Return the lowest _i_d in use.
+            _l_a_s_t   Return the highest _i_d in use.
+            Implementations  should  be aware that in combination
+            with _t_h_i_s, _s_u_c_c and _p_r_e_d the initial value of _i_d  has
+            to be used for computation (even if declared as VVAARR).
+       _r_e_o_r_g_a_n_i_z_e: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n)
+            : BBOOOOLLEEAANN;
+            Reorganize  the container in an implementation-depen­
+            dent manner.
+       _s_e_t_A_n_c_h_o_r: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n;
+            _i_d: _I_d_e_n_t) : BBOOOOLLEEAANN;
+            Define  or  redefine  an  anchor _i_d for the container
+            (see below).
+       _g_e_t_A_n_c_h_o_r: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r; _t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n;
+            VVAARR _i_d: _I_d_e_n_t) : BBOOOOLLEEAANN;
+
+
+
+Release 0.5       Last change: 28 November 1996                 3
+
+
+
+
+
+Containers(3)          Ulm's Oberon System          Containers(3)
+
+
+            Return the anchor _i_d of the container.
+       _c_l_o_s_e: PPRROOCCEEDDUURREE(_c_o_n_t: _C_o_n_t_a_i_n_e_r) : BBOOOOLLEEAANN;
+            Execute necessary clean-up activities before the con­
+            tainer is closed.
+
+       Implementations are free to implement all  of  the  listed
+       operations  or only a subset of them.  Note, however, that
+       the set of implemented operations must not be empty.   The
+       set  of  capabilities  is  computed by _C_o_n_t_a_i_n_e_r_s from the
+       interface procedures not set to NNIILL and can be accessed by
+       _C_a_p_a_b_i_l_i_t_i_e_s.  All accessing operations are always associ­
+       ated to a running transaction which is given by _t_r_a_n_s (see
+       _T_r_a_n_s_a_c_t_i_o_n_s_(_3_)).   There  may  be implementations of _C_o_n_­
+       _t_a_i_n_e_r_s which ignore _t_r_a_n_s and accept any  value  for  it,
+       including NNIILL.
+
+       Applications can access a container by the exported proce­
+       dures which in general follow the  specifications  of  the
+       corresponding  interface procedures.  _S_e_t_A_n_c_h_o_r and _G_e_t_A_n_­
+       _c_h_o_r are intended to maintain  the  identification  of  an
+       anchor  object  for  the  container.  This feature is very
+       helpful for implementations  that  want  to  organize  the
+       objects  in  a  certain way and need some handles for this
+       goal (e.g. the beginning of a list or the root of a tree).
+
+       _R_e_m_o_v_e  is equivalent to _O_b_t_a_i_n + _D_e_l_e_t_e_, _E_x_c_h_a_n_g_e has the
+       same effect as _O_b_t_a_i_n and _R_e_p_l_a_c_e.   Any  other  procedure
+       call  is directly delegated to the corresponding interface
+       procedure.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Insufficient capabilities of  the  underlying  implementa­
+       tions,  providing  an  illegal  _d_i_r  parameter to _F_i_n_d, an
+       attempt to operate on closed containers, or  any  failures
+       on  the  implementation  level  will  cause  _C_o_n_t_a_i_n_e_r_s to
+       return FFAALLSSEE and to raise  an  event  of  type  _e_r_r_o_r  and
+       relate it to _c_o_n_t.  Additionally, the underlying implemen­
+       tations are  expected  to  generate  more  detailed  error
+       events.
+
+       _I_n_i_t checks its parameters for validity by assertions.
+
+SSEEEE AALLSSOO
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)           error handling
+       _P_e_r_s_i_s_t_e_n_t_D_i_s_c_i_p_l_i_n_e_s_(_3_)   definition     of    persistent
+                                  objects  with  additional  data
+                                  structures
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)       basic  definition of persistent
+                                  objects
+       _R_e_m_o_t_e_C_o_n_t_a_i_n_e_r_s_(_3_)        remote access to containers
+       _S_e_r_v_i_c_e_s_(_3_)                type system of the library
+       _S_t_a_n_d_a_r_d_C_o_n_t_a_i_n_e_r_s_(_3_)      standard implementation of con­
+                                  tainers
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 4
+
+
+
+
+
+Containers(3)          Ulm's Oberon System          Containers(3)
+
+
+       _T_r_a_n_s_a_c_t_i_o_n_s_(_3_)            abstraction   for   distributed
+                                  transactions
+
+AAUUTTHHOORR
+       Werner  Stanglow  (stanglow@mathematik.uni-ulm.de),  revi­
+       sions are due to Andreas Borchert.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 5
+
+

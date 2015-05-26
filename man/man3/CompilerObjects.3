@@ -1,0 +1,506 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH CompilerObjects 3 "Last change: 24 June 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+CompilerObjects \- language-independent base of persistent compiler objects
+.SH SYNOPSIS
+.Pg
+TYPE Location = POINTER TO LocationRec;
+TYPE LocationRec =
+   RECORD
+      (PersistentObjects.ObjectRec)
+      src: Sources.Source;
+      begin, end: Streams.Count;
+   END;
+.sp 0.7
+TYPE Object = POINTER TO ObjectRec;
+TYPE ObjectRec =
+   RECORD
+      (PersistentDisciplines.ObjectRec)
+      loc: Location;
+   END;
+.sp 0.7
+TYPE Attachment = POINTER TO AttachmentRec;
+TYPE AttachmentRec = RECORD (ObjectRec) END;
+.sp 0.7
+CONST public = 1; private = 2;
+TYPE ObjectType = SHORTINT; (* public or private *)
+.sp 0.3
+CONST archIndependent = 1;
+CONST archDependent = 3;
+TYPE Stage = SHORTINT; (* archIndependent or archDependent *)
+.sp 0.3
+TYPE CacheMode = SET;
+CONST cachePublic = {public * archIndependent,
+         public * archDependent};
+CONST cachePrivate = {private * archIndependent,
+         private * archDependent};
+CONST cacheAll = cachePublic + cachePrivate;
+CONST cacheArchIndependent = {public * archIndependent,
+         private * archIndependent};
+CONST cacheArchDependent = {public * archDependent,
+         private * archDependent};
+.sp 0.7
+TYPE Header = POINTER TO HeaderRec;
+TYPE HeaderRec =
+   RECORD
+      (PersistentDisciplines.ObjectRec)
+      modname: ConstStrings.String;
+      src: Sources.Source;
+      srcid: ConstStrings.String;
+      key: CompilerKeys.Key;
+      dependencies: CompilerKeys.Set;
+      type: ObjectType;
+      stage: Stage;
+      arch: Architectures.Architecture;
+   END;
+.sp 0.7
+TYPE ModuleTable = POINTER TO ModuleTableRec;
+TYPE ModuleTableRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+CONST cannotOpenObjectText = 0;
+CONST cannotReadTextHeader = 1;
+CONST cannotDecodeObject = 2;
+CONST corruptedInput = 3;
+CONST invalidStructure = 4;
+CONST errors = 5;
+TYPE ErrorCode = SHORTINT; (* cannotOpenObjectText ... *)
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      code: ErrorCode;
+      modname: ConstStrings.String;
+   END;
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+.sp 0.7
+PROCEDURE CreateLocation(VAR location: Location;
+                         src: Sources.Source;
+                         begin, end: Streams.Count);
+.sp 0.7
+PROCEDURE CreateHeader(VAR header: Header;
+                       modname: ConstStrings.String);
+.sp 0.7
+PROCEDURE CreateModuleTable(VAR mtab: ModuleTable);
+PROCEDURE AddModule(mtab: ModuleTable;
+                    header: Header; module: Object);
+PROCEDURE AddHeader(mtab: ModuleTable; header: Header);
+PROCEDURE Lookup(mtab: ModuleTable;
+                 modname: ConstStrings.String;
+                 type: ObjectType;
+                 arch: Architectures.Architecture;
+                 VAR header: Header;
+                 VAR module: Object) : BOOLEAN;
+PROCEDURE LookupHeader(mtab: ModuleTable;
+                       modname: ConstStrings.String;
+                       type: ObjectType;
+                       arch: Architectures.Architecture;
+                       VAR header: Header) : BOOLEAN;
+.sp 0.7
+PROCEDURE Init(object: Object);
+PROCEDURE InitBuiltInObject(object: Object);
+PROCEDURE Attach(object: Object; attachment: Attachment);
+PROCEDURE InclAttachment(object: Object; attachment: Attachment);
+PROCEDURE GetAttachment(object: Object;
+                        VAR attachment: Attachment);
+.sp 0.7
+PROCEDURE ConvertObjectToText(
+            object: Object;
+            table: ModularizedStructures.ObjectTable;
+            header: Header;
+            VAR text: PersistentTexts.Text;
+            errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE ConvertTextToObject(
+            text: PersistentTexts.Text;
+            table: ModularizedStructures.ObjectTable;
+            header: Header;
+            VAR object: Object;
+            errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                      VAR object: CompilerObjects.Object) : BOOLEAN;
+PROCEDURE Write(s: Streams.Stream;
+                object: CompilerObjects.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I CompilerObjects
+provides a language-independent base of persistent compiler objects.
+Successful compilation runs return an object of type \fIObject\fP
+(a so-called root object) that references further persistent
+objects either generated by this run or by other runs of imported
+modules by means of \fIModularizedStructures(3)\fP. Each compilation
+result is accompanied by a header that allows to examine meta data
+without accessing or restoring its associated objects.
+.LP
+Not just root objects should be extensions of
+\fICompilerObjects.Object\fP but every object that may be referenced
+by compilation results of other modules (like symbol table entries)
+as \fIWrite\fP and \fIGuardedRead\fP provide the necessary support for
+\fIModularizedStructures(3)\fP. Compiler objects should never
+written or read to external streams but instead converted to or from
+persistent texts (see \fIPersistentTexts(3)\fP) by
+\fIConvertObjectToText\fP and \fIConvertTextToObject\fP, respectively.
+This is necessary to store and load compilations results without
+taking care of topological orders (as required by
+\fIModularizedStructures(3)\fP) and to avoid time-consuming restoration
+operations as long they are not strictly required.
+.LP
+Compiler objects have optionally a location of type \fILocation\fP
+that references a stretch of bytes inside a source using
+stream positions of \fIStreams(3)\fP. These locations
+may later be used on the generation of error events (see
+\fICompilerErrors(3)\fP). Compiler locations are expected to be
+precise by not just noting a single position but the full
+textual representation of a syntactical construct that is represented
+by a compiler object. While locations of leaf objects of an abstract syntax
+tree may just cover a token, upper nodes more close to the
+root should have a location that is the smallest interval including
+the locations of all sub nodes.
+.LP
+Most languages come with built-in objects representing, for example, basic
+types like integers and floating point numbers. One way to represent them
+as persistent objects is to treat them as items of a separate module but
+this is not always practicable. \fICompilerObjects(3)\fP allows built-in
+objects to be tagged as such, and, that is to be considered with care,
+saves and restores them not using \fIModularizedStructures(3)\fP
+but directly by \fILinearizedStructures(3)\fP which causes them to
+be cloned. This leads to multiple incarnations of built-in objects
+representing the same built-in language construct if they are loaded
+from different modules.
+.LP
+In a multi-stage compilation environment where the first pass
+generates an architecture-independent abstract syntax tree, followed
+by a second pass that generates an architecture-dependent interface
+usable for compilation runs of other modules importing this module,
+it might be useful to have twin objects. One object represents the
+architecture-independent part and belongs to a separate module in the
+sense of \fIModularizedStructures(3)\fP. The second object provides
+additional architecture-dependent informations for the first object. The
+second object can easily reference the first object but not vice
+versa. This is not just due to the avoidance of cyclic references
+(as required by \fIModularizedStructures(3)\fP) but also under
+the consideration that there might be many different architectures
+and therefore different architecture-dependent extensions to one
+architecture-independent syntax tree.
+.LP
+This problem is solved by so-called attachments of type \fIAttachment\fP
+which is a specific extension of \fIObject\fP.  \fIAttach\fP creates
+a persistent tie between \fIobject\fP and \fIattachment\fP, and
+\fIGetAttachment\fP returns the attachment belonging to \fIobject\fP.
+While any number of attachments for one object may have once been
+created (usually one for each architecture), there must never be more
+than one attachment in existence in memory for each object instance in
+memory. Hence, if many different architecture-dependent informations
+are needed for one object, a single attachment object should
+carry all of them, either directly or by use of
+\fIPersistentDisciplines(3)\fP. Note, however, that
+\fIPersistentDisciplines(3)\fP or other means must not be used to
+modify loaded compilation results from earlier compilation runs as they
+have to be treated as read-only.
+.LP
+Headers provide all language-independent meta informations needed
+of a result generated by a compiler:
+.Tb dependencies
+.Tp modname
+Module name that must conform to that of the source reference
+\fIsrc.modname\fP if \fIsrc\fP is non-\fBNIL\fP
+(see \fICompilerSources(3)\fP).
+.Tp src
+Source reference, may be \fBNIL\fP.
+.Tp srcid
+Source identification (see \fICompilerSources(3)\fP), must be non-\fBNIL\fP.
+.Tp key
+Associated interface-branding key (see \fICompilerKeys(3)\fP).
+.Tp dependencies
+Set of dependencies to other interfaces (see \fICompilerKeys(3)\fP).
+.Tp type
+Type of compiler result: either \fIpublic\fP (interface information
+usable on compiler runs of importing modules), or \fIprivate\fP
+(final machine code or an intermediate architecture-independent state
+representing the abstract syntax tree).
+.Tp stage
+Either \fIarchIndependent\fP or \fIarchDependent\fP.
+.Tp arch
+Concrete architecture: \fBNIL\fP if \fIstage\fP equals
+\fIarchIndependent\fP, and non-\fBNIL\fP otherwise
+(see \fIArchitectures(3)\fP).
+.Te
+.LP
+The integer constants of \fIObjectType\fP and \fIStage\fP have been
+chosen in a way that gives any possible combination of object type and
+stage a unique number. Sets of these combinations are cache modes that
+are used by \fICompilers(3)\fP to decide which kinds of intermediate
+results should be kept in storage for further compilations.
+.LP
+A module table allows to collect all compilation results that are loaded
+or generated during a compilation run. It is as such part of the context
+of a compilation (see \fICompilers(3)\fP) and maintained by the object
+loader (see \fIObjectLoader(3)\fP).  Module tables have at maximum two
+entries per module: public interface and private stuff (abstract syntax
+tree or machine code). Entries consists of a header and, optionally, the
+loaded compilation result. Entries may be upgraded, i.e.  they may advance
+from architecture-independent to architecture-dependent, and compilation
+results may be added where previously just a header was present. Module
+tables must always be consistent in the sense of \fICompilerKeys(3)\fP
+and violations lead to failed assertions.
+.I CreateLocation
+creates a location record representing the byte stretch
+\fB[\fP\fIbegin\fP, \fIend\fP\fB)\fP of \fIsrc\fP. Except for noting the
+end of a source, \fIend\fP should be larger than \fIbegin\fP. Locations
+are usually stored into the \fIlocation\fP component of compiler objects
+and later used to generate error messages (see \fICompilerErrors(3)\fP)
+or allow debuggers to display source texts.
+.LP
+.I CreateHeader
+creates and initializes a header object of \fImodname\fP. Note
+that the remaining components need to be initialized before
+returning it as compilation result or including it to a module table.
+.LP
+.I CreateModuleTable
+creates an empty module table.
+While \fIAddHeader\fP adds an entry consisting only of a header
+to \fImtab\fP, \fIAddModule\fP adds both of them, header and
+an object representing the result of a compilation. Upgrades
+are permitted, i.e. \fIAddModule\fP may be called for modules
+already added to add a compilation result where the header only
+was formerly known, to advance a compilations result from
+architecture-independent to architecture-dependent, or to add
+the compilation result of an entire module where just the
+public interface was part of the module table before.
+Note, however, that compatibility in the sense of \fICompilerKeys(3)\fP
+is to be strictly preserved.
+.LP
+.I Lookup
+and
+.I LookupHeader
+allow to look up compiler objects of the module table by
+their module name, the object type (\fIpublic\fP or \fIprivate\fP),
+and their architecture. Note that the architecture passed to
+the look up procedures needs just to be compatible with that of
+the object look for (see \fIArchitectures(3)\fP).
+.LP
+.I Init
+and
+.I InitBuiltInObject
+allow to initialize ordinary and built-in compiler objects. Note
+that \fIInit\fP may be followed by \fIInitBuiltInObject\fP as
+long \fIobject\fP has not been tied with a module before by
+writing it using \fIWrite\fP.
+.LP
+.I Attach
+creates a persistent association between
+\fIattachment\fP and \fIobject\fP.
+.I InclAttachment
+should be called for all attachments using a root object belonging
+to the same module in the sense of \fIModularizedStructures(3)\fP.
+This may be omitted if these attachments are already connected
+to the root object by other persistent references that do not
+cross module boundaries.
+.I GetAttachment
+allows to retrieve the attachment belonging to an object. \fBNIL\fP
+is returned if there is no attachment present.
+.LP
+.I ConvertObjectToText
+and
+.I ConvertTextToObject
+convert root objects of compilation results to persistent texts and
+vice versa.
+.LP
+.I GuardedRead
+and
+.I Write
+are to be used in marshalling procedures to read and write
+compiler objects.
+.SH DIAGNOSTICS
+Following error events may be raised by \fICompilerObjects\fP in
+its marshalling and conversion procedures:
+.Tb cannotOpenObjectText
+.Tp cannotOpenObjectText
+is returned by \fIConvertTextToObject\fP if it is unable
+to open the persistent text object (see \fIPersistentTexts(3)\fP).
+.Tp cannotReadTextHeader
+is returned by \fIConvertTextToObject\fP on failures
+to read the module name that is expected at the beginning of \fItext\fP.
+.Tp cannotDecodeObject
+is returned by \fIConvertTextToObject\fP on failures of
+\fIGuardedRead\fP.
+.Tp corruptedInput
+is returned by \fIGuardedRead\fP and the marshalling read procedure
+for attachment objects in case of inconsistencies.
+.Tp invalidStructure
+is raised by \fIGuardedRead\fP in case of lookup failures regarding
+references to foreign persistent modules (see \fIModularizedStructures(3)\fP).
+.Te
+.LP
+In addition, various assertions check the validity of module tabs,
+headers, and parameters.
+.SH "SEE ALSO"
+.Tb ModularizedStructures(3)
+.Tp Architectures(3)
+classification of target architectures
+.Tp CompilerKeys(3)
+keys that identify dependencies of compiler-generated objects
+.Tp CompilerSources(3)
+objects representing source texts
+.Tp CompilerStreamPosKeys(3)
+service provider of \fIStreamPosKeys(3)\fP for extensions of
+\fICompilerObjects.Object\fP
+.Tp Compilers(3)
+general language-independent compiler interface
+.Tp ModularizedStructures(3)
+modularization of persistent object structures
+.Tp ObjectLoader(3)
+general language-independent loader
+.Tp PersistentTexts(3)
+persistent text objects
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: CompilerObjects.3,v 1.3 2004/06/24 08:27:41 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: CompilerObjects.3,v $
+.\" Revision 1.3  2004/06/24 08:27:41  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.2  2000/11/17 06:51:34  borchert
+.\" reference to CompilerStreamPosKeys added
+.\"
+.\" Revision 1.1  2000/04/30  10:46:58  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

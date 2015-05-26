@@ -1,0 +1,513 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSStdResol.om,v 1.3 2009/02/05 14:15:17 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSStdResol.om,v $
+   Revision 1.3  2009/02/05 14:15:17  borchert
+   bug fix: accept all records if rrtype = DNSRecords.all
+
+   Revision 1.2  2005/03/15 07:28:36  borchert
+   do no longer generate all possible suffixes from the local domain
+
+   Revision 1.1  2004/03/09 16:31:40  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE DNSStdResolvers;
+
+   IMPORT ConstStrings, DNSHeaders, DNSRecords, DNSRequests, DNSResolvers,
+      EphemeralPortRange, Errors, Events, IPv4Addresses, Iterators,
+      RelatedEvents, ResolvConfParser, Resources, Services, Streams, Strings,
+      SysMain, SysSockets, UnixEnvironment, UnixFiles, Write;
+
+   CONST
+      port = 53;
+      defaultConfiguration = "/etc/resolv.conf";
+      maxCNAME = 8;
+
+   TYPE
+      Resolver = POINTER TO ResolverRec;
+      ResolverRec =
+	 RECORD
+	    (DNSResolvers.ResolverRec)
+	    context: DNSRequests.Context;
+	    conf: ResolvConfParser.Configuration;
+	    ndots: INTEGER;
+	 END;
+   VAR
+      type: Services.Type;
+      if: DNSResolvers.Interface;
+      key: Resources.Key;
+      resolver: Resolver;
+
+   CONST
+      noRecordsFound = 0;
+      nonExistingDomain = 1;
+      toomanyCNAMEs = 2;
+      badCNAME = 3;
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* noRecordsFound... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    domain: DNSRecords.Name;
+	    rrtype: DNSRecords.RRType;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.domain[0] # 0X THEN
+	    Write.StringS(s, event.domain);
+	    Write.StringS(s, ": ");
+	 END;
+	 IF (event.rrtype >= 0) & (event.rrtype < LEN(DNSRecords.rrName)) &
+	       (DNSRecords.rrName[event.rrtype][0] # 0X) THEN
+	    CASE event.errorcode OF
+	    | noRecordsFound:
+	       Write.StringS(s, "no ");
+	       Write.StringS(s, DNSRecords.rrName[event.rrtype]);
+	       Write.StringS(s, " records found");
+	    ELSE
+	       Write.StringS(s, event.message);
+	       Write.StringS(s, " while looking for ");
+	       Write.StringS(s, DNSRecords.rrName[event.rrtype]);
+	       Write.StringS(s, " records");
+	    END;
+	 ELSE
+	    Write.StringS(s, event.message);
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[noRecordsFound] := "no records found";
+      errormsg[nonExistingDomain] := "non-existing domain";
+      errormsg[toomanyCNAMEs] := "chain of CNAME records is too long";
+      errormsg[badCNAME] := "CNAME points to a non-existing domain";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   rrtype: DNSRecords.RRType;
+		   domain: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.rrtype := rrtype;
+      COPY(domain, event.domain);
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 resolver: Resolver;
+   BEGIN
+      WITH event: Resources.Event DO
+	 resolver := event.resource(Resolver);
+	 CASE event.change OF
+	 | Resources.unreferenced:
+	    Resources.Notify(resolver, Resources.terminated);
+	 | Resources.terminated:
+	    Resources.Notify(resolver.context, Resources.terminated);
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE IterateSuffixes(it: Iterators.Iterator;
+                             ref: Iterators.Reference;
+			     mode: Iterators.Mode);
+      VAR
+	 domain: DNSRecords.Name;
+	 cs: ConstStrings.String;
+	 slit: Iterators.Iterator;
+	 any: BOOLEAN;
+
+      PROCEDURE Generate(domain: ARRAY OF CHAR);
+	 VAR
+	    cs: ConstStrings.String;
+      BEGIN
+	 ConstStrings.Create(cs, domain);
+	 Iterators.Yield(it, cs);
+      END Generate;
+
+   BEGIN (* IterateSuffixes *)
+      IF UnixEnvironment.String("LOCALDOMAIN", domain) &
+	    (domain[0] # 0X) THEN
+	 Generate(domain);
+      ELSE
+	 WITH ref: Resolver DO
+	    any := FALSE;
+	    ResolvConfParser.IterateSearchList(ref.conf, slit);
+	    WHILE Iterators.Get(slit, cs) DO
+	       Iterators.Yield(it, cs); any := TRUE;
+	    END;
+	    IF ~any & ResolvConfParser.GetLocalDomain(ref.conf, domain) THEN
+	       Generate(domain);
+	    END;
+	 END;
+      END;
+   END IterateSuffixes;
+
+   PROCEDURE CreateSuffixIterator(VAR it: Iterators.Iterator;
+                                  resolver: DNSResolvers.Resolver);
+   BEGIN
+      Iterators.Create(it, IterateSuffixes, resolver, 0);
+   END CreateSuffixIterator;
+
+   PROCEDURE LookForCNAME(VAR name: ARRAY OF CHAR;
+			  record: DNSRecords.Record) : BOOLEAN;
+   BEGIN
+      WHILE record # NIL DO
+	 IF (name = record.name) & (record.type = DNSRecords.cname) &
+	       DNSRecords.ExtractName(record, name) THEN
+	    RETURN TRUE
+	 END;
+	 record := record.next;
+      END;
+      RETURN FALSE
+   END LookForCNAME;
+
+   PROCEDURE GetRecords(resolver: DNSResolvers.Resolver;
+                        hostname: ARRAY OF CHAR;
+			rrtype: DNSRecords.RRType;
+			trysuffixes: BOOLEAN;
+			VAR records: DNSRecords.Record;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 header: DNSHeaders.Header;
+	 answerRecs, authRecs, addRecs: DNSRecords.Record;
+	 rcode: DNSHeaders.ResponseCode;
+	 record: DNSRecords.Record;
+	 name: DNSRecords.Name;
+	 cnamecnt: INTEGER;
+	 head, tail, entry: DNSRecords.Record;
+	 ipaddr: IPv4Addresses.Address;
+	 suffixes: Iterators.Iterator;
+	 suffix: DNSRecords.Name;
+	 csdomain: ConstStrings.String;
+	 followingCNAME: BOOLEAN;
+	 skipFirstAttempt: BOOLEAN;
+
+      PROCEDURE CountDots() : INTEGER;
+	 VAR
+	    index, count: INTEGER;
+      BEGIN
+	 index := 0; count := 0;
+	 WHILE (index < LEN(hostname)) & (hostname[index] # 0X) DO
+	    IF hostname[index] = "." THEN
+	       INC(count);
+	    END;
+	    INC(index);
+	 END;
+	 RETURN count
+      END CountDots;
+
+      PROCEDURE UseNextSuffix() : BOOLEAN;
+      BEGIN
+	 IF suffixes = NIL THEN
+	    CreateSuffixIterator(suffixes, resolver);
+	 END;
+	 IF ~Iterators.Get(suffixes, csdomain) THEN
+	    (* list of domain names exhausted *)
+	    Error(errors, nonExistingDomain, rrtype, hostname);
+	    RETURN FALSE
+	 END;
+	 ConstStrings.Extract(suffix, csdomain);
+	 COPY(hostname, name);
+	 IF suffix[0] # "." THEN
+	    Strings.Concatenate(name, ".");
+	 END;
+	 Strings.Concatenate(name, suffix);
+	 RETURN TRUE
+      END UseNextSuffix;
+
+   BEGIN (* GetRecords *)
+      WITH resolver: Resolver DO
+	 suffixes := NIL; cnamecnt := 0;
+	 IF trysuffixes & (resolver.ndots > 0) &
+	       (CountDots() < resolver.ndots) THEN
+	    IF ~UseNextSuffix() THEN RETURN FALSE END;
+	 ELSE
+	    COPY(hostname, name);
+	 END;
+	 LOOP
+	    IF ~DNSRequests.Process(resolver.context, name,
+		  rrtype, DNSRecords.classIN,
+		  header, answerRecs, authRecs, addRecs, errors) THEN
+	       (* error events have already been generated *)
+	       RETURN FALSE
+	    END;
+	    rcode := DNSHeaders.GetResponseCode(header);
+	    ASSERT((rcode = DNSHeaders.noError) OR
+	       (rcode = DNSHeaders.nameError));
+	    IF rcode = DNSHeaders.noError THEN
+	       followingCNAME := FALSE;
+	       IF (rrtype # DNSRecords.all) & (rrtype # DNSRecords.cname) THEN
+		  (* follow CNAME chains unless all records are requested *)
+		  WHILE LookForCNAME(name, answerRecs) DO
+		     INC(cnamecnt);
+		     IF cnamecnt > maxCNAME THEN
+			Error(errors, toomanyCNAMEs, rrtype, hostname);
+			RETURN FALSE
+		     END;
+		     followingCNAME := TRUE;
+		  END;
+	       END;
+	       head := NIL; tail := NIL;
+	       record := answerRecs;
+	       WHILE record # NIL DO
+		  entry := record; record := record.next;
+		  IF (entry.name = name) &
+			((rrtype = DNSRecords.all) OR
+			   (entry.type = rrtype)) THEN
+		     entry.next := NIL;
+		     IF head = NIL THEN
+			head := entry;
+		     ELSE
+			tail.next := entry;
+		     END;
+		     tail := entry;
+		  END;
+	       END;
+	       IF head # NIL THEN
+		  records := head; RETURN TRUE
+	       END;
+	       IF ~followingCNAME THEN
+		  (* valid domain name but no A records *)
+		  Error(errors, noRecordsFound, rrtype, hostname);
+		  RETURN FALSE
+	       END;
+	    ELSIF cnamecnt = 0 THEN
+	       IF trysuffixes THEN
+		  IF ~UseNextSuffix() THEN RETURN FALSE END;
+	       ELSE
+		  Error(errors, nonExistingDomain, rrtype, hostname);
+		  RETURN FALSE
+	       END;
+	    ELSE
+	       (* CNAME record points to an unknown name *)
+	       Error(errors, badCNAME, rrtype, hostname);
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+   END GetRecords;
+
+   (* === interface procedures =========================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(type, "DNSStdResolvers.Resolver",
+	 "DNSResolvers.Resolver");
+      NEW(if);
+      if.getRecords := GetRecords;
+   END Init;
+
+   PROCEDURE SysMainTerminationHandler(event: Events.Event);
+   BEGIN
+      IF resolver # NIL THEN
+	 Resources.Detach(resolver, key);
+	 resolver := NIL;
+      END;
+   END SysMainTerminationHandler;
+
+   PROCEDURE CreateFromConfigurationOrEnvironment(
+	       VAR resolver: DNSResolvers.Resolver;
+	       configuration: ARRAY OF CHAR;
+	       environment: ARRAY OF CHAR);
+      VAR
+	 resolv: Resolver;
+	 notification: Events.EventType;
+
+      PROCEDURE CreateContext(VAR context: DNSRequests.Context;
+			      VAR conf: ResolvConfParser.Configuration;
+			      configuration: ARRAY OF CHAR;
+			      errors: RelatedEvents.Object);
+	 VAR
+	    s: Streams.Stream;
+	    ns: ResolvConfParser.NameServer;
+	    sockaddr: IPv4Addresses.SocketAddress;
+	    nsname: ARRAY 16 OF CHAR;
+	    it: Iterators.Iterator;
+	    rotate: INTEGER;
+	    timeout: INTEGER;
+	    retries: INTEGER;
+
+	 PROCEDURE WriteDottedDecimal(ipaddr: IPv4Addresses.Address;
+				      VAR dotdec: ARRAY OF CHAR);
+	    VAR
+	       s: Streams.Stream;
+	 BEGIN
+	    dotdec[0] := 0X; Strings.Open(s, dotdec);
+	    IPv4Addresses.WriteText(s, ipaddr);
+	    Streams.Release(s);
+	 END WriteDottedDecimal;
+
+	 PROCEDURE AddNameserver(sockaddr: IPv4Addresses.SocketAddress);
+	    VAR
+	       sysaddr: IPv4Addresses.SysAddress;
+	       socket: SysSockets.Socket;
+
+	    PROCEDURE SelectPort(socket: SysSockets.Socket);
+	       VAR
+		  attempt: INTEGER;
+		  localaddr: IPv4Addresses.SocketAddress;
+		  sysaddr: IPv4Addresses.SysAddress;
+	    BEGIN
+	       localaddr.host := 0;
+	       attempt := 0;
+	       WHILE attempt < 10 DO
+		  IPv4Addresses.SetPort(localaddr,
+		     EphemeralPortRange.GetRandomPort());
+		  IPv4Addresses.ConvertToSys(localaddr, sysaddr);
+		  IF SysSockets.Bind(socket, sysaddr, RelatedEvents.null) THEN
+		     RETURN
+		  END;
+		  INC(attempt);
+	       END;
+	    END SelectPort;
+
+	 BEGIN (* AddNameserver *)
+	    IPv4Addresses.ConvertToSys(sockaddr, sysaddr);
+	    IF SysSockets.Create(socket, SysSockets.pfINET,
+		     SysSockets.dgram, 0, errors) THEN
+	       SelectPort(socket);
+	       IF SysSockets.Connect(socket, sysaddr, errors) THEN
+		  WriteDottedDecimal(sockaddr.host, nsname);
+		  DNSRequests.AddNameServer(context, socket, nsname);
+	       END;
+	    END;
+	 END AddNameserver;
+
+      BEGIN (* CreateContext *)
+	 DNSRequests.CreateContext(context);
+	 RelatedEvents.Forward(context, errors);
+	 IF (configuration[0] # 0X) &
+	       UnixFiles.Open(s, configuration,
+		  UnixFiles.read, Streams.onebuf, errors) &
+	       ResolvConfParser.Parse(conf, s, errors) THEN
+	    ResolvConfParser.IterateNameServers(conf, it);
+	    WHILE Iterators.Get(it, ns) DO
+	       sockaddr.host := ns.ipaddr;
+	       IPv4Addresses.SetPort(sockaddr, port);
+	       AddNameserver(sockaddr);
+	    END;
+	    IF ResolvConfParser.GetOption(conf, "rotate", rotate) &
+		  (rotate # 0) THEN
+	       DNSRequests.EnableRoundRobin(context);
+	    END;
+	    IF ~ResolvConfParser.GetOption(conf, "ndots", resolv.ndots) THEN
+	       resolv.ndots := 1;
+	    END;
+	    IF (ResolvConfParser.GetOption(conf, "timeout", timeout) OR
+		  ResolvConfParser.GetOption(conf, "retrans", timeout)) &
+		  (timeout > 0) THEN
+	       DNSRequests.SetTimeout(context, timeout);
+	    END;
+	    IF (ResolvConfParser.GetOption(conf, "retry", retries) OR
+		  ResolvConfParser.GetOption(conf, "attempts", retries)) &
+		  (retries >= 0) THEN
+	       DNSRequests.SetNumberOfRetries(context, retries);
+	    END;
+	 ELSIF environment[0] # 0X THEN
+	    IPv4Addresses.CreateAddress(sockaddr.host, environment);
+	    IPv4Addresses.SetPort(sockaddr, port);
+	    AddNameserver(sockaddr);
+	 ELSE
+	    IPv4Addresses.CreateAddress(sockaddr.host, "127.0.0.1");
+	    IPv4Addresses.SetPort(sockaddr, port);
+	    AddNameserver(sockaddr);
+	 END;
+      END CreateContext;
+
+   BEGIN (* Create *)
+      NEW(resolv);
+      Services.Init(resolv, type);
+      RelatedEvents.QueueEvents(resolv);
+      CreateContext(resolv.context, resolv.conf, configuration, resolv);
+      DNSResolvers.Init(resolv, if);
+      Resources.TakeInterest(resolv, notification);
+      Events.Handler(notification, TerminationHandler);
+      resolver := resolv;
+   END CreateFromConfigurationOrEnvironment;
+
+   (* === exported constructor =========================================== *)
+
+   PROCEDURE CreateFromConfiguration(VAR resolver: DNSResolvers.Resolver;
+                                     configuration: ARRAY OF CHAR);
+   BEGIN
+      CreateFromConfigurationOrEnvironment(resolver, configuration, "");
+   END CreateFromConfiguration;
+
+   PROCEDURE Create(VAR resolver: DNSResolvers.Resolver);
+      VAR
+	 conffile: ARRAY 512 OF CHAR;
+	 cacheip: ARRAY 16 OF CHAR;
+
+      PROCEDURE ValidIP(ipaddr: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    s: Streams.Stream;
+	    valid: BOOLEAN;
+	    addr: IPv4Addresses.Address;
+      BEGIN
+	 Strings.Open(s, ipaddr);
+	 valid := IPv4Addresses.ReadText(s, addr);
+	 Streams.Release(s);
+	 RETURN valid
+      END ValidIP;
+
+   BEGIN (* Create *)
+      IF UnixEnvironment.String("DNSCACHEIP", cacheip) &
+	    ValidIP(cacheip) THEN
+	 CreateFromConfigurationOrEnvironment(resolver, "", cacheip);
+      ELSIF UnixEnvironment.String("LOCALRES", conffile) THEN
+	 CreateFromConfiguration(resolver, conffile);
+      ELSE
+	 CreateFromConfiguration(resolver, defaultConfiguration);
+      END;
+   END Create;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+   IF DNSResolvers.std = NIL THEN
+      Create(resolver);
+      Resources.Attach(resolver, key);
+      DNSResolvers.std := resolver;
+      Events.Handler(SysMain.mainTaskFinished, SysMainTerminationHandler);
+   END;
+END DNSStdResolvers.

@@ -1,0 +1,275 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixEnviron.om,v 1.2 1995/01/04 17:00:34 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixEnviron.om,v $
+   Revision 1.2  1995/01/04  17:00:34  borchert
+   support of Services added
+
+   Revision 1.1  1994/02/23  07:27:26  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 9/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixEnvironment;
+
+   (* the environment is a list of parameters of the form name=value *)
+      
+   IMPORT Services, Streams, SysArgs;
+
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    pos,		(* absolute position *)
+	    len,		(* length of current environment parameter *)
+	    valoffset,		(* index behind "="; 0 if no "=" *)
+	    envindex,
+	    index: LONGINT;	(* position in `SysArgs.envp' *)
+	    all: BOOLEAN;	(* reading all parameters? *)
+	 END;
+
+   VAR
+      envlength: Streams.Count;	(* total length of environment *)
+      if: Streams.Interface;
+      caps: Streams.CapabilitySet;
+      type: Services.Type; (* UnixEnvironment.Stream *)
+
+   (* === interface procedures ======================================= *)
+
+   PROCEDURE Length(index: LONGINT; VAR length, valoff: LONGINT);
+      (* return length of index-th environment parameter *)
+      VAR
+	 ch: CHAR;
+   BEGIN
+      length := 0; valoff := 0;
+      LOOP
+	 ch := SysArgs.environ[index][length];
+	 IF ch = 0X THEN
+	    EXIT
+	 END;
+	 INC(length);
+	 IF (ch = "=") & (valoff = 0) THEN
+	    valoff := length;
+	 END;
+      END;
+   END Length;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+      VAR
+	 ch: CHAR;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.envindex >= SysArgs.envc THEN
+	    RETURN FALSE
+	 END;
+	 ch := SysArgs.environ[s.envindex][s.index];
+	 IF ch = 0X THEN
+	    IF s.all THEN
+	       INC(s.envindex);
+	       IF s.envindex < SysArgs.envc THEN
+		  s.index := 0;
+		  Length(s.envindex, s.len, s.valoffset);
+	       END;
+	    ELSE
+	       RETURN FALSE (* end of file *)
+	    END;
+	 ELSE
+	    INC(s.index);
+	 END;
+	 INC(s.pos);
+	 byte := ch;
+      END;
+      RETURN TRUE
+   END Read;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR pos: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 pos := s.pos;
+      END;
+      RETURN TRUE
+   END Tell;
+
+   PROCEDURE Seek(s: Streams.Stream;
+		  pos: Streams.Count; whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 seekpos: Streams.Count;
+	 index: LONGINT;
+	 sum: LONGINT;
+	 valoff, length: LONGINT;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: seekpos := pos;
+	 | Streams.fromPos:   seekpos := s.pos + pos;
+	 | Streams.fromEnd:   seekpos := envlength + pos;
+	 ELSE
+	    RETURN FALSE
+	 END;
+	 IF (seekpos < 0) OR (seekpos > envlength) THEN
+	    RETURN FALSE
+	 END;
+	 IF s.all & (seekpos <= envlength) THEN
+	    index := 0; sum := 0;
+	    LOOP
+	       Length(index, length, valoff);
+	       INC(sum, length+1); (* count 0X *)
+	       IF sum > seekpos THEN
+		  EXIT
+	       END;
+	       INC(index);
+	    END;
+	    s.envindex := index;
+	    s.index := seekpos - (sum - (length+1));
+	    s.len := length;
+	    s.valoffset := valoff;
+	 ELSIF ~s.all & (seekpos+s.valoffset <= s.len) THEN
+	    s.index := seekpos + s.valoffset;
+	 ELSE
+	    RETURN FALSE
+	 END;
+	 s.pos := seekpos;
+      END;
+      RETURN TRUE
+   END Seek;
+
+   PROCEDURE CalcEnvLength;
+      VAR
+	 index,			(* of SysArgs.environ *)
+	 length,
+	 valoff: LONGINT;
+   BEGIN
+      index := 0; envlength := 0;
+      WHILE index < SysArgs.envc DO
+	 Length(index, length, valoff);
+	 INC(envlength, length+1); (* count 0X *)
+	 INC(index);
+      END;
+   END CalcEnvLength;
+
+   PROCEDURE SearchName(name: ARRAY OF CHAR; VAR index: LONGINT) : BOOLEAN;
+      (* return index of environment parameter with name `name';
+	 return FALSE if not found
+      *)
+      VAR
+	 i: LONGINT;
+	 ch: CHAR;
+   BEGIN
+      index := 0;
+      WHILE index < SysArgs.envc DO
+	 i := 0;
+	 LOOP
+	    ch := SysArgs.environ[index][i];
+	    IF (ch = "=") & ((i = LEN(name)) OR (name[i] = 0X)) THEN
+	       RETURN TRUE
+	    END;
+	    IF (i >= LEN(name)) OR (ch = 0X) OR (ch # name[i]) THEN
+	       EXIT
+	    END;
+	    INC(i);
+	 END;
+	 INC(index);
+      END;
+      RETURN FALSE
+   END SearchName;
+
+   (* === exported procedures ======================================== *)
+
+   PROCEDURE String(name: ARRAY OF CHAR; VAR value: ARRAY OF CHAR) : BOOLEAN;
+      (* look for environment parameter with name `name' and
+	 store its associated value (behind "=") into `value';
+	 `String' returns FALSE if `name' is not found
+      *)
+      VAR
+	 index, i1, i2, len: LONGINT;
+   BEGIN
+      IF SearchName(name, index) THEN
+	 Length(index, len, i1);
+	 i2 := 0;
+	 WHILE (i1 < len) & (i2+1 < LEN(value)) DO
+	    value[i2] := SysArgs.environ[index][i1];
+	    INC(i1); INC(i2);
+	 END;
+	 value[i2] := 0X;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END String;
+
+   PROCEDURE Open(VAR value: Streams.Stream; name: ARRAY OF CHAR) : BOOLEAN;
+      (* opens `value' as stream for reading the value
+	 associated with `name';
+	 `Open' returns FALSE if `name' is not found
+      *)
+      VAR
+	 index: LONGINT;
+	 s: Stream;
+   BEGIN
+      IF SearchName(name, index) THEN
+	 NEW(s);
+	 Services.Init(s, type);
+	 Streams.Init(s, if, caps, Streams.onebuf);
+	 Length(index, s.len, s.valoffset);
+	 s.pos := 0;
+	 s.envindex := index;
+	 s.index := s.valoffset;
+	 s.all := FALSE;
+	 value := s;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Open;
+
+   PROCEDURE OpenAll(VAR stream: Streams.Stream);
+      (* opens `stream' to read all environment parameters;
+	 environment parameters are 0X-terminated
+      *)
+      VAR
+	 s: Stream;
+   BEGIN
+      NEW(s);
+      Services.Init(s, type);
+      Streams.Init(s, if, caps, Streams.onebuf);
+      IF SysArgs.envc = 0 THEN
+	 s.len := 0;
+	 s.valoffset := 0;
+      ELSE
+	 Length(0, s.len, s.valoffset);
+      END;
+      s.index := 0;
+      s.pos := 0;
+      s.envindex := 0;
+      s.all := TRUE;
+      stream := s;
+   END OpenAll;
+
+BEGIN
+   CalcEnvLength;
+   NEW(if); if.read := Read; if.tell := Tell; if.seek := Seek;
+   caps := {Streams.read, Streams.tell, Streams.seek};
+   Services.CreateType(type, "UnixEnvironment.Stream", "Streams.Stream");
+END UnixEnvironment.

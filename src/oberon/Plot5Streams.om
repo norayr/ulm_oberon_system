@@ -1,0 +1,255 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Plot5Stream.om,v 1.1 2004/04/07 06:05:07 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Plot5Stream.om,v $
+   Revision 1.1  2004/04/07 06:05:07  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Plot5Streams;
+
+   IMPORT ASCII, Forwarders, Plotters, Services, Streams;
+
+   CONST
+      caps = {Plotters.setspace, Plotters.erase,
+	 Plotters.string, Plotters.linemodes};
+   TYPE
+      Plotter = POINTER TO PlotterRec;
+      PlotterRec =
+	 RECORD
+	    (Plotters.PlotterRec)
+	    out: Streams.Stream;
+	    ok: BOOLEAN;
+	 END;
+   VAR
+      plotterType: Services.Type;
+      if: Plotters.Interface;
+      desc: Plotters.Description;
+
+   (* === auxiliary functions ======================================== *)
+
+   PROCEDURE WriteInt(s: Streams.Stream; intval: INTEGER) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, CHR(intval MOD 256)) &
+             Streams.WriteByte(s, CHR(intval DIV 256 MOD 256))
+   END WriteInt;
+
+   (* === if procedures ============================================== *)
+
+   PROCEDURE SetSpace(plotter: Plotters.Plotter;
+                      xmin, ymin,
+		      xmax, ymax: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "s") &
+	    WriteInt(out, xmin) &
+	    WriteInt(out, ymin) &
+	    WriteInt(out, xmax) &
+	    WriteInt(out, ymax);
+      END;
+   END SetSpace;
+		     
+   PROCEDURE Erase(plotter: Plotters.Plotter);
+   BEGIN
+      WITH plotter: Plotter DO
+	 plotter.ok := plotter.ok & Streams.WriteByte(plotter.out, "e");
+      END;
+   END Erase;
+
+   PROCEDURE Move(plotter: Plotters.Plotter; xto, yto: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "m") &
+	    WriteInt(out, xto) &
+	    WriteInt(out, yto);
+      END;
+   END Move;
+
+   PROCEDURE Cont(plotter: Plotters.Plotter; xto, yto: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "n") &
+	    WriteInt(out, xto) &
+	    WriteInt(out, yto);
+      END;
+   END Cont;
+
+   PROCEDURE Point(plotter: Plotters.Plotter; xpoint, ypoint: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "p") &
+	    WriteInt(out, xpoint) &
+	    WriteInt(out, ypoint);
+      END;
+   END Point;
+
+   PROCEDURE Line(plotter: Plotters.Plotter; xfrom, yfrom, xto, yto: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "l") &
+	    WriteInt(out, xfrom) &
+	    WriteInt(out, yfrom) &
+	    WriteInt(out, xto) &
+	    WriteInt(out, yto);
+      END;
+   END Line;
+
+   PROCEDURE Arc(plotter: Plotters.Plotter;
+                 xcenter, ycenter, xstart, ystart, xend, yend: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "a") &
+	    WriteInt(out, xcenter) &
+	    WriteInt(out, ycenter) &
+	    WriteInt(out, xstart) &
+	    WriteInt(out, ystart) &
+	    WriteInt(out, xend) &
+	    WriteInt(out, yend);
+	 Move(plotter, xend, yend);
+      END;
+   END Arc;
+
+   PROCEDURE Circle(plotter: Plotters.Plotter;
+                    xcenter, ycenter, radius: INTEGER);
+      VAR
+	 out: Streams.Stream;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok &
+	    Streams.WriteByte(out, "c") &
+	    WriteInt(out, xcenter) &
+	    WriteInt(out, ycenter) &
+	    WriteInt(out, radius);
+      END;
+   END Circle;
+
+   PROCEDURE String(plotter: Plotters.Plotter; str: ARRAY OF CHAR);
+      VAR
+	 out: Streams.Stream;
+	 index: INTEGER;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok & Streams.WriteByte(out, "t");
+	 index := 0;
+	 WHILE (index < LEN(str)) &
+	       (str[index] # 0X) & (str[index] # ASCII.nl) &
+	       plotter.ok DO
+	    plotter.ok := Streams.WriteByte(out, str[index]);
+	    INC(index);
+	 END;
+	 plotter.ok := plotter.ok & Streams.WriteByte(out, ASCII.nl);
+      END;
+   END String;
+
+   PROCEDURE SetLineMode(plotter: Plotters.Plotter; mode: Plotters.LineMode);
+      VAR
+	 out: Streams.Stream;
+	 style: ARRAY 32 OF CHAR;
+	 index: INTEGER;
+   BEGIN
+      WITH plotter: Plotter DO
+	 out := plotter.out;
+	 plotter.ok := plotter.ok & Streams.WriteByte(out, "f");
+	 CASE mode OF
+	 | Plotters.solid:       style := "solid";
+	 | Plotters.dotted:      style := "dotted";
+	 | Plotters.dotdashed:   style := "dotdashed";
+	 | Plotters.shortdashed: style := "shortdashed";
+	 | Plotters.longdashed:  style := "longdashed";
+	 END;
+	 index := 0;
+	 WHILE (index < LEN(style)) & (style[index] # 0X) & plotter.ok DO
+	    plotter.ok := Streams.WriteByte(out, style[index]);
+	    INC(index);
+	 END;
+	 plotter.ok := plotter.ok & Streams.WriteByte(out, ASCII.nl);
+      END;
+   END SetLineMode;
+
+   (* === module initialization ====================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      Services.CreateType(plotterType, "PlotStreams.Plotter",
+	 "Plotters.Plotter");
+      NEW(if);
+      if.setSpace := SetSpace;
+      if.erase := Erase;
+      if.move := Move;
+      if.cont := Cont;
+      if.point := Point;
+      if.line := Line;
+      if.arc := Arc;
+      if.circle := Circle;
+      if.string := String;
+      if.setLineMode := SetLineMode;
+      if.close := NIL;
+      NEW(desc);
+      desc.xmin := 0; desc.xmax := 07FFFH;
+      desc.ymin := 0; desc.ymax := 07FFFH;
+   END InitModule;
+
+   (* === exported constructor ======================================= *)
+
+   PROCEDURE Create(VAR plotter: Plotters.Plotter; out: Streams.Stream);
+      VAR
+	 p: Plotter;
+   BEGIN
+      ASSERT(out # NIL);
+      NEW(p); Services.Init(p, plotterType);
+      p.out := out; p.ok := TRUE;
+      Plotters.Init(p, if, caps, desc);
+      Plotters.SetSpace(p, 0, 0, 4095, 4095); (* default size *)
+      Forwarders.Forward(p, out);
+      plotter := p;
+   END Create;
+
+BEGIN
+   InitModule;
+END Plot5Streams.

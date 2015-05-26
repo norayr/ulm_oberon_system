@@ -1,0 +1,396 @@
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+NNAAMMEE
+       Terminals - abstraction for terminals
+
+SSYYNNOOPPSSIISS
+       (* terminal characteristics *)
+       CONST autoleftmargin = 0; autorightmargin = 1;
+       CONST overstrikes = 2; safelastcolumn = 3;
+       (* errorcodes *)
+       CONST cannotSetEcho = 0;
+       CONST cannotSetTermMode = 1;
+       CONST cannotSetCursor = 2;
+       CONST cannotMoveCursor = 3;
+       CONST cannotSetAppearance = 4;
+       CONST cannotScroll = 5;
+       CONST cannotSetScrollRegion = 6;
+       CONST cannotClearScreen = 7;
+       CONST invalidDirection = 8;
+       CONST invalidRegion = 9;
+       CONST invalidPosition = 10;
+       CONST notSupported = 11;
+       CONST errorcodes = 12;
+       (* echo *)
+       CONST on = 0; off = 1;
+       (* terminal modes *)
+       CONST raw = 0; cooked = 1;
+       (* directions *)
+       CONST forward = 0; reverse = 1;
+       (* cursor shapes *)
+       CONST visible = 0; invisible = 1;
+       (* capabilities *)
+       CONST setEcho = 0;
+       CONST setTermMode = 1;
+       CONST setCursor = 2;
+       CONST moveCursor = 3;
+       CONST setAppearance = 4;
+       CONST scroll = 5;
+       CONST setScrollRegion = 6;
+       CONST clearScreen = 7;
+
+       TYPE CapabilitySet = SET;
+       TYPE Echomode = SHORTINT;
+       TYPE Termmode = SHORTINT;
+       TYPE Direction = SHORTINT;
+       TYPE Shape = SHORTINT;
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE WindowChangeEvent = POINTER TO WindowChangeEventRec;
+       TYPE WindowChangeEventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Streams.Stream;
+          END;
+       TYPE InterruptEvent = POINTER TO InterruptEventRec;
+       TYPE InterruptEventRec =
+          RECORD
+
+
+
+Release 0.5        Last change: 11 January 1996                 1
+
+
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+             (Events.EventRec)
+             stream: Streams.Stream;
+          END;
+       TYPE QuitEvent = POINTER TO QuitEventRec;
+       TYPE QuitEventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Streams.Stream;
+          END;
+       TYPE HangupEvent = POINTER TO HangupEventRec;
+       TYPE HangupEventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Streams.Stream;
+          END;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       (* interface procedures *)
+       TYPE SetTermModeProc = PROCEDURE (s: Streams.Stream; mode: Termmode);
+       TYPE SetEchoProc = PROCEDURE (s: Streams.Stream; mode: Echomode);
+       TYPE SetCursorProc = PROCEDURE (s: Streams.Stream; line, column: INTEGER);
+       TYPE MoveCursorProc = PROCEDURE(s: Streams.Stream; fromline, fromcolumn,
+                                                          toline, tocolumn: INTEGER);
+       TYPE SetAppearanceProc = PROCEDURE(s: Streams.Stream; ap: Shape);
+       TYPE ScrollProc = PROCEDURE(s: Streams.Stream; dir: Direction);
+       TYPE SetScrollRegionProc = PROCEDURE(s: Streams.Stream; top, bottom: INTEGER);
+       TYPE ClearProc = PROCEDURE(s: Streams.Stream);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             setEcho: SetEchoProc;
+             setTermMode: SetTermModeProc;
+             setCursor: SetCursorProc;
+             moveCursor: MoveCursorProc;
+             setAppearance: SetAppearanceProc;
+             scroll: ScrollProc;
+             setScrollRegion: SetScrollRegionProc;
+             clearScreen: ClearProc;
+          END;
+       TYPE Status =
+          RECORD
+             (Objects.ObjectRec)
+             lines, columns: INTEGER;      (* of physical screen    *)
+             scrtop, scrbottom: INTEGER;   (* top and bottom of scroll region *)
+             echo: Echomode;               (* on or off             *)
+             mode: Termmode;               (* raw or cooked         *)
+             characteristics: SET;         (* of terminal characteristics *)
+             scrollDirections: SET;        (* up, down *)
+             cursorShape: Shape;           (* current shape of cursor *)
+
+
+
+Release 0.5        Last change: 11 January 1996                 2
+
+
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+          END;
+       TYPE StreamRec =
+          RECORD
+             (Streams.StreamRec)
+          END;
+
+       VAR console: Streams.Stream;
+       VAR windowchanged: Events.EventType;
+       VAR interrupt: Events.EventType;
+       VAR quit: Events.EventType;
+       VAR hangup: Events.EventType;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+
+       PROCEDURE Init(s: Streams.Stream; status: Status; caps: CapabilitySet;
+                      if: Interface);
+       PROCEDURE ClearScreen(s: Streams.Stream);
+       PROCEDURE Echo(s: Streams.Stream; mode: Echomode);
+       PROCEDURE SetTermMode(s: Streams.Stream; mode: Termmode);
+       PROCEDURE SetCursor(s: Streams.Stream; line, column: INTEGER);
+       PROCEDURE MoveCursor(s: Streams.Stream; fromline, fromcolumn,
+                                               toline, tocolumn: INTEGER);
+       PROCEDURE CursorAppearance(s: Streams.Stream; ap: Shape);
+       PROCEDURE Scroll(s: Streams.Stream; dir: Direction);
+       PROCEDURE SetScrollRegion(s: Streams.Stream; top, bottom: INTEGER);
+       PROCEDURE Capabilities(s: Streams.Stream): CapabilitySet;
+       PROCEDURE GetStatus(s: Streams.Stream; VAR status: Status);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _T_e_r_m_i_n_a_l_s offers a general interface for terminals. Termi­
+       nal devices  enable  users  to  communicate  with  a  host
+       machine,  i.e.  send  data to a host and recieve data from
+       it. Terminals usually use a keyboard for input and a  dis­
+       play  for  output.  Displays  are organized in a number of
+       lines and columns with a cursor designating  the  location
+       where  the  next  character  will  be  printed.  Lines and
+       columns are counted relative to  the  upper  left  corner,
+       which has the coordinates (0,0).
+
+       _T_e_r_m_i_n_a_l_s  stores  some  characteristics of the terminal's
+       display:
+
+       _a_u_t_o_l_e_f_t_m_a_r_g_i_n   backspace or  cursor-left  in  the  first
+                        column forces the cursor to the last col­
+                        umn of the previous line. The reaction is
+                        undefined  if  the  cursor already was on
+                        the first line.
+       _a_u_t_o_r_i_g_h_t_m_a_r_g_i_n  writing to the  last  column  forces  the
+                        cursor  to  the  first column of the next
+                        line. The reaction is  undefined  if  the
+                        cursor already was on the last line.
+       _o_v_e_r_s_t_r_i_k_e_s      terminal  overstrikes  characters  rather
+                        than replacing them.
+
+
+
+Release 0.5        Last change: 11 January 1996                 3
+
+
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+       _s_a_v_e_l_a_s_t_c_o_l_u_m_n   writing a character in  the  lower  right
+                        corner does not scroll the screen and the
+                        cursor position remains unchanged.
+
+       A terminal can operate in two modes:
+
+       _c_o_o_k_e_d   in _c_o_o_k_e_d mode terminal  input  is  processed  in
+                units  of  lines, i.e. input can be edited before
+                it is passed to an application.
+       _r_a_w      in _r_a_w mode, input characters are  not  assembled
+                into lines and therefore no input editing is pos­
+                sible.
+
+       The set of procedures which implement a  terminal-abstrac­
+       tion  of  a  specific  form  is given by an interface. Not
+       every procedure must be implemented.  The  set  of  imple­
+       mented  procedures is given by the _c_a_p_s parameter of _I_n_i_t.
+       The interface procedures should meet following  specifica­
+       tions:
+
+       _s_e_t_t_e_r_m_m_o_d_e: PPRROOCCEEDDUURREE(s: Stream; mode: Termmode);
+            set terminals mode.
+       _s_e_t_e_c_h_o: PPRROOCCEEDDUURREE(s: Stream; mode: Echomode);
+            turn echoing of input on or off.
+       _s_e_t_c_u_r_s_o_r: PPRROOCCEEDDUURREE(s: Stream; line, column: INTEGER);
+            place cursor at absolute position
+       _m_o_v_e_c_u_r_s_o_r:  PPRROOCCEEDDUURREE(s:  Stream;  fromline,  fromcolumn,
+            toline, tocolumn);
+            move cursor from position (_f_r_o_m_l_i_n_e_,  _f_r_o_m_c_o_l_u_m_n)  to
+            (_t_o_l_i_n_e_, _t_o_c_o_l_u_m_n).
+       _s_e_t_a_p_p_e_a_r_a_n_c_e: PPRROOCCEEDDUURREE(s: Stream; ap: Shape);
+            set the appearance of the cursor.
+       _s_c_r_o_l_l: PPRROOCCEEDDUURREE(s: Stream; dir: Direction);
+            scroll scrollregion once in direction dir.
+       _s_e_t_s_c_r_o_l_l_r_e_g_i_o_n:  PPRROOCCEEDDUURREE(s:  Stream; top, bottom: INTE­
+            GER);
+            set the scrollregion.
+       _c_l_e_a_r_s_c_r_e_e_n: PPRROOCCEEDDUURREE(s: Stream);
+            clear terminal's screen.
+
+       _I_n_i_t initializes the terminal _s for the  interface  speci­
+       fied by _i_f and _c_a_p_s.  _s_t_a_t_u_s has to hold the initial state
+       of the terminal.
+
+       _S_e_t_T_e_r_m_M_o_d_e sets the terminal's mode to _r_a_w or _c_o_o_k_e_d.
+
+       _E_c_h_o turns echoing of input on or off.
+
+       _C_l_e_a_r_S_c_r_e_e_n clears the terminal's screen.
+
+       _S_c_r_o_l_l scrolls the contents of the  scrollregion  once  in
+       direction _d_i_r.
+
+       _S_e_t_S_c_r_o_l_l_R_e_g_i_o_n sets the scrollregion to (_t_o_p, _b_o_t_t_o_m).
+
+
+
+Release 0.5        Last change: 11 January 1996                 4
+
+
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+       _S_e_t_C_u_r_s_o_r  sets the cursor to the position denoted by _l_i_n_e
+       and _c_o_l_u_m_n.
+
+       _M_o_v_e_C_u_r_s_o_r moves the cursor from position (_f_r_o_m_l_i_n_e, _f_r_o_m_­
+       _c_o_l_u_m_n)  to  to  position (_t_o_l_i_n_e, _t_o_c_o_l_u_m_n). Clients must
+       track the current cursor position themselves in  order  to
+       use this procedure properly.
+
+       _C_u_r_s_o_r_A_p_p_e_a_r_a_n_c_e  sets  the cursor's appearance. Available
+       modes are _v_i_s_i_b_l_e and _i_n_v_i_s_i_b_l_e.
+
+       _C_a_p_a_b_i_l_i_t_i_e_s returns the capabilities of the terminal.
+
+       _G_e_t_S_t_a_t_u_s returns the status of the terminal.
+
+       _T_e_r_m_i_n_a_l_s defines four event types for handling of signals
+       generated by terminals:
+       _w_i_n_d_o_w_c_h_a_n_g_e_d   raised  when  the  size of the display has
+                       changed. This event appears mainly on ter­
+                       minal emulations of window systems.
+       _i_n_t_e_r_r_u_p_t       raised  when  a user presses the interrupt
+                       key.
+       _q_u_i_t            raised when a user presses the quit key.
+       _h_a_n_g_u_p          raised after the modem line was hung up.
+       When the signals  occur  the  associated  events  must  be
+       raised by the terminal implementation.
+
+       The default handling for the events is:
+
+       ·      Update  the  line  and  column  information  in the
+              stream's status in case of a _W_i_n_d_o_w_C_h_a_n_g_e_E_v_e_n_t.
+
+       ·      Call _P_r_o_c_e_s_s_._T_e_r_m_i_n_a_t_e in  case  of  _I_n_t_e_r_r_u_p_t_E_v_e_n_t
+              and _H_a_n_g_u_p_E_v_e_n_t.
+
+       ·      Call _P_r_o_c_e_s_s_._A_b_o_r_t in case of QuitEvent.
+
+DDIIAAGGNNOOSSTTIICCSS
+       All  terminal  related errors lead to events of type error
+       which are passed to _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_) for further handling.
+
+       Following errorcodes are currently implemented:
+
+       _c_a_n_n_o_t_S_e_t_E_c_h_o           terminal cannot set echo
+       _c_a_n_n_o_t_S_e_t_T_e_r_m_M_o_d_e       terminal cannot set termmode
+       _c_a_n_n_o_t_S_e_t_C_u_r_s_o_r         terminal cannot set cursor
+       _c_a_n_n_o_t_M_o_v_e_C_u_r_s_o_r        terminal cannot move cursor
+       _c_a_n_n_o_t_S_e_t_A_p_p_e_a_r_a_n_c_e     terminal  cannot change appearance
+                               of cursor
+       _c_a_n_n_o_t_S_c_r_o_l_l            terminal cannot scroll
+       _c_a_n_n_o_t_S_e_t_S_c_r_o_l_l_R_e_g_i_o_n   terminal does not  support  scroll
+                               regions
+       _c_a_n_n_o_t_C_l_e_a_r_S_c_r_e_e_n       terminal cannot clear the screen
+
+
+
+
+Release 0.5        Last change: 11 January 1996                 5
+
+
+
+
+
+Terminals(3)           Ulm's Oberon System           Terminals(3)
+
+
+       _i_n_v_a_l_i_d_D_i_r_e_c_t_i_o_n        invalid direction given to Scroll
+       _i_n_v_a_l_i_d_R_e_g_i_o_n           given   scrollregion   is   beyond
+                               screen limits
+       _i_n_v_a_l_i_d_P_o_s_i_t_i_o_n         given position  is  beyond  screen
+                               limits
+
+SSEEEE AALLSSOO
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)      error handling
+       _S_t_r_e_a_m_s_(_3_)            streams interface
+       _S_y_s_T_e_r_m_I_O_(_3_)          UNIX Sytem V interface to the termi­
+                             nal driver
+       _T_e_r_m_A_t_t_r_i_b_u_t_e_s_(_3_)     support  of  display  attributes  on
+                             ASCII terminals
+       _T_e_r_m_I_n_f_o_s_(_3_)          interface   to   the  UNIX  terminfo
+                             database
+       _T_e_r_m_K_e_y_s_(_3_)           support of function  keys  on  ASCII
+                             terminals
+       _T_e_r_m_L_i_n_e_G_r_a_p_h_i_c_s_(_3_)   support  of  line  graphics on ASCII
+                             terminals
+       _U_n_i_x_T_e_r_m_i_n_a_l_s_(_3_)      UNIX implementation of terminals
+
+AAUUTTHHOORR
+       Ralf Beck with some minor corrections of Andreas Borchert
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5        Last change: 11 January 1996                 6
+
+

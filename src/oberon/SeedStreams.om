@@ -1,0 +1,81 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SeedStreams.om,v 1.1 2004/03/08 13:57:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SeedStreams.om,v $
+   Revision 1.1  2004/03/08 13:57:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SeedStreams;
+
+   IMPORT RandomGenerators, Services, Streams, Types;
+
+   TYPE
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec =
+	 RECORD
+	    (RandomGenerators.SequenceRec)
+	    seeds: Streams.Stream;
+	 END;
+
+   VAR
+      sequenceType: Services.Type;
+   CONST
+      caps = {RandomGenerators.int32ValS};
+   VAR
+      if: RandomGenerators.Interface;
+
+   (* === interface procedures =========================================== *)
+
+   PROCEDURE Int32ValS(sequence: RandomGenerators.Sequence): Types.Int32;
+      VAR
+	 int32: Types.Int32;
+   BEGIN
+      WITH sequence: Sequence DO
+	 IF Streams.Read(sequence.seeds, int32) THEN
+	    RETURN int32
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END Int32ValS;
+
+   (* === exported constructor ============================================ *)
+
+   PROCEDURE Create(VAR sequence: RandomGenerators.Sequence;
+                    seeds: Streams.Stream);
+      VAR
+	 seq: Sequence;
+   BEGIN
+      ASSERT(seeds # NIL);
+      NEW(seq); seq.seeds := seeds;
+      Services.Init(seq, sequenceType);
+      RandomGenerators.Init(seq, if, caps);
+      sequence := seq;
+   END Create;
+
+BEGIN
+   NEW(if); if.int32ValS := Int32ValS;
+   Services.CreateType(sequenceType,
+      "SeedStreams.Sequence", "RandomGenerators.Sequence");
+END SeedStreams.

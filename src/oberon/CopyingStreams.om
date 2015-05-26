@@ -1,0 +1,388 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CopyingStre.om,v 1.2 2004/09/16 18:29:35 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CopyingStre.om,v $
+   Revision 1.2  2004/09/16 18:29:35  borchert
+   write support for bidirectional streams added
+
+   Revision 1.1  1996/12/10  09:05:41  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CopyingStreams;
+
+   (* stream implementation offering seek and tell capability
+      on base of input streams which do not permit rewinding;
+      this is done by copying everything read so far into memory
+   *)
+
+   IMPORT Events, Forwarders, MemOps, Memory, MemStreams, Priorities,
+      RelatedEvents, Services, Streams, SubStreams, SYS := SYSTEM, SysIO,
+      SysMemory, Types;
+
+   CONST
+      basecaps = {Streams.read, Streams.addrio, Streams.seek, Streams.tell,
+                  Streams.close};
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    input: Streams.Stream;  (* underlying input stream *)
+	    pos: Streams.Count;     (* current position, always <= length *)
+	    region: Memory.Region;  (* region of our in-memory copy *)
+	    addr: Memory.Address;   (* begin of in-memory copy *)
+	    allocated: Memory.Size; (* so much has been allocated yet *)
+	    length: Memory.Size;    (* length of internal copy *)
+	 END;
+   VAR
+      type: Services.Type; (* type of CopyingStreams.Stream *)
+      if: Streams.Interface;
+
+   VAR
+      pageSize: Memory.Size; (* page size of the system; does not change *)
+
+   CONST
+      mapfile = "/dev/zero"; (* is mapped for storage allocation *)
+   VAR
+      mapfd: SysIO.File; (* memory object for storage allocation *)
+      canAllocateMemory: BOOLEAN;
+      initErrors: RelatedEvents.Object; (* errors collected during init *)
+
+   CONST
+      cannotAllocMemory = 0;
+	 (* always returned by Open if we do not have a valid mapfd *)
+      invalidInputStream = 1;
+	 (* the stream passed as input stream to Open does not
+	    support reading
+	 *)
+      outOfMemory = 2;
+	 (* unable to process more input data due out of memory *)
+      posOutOfRange = 3;
+	 (* seek position outside the range of 0..maxinputpos;
+	    note that seek positions outside of the range read
+	    so far are not supported
+	 *)
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* cannotAllocMemory..posOutOfRange *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[cannotAllocMemory] := "unable to allocate memory";
+      errormsg[invalidInputStream] :=
+	 "input stream does not have a read capability";
+      errormsg[outOfMemory] :=
+	 "unable to process more input data due out of memory";
+      errormsg[posOutOfRange] :=
+	 "seek position out of yet seen input";
+   END InitErrorHandling;
+
+   (* === memory management =============================================== *)
+
+   PROCEDURE MapPage(at: Memory.Address;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 mapaddress: Memory.Address;
+   BEGIN
+      ASSERT(canAllocateMemory);
+      IF SysMemory.Map(at, pageSize,
+                       SysMemory.read + SysMemory.write,
+		       SysMemory.private + SysMemory.fixed,
+		       mapfd, 0,
+		       mapaddress, errors) THEN
+	 ASSERT(mapaddress = at);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END MapPage;
+
+   PROCEDURE CreateRegion(VAR region: Memory.Region;
+                          VAR addr: Memory.Address;
+			  VAR allocated: Memory.Size;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF ~Memory.AllocateRegion(pageSize,
+                                Memory.growingForward + Memory.redzoneProtected,
+				addr, region, errors) THEN
+	 RETURN FALSE
+      END;
+      IF ~MapPage(addr, errors) THEN
+	 Memory.ReleaseRegion(region); RETURN FALSE
+      END;
+      RETURN TRUE
+   END CreateRegion;
+
+   PROCEDURE ExtendRegion(region: Memory.Region;
+			  addr: Memory.Address;       (* begin addr *)
+			  VAR allocated: Memory.Size;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+      (* extend the given region by one page *)
+   BEGIN
+      IF ~Memory.ExtendRegion(region, allocated + pageSize, errors) OR
+	    ~MapPage(addr + allocated, errors) THEN
+	 RETURN FALSE
+      END;
+      INC(allocated, pageSize);
+      RETURN TRUE
+   END ExtendRegion;
+
+   PROCEDURE ReleaseRegion(region: Memory.Region;
+                           addr: Memory.Address;
+			   allocated: Memory.Size;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF SysMemory.Unmap(addr, allocated, errors) THEN
+	 Memory.ReleaseRegion(region);
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END ReleaseRegion;
+
+   (* === Streams interface =============================================== *)
+
+   PROCEDURE AddrRead(s: Streams.Stream; ptr: Streams.Address;
+                      cnt: Streams.Count) : Streams.Count;
+      CONST
+	 bufsize = 8192; (* something which is probably larger than pageSize *)
+      TYPE
+	 BufferArray = ARRAY bufsize OF Types.Byte;
+	 (* $O- $P- *)
+	 Buffer = POINTER TO BufferArray; (* untraced pointer *)
+	 (* $O= $P= *)
+      VAR
+	 buf: Buffer;
+	 bufpos: Memory.Address;
+	 read, wantread: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF cnt <= 0 THEN RETURN 0 END;
+	 IF s.pos = s.length THEN
+	    IF s.length = s.allocated THEN
+	       IF ~ExtendRegion(s.region, s.addr, s.allocated, s) THEN
+		  Error(s, outOfMemory);
+		  RETURN 0
+	       END;
+	    END;
+	    wantread := s.allocated - s.length;
+	    IF wantread > bufsize THEN
+	       wantread := bufsize;
+	    END;
+	    buf := SYS.VAL(Buffer, s.addr + s.pos);
+	    read := Streams.ReadPacket(s.input, buf^, 0, wantread);
+	    INC(s.length, read);
+	 END;
+	 IF cnt > s.length - s.pos THEN
+	    cnt := s.length - s.pos;
+	 END;
+	 MemOps.CopyU(s.addr + s.pos, ptr, cnt);
+	 INC(s.pos, cnt);
+	 RETURN cnt
+      END;
+   END AddrRead;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.pos < s.length THEN
+	    SYS.GET(s.addr + s.pos, byte); INC(s.pos);
+	    RETURN TRUE
+	 ELSE
+	    RETURN AddrRead(s, SYS.ADR(byte), 1) = 1
+	 END;
+      END;
+   END Read;
+
+   PROCEDURE AddrWrite(s: Streams.Stream; ptr: Streams.Address;
+                       cnt: Streams.Count) : Streams.Count;
+      VAR
+	 count: Streams.Count;
+	 ch: CHAR;
+   BEGIN
+      WITH s: Stream DO
+	 count := 0;
+	 WHILE count < cnt DO
+	    SYS.GET(ptr + count, ch);
+	    IF ~Streams.WriteByte(s.input, ch) THEN RETURN count END;
+	    INC(count);
+	 END;
+	 RETURN 0
+      END;
+   END AddrWrite;
+
+   PROCEDURE Write(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 RETURN Streams.WriteByte(s.input, byte)
+      END;
+   END Write;
+
+   PROCEDURE Seek(s: Streams.Stream;
+                  cnt: Streams.Count;
+		  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: newpos := cnt;
+	 | Streams.fromPos:   newpos := s.pos + cnt;
+	 | Streams.fromEnd:   newpos := s.length - cnt;
+	 END;
+	 IF (newpos < 0) OR (newpos > s.length) THEN
+	    Error(s, posOutOfRange); RETURN FALSE
+	 END;
+	 s.pos := newpos;
+	 RETURN TRUE
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 cnt := s.pos; RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 ok := ReleaseRegion(s.region, s.addr, s.allocated, s);
+	 ok := Streams.Close(s.input) & ok;
+	 RETURN ok
+      END;
+   END Close;
+
+   (* === support of SubStreams =========================================== *)
+
+   PROCEDURE OpenSubStream(VAR s: Streams.Stream;
+                           base: Streams.Stream;
+			   from, length: Streams.Count;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH base: Stream DO
+	 IF (from < 0) OR (length < 0) OR (from + length > base.length) THEN
+	    Error(errors, posOutOfRange); RETURN FALSE
+	 END;
+	 MemStreams.OpenU(s, base.addr + from, length, MemStreams.read);
+	 RETURN TRUE
+      END;
+   END OpenSubStream;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 interrupted: BOOLEAN; (* is ignored *)
+   BEGIN
+      InitErrorHandling;
+      pageSize := Memory.GetPageSize();
+      Services.CreateType(type, "CopyingStreams.Stream", "Streams.Stream");
+      SubStreams.Register(type, OpenSubStream);
+      NEW(initErrors); RelatedEvents.QueueEvents(initErrors);
+      canAllocateMemory := SysIO.Open(mapfd, mapfile, SysIO.rdwr, initErrors,
+                                      (* retry = *) TRUE, interrupted);
+      NEW(if);
+      if.addrread := AddrRead; if.read := Read;
+      if.addrwrite := AddrWrite; if.write := Write;
+      if.seek := Seek; if.tell := Tell; if.close := Close;
+   END Init;
+
+   (* === exported constructor ============================================ *)
+
+   PROCEDURE Open(VAR s: Streams.Stream; input: Streams.Stream;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+	 inputcaps: Streams.CapabilitySet;
+	 caps: Streams.CapabilitySet;
+	 region: Memory.Region;
+	 addr: Memory.Address;
+	 allocated: Memory.Size;
+	 newstream: Stream;
+   BEGIN
+      IF ~canAllocateMemory THEN
+	 RelatedEvents.GetQueue(initErrors, queue);
+	 RelatedEvents.AppendQueue(initErrors, queue);
+	 Error(errors, cannotAllocMemory); RETURN FALSE
+      END;
+      inputcaps := Streams.Capabilities(input);
+      IF ~(Streams.read IN inputcaps) THEN
+	 Error(errors, invalidInputStream); RETURN FALSE
+      END;
+      caps := basecaps;
+      IF Streams.write IN inputcaps THEN
+	 IF (Streams.seek IN inputcaps) &
+	       (Streams.GetBufMode(input) # Streams.nobuf) THEN
+	    (* input stream is not bidirectional *)
+	    Error(errors, invalidInputStream); RETURN FALSE
+	 END;
+	 INCL(caps, Streams.write);
+      END;
+      IF ~CreateRegion(region, addr, allocated, errors) THEN
+	 Error(errors, outOfMemory); RETURN FALSE
+      END;
+      NEW(newstream);
+      newstream.input := input;
+      newstream.pos := 0;
+      newstream.region := region;
+      newstream.addr := addr;
+      newstream.allocated := allocated;
+      newstream.length := 0;
+      Services.Init(newstream, type);
+      Streams.Init(newstream, if, caps, Streams.nobuf);
+      Forwarders.Forward(newstream, input);
+      s := newstream;
+      RETURN TRUE
+   END Open;
+
+BEGIN
+   Init;
+END CopyingStreams.

@@ -1,0 +1,120 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: HostPorts.od,v 1.1 2006/08/11 14:45:57 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: HostPorts.od,v $
+   Revision 1.1  2006/08/11 14:45:57  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION HostPorts;
+
+   (* scan and parse tuples consisting of a host and a port
+      (hostports) according to RFCs 2373, 2396 and 2732:
+
+      hostport      = host [ ":" port ]
+      host          = hostname | IPv4address | IPv6reference
+      hostname      = *( domainlabel "." ) toplabel [ "." ]
+      domainlabel   = alphanum | alphanum *( alphanum | "-" ) alphanum
+      toplabel      = alpha | alpha *( alphanum | "-" ) alphanum
+
+      IPv4address   = 1*digit "." 1*digit "." 1*digit "." 1*digit
+      port          = *digit
+      ipv6reference = "[" IPv6address "]"
+      IPv6address   = see RFC 2373
+   *)
+
+   IMPORT Disciplines, DNSRecords, Events, IPv4Addresses, IPv6Addresses,
+      Networks, Objects, Streams;
+
+   TYPE
+      HostPort = POINTER TO HostPortRec;
+      HostPortRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    port: INTEGER;
+	    host: DNSRecords.Name;
+	 END;
+      IPv4HostPort = POINTER TO IPv4HostPortRec;
+      IPv4HostPortRec =
+	 RECORD
+	    (HostPortRec)
+	    address: IPv4Addresses.SocketAddress;
+	 END;
+      IPv6HostPort = POINTER TO IPv6HostPortRec;
+      IPv6HostPortRec =
+	 RECORD
+	    (HostPortRec)
+	    address: IPv6Addresses.SocketAddress;
+	 END;
+
+   TYPE
+      AddIPv4Address =
+	 PROCEDURE (service: Disciplines.Object;
+	            address: IPv4Addresses.SocketAddress) : BOOLEAN;
+      AddIPv6Address =
+	 PROCEDURE (service: Disciplines.Object;
+	            address: IPv6Addresses.SocketAddress) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addIPv4Address: AddIPv4Address;
+	    addIPv6Address: AddIPv6Address;
+	 END;
+
+   CONST
+      unexpectedEOF = 0;
+      closingBracketMissing = 1;
+      hostnameTooLong = 2;
+      tooManyDots = 3;
+      invalidPort = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* unexpectedEOF... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE SetDefaultPort(s: Streams.Stream; port: INTEGER);
+   PROCEDURE SetPort(s: Streams.Stream; port: INTEGER);
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR hostport: HostPort) : BOOLEAN;
+   PROCEDURE WriteText(s: Streams.Stream; hostport: HostPort); 
+
+   PROCEDURE CreateAddress(VAR address: Networks.Address; hostport: HostPort);
+
+   PROCEDURE ReadAddress(s: Streams.Stream;
+                         VAR address: Networks.Address) : BOOLEAN;
+
+   PROCEDURE Init(service: Disciplines.Object; if: Interface);
+   PROCEDURE Add(service: Disciplines.Object; hostport: HostPort) : BOOLEAN;
+   PROCEDURE ReadAndAdd(s: Streams.Stream;
+                        service: Disciplines.Object) : BOOLEAN;
+
+END HostPorts.

@@ -1,0 +1,181 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysPoll;
+
+   IMPORT Objects, RelatedEvents, Sys, SYS := SYSTEM, SysErrors, SysTime,
+      SysTypes, Types;
+
+   CONST
+      (* bits for events and revents *)
+      pollIn =       1H; (* fd is readable *)
+      pollPri =      2H; (* high priority info at fd *)
+      pollOut =      4H; (* fd is writable (won't block) *)
+      pollRdNorm =  40H; (* normal data is readable *)
+      pollWrNorm = 0100H;
+      pollRdBand =  80H; (* out-of-band data is readable *)
+      pollWrBand = 200H; (* out-of-band data is writable *)
+      pollNorm = pollRdNorm;
+      pollErr =      8H; (* fd has error condition *)
+      pollHup =     10H; (* fd has been hung up on *)
+      pollNval =    20H; (* invalid pollfd entry *)
+      pollMsg =    400H;
+
+   TYPE
+      (* struct pollfd of Solaris 2, see <sys/poll.h> *)
+      Flags = SYS.INT16;
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    fd: SysTypes.File;
+	    events: Flags;
+	    revents: Flags;
+	 END;
+      Member = POINTER TO MemberRec;
+      MemberRec =
+	 RECORD
+	    next: Member;
+	    entry: Entry;
+	 END;
+
+      FdSet = POINTER TO FdSetRec;
+      FdSetRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    card: INTEGER;
+	    members: Member;
+	    next: Member;
+	 END;
+   CONST
+      pollfdrecsize = SYS.SIZE(SysTypes.File) + 2 * SYS.SIZE(Flags);
+      (* we assume that the struct pollfd of poll(2) has exactly
+	 the size of pollfdrecsize with the fd field at position 0,
+	 events at position SYS.SIZE(SysTypes.File) and
+	 revents at position SYS.SIZE(SysTypes.File) + SYS.SIZE(Flags)
+      *)
+
+   PROCEDURE ConvertTimeout(timeout: SysTime.TimeVal) : LONGINT;
+      (* convert seconds & microseconds into milliseconds *)
+      VAR
+	 roundup: INTEGER;
+   BEGIN
+      IF timeout.sec >= MAX(INTEGER) DIV 1000 THEN
+	 RETURN MAX(INTEGER)
+      ELSE
+	 IF timeout.usec MOD 1000 # 0 THEN
+	    roundup := 1;
+	 ELSE
+	    roundup := 0;
+	 END;
+	 RETURN timeout.sec * 1000 + timeout.usec DIV 1000 + roundup
+      END;
+   END ConvertTimeout;
+
+   PROCEDURE CreateSet(VAR fdset: FdSet);
+      VAR
+	 set: FdSet;
+   BEGIN
+      NEW(set); set.card := 0; set.members := NIL; set.next := NIL;
+      fdset := set;
+   END CreateSet;
+
+   PROCEDURE Incl(fdset: FdSet; entry: Entry);
+      VAR
+	 member: Member;
+   BEGIN
+      ASSERT((entry # NIL) & (entry.fd >= 0) & (entry.events # 0));
+      NEW(member); member.entry := entry;
+      member.next := fdset.members; fdset.members := member;
+      INC(fdset.card);
+   END Incl;
+
+   PROCEDURE Card(fdset: FdSet) : INTEGER;
+   BEGIN
+      RETURN fdset.card
+   END Card;
+
+   PROCEDURE ExamineEntries(fdset: FdSet);
+   BEGIN
+      fdset.next := fdset.members;
+   END ExamineEntries;
+
+   PROCEDURE Next(fdset: FdSet; VAR entry: Entry) : BOOLEAN;
+   BEGIN
+      IF fdset.next = NIL THEN RETURN FALSE END;
+      entry := fdset.next.entry;
+      fdset.next := fdset.next.next;
+      RETURN TRUE
+   END Next;
+
+   PROCEDURE Poll(fdset: FdSet; timeout: LONGINT;
+		  VAR ready: INTEGER;
+                  errors: RelatedEvents.Object;
+		  retry: BOOLEAN;
+		  VAR interrupted: BOOLEAN) : BOOLEAN;
+      VAR
+	 member: Member;
+	 p: Objects.Object;
+	 fds, addr: Types.Address;
+	 i: INTEGER;
+	 d0, d1: INTEGER;
+   BEGIN
+      ASSERT(fdset.card > 0);
+      SYS.NEW(p, pollfdrecsize * fdset.card);
+      fds := SYS.VAL(Types.Address, p);
+      member := fdset.members; i := 0;
+      WHILE member # NIL DO
+	 addr := fds + i * pollfdrecsize;
+	 SYS.PUT(addr, member.entry.fd);
+	 SYS.PUT(addr + SYS.SIZE(SysTypes.File), member.entry.events);
+	 member := member.next; INC(i);
+      END;
+      interrupted := FALSE; ready := 0;
+      LOOP
+	 IF SYS.UNIXCALL(Sys.poll, d0, d1, fds, fdset.card, timeout) THEN
+	    ready := d0;
+	    IF ready > 0 THEN
+	       member := fdset.members; i := 0;
+	       WHILE member # NIL DO
+		  addr := fds + i * pollfdrecsize;
+		  SYS.GET(addr + SYS.SIZE(SysTypes.File) + SYS.SIZE(Flags),
+			  member.entry.revents);
+		  member := member.next; INC(i);
+	       END;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    IF d0 = SysErrors.intr THEN
+	       interrupted := TRUE;
+	    END;
+	    IF (d0 # SysErrors.intr) & (d0 # SysErrors.again) OR ~retry THEN
+	       SysErrors.Raise(errors, d0, Sys.poll, "");
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+   END Poll;
+
+END SysPoll.

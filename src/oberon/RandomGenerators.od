@@ -1,0 +1,142 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RandomGener.od,v 1.5 2004/03/09 21:43:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RandomGener.od,v $
+   Revision 1.5  2004/03/09 21:43:41  borchert
+   unpredictable added to the standard set of PRNGs
+
+   Revision 1.4  1997/10/10 16:23:42  martin
+   RestartSequence added
+   capabilities named after methods
+   several comments changed
+
+   Revision 1.3  1997/04/01  16:33:00  borchert
+   major revision of Random:
+   - module renamed to RandomGenerators
+   - abstraction instead of simple implementation (work by Frank Fischer)
+
+   Revision 1.2  1994/08/30  09:47:52  borchert
+   sequences added
+
+   Revision 1.1  1994/02/23  07:25:24  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   original implementation by AFB 2/90
+   conversion to abstraction by Frank B.J. Fischer 3/97
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION RandomGenerators;
+
+   (*    Anyone who considers arithmetical
+	methods of producing random digits
+	 is, of course, in a state of sin.
+		 - John von Neumann (1951)
+   *)
+
+   IMPORT Objects, Operations, Services, Types;
+
+   TYPE
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec = RECORD (Services.ObjectRec) END;
+
+      Int32ValSProc = PROCEDURE (sequence: Sequence): Types.Int32;
+      LongRealValSProc = PROCEDURE (sequence: Sequence): LONGREAL;
+      RewindSequenceProc = PROCEDURE (sequence: Sequence);
+      RestartSequenceProc = PROCEDURE (sequence, seed: Sequence);
+      SetValSProc = PROCEDURE (sequence: Sequence; value: Operations.Operand);
+
+   CONST
+      int32ValS = 0; longRealValS = 1; rewindSequence = 2; restartSequence = 3;
+
+   TYPE
+      CapabilitySet = SET;		(* of [int32ValS..restartSequence] *)
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    int32ValS      : Int32ValSProc;	(* at least one of ... *)
+	    longRealValS   : LongRealValSProc;	(* ... these required  *)
+	    rewindSequence : RewindSequenceProc;	(* optional *)
+	    restartSequence: RestartSequenceProc;	(* optional *)
+	 END;
+
+   VAR
+      std : Sequence;				(* default sequence *)
+      seed: Sequence;				(* sequence of seed values *)
+      unpredictable: Sequence;
+	 (* reasonably fast sequence of unpredictable values;
+	    is initially NIL
+	 *)
+
+   PROCEDURE Init(sequence: Sequence; if: Interface; caps: CapabilitySet);
+      (* initialize sequence *)
+
+   PROCEDURE Capabilities(sequence: Sequence): CapabilitySet;
+      (* tell which procedures are implemented *)
+
+   PROCEDURE RewindSequence(sequence: Sequence);
+      (* re-examine sequence *)
+
+   PROCEDURE RestartSequence(sequence, seed: Sequence);
+      (* restart sequence with new seed values *)
+
+   PROCEDURE Int32Val(): Types.Int32;
+      (* get random 32-bit value from std sequence *)
+
+   PROCEDURE Int32ValS(sequence: Sequence): Types.Int32;
+      (* get random 32-bit value from sequence *)
+
+   PROCEDURE LongRealVal(): LONGREAL;
+      (* get a uniformly distributed longreal value in [0..1) *)
+
+   PROCEDURE LongRealValS(sequence: Sequence): LONGREAL;
+      (* get a uniformly distributed longreal value in [0..1) *)
+
+   PROCEDURE RealVal(): REAL;
+      (* get a uniformly distributed real value in [0..1) *)
+
+   PROCEDURE RealValS(sequence: Sequence): REAL;
+      (* get a uniformly distributed real value in [0..1) *)
+
+   PROCEDURE Val(low, high: LONGINT): LONGINT;
+      (* get a uniformly distributed integer in [low..high] *)
+
+   PROCEDURE ValS(sequence: Sequence; low, high: LONGINT): LONGINT;
+      (* get a uniformly distributed integer in [low..high] *)
+
+   PROCEDURE Flip(): BOOLEAN;
+      (* return TRUE or FALSE *)
+
+   PROCEDURE FlipS(sequence: Sequence): BOOLEAN;
+      (* return TRUE or FALSE *)
+
+   PROCEDURE Support(type: Services.Type; setValS: SetValSProc);
+      (* support service for type *)
+
+   PROCEDURE SetVal(value: Operations.Operand);
+      (* store random value from std sequence into already initialized value *)
+
+   PROCEDURE SetValS(sequence: Sequence; value: Operations.Operand);
+      (* store random value from sequence into already initialized value *)
+
+END RandomGenerators.

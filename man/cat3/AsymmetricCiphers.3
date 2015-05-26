@@ -1,0 +1,132 @@
+
+
+
+AsymmetricCiphers(3)   Ulm's Oberon System   AsymmetricCiphers(3)
+
+
+NNAAMMEE
+       AsymmetricCiphers - abstraction for public key ciphers
+
+SSYYNNOOPPSSIISS
+       CONST composed = 0; isPrivateKey = 1;
+       TYPE CapabilitySet = SET;
+       TYPE Cipher = POINTER TO CipherRec;
+       TYPE CipherRec = RECORD (BlockCiphers.CipherRec) END;
+       TYPE SplitProc = PROCEDURE (VAR public: Cipher; key: Cipher);
+       TYPE RandomStreamProc = PROCEDURE (s: Streams.Stream);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Ciphers.InterfaceRec)
+             compencrypt : Ciphers.CryptProc;
+             split : SplitProc;
+             randomStream : RandomStreamProc;
+          END;
+       PROCEDURE Init (key: Cipher; if: Interface;
+                      cap: CapabilitySet; inLength, outLength: INTEGER);
+       PROCEDURE Capabilities (key: Cipher) : CapabilitySet;
+       PROCEDURE IsPublicKey (key: Cipher) : BOOLEAN;
+       PROCEDURE Split (VAR public: Cipher; key: Cipher);
+       PROCEDURE ComposedEncrypt (in: Streams.Stream; key: Cipher;
+                        out: Streams.Stream) : BOOLEAN;
+       PROCEDURE ComposedEncryptPart (in: Streams.Stream; key: Cipher;
+                        length: INTEGER; out: Streams.Stream) : BOOLEAN;
+       PROCEDURE ComposedEncryptBlock (in: Streams.Stream; key: Cipher;
+                        out: Streams.Stream) : BOOLEAN;
+       PROCEDURE RandomStream(s: Streams.Stream; key: Cipher);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _A_s_y_m_m_e_t_r_i_c_C_i_p_h_e_r_s  provides  an abstraction for the use of
+       public key ciphers. In general a public key consists basi­
+       cally of two parts: a public cipher which can encrypt data
+       and a private cipher which can  decrypt  (hence  the  name
+       asymmetric  cipher  since  there  are  different  keys for
+       encryption and decryption).  User A may  send  his  public
+       key  over an insecure channel to another user B for commu­
+       nication purposes. User B then encrypts the data using A's
+       public  key  and  sends it to him. Since only user A knows
+       how to decrypt data using his private key this  communica­
+       tion  can  not wiretapped by an intruder (at least in the­
+       ory).
+
+       Apart from an encryption and a decryption method an imple­
+       mentation  has  to  provide  three other procedures for an
+       asymmetric cipher: _c_o_m_p_e_n_c_r_y_p_t is the composition  of  the
+       encryption  and decryption maps.  For most public key sys­
+       tems this will be the identical map. In this case  it  may
+       be  given  as  NNIILL.  _s_p_l_i_t  extracts  the public part of a
+       cipher.  _r_a_n_d_o_m_S_t_r_e_a_m puts  some  random  bytes  onto  the
+       stream  _s  which  can  be  used  as starting values for an
+
+
+
+Release 0.5       Last change: 17 September 1996                1
+
+
+
+
+
+AsymmetricCiphers(3)   Ulm's Oberon System   AsymmetricCiphers(3)
+
+
+       encryption with the specific asymmetric cipher.
+
+       _I_n_i_t initializes the cipher _k_e_y with the  given  interface
+       _i_f,  the  capabilities  _c_a_p and the block lengths _i_n_l_e_n_g_t_h
+       and _o_u_t_L_e_n_g_t_h.
+
+       _C_a_p_a_b_i_l_i_t_e_s returns  the  capabilities  of  an  asymmetric
+       cipher. The supported capabilities are:
+       _c_o_m_p_o_s_e_d       is  set when the composed map of the cipher
+                      is not the identity map
+       _i_s_P_r_i_v_a_t_e_K_e_y   is set when the cipher is private
+
+       _I_s_P_u_b_l_i_c_K_e_y returns TTRRUUEE if the cipher  _k_e_y  is  a  public
+       cipher, otherwise FFAALLSSEE.
+
+       _S_p_l_i_t  extracts  the  public  part  of  the cipher _k_e_y and
+       returns it as a seperate cipher _p_u_b_l_i_c. If _k_e_y itself is a
+       public cipher then _p_u_b_l_i_c is set to _k_e_y.
+
+       _C_o_m_p_o_s_e_d_E_n_c_r_y_p_t,  _C_o_m_p_o_s_e_d_E_n_c_r_y_p_t_P_a_r_t  and_C_o_m_p_o_s_e_d_E_n_c_r_y_p_t_­
+       _B_l_o_c_k encrypt the stream _i_n using the composed map of  the
+       cipher  _k_e_y.   If _c_o_m_p_o_s_e_d is not a capability of _k_e_y then
+       the identiy map is used instead. The use  of  these  func­
+       tions   is   similar   to   the  use  of  _C_i_p_h_e_r_s_._E_n_c_r_y_p_t,
+       _C_i_p_h_e_r_s_._E_n_c_r_y_p_t_P_a_r_t and _B_l_o_c_k_C_i_p_h_e_r_s_._E_n_c_r_y_p_t_B_l_o_c_k.
+
+       _R_a_n_d_o_m_S_t_r_e_a_m puts some random bytes  onto  the  stream  _s.
+       These  can be used as the starting values of an encryption
+       when the composed map of the cipher is not  the  identical
+       map.
+
+SSEEEE AALLSSOO
+       _B_l_o_c_k_C_i_p_h_e_r_s_(_3_)    abstraction   for   the  use  of  block
+                          ciphers
+       _C_i_p_h_e_r_s_(_3_)         abstraction  for  general  ciphers  and
+                          crypto systems
+       _S_t_r_e_a_m_C_i_p_h_e_r_s_(_3_)   abstraction   for  the  use  of  stream
+                          ciphers
+       _T_C_r_y_p_t_(_3_)          implementation of the TCRYPT algorithm
+
+AAUUTTHHOORR
+       Michael Szczuka, University of Ulm
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 17 September 1996                2
+
+

@@ -1,0 +1,118 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPTimerEve.om,v 1.1 2001/05/08 07:36:20 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPTimerEve.om,v $
+   Revision 1.1  2001/05/08 07:36:20  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPTimerEvents;
+
+   IMPORT Disciplines, Events, FTPSessions, Times;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    msgEventType: Events.EventType;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   CONST
+      setTimeoutCmd = 0; resetCmd = 1; startTransferCmd = 2;
+      endOfTransferCmd = 3;
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    cmd: SHORTINT; (* setTimeoutCmd .. endTransferCmd *)
+	    timeout: Times.Time;
+	 END;
+
+   PROCEDURE GetEventType(session: FTPSessions.Session;
+			  VAR eventType: Events.EventType);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(sdisc); sdisc.id := sdid;
+	 Events.Define(sdisc.msgEventType);
+	 Disciplines.Add(session, sdisc);
+      END;
+      eventType := sdisc.msgEventType;
+   END GetEventType;
+
+   PROCEDURE SetTimeout(session: FTPSessions.Session; period: Times.Time);
+      VAR
+	 sdisc: SessionDiscipline;
+	 event: Event;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(event); event.type := sdisc.msgEventType;
+	 event.cmd := setTimeoutCmd; event.timeout := period;
+	 Events.Raise(event);
+      END;
+   END SetTimeout;
+
+   PROCEDURE Reset(session: FTPSessions.Session);
+      VAR
+	 sdisc: SessionDiscipline;
+	 event: Event;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(event); event.type := sdisc.msgEventType;
+	 event.cmd := resetCmd;
+	 Events.Raise(event);
+      END;
+   END Reset;
+
+   PROCEDURE StartTransfer(session: FTPSessions.Session);
+      VAR
+	 sdisc: SessionDiscipline;
+	 event: Event;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(event); event.type := sdisc.msgEventType;
+	 event.cmd := startTransferCmd;
+	 Events.Raise(event);
+      END;
+   END StartTransfer;
+
+   PROCEDURE EndOfTransfer(session: FTPSessions.Session);
+      VAR
+	 sdisc: SessionDiscipline;
+	 event: Event;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(event); event.type := sdisc.msgEventType;
+	 event.cmd := endOfTransferCmd;
+	 Events.Raise(event);
+      END;
+   END EndOfTransfer;
+
+BEGIN
+   sdid := Disciplines.Unique();
+END FTPTimerEvents.

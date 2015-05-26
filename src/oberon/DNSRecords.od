@@ -1,0 +1,211 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSRecords.od,v 1.2 2005/04/20 21:05:40 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSRecords.od,v $
+   Revision 1.2  2005/04/20 21:05:40  borchert
+   WriteA .. WriteSOA added
+
+   Revision 1.1  2004/03/02 12:31:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION DNSRecords;
+
+   (* DNS resource records according to RFC 1035, 3.2.1 *)
+
+   IMPORT IPv4Addresses, IPv6Addresses, Objects, Streams, Types;
+
+   CONST
+      (* RFC 1035, 3.2.2 -- various nowadays obsolete RR types omitted *)
+      a = 1; ns = 2; cname = 5;
+      soa = 6; ptr = 12; mx = 15;
+      txt = 16;
+
+      (* RFC 1876 *)
+      loc = 29;
+
+      (* RFC 1886 *)
+      aaaa = 28;
+
+      (* RFC 2065 *)
+      sig = 24; key = 25; nxt = 30;
+
+      (* RFC 2782 *)
+      srv = 33;
+
+      (* RFC 2915 *)
+      naptr = 35;
+
+      (* QTYPE values = RFC 1035 = 3.2.3 *)
+      axfr = 252; all = 255;
+   TYPE
+      (* note that we use Int32 instead of Int16 for these
+         unsigned 2-byte integer values to avoid negative values
+      *)
+      RRType = Types.Int32; (* unsigned 2-byte integer, a .. all *)
+      RRName = ARRAY 8 OF CHAR;
+   VAR
+      rrName: ARRAY 256 OF RRName;
+
+   CONST
+      (* classes according to RFC 1035, section 3.2.4 *)
+      classIN = 1; (* the Internet *)
+      classCS = 2;
+	 (* the CSNET class (Obsolete - used only for
+	    examples in some obsolete RFCs)
+	 *)
+      classCH = 3; (* the CHAOS class *)
+      classHS = 4; (* Hesiod *)
+      classNone = 254; (* RFC 2136 *)
+      classAny = 255; (* any class *)
+   TYPE
+      Class = Types.Int32;
+      ClassName = ARRAY 8 OF CHAR;
+   VAR
+      className: ARRAY 256 OF ClassName;
+
+   CONST
+      namelen = 512;
+   TYPE
+      Name = ARRAY namelen OF CHAR; (* qualified DNS names *)
+   TYPE
+      Record = POINTER TO RecordRec;
+      RecordRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: Record;
+	    name: Name;
+	    type: RRType;
+	    class: Class;
+	    ttl: Types.Int32;
+	    rdata: Streams.Stream; (* data of this record *)
+	    pdata: Streams.Stream; (* entire response packet *)
+	    rpos: Streams.Count; (* position of rdata within pdata *)
+	 END;
+   TYPE
+      ListOfTextRecords = POINTER TO ListOfTextRecordsRec;
+      ListOfTextRecordsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    text: Name;
+	    next: ListOfTextRecords;
+	 END;
+
+   PROCEDURE ReadName(s: Streams.Stream; VAR name: ARRAY OF CHAR) : BOOLEAN;
+      (* extract domain name from s;
+	 pointers according RFC 1035, 4.1.4 are supported provided
+	 that stream position 0 equals pointer position 0;
+	 the stream position is, if possible, left behind the
+	 name field even in case of pointers
+      *)
+
+   PROCEDURE WriteName(s: Streams.Stream; name: ARRAY OF CHAR) : BOOLEAN;
+      (* write domain name as sequence of so-called labels,
+	 no compression used;
+	 FALSE is returned on all errors of s and in case
+	 of invalid domain names that must conform to following RE: (*
+
+	    ([^.]{1,63}(\.[^.]{1,63})*)?\.?
+      *)
+
+   PROCEDURE ReadRecord(s: Streams.Stream;
+			VAR name: ARRAY OF CHAR;
+			VAR type: RRType;
+			VAR class: Class;
+			VAR ttl: Types.Int32;
+			VAR rdata: Streams.Stream;
+			VAR rpos: Streams.Count) : BOOLEAN;
+      (* parse an entire resource record,
+	 store its components into the VAR-parameters,
+	 and, if possible, leave the position of s behind the record;
+	 rdata is a sub-stream of s
+      *)
+
+   PROCEDURE WriteRecord(s: Streams.Stream;
+			 name: ARRAY OF CHAR;
+			 type: RRType;
+			 class: Class;
+			 ttl: Types.Int32;
+			 rdata: Streams.Stream) : BOOLEAN;
+      (* generate resource record and write it onto s;
+	 rdata must be a sub-stream that supports seek operations
+      *)
+
+   PROCEDURE ReadQuestion(s: Streams.Stream;
+			  VAR name: ARRAY OF CHAR;
+			  VAR type: RRType;
+			  VAR class: Class) : BOOLEAN;
+      (* read question record from a DNS message *)
+
+   PROCEDURE WriteQuestion(s: Streams.Stream;
+			   name: ARRAY OF CHAR;
+			   type: RRType;
+			   class: Class) : BOOLEAN;
+      (* generate question record for DNS message *)
+
+   PROCEDURE ReadRecords(s: Streams.Stream; count: INTEGER;
+			 packetlen: Streams.Count;
+                         VAR records: Record) : BOOLEAN;
+      (* read count records from s which is a stream representing
+         the entire packet; packetlen is the size of the packet;
+	 a linear list of records is returned in records
+      *)
+
+   PROCEDURE ExtractName(record: Record; VAR name: ARRAY OF CHAR) : BOOLEAN;
+   PROCEDURE ExtractA(record: Record;
+                      VAR ipaddr: IPv4Addresses.Address) : BOOLEAN;
+   PROCEDURE ExtractAAAA(record: Record;
+			 VAR ipaddr: IPv6Addresses.Address) : BOOLEAN;
+   PROCEDURE ExtractMX(record: Record;
+                       VAR preference: INTEGER;
+		       VAR name: ARRAY OF CHAR) : BOOLEAN;
+   PROCEDURE ExtractTXT(record: Record;
+                        VAR list: ListOfTextRecords) : BOOLEAN;
+   PROCEDURE ExtractSOA(record: Record;
+                        VAR mname: ARRAY OF CHAR;
+			VAR rname: ARRAY OF CHAR;
+			VAR serial: Types.Int32;
+			VAR refresh: Types.Int32;
+			VAR retry: Types.Int32;
+			VAR expire: Types.Int32;
+			VAR minimum: Types.Int32) : BOOLEAN;
+
+   PROCEDURE WriteA(s: Streams.Stream;
+                    ipaddr: IPv4Addresses.Address) : BOOLEAN;
+   PROCEDURE WriteAAAA(s: Streams.Stream;
+                       ipaddr: IPv6Addresses.Address) : BOOLEAN;
+   PROCEDURE WriteMX(s: Streams.Stream;
+                     preference: INTEGER;
+		     name: ARRAY OF CHAR) : BOOLEAN;
+   PROCEDURE WriteTXT(s: Streams.Stream;
+                      list: ListOfTextRecords) : BOOLEAN;
+   PROCEDURE WriteSOA(s: Streams.Stream;
+                      mname: ARRAY OF CHAR;
+		      rname: ARRAY OF CHAR;
+		      serial: Types.Int32;
+		      refresh: Types.Int32;
+		      retry: Types.Int32;
+		      expire: Types.Int32;
+		      minimum: Types.Int32) : BOOLEAN;
+
+END DNSRecords.

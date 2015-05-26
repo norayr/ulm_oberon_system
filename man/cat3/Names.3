@@ -1,0 +1,296 @@
+Names(3)                      Ulm's Oberon System                     Names(3)
+
+
+
+[1mNAME[0m
+       Names - abstraction for name hierarchies
+
+[1mSYNOPSIS[0m
+       TYPE Name = ConstStrings.String;
+       TYPE Node = POINTER TO NodeRec;
+       TYPE NodeRec = RECORD (Services.ObjectRec) END;
+       TYPE Lister = Iterators.Iterator;
+
+       CONST examine = 0;
+       CONST change = 1;
+       CONST read = 2;
+       CONST search = 3;
+       CONST insert = 4;
+       CONST delete = 5;
+       CONST destroy = 6;
+       CONST accessmodes = 7;
+       TYPE AccessMode = SHORTINT;            (* [examine..destroy] *)
+       TYPE Permissions = ARRAY accessmodes OF Shards.Pot;
+       TYPE Status = POINTER TO StatusRec;
+       TYPE StatusRec =
+          RECORD
+             (Objects.ObjectRec)
+             perm: Permissions;
+          END;
+
+       TYPE AccessProc = PROCEDURE (node: Node; mode: AccessMode;
+                                     auth: Shards.Lid): BOOLEAN;
+       TYPE GetStatusProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                                     VAR status: StatusRec): BOOLEAN;
+       TYPE SetStatusProc = PROCEDURE (node: Node; status: Status;
+                                     auth: Shards.Lid): BOOLEAN;
+       TYPE GetMembersProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                                     VAR members: Lister): BOOLEAN;
+       TYPE TakeInterestProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                                     VAR eventType: Events.EventType): BOOLEAN;
+       TYPE GetNodeProc = PROCEDURE (node: Node; name: Name; auth: Shards.Lid;
+                                     VAR subnode: Node): BOOLEAN;
+       TYPE InsertProc = PROCEDURE (node, subnode: Node; name: Name;
+                                     auth: Shards.Lid): BOOLEAN;
+       TYPE MakeSubnodeProc = PROCEDURE (node: Node; name: Name; status: Status;
+                                         caps: CapabilitySet; auth: Shards.Lid;
+                                         VAR subnode: Node): BOOLEAN;
+       TYPE DeleteProc = PROCEDURE (node: Node; name: Name;
+                                     auth: Shards.Lid): BOOLEAN;
+       TYPE DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid): BOOLEAN;
+
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             access:           AccessProc;
+             getStatus:        GetStatusProc;
+             setStatus:        SetStatusProc;
+             getMembers:       GetMembersProc;
+             takeInterest:     TakeInterestProc;
+             getNode:          GetNodeProc;
+             insert:           InsertProc;
+             makeSubnode:      MakeSubnodeProc;
+             delete:           DeleteProc;
+             destroy:          DestroyProc;
+          END;
+
+       CONST accessCap = 0;
+       CONST statusCap = 1;
+       CONST domainCap = 2;
+       CONST destroyCap = 3;
+       CONST makeSubnodeCap = 4;
+       CONST allCaps = {accessCap .. makeSubnodeCap};
+       CONST strictCaps = {statusCap, domainCap, makeSubnodeCap};
+       TYPE CapabilitySet = SET;              (* of [accessCap..destroyCap] *)
+
+       CONST inserted = insert;
+       CONST deleted = delete;
+       TYPE State = SHORTINT;                 (* inserted or deleted *)
+       TYPE MemberEvent = POINTER TO MemberEventRec;
+       TYPE MemberEventRec =
+          RECORD
+             (Events.EventRec)
+             state: State;
+             name: Name;                      (* of inserted/deleted member *)
+             node: Node;
+          END;
+
+       VAR root: Node;
+
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE InitNode(node: Node; if: Interface; caps: CapabilitySet);
+       PROCEDURE CreateNode(VAR node: Node; status: Status; caps: CapabilitySet);
+       PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+       PROCEDURE Capabilities(node: Node): CapabilitySet;
+       PROCEDURE Access(node: Node; mode: AccessMode; auth: Shards.Lid): BOOLEAN;
+       PROCEDURE GetStatus(node: Node; auth: Shards.Lid;
+                                  VAR status: StatusRec): BOOLEAN;
+       PROCEDURE SetStatus(node: Node; status: Status; auth: Shards.Lid): BOOLEAN;
+       PROCEDURE GetMembers(node: Node; auth: Shards.Lid;
+                                  VAR members: Lister): BOOLEAN;
+       PROCEDURE TakeInterest(node: Node; auth: Shards.Lid;
+                                  VAR eventType: Events.EventType): BOOLEAN;
+       PROCEDURE GetNode(node: Node; name: Name; auth: Shards.Lid;
+                                  VAR subnode: Node): BOOLEAN;
+       PROCEDURE Insert(node, subnode: Node; name: Name;
+                                  auth: Shards.Lid): BOOLEAN;
+       PROCEDURE MakeSubnode(node: Node; name: Name;
+                             status: Status; caps: CapabilitySet;
+                             auth: Shards.Lid; VAR subnode: Node): BOOLEAN;
+       PROCEDURE Delete(node: Node; name: Name; auth: Shards.Lid): BOOLEAN;
+       PROCEDURE Destroy(node: Node; auth: Shards.Lid): BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mNames[24m defines and basically implements an abstraction for globally dis-
+       tributable name spaces for objects.  Name spaces are directed  (and  in
+       general cycle-free) graphs.  Nodes in the ``root'' hierarchy as defined
+       in this module can belong to other processes (name servers).  Access to
+       individual nodes can be controlled by use of an authorization scheme.
+
+       Nodes can have a combination of following capabilities:
+       [4maccessCap[24m        indicates  that  an explicit access method is present,
+                        so that results of [4mAccess[24m (see below) can  be  consid-
+                        ered authoritative;
+       [4mstatusCap[24m        indicates that status information is maintained;
+       [4mdomainCap[24m        denotes  a  node's capability to manage subnodes (mem-
+                        bers);
+       [4mdestroyCap[24m       indicates that an explicit destroy method is  present.
+       [4mmakeSubnodeCap[24m   indicates the support of the [4mMakeSubnode[24m operation.
+       For convenience, [4mallCaps[24m defines a set of all capabilities, and [4mstrict-[0m
+       [4mCaps[24m defines a set of those capabilities that will  cause  failures  of
+       associated methods when missing.
+
+       A  [4mstatus[24m,  if  maintained,  contains  authorization  agents  (of  type
+       [4mShards.Pot[24m) controlling the use of following methods:
+       [4mexamine[24m   [4mGetStatus[0m
+       [4mchange[24m    [4mSetStatus[0m
+       [4mread[24m      [4mGetMembers[24m, [4mTakeInterest[0m
+       [4msearch[24m    [4mGetNode[0m
+       [4minsert[24m    [4mInsert[0m
+       [4mdelete[24m    [4mDelete[0m
+       [4mdestroy[24m   [4mDestroy[0m
+
+   [1mProcedures of general interest[0m
+       [4mCapabilities[24m returns capabilities of [4mnode[24m.
+
+       [4mAccess[24m tries to guess whether [4mnode[24m would allow a particular access mode
+       [4mmode[24m.   When  in  doubt,  e.g.  because  [4mnode[24m has no [4maccess[24m capability,
+       result is [1mTRUE[22m.
+
+       [4mGetStatus[24m examines the current status of [4mnode[24m.  [4mSetStatus[24m  changes  the
+       status of [4mnode[24m.
+
+       [4mGetMembers[24m reads from [4mnode[24m all names of current subnodes.
+
+       [4mTakeInterest[24m  returns an event type for events notifying changes (addi-
+       tions or deletions) of members.  Different nodes will  yield  different
+       event  types.  Notification events carry a reference to the domain node
+       whose set of members has changed and the name of the member.
+
+       [4mGetNode[24m searches [4mnode[24m for a direct subnode named [4mname.[0m
+
+       [4mInsert[24m inserts name [4mname[24m for subnode [4msubnode[24m into [4mnode[24m.
+
+       [4mMakeSubnode[24m creates a subnode of the same type as [4mnode[24m and  inserts  it
+       into  [4mnode[24m.   The  initial status is defined by [4mstatus[24m.  If set to [1mNIL[22m,
+       [4msubnode[24m inherits its status from [4mnode[24m.  The set of supported  capabili-
+       ties  of  [4msubnode[24m  is  the intersection of [4mcaps[24m and those of the corre-
+       sponding implementation.  The new subnode is returned in [4msubnode[24m.
+
+       [4mDelete[24m deletes name [4mname[24m for an existing subnode of [4mnode[24m.
+
+       [4mDestroy[24m terminates [4mnode[24m and deletes references to it wherever possible.
+
+       [4mCreateNode[24m can be used to create a node of standard behaviour.  In that
+       case, [4mstatus[24m may be [1mNIL [22mif no restrictions are required.
+
+   [1mExample[0m
+       This is an example of a procedure printing  the  names  of  all  direct
+       subnodes  of a given node to a stream, supposed they are publicly visi-
+       ble:
+
+       PROCEDURE PrintMembers(node: Names.Node; s: Streams.Stream);
+          VAR
+             members: Iterators.Iterator;
+             member: Names.Name;
+       BEGIN
+          IF Names.domainCap in Names.Capabilities(node) THEN
+             IF Names.GetMembers(node, NIL, members) THEN
+                WHILE Iterators.Get(members, member) DO
+                   ConstStrings.Write(s, member); Write.LnS(s);
+                END;
+             ELSE
+                Conclusions.Conclude(node, Errors.error, "PrintMembers");
+             END;
+          END;
+       END PrintMembers;
+
+
+   [1mProcedures for implementors[0m
+       Implementations other than the standard implementation must  initialize
+       new instances of nodes using [4mInitNode[24m, specifying a set of capabilities
+       [4mcaps[24m and an interface [4mif[24m containing following procedures:
+       If [4mstatusCap[24m [1mIN [4m[22mcaps[24m:
+          [4mgetStatus[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mauth[24m: [4mShards.Lid[24m; [1mVAR [4m[22mstatus[24m:  [4mSta-[0m
+            [4mtusRec[24m) : [1mBOOLEAN[22m;
+            copy node's status information into [4mstatus[24m.
+          [4msetStatus[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mstatus[24m: [4mStatus[24m; [4mauth[24m: [4mShards.Lid[24m) :
+            [1mBOOLEAN[22m;
+            set node's status information to [4mstatus[24m.
+       If [4mdomainCap[24m [1mIN [4m[22mcaps[24m:
+          [4mgetMembers[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m;  [4mauth[24m:  [4mShards.Lid[24m;  [1mVAR  [4m[22mmembers[24m:
+            [4mLister[24m) : [1mBOOLEAN[22m;
+            return in [4mmembers[24m an iterator that will supply all names of node's
+            direct subnodes.
+          [4mtakeInterest[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mauth[24m: [4mShards.Lid[24m; [1mVAR [4m[22meventType[24m:
+            [4mEvents.EventType[24m) : [1mBOOLEAN[22m;
+            return in [4meventType[24m a type for events notifying changes of members
+            of [4mnode[24m.
+          [4mgetNode[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mname[24m:  [4mName[24m;  [4mauth[24m:  [4mShards.Lid[24m;  [1mVAR[0m
+            [4msubnode:[24m [4mNode[24m) : [1mBOOLEAN[22m;
+            return in [4msubnode[24m node's subnode named [4mname[24m.
+          [4minsert[24m:  [1mPROCEDURE[22m([4mnode[24m:  [4mNode[24m;  [4msubnode[24m:  [4mNode[24m;  [4mname[24m:  [4mName[24m; [4mauth[24m:
+            [4mShards.Lid[24m) : [1mBOOLEAN[22m;
+            insert subnode [4msubnode[24m by name [4mname[24m into node.
+          [4mdelete[24m:  [1mPROCEDURE[22m([4mnode[24m:  [4mNode[24m;  [4mname[24m:  [4mName[24m;  [4mauth[24m:  [4mShards.Lid[24m)  :
+            [1mBOOLEAN[22m;
+            delete name [4mname[24m from node.
+       If [4mmakeSubnodeCap[24m [1mIN [4m[22mcaps[24m:
+          [4mmakeSubnode[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mname[24m: [4mName[24m; [4mstatus[24m: [4mStatus[24m; [4mcaps[24m:
+            [4mCapabilitySet[24m; [4mauth[24m: [4mShards.Lid[24m; [1mVAR [4m[22msubnode[24m: [4mNode[24m) : [1mBOOLEAN[22m;
+            create a subnode of the own implementation and insert it under the
+            given  name  into  [4mnode[24m.   The status is to be inherited from [4mnode[0m
+            unless a non-[1mNIL [22mstatus is given.
+       If [4mdestroyCap[24m [1mIN [4m[22mcaps[24m:
+          [4mdestroy[24m: [1mPROCEDURE[22m([4mnode[24m: [4mNode[24m; [4mauth[24m: [4mShards.Lid[24m) : [1mBOOLEAN[22m;
+            check authorization to destroy node; clean up if appropriate.
+
+       Trivial implementations (i.e. those with an empty set of  capabilities)
+       may pass a [1mNIL [22mvalue for [4mif[24m to [4mInitNode[24m.
+
+       Implementors  are  free  to  share the builtin [4mError[24m procedure to raise
+       error events as defined below.
+
+[1mDIAGNOSTICS[0m
+       All procedures return [1mTRUE [22mon success,  otherwise  [1mFALSE[22m.   Errors  are
+       related  to  nodes  and  queued  by  default; their priority is [4mPriori-[0m
+       [4mties.liberrors[24m.
+
+       Following error codes are currently implemented:
+       [4mnoPermission[24m    operation was not permitted
+       [4mbadAccessMode[24m   illegal access mode
+       [4mnoStatus[24m        node does not maintain a status
+       [4mnoDomain[24m        node is not a domain
+       [4mnodeNotFound[24m    node could not be found
+       [4mnodeDestroyed[24m   node has been destroyed
+       [4mnameExists[24m      name is already in use
+       [4mnodeBusy[24m        node busy, possible deadlock situation
+       [4mcyclicLink[24m      operation would cause a cyclic link  (not  detected  by
+                       some implementations)
+       [4mserverFailure[24m   name server failure
+       [4mnoSubDomain[24m     [4mMakeSubnode[24m is not supported by this node
+       [4munknownError[24m    [4mError[24m was called with unknown error code
+
+[1mSEE ALSO[0m
+       [4mConstStrings(3)[24m        handling of arbitrarily long strings
+       [4mIterators(3)[24m           sequential access of data structures
+       [4mNamedObjects(3)[24m        add [4mNames[24m functionality to arbitrary objects
+       [4mPaths(3)[24m               resolving string constants into name paths
+       [4mPathConditions(3)[24m      wait until a path of [4mNames[24m becomes valid
+       [4mPersistentNodes(3)[24m     persistent directory nodes
+       [4mServices(3)[24m            type-independent definition of extensions
+       [4mRelatedEvents(3)[24m       error event handling
+       [4mRemoteNames(3)[24m         support of [4mRemoteObjects(3)[24m for [4mNames[0m
+       [4mResources(3)[24m           object termination handling
+       [4mShards(3)[24m              abstraction for authorization protocols
+       [4mUniqueNames(3)[24m         supply unique names
+       [4mUnixNames(3)[24m           imports the public root
+
+[1mAUTHOR[0m
+       Martin Hasch, University of Ulm,
+       [4mMakeSubnode[24m was added by Andreas Borchert
+
+
+
+Release 0.5             Last change: 13 September 2004                Names(3)

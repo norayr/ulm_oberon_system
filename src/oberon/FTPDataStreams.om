@@ -1,0 +1,462 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPDataStre.om,v 1.3 2001/05/21 15:48:15 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: FTPDataStre.om,v $
+   Revision 1.3  2001/05/21 15:48:15  borchert
+   move from Jobs to PriorityJobs
+
+   Revision 1.2  2001/05/16 18:55:59  borchert
+   bug fix: a new PASV while an old PASV port was open caused the
+            old listener task to close the new port
+   Internet.CreateSomeSocketOn instead of Internet.CreateSomeSocket used
+
+   Revision 1.1  2001/05/08 07:53:11  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPDataStreams;
+
+   IMPORT ASCII, Conditions, Disciplines, EventConditions, Events,
+      FTPCommands, FTPPriorities, FTPRequests, FTPResponses, FTPSessions,
+      FTPTimerEvents, IPv4Addresses, IPv4TCPSockets, Messages, PriorityJobs,
+      RelatedEvents, Resources, Scan, StreamDisciplines, Streams, Strings,
+      Tasks, UnixSockets, Write;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    earlyconnects: BOOLEAN; (* early connects OK? *)
+	    me, peer: IPv4Addresses.Address;
+	    opened: BOOLEAN; (* stream revealed to Open? *)
+	    signal: Events.Event; (* raise this event in Open, if defined *)
+	    signalCondition: Conditions.Condition; (* for signal *)
+	    stream: Streams.Stream; (* established connection *)
+	    socket: UnixSockets.Socket; (* PASV socket *)
+	    waitcond: Conditions.Condition;
+	    job: PriorityJobs.Job; (* current job (Listener or Connector) *)
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (PriorityJobs.JobRec)
+	    session: FTPSessions.Session;
+	    sdisc: SessionDiscipline;
+	    address: IPv4Addresses.SocketAddress; (* for Connector *)
+	    signal: Events.Event; (* raise this event in Listener *)
+	 END;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE CloseDataConnection(sdisc: SessionDiscipline; block: BOOLEAN);
+      VAR
+	 stream: Streams.Stream;
+	 socket: UnixSockets.Socket;
+	 condition: Conditions.Condition;
+   BEGIN
+      stream := NIL; socket := NIL;
+      IF sdisc.stream # NIL THEN
+	 stream := sdisc.stream; sdisc.stream := NIL;
+      END;
+      IF sdisc.socket # NIL THEN
+	 socket := sdisc.socket; sdisc.socket := NIL;
+      END;
+      sdisc.opened := FALSE;
+      IF (stream # NIL) & Resources.Alive(stream) THEN
+	 Resources.Notify(stream, Resources.terminated);
+      END;
+      IF (socket # NIL) & Resources.Alive(socket) THEN
+	 Resources.Notify(socket, Resources.terminated);
+      END;
+      IF block & (sdisc.job # NIL) THEN
+	 (* block until the Listener or Connector has finished *)
+	 PriorityJobs.CreateCondition(condition, sdisc.job);
+	 IF condition # NIL THEN
+	    Tasks.WaitFor(condition);
+	 END;
+      END;
+   END CloseDataConnection;
+
+   PROCEDURE DataConnectionOpen(sdisc: SessionDiscipline) : BOOLEAN;
+   BEGIN
+      RETURN (sdisc.stream # NIL) & Resources.Alive(sdisc.stream) OR
+	     (sdisc.socket # NIL) & Resources.Alive(sdisc.socket)
+   END DataConnectionOpen;
+
+   PROCEDURE Listener(job: PriorityJobs.Job);
+      VAR
+	 resCondition: Conditions.Condition;
+	 acceptCondition: Conditions.Condition;
+	 socket: UnixSockets.Socket;
+	 eventType: Events.EventType;
+	 conditions: Conditions.ConditionSet;
+	 event: Resources.Event;
+	 peer: IPv4Addresses.SocketAddress;
+	 acceptCount: INTEGER;
+   BEGIN
+      WITH job: Job DO
+	 socket := job.sdisc.socket;
+	 IF socket = NIL THEN RETURN END;
+	 IPv4TCPSockets.CreateAcceptCondition(acceptCondition, socket);
+	 Resources.TakeInterest(socket, eventType);
+	 EventConditions.Create(resCondition, eventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, acceptCondition);
+	 Conditions.Incl(conditions, resCondition);
+	 acceptCount := 0;
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    IF EventConditions.TestAndGet(resCondition, event) THEN
+	       IF event.change = Resources.terminated THEN EXIT END;
+	    ELSIF Resources.Alive(socket) THEN
+	       IF IPv4TCPSockets.Accept(socket, job.sdisc.stream,
+			Streams.onebuf, peer) THEN
+		  INC(acceptCount);
+		  IF (peer.host = job.sdisc.peer) & (acceptCount = 1) THEN
+		     Resources.DependsOn(job.sdisc.stream, job.session);
+		     RelatedEvents.Forward(job.sdisc.stream, job.session);
+		     FTPTimerEvents.Reset(job.session);
+		     Conditions.Excl(conditions, resCondition);
+		     EventConditions.Drop(resCondition);
+		     Resources.TakeInterest(job.sdisc.stream, eventType);
+		     EventConditions.Create(resCondition, eventType);
+		     Conditions.Incl(conditions, resCondition);
+		     Events.Raise(job.signal); job.signal := NIL;
+		  ELSE
+		     (* reject connection theft *)
+		     EXIT
+		  END;
+	       END;
+	    ELSE
+	       (* socket dead but stream alive? *)
+	       Conditions.Excl(conditions, acceptCondition);
+	       ASSERT(acceptCount > 0);
+	       IF ~Resources.Alive(job.sdisc.stream) THEN EXIT END;
+	    END;
+	 END;
+	 EventConditions.Drop(resCondition);
+	 CloseDataConnection(job.sdisc, (* block = *) FALSE);
+	 IF job.signal # NIL THEN
+	    job.sdisc.stream := NIL;
+	    Events.Raise(job.signal); job.signal := NIL;
+	 END;
+	 job.sdisc.job := NIL;
+      END;
+   END Listener;
+
+   PROCEDURE Connector(job: PriorityJobs.Job);
+      (* process PORT command in background;
+	 on default, we try to open the specified port immediately;
+	 this works fine with most clients but fails with
+	 some clients that allow connections only after issuing
+	 the command that requires the connection (e.g., Frontpage);
+	 if we see this problem we avoid early connects on future
+	 PORT commands
+      *)
+      VAR
+	 openCondition: Conditions.Condition;
+	 resCondition: Conditions.Condition;
+	 eventType: Events.EventType;
+	 conditions: Conditions.ConditionSet;
+	 event: Resources.Event;
+	 me: IPv4Addresses.SocketAddress;
+	 retries: INTEGER;
+	 signal: Events.Event;
+	 signalType: Events.EventType;
+	 signalCondition: Conditions.Condition;
+	 slowmode: BOOLEAN;
+   BEGIN
+      WITH job: Job DO
+	 me.host := job.sdisc.me; me.portnum := 0;
+	 Resources.TakeInterest(job.session, eventType);
+	 EventConditions.Create(resCondition, eventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, resCondition);
+	 signalCondition := job.sdisc.signalCondition;
+	 IF signalCondition # NIL THEN
+	    Conditions.Incl(conditions, signalCondition);
+	    openCondition := NIL;
+	    slowmode := TRUE;
+	 ELSE
+	    IPv4TCPSockets.CreateOpenConditionAs(openCondition,
+	       job.address, me);
+	    Conditions.Incl(conditions, openCondition);
+	    slowmode := FALSE;
+	 END;
+	 retries := 0;
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    IF EventConditions.TestAndGet(resCondition, event) THEN
+	       IF event.change = Resources.terminated THEN EXIT END;
+	    ELSIF (openCondition = NIL) &
+		  EventConditions.TestAndGet(signalCondition, signal) THEN
+	       IPv4TCPSockets.CreateOpenConditionAs(openCondition,
+		  job.address, me);
+	       Conditions.Incl(conditions, openCondition);
+	       Conditions.Excl(conditions, signalCondition);
+	       EventConditions.Drop(signalCondition);
+	       signalCondition := NIL;
+	    ELSIF IPv4TCPSockets.TestAndOpen(job.sdisc.stream,
+		     openCondition, Streams.onebuf, job.session) THEN
+	       FTPTimerEvents.Reset(job.session);
+	       Resources.DependsOn(job.sdisc.stream, job.session);
+	       EXIT
+	    ELSIF ~slowmode & (retries = 0) THEN
+	       INC(retries);
+	       Events.Define(signalType);
+	       NEW(signal); signal.type := signalType;
+	       job.sdisc.signal := signal;
+	       EventConditions.Create(signalCondition, signalType);
+	       Conditions.Excl(conditions, openCondition);
+	       Conditions.Incl(conditions, signalCondition);
+	       (* avoid early connects on further PORT commands *)
+	       job.sdisc.earlyconnects := FALSE;
+	    ELSIF (retries = 1) &
+		  EventConditions.TestAndGet(signalCondition, signal) THEN
+	       INC(retries);
+	       IPv4TCPSockets.CreateOpenConditionAs(openCondition,
+		  job.address, me);
+	       Conditions.Incl(conditions, openCondition);
+	    ELSE
+	       job.sdisc.stream := NIL;
+	       EXIT
+	    END;
+	 END;
+	 EventConditions.Drop(resCondition);
+	 IF signalCondition # NIL THEN
+	    EventConditions.Drop(signalCondition);
+	 END;
+	 job.sdisc.job := NIL;
+      END;
+   END Connector;
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+      VAR
+	 sdisc: SessionDiscipline;
+	 request: FTPRequests.Request;
+
+      PROCEDURE OpenPort;
+	 VAR
+	    address: IPv4Addresses.SocketAddress;
+	    job: Job;
+	    addresstext: ARRAY 64 OF CHAR;
+	    eventType: Events.EventType;
+
+	 PROCEDURE PrintAddress;
+	    VAR
+	       s: Streams.Stream;
+	       portnum: INTEGER;
+	 BEGIN
+	    addresstext := ""; Strings.Open(s, addresstext);
+	    Write.CharS(s, "=");
+	    Write.IntS(s, address.host DIV 1000000H MOD 100H, 1);
+	    Write.CharS(s, ",");
+	    Write.IntS(s, address.host DIV 10000H MOD 100H, 1);
+	    Write.CharS(s, ",");
+	    Write.IntS(s, address.host DIV 100H MOD 100H, 1);
+	    Write.CharS(s, ",");
+	    Write.IntS(s, address.host MOD 100H, 1);
+	    Write.CharS(s, ",");
+	    portnum := IPv4Addresses.GetPort(address);
+	    Write.IntS(s, portnum DIV 100H MOD 100H, 1);
+	    Write.CharS(s, ",");
+	    Write.IntS(s, portnum MOD 100H, 1);
+	 END PrintAddress;
+
+      BEGIN (* OpenPort *)
+	 WITH message: FTPSessions.Message DO
+	    address.host := sdisc.me;
+	    IPv4Addresses.SetPort(address, 0);
+	    IF IPv4TCPSockets.CreateSomeSocketOn(sdisc.socket,
+		  address, object) THEN
+	       Resources.DependsOn(sdisc.socket, object);
+	       RelatedEvents.Forward(sdisc.socket, object);
+	       NEW(job); job.sdisc := sdisc;
+	       job.session := object(FTPSessions.Session);
+	       Events.Define(eventType);
+	       NEW(job.signal); job.signal.type := eventType;
+	       EventConditions.Create(sdisc.waitcond, eventType);
+	       sdisc.job := job;
+	       PriorityJobs.Submit(job, job.session,
+		  FTPPriorities.data, Listener);
+	       PrintAddress;
+	       FTPResponses.Create(message.response, 227, addresstext);
+	    ELSE
+	       FTPResponses.Create(message.response, 425,
+		  "Sorry. Unable to create port on my side.");
+	    END;
+	 END;
+      END OpenPort;
+
+      PROCEDURE ConnectPort;
+	 VAR
+	    address: IPv4Addresses.SocketAddress;
+	    job: Job;
+	    portnum: INTEGER;
+
+	 PROCEDURE ScanAddress() : BOOLEAN;
+	    VAR
+	       h1, h2, h3, h4, p1, p2: INTEGER;
+
+	    PROCEDURE Valid(byte: INTEGER) : BOOLEAN;
+	    BEGIN
+	       RETURN (byte >= 0) & (byte <= 255)
+	    END Valid;
+
+	 BEGIN (* ScanAddress *)
+	    Streams.SetPos(request.param, 0);
+	    Scan.S6(request.param, "%d,%d,%d,%d,%d,%d",
+	       h1, h2, h3, h4, p1, p2);
+	    IF request.param.count # 6 THEN RETURN FALSE END;
+	    IF ~Valid(h1) OR ~Valid(h2) OR ~Valid(h3) OR
+		  ~Valid(h4) OR ~Valid(p1) OR ~Valid(p2) THEN
+	       RETURN FALSE
+	    END;
+	    address.host := h1 * 1000000H + h2 * 10000H + h3 * 100H + h4;
+	    IPv4Addresses.SetPort(address, p1 * 100H + p2);
+	    RETURN TRUE
+	 END ScanAddress;
+
+      BEGIN (* ConnectPort *)
+	 WITH message: FTPSessions.Message DO
+	    IF request.param = NIL THEN
+	       FTPResponses.Create(message.response, 501, "Parameter missing!");
+	       RETURN
+	    END;
+	    IF ~ScanAddress() THEN
+	       FTPResponses.Create(message.response, 501,
+		  "Sorry. I am unable to decode your port parameter!");
+	       RETURN
+	    END;
+	    IF address.host # sdisc.peer THEN
+	       FTPResponses.Create(message.response, 425,
+		  "Sorry. I am not going to attack third parties!");
+	       RETURN
+	    END;
+	    portnum := IPv4Addresses.GetPort(address);
+	    IF portnum < 1024 THEN
+	       FTPResponses.Create(message.response, 425,
+		  "Sorry. I am not going to open privileged ports on your side!");
+	       RETURN
+	    END;
+	    NEW(job); job.sdisc := sdisc;
+	    job.address := address;
+	    job.session := object(FTPSessions.Session);
+	    IF sdisc.earlyconnects THEN
+	       job.sdisc.signal := NIL;
+	    ELSE
+	       NEW(job.sdisc.signal);
+	       Events.Define(job.sdisc.signal.type);
+	       EventConditions.Create(job.sdisc.signalCondition,
+		  job.sdisc.signal.type);
+	    END;
+	    sdisc.job := job;
+	    PriorityJobs.Submit(job, job.session,
+	       FTPPriorities.data, Connector);
+	    PriorityJobs.CreateCondition(sdisc.waitcond, job);
+	    FTPResponses.Create(message.response, 200,
+	       "PORT command successful.");
+	 END;
+      END ConnectPort;
+
+   BEGIN (* Handler *)
+      IF ~(message IS FTPSessions.Message) THEN RETURN END;
+      IF ~Disciplines.Seek(object, sdid, sdisc) THEN RETURN END;
+      WITH message: FTPSessions.Message DO
+	 request := message.request;
+	 IF (request.command = FTPCommands.pasv) OR
+	       (request.command = FTPCommands.port) THEN
+	    CloseDataConnection(sdisc, (* block = *) TRUE);
+	    IF request.command = FTPCommands.pasv THEN
+	       OpenPort;
+	    ELSE
+	       ConnectPort;
+	    END;
+	 ELSIF (request.command = FTPCommands.abor) &
+	       DataConnectionOpen(sdisc) THEN
+	    CloseDataConnection(sdisc, (* block = *) TRUE);
+	    FTPResponses.Create(message.response, 226,
+	       "Open data connection was closed.");
+	 END;
+      END;
+   END Handler;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE AddHandler(session: FTPSessions.Session;
+			me, peer: IPv4Addresses.Address);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      NEW(sdisc); sdisc.id := sdid;
+      sdisc.earlyconnects := TRUE;
+      sdisc.me := me; sdisc.peer := peer; sdisc.stream := NIL;
+      sdisc.socket := NIL; sdisc.opened := FALSE; sdisc.waitcond := NIL;
+      sdisc.signal := NIL;
+      Disciplines.Add(session, sdisc);
+      Messages.InstallHandler(session, Handler);
+   END AddHandler;
+
+   PROCEDURE SuppressEarlyConnects(session: FTPSessions.Session);
+      VAR
+	 sdisc: SessionDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(session, sdid, sdisc); ASSERT(ok);
+      sdisc.earlyconnects := FALSE;
+   END SuppressEarlyConnects;
+
+   PROCEDURE Open(VAR s: Streams.Stream;
+		  session: FTPSessions.Session) : BOOLEAN;
+      VAR
+	 news: Streams.Stream;
+	 sdisc: SessionDiscipline;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 signal: Events.Event;
+   BEGIN
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN RETURN FALSE END;
+      IF sdisc.opened THEN RETURN FALSE END;
+      IF sdisc.signal # NIL THEN
+	 signal := sdisc.signal; sdisc.signal := NIL; Events.Raise(signal);
+      END;
+      IF sdisc.waitcond # NIL THEN
+	 Tasks.WaitFor(sdisc.waitcond);
+	 sdisc.waitcond := NIL;
+      END;
+      IF sdisc.stream # NIL THEN
+	 s := sdisc.stream;
+	 lineterm[0] := ASCII.cr; lineterm[1] := ASCII.nl; lineterm[2] := 0X;
+	 StreamDisciplines.SetLineTerm(s, lineterm);
+	 sdisc.opened := TRUE; RETURN TRUE
+      END;
+      RETURN FALSE
+   END Open;
+
+BEGIN
+   sdid := Disciplines.Unique();
+END FTPDataStreams.

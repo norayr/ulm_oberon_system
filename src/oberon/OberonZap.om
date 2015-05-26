@@ -1,0 +1,191 @@
+(* Ulm's Oberon Compiler
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Oberon Compiler.
+
+   Ulm's Oberon Compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Oberon Compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonZap.om,v 1.2 2005/02/05 18:26:40 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: OberonZap.om,v $
+   Revision 1.2  2005/02/05 18:26:40  borchert
+   language parameter removed
+
+   Revision 1.1  2004/04/04 07:05:33  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonZap;
+
+   IMPORT Args, CDBNames, CompilerDatabases,
+      CompilerObjects, Conclusions, ConstStrings, Errors, Events, InetTCP,
+      Iterators, Jobs, Names, Networks, Paths, PersistentEvents,
+      PersistentObjects, PersistentTexts, PrivateShards, Process,
+      RelatedEvents, RemoteCDBNames, RemoteEvents, RemoteIterators,
+      RemoteNames, RemoteObjects, RemoteStreams, Resources, Services,
+      Shadows, Shards, Sources := CompilerSources, StdCDBNames, Storage,
+      Streams, StringArgs, Strings, StrListArgs, UnixCommandLine,
+      UnixEnvironment, UnixFiles, UnixNames, Write;
+
+   VAR
+      intensity: INTEGER;
+      lidType: Services.Type;
+      errors: RelatedEvents.Object;
+      path: ARRAY 512 OF CHAR;
+      auth: Shards.Lid;
+      basedir: ARRAY 512 OF CHAR;
+      args: Args.Arguments;
+      authfile: ARRAY 512 OF CHAR;
+      strlist: StrListArgs.Value;
+      member: StrListArgs.Member;
+      root, node: Names.Node;
+      s: Streams.Stream;
+      rootEventType: Events.EventType;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE FetchString(name, default, envparam: ARRAY OF CHAR;
+                         VAR string: ARRAY OF CHAR);
+      VAR
+	 arg: StringArgs.Value;
+   BEGIN
+      Args.GetValue(args, name, arg);
+      IF arg = NIL THEN
+	 IF ~UnixEnvironment.String(envparam, string) THEN
+	    COPY(default, string);
+	 END;
+      ELSE
+	 ConstStrings.Extract(string, arg.string);
+      END;
+   END FetchString;
+
+   PROCEDURE UsageLine;
+   BEGIN
+      Write.StringS(Streams.stderr, "Usage: ");
+      Write.StringS(Streams.stderr, Process.name);
+      Write.LineS(Streams.stderr, " [options] source file...");
+   END UsageLine;
+
+   PROCEDURE Usage;
+   BEGIN
+      UsageLine;
+      Write.LineS(Streams.stderr, "For more infos try ``-help''");
+      Process.Exit(Process.indicateFailure);
+   END Usage;
+
+   PROCEDURE ProcessArgs(VAR args: Args.Arguments);
+   BEGIN (* ProcessArgs *)
+      Args.Create(args);
+      RelatedEvents.QueueEvents(args);
+      Args.Define(args, "auth",     "a", StringArgs.type, "auth for CDB");
+      Args.Define(args, "basedir",  "b", StringArgs.type, "base path of CDB");
+      Args.Define(args, "args",     0X,  StrListArgs.type, "module...");
+      Args.Scan(args, Args.systemScanners);
+
+      IF RelatedEvents.EventsPending(args) THEN
+	 UsageLine;
+	 Conclusions.Conclude(args, Errors.fatal, "");
+      END;
+   END ProcessArgs;
+
+   PROCEDURE Zap(node: Names.Node);
+      VAR
+	 it: Iterators.Iterator;
+	 name: ConstStrings.String;
+	 member: Names.Node;
+   BEGIN
+      RelatedEvents.Forward(node, errors);
+      IF Names.domainCap IN Names.Capabilities(node) THEN
+	 IF Names.GetMembers(node, auth, it) THEN
+	    WHILE Iterators.Get(it, name) DO
+	       IF Names.GetNode(node, name, auth, member) THEN
+		  Zap(member);
+	       ELSE
+		  Conclusions.Conclude(errors, Errors.fatal, "");
+	       END;
+	    END;
+	 ELSE
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      ELSE
+	 IF ~Names.Destroy(node, auth) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      END;
+   END Zap;
+
+BEGIN
+   intensity := Storage.Intensity(4);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+
+   ProcessArgs(args);
+   FetchString("basedir", "/pub/cdb/oberon", "CDB_BASEDIR", basedir);
+   FetchString("auth", "", "CDB_AUTH", authfile);
+   IF authfile = "" THEN
+      auth := NIL;
+   ELSE
+      CreateLid(auth, authfile);
+   END;
+   Args.GetValue(args, "args", strlist);
+   IF strlist = NIL THEN
+      Usage;
+   END;
+
+   path[0] := 0X; Strings.Open(s, path);
+   Write.StringS(s, basedir);
+   Write.CharS(s, Paths.separator);
+   Write.StringS(s, "modules");
+   Streams.Release(s);
+   IF ~Paths.GetNode(path, auth, errors, root) THEN
+      Conclusions.Conclude(root, Errors.fatal, "");
+   END;
+
+   RelatedEvents.GetEventType(root, rootEventType);
+   Conclusions.CatchEvent(rootEventType, Errors.error);
+
+   member := strlist.head;
+   WHILE member # NIL DO
+      IF Names.GetNode(root, member.string, auth, node) THEN
+	 Zap(node);
+      ELSE
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      member := member.next;
+   END;
+
+   IF Conclusions.errors > 0 THEN
+      Process.Exit(Process.indicateFailure);
+   ELSE
+      Process.Exit(Process.indicateSuccess);
+   END;
+END OberonZap.

@@ -1,0 +1,122 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CrPipes.od,v 1.1 1994/02/23 08:03:25 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CrPipes.od,v $
+   Revision 1.1  1994/02/23  08:03:25  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 2/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION CrPipes;
+
+   IMPORT Objects, Streams;
+
+   (* design of a pipe:
+
+      +-----------+                      +-----------+
+      |           |                      |           |
+      | producer  |                      | consumer  |
+      |           |                      |           |
+      |           |                      |           |
+  ======> in      |   +--------------+   |     out ======>
+      |           |   |    +----+    |   |           |
+      |     out ==========>|    |==========> in      |
+      |           |   |    +----+    |   |           |
+      |           |   | pipe buffer  |   |           |
+      +-----------+   +--------------+   +-----------+
+
+   *)
+
+   TYPE
+      Filter = PROCEDURE (in, out: Streams.Stream);
+	 (* a filter is a procedure reading from `in'
+	    and writing to `out';
+	    every filter runs as a coroutine;
+	    there are three ways of returning/closing
+	    (1) calling Streams.Close(out)
+		if out is a pipe this is an operation of no return;
+		to be sure about returning use (2) instead
+	    (2) returning; this causes out and in to be closed
+		automatically (only pipes are closed - other streams
+		remain open)
+	    (3) implicitly if the consumer calls Streams.Close(in)
+
+	    it should be sufficient for filters to parameterize
+	    them per streams;
+	    if any extensions are needed extend Stream or CrPipe
+	    and pass this extended pointers to Open and initialize
+	    the additional components before calling Spawn
+
+	    `in' and `out' needn't to be pipes;
+	    i.e. the in-stream of the leftmost filter and the out-stream
+	    of the rightmost filter aren't pipes
+	 *)
+      CrPipe = POINTER TO CrPipeRec;
+	 (* valid operations are read xor write;
+	    if CrPipe is unbuffered every read or write operation
+	    causes transfer of execution (if both ends read and write
+	    same amount of bytes);
+	    buffered CrPipes cause output operations to be collected
+	    until the internal buffer is filled
+	 *)
+      CrPipeRec =
+	 RECORD
+	    (Streams.StreamRec)
+	 END;
+
+      PROCEDURE Open(VAR out, in: Streams.Stream; bufmode: Streams.BufMode);
+	 (* creates a pipe with two ends (out and in) which are
+	    not connected yet;
+	    out: write only
+	    in:  read only;
+	    connections are done by the Spawn-operation;
+	    any i/o operations on CrPipes are illegal
+	    'til time of connection;
+
+	    bufmode:
+	       Streams.onebuf	 is useful for byte-oriented filters
+				 (else every ReadByte or WriteByte would
+				 cause a transfer-operation)
+	       Streams.nobuf	 is useful for record-oriented filters
+				 (especially if the calculation of
+				 a record needs a long time and not
+				 all records are needed, e.g. backtracking
+				 algorithms)
+	 *)
+
+      PROCEDURE Spawn(filter: Filter; in, out: Streams.Stream);
+	 (* pass `in' and `out' to filter and start the procedure
+	    as a coroutine;
+	    pipe constructions must be linear:
+	    cycles cause deadlocks
+	 *)
+
+      (* start pipelines either by reading from the end
+	 or by writing to the start by the main coroutine
+	 (main coroutine = coroutine calling Open and Spawn);
+	 coroutines created by Spawn must not extend their own
+	 pipeline architecture
+      *)
+
+END CrPipes.

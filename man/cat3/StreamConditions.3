@@ -1,0 +1,105 @@
+StreamConditions(3)           Ulm's Oberon System          StreamConditions(3)
+
+
+
+[1mNAME[0m
+       StreamConditions  - wait until a stream becomes ready for input or out-
+       put
+
+[1mSYNOPSIS[0m
+       CONST read = 0; write = 1; (* operations *)
+       TYPE Operation = SHORTINT; (* read or write *)
+       TYPE CreateConditionMessage =
+          RECORD
+             (Streams.Message)
+             (* in-parameters *)
+             operation: Operation; (* read or write *)
+             (* out-parameters *)
+             condition: Conditions.Condition; (* return value *)
+             stream: Streams.Stream; (* message processed for this stream *)
+             msgProcessed: BOOLEAN; (* initially FALSE; has to be set to TRUE *)
+          END;
+       TYPE TestConditionMessage =
+          RECORD
+             (Streams.Message)
+             (* in-parameters *)
+             operation: Operation; (* read or write *)
+             errors: RelatedEvents.Object; (* relate errors to this object *)
+             (* out-parameters *)
+             wouldblock: BOOLEAN;
+             msgProcessed: BOOLEAN;
+          END;
+
+       CONST msgFailed = 0;
+       CONST invalidOp = 1;
+       CONST errorcodes = 2;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Create(VAR condition: Conditions.Condition;
+                        s: Streams.Stream; operation: Operation);
+
+
+[1mDESCRIPTION[0m
+       [4mStreamConditions[24m creates conditions which allow to wait until a  stream
+       is  ready  for  reading or waiting, i.e. a read or wait operation would
+       not cause the current process or task to be blocked.
+
+       Stream conditions must be supported by the underlying stream  implemen-
+       tation.   [4mStreamConditions[24m uses stream messages to communicate with the
+       stream implementation:
+       [4mCreateConditionMessage[24m   asks the underlying implementation to create a
+                                condition.   The newly created condition is to
+                                be returned in [4mcondition[24m.  Further, [4mstream[24m  is
+                                to  be set to the stream.  Because the message
+                                may be passed through some other stream imple-
+                                mentations  it is possible that this is a dif-
+                                ferent stream.  [4mmsgProcessed[24m must  be  set  to
+                                [1mTRUE[22m,  otherwise [4mStreamConditions[24m assumes that
+                                the implementation  does  not  support  stream
+                                conditions.
+                                In  case  of  buffered streams it is important
+                                that the implementation  does  not  forget  to
+                                check the buffer status by use of the appropi-
+                                ate routines of [4mStreams[24m.
+                                The underlying implementation is free  to  set
+                                [4mcondition[24m  to  [1mNIL[22m.   [4mStreamConditions[24m creates
+                                then a condition of its own and  assumes  that
+                                the  stream  implementation is able to process
+                                messages of type [4mTestConditionMessage[24m.
+       [4mTestConditionMessage[24m     requests the stream implementation to test the
+                                condition:  [4mwouldblock[24m is to be set to [1mTRUE [22mif
+                                an [4moperation[24m would cause the process  or  task
+                                to  be  blocked  or  in  case  of errors.  Any
+                                errors are to be related to [4merrors[24m instead  to
+                                the  stream.   Again, [4mmsgProcessed[24m must be set
+                                to [1mTRUE [22mto indicate that the message has  been
+                                processed.
+
+       [4mCreate[24m  creates  a  condition  which allows the process or task to wait
+       until the stream becomes ready for the given operation.   [4mcondition[24m  is
+       set  to  [1mNIL  [22mif stream conditions are not supported for the underlying
+       stream implementation.
+
+[1mDIAGNOSTICS[0m
+       Errors during [4mCreate[24m are related to the given stream and errors  during
+       the evaluation of conditions are related to the [4merrors[24m parameter of the
+       interface procedures of [4mConditions[24m.  Following errors are generated  by
+       [4mStreamConditions[24m:
+       [4mmsgFailed[24m   indicates that a message was returned unprocessed.
+       [4minvalidOp[24m   an  invalid operation was given to [4mCreate[24m (neither [4mread[24m nor
+                   [4mwrite[24m).
+
+[1mSEE ALSO[0m
+       [4mConditions(3)[24m   interface for conditions
+       [4mStreams(3)[24m      streams interface
+
+
+
+Release 0.5              Last change: 4 February 2005      StreamConditions(3)

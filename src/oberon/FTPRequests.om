@@ -1,0 +1,224 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPRequests.om,v 1.3 2006/11/27 18:24:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPRequests.om,v $
+   Revision 1.3  2006/11/27 18:24:28  borchert
+   BEGIN comment fixed
+
+   Revision 1.2  2002/04/28 15:19:00  borchert
+   - bug fix in CR handling
+
+   Revision 1.1  2001/04/26 09:03:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPRequests;
+
+   IMPORT ASCII, ConstStrings, Events, NetIO, PersistentDisciplines,
+      PersistentObjects, PersistentTexts, Services, Streams,
+      Texts, Write;
+
+   TYPE
+      Request = POINTER TO RequestRec;
+      RequestRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    command: ConstStrings.String; (* in upper-case *)
+	    param: Streams.Stream; (* rest of the line, may be NIL *)
+	 END;
+   VAR
+      requestType: Services.Type;
+      textType: Services.Type; (* that of PersistentTexts.Text *)
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    request: Request;
+	 END;
+
+   (* === PersistentObjects if procedures ============================== *)
+
+   PROCEDURE CreateRequest(VAR object: PersistentObjects.Object);
+      VAR
+	 request: Request;
+   BEGIN
+      NEW(request); request.command := NIL; request.param := NIL;
+      PersistentObjects.Init(request, requestType);
+      object := request;
+   END CreateRequest;
+
+   PROCEDURE ReadRequest(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 text: PersistentTexts.Text;
+	 paramGiven: BOOLEAN;
+   BEGIN
+      WITH object: Request DO
+	 IF ~NetIO.ReadConstString(s, object.command) OR
+	       ~NetIO.ReadBoolean(s, paramGiven) THEN
+	    RETURN FALSE
+	 END;
+	 IF paramGiven THEN
+	    RETURN PersistentObjects.GuardedRead(s, textType, text) &
+		   PersistentTexts.Open(object.param, text, s)
+	 ELSE
+	    object.param := NIL;
+	    RETURN TRUE
+	 END;
+      END;
+   END ReadRequest;
+
+   PROCEDURE WriteRequest(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 text: PersistentTexts.Text;
+   BEGIN
+      WITH object: Request DO
+	 IF ~NetIO.WriteConstString(s, object.command) OR
+	       ~NetIO.WriteBoolean(s, object.param # NIL) THEN
+	    RETURN FALSE
+	 END;
+	 IF object.param # NIL THEN
+	    RETURN PersistentTexts.Create(text, object.param) &
+		   PersistentObjects.Write(s, text)
+	 ELSE
+	    RETURN TRUE
+	 END;
+      END;
+   END WriteRequest;
+
+   (* === module initialization ======================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      Services.SeekType("PersistentTexts.Text", textType);
+      ASSERT(textType # NIL);
+      NEW(persif); persif.create := CreateRequest;
+      persif.read := ReadRequest; persif.write := WriteRequest;
+      PersistentObjects.RegisterType(requestType,
+	 "FTPRequests.Request", "PersistentDisciplines.Object",
+	 persif);
+   END Init;
+
+   (* === exported procedure =========================================== *)
+
+   PROCEDURE GetRequest(s: Streams.Stream; VAR request: Request) : BOOLEAN;
+      VAR
+	 req: Request;
+	 ch: CHAR;
+	 command: ConstStrings.String; cs: Streams.Stream;
+	 text: Streams.Stream;
+	 chbuf: CHAR; chbuffered: BOOLEAN; (* maintained by GetByte *)
+
+      PROCEDURE NextByte(VAR ch: CHAR) : BOOLEAN;
+	 (* get next char and process telnet codes,
+	    see RFC 959 and http://cr.yp.to/ftp/request.html
+	 *)
+	 VAR
+	    ch2: CHAR;
+      BEGIN
+	 LOOP
+	    IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	    IF ch # 0FFX THEN RETURN TRUE END;
+	    IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	    CASE ch OF
+	    | 0FFX:  RETURN TRUE
+	    | 0FBX:  IF ~Streams.ReadByte(s, ch2) OR
+			   ~Streams.WriteByte(s, 0FFX) OR
+			   ~Streams.WriteByte(s, 0FEX) OR
+			   ~Streams.WriteByte(s, ch2) OR
+			   ~Streams.Flush(s) THEN
+			RETURN FALSE
+		     END;
+	    | 0FDX:  IF ~Streams.ReadByte(s, ch2) OR
+			   ~Streams.WriteByte(s, 0FFX) OR
+			   ~Streams.WriteByte(s, 0FCX) OR
+			   ~Streams.WriteByte(s, ch2) OR
+			   ~Streams.Flush(s) THEN
+			RETURN FALSE
+		     END;
+	    ELSE
+	       (* ignore it *)
+	    END;
+	 END;
+      END NextByte;
+
+      PROCEDURE GetByte(VAR ch: CHAR) : BOOLEAN;
+	 (* translate ASCII.cr ASCII.nl and
+	    ASCII.cr ASCII.nul to ASCII.nl
+	    (the latter is an option in telnet-like connections)
+	 *)
+      BEGIN
+	 IF chbuffered THEN
+	    chbuffered := FALSE; ch := chbuf; RETURN TRUE
+	 END;
+	 IF ~NextByte(ch) THEN RETURN FALSE END;
+	 IF ch # ASCII.cr THEN RETURN TRUE END;
+	 IF ~NextByte(ch) THEN RETURN FALSE END;
+	 IF ch = ASCII.nl THEN RETURN TRUE END;
+	 IF ch = 0X THEN ch := ASCII.nl; RETURN TRUE END;
+	 chbuffered := TRUE; chbuf := ch; ch := ASCII.cr;
+	 RETURN TRUE
+      END GetByte;
+
+   BEGIN (* GetRequest *)
+      chbuffered := FALSE;
+      ConstStrings.Init(cs);
+      LOOP
+	 IF ~GetByte(ch) THEN RETURN FALSE END;
+	 IF (ch = ASCII.nl) OR (ch = " ") THEN EXIT END;
+	 IF (ch >= "a") & (ch <= "z") THEN
+	    ch := CAP(ch);
+	 END;
+	 Write.CharS(cs, ch);
+      END;
+      ConstStrings.Close(cs, command);
+      CreateRequest(req);
+      req.command := command;
+      req.param := NIL;
+      IF ch # ASCII.nl THEN
+	 IF ~GetByte(ch) THEN RETURN FALSE END;
+	 IF ch # ASCII.nl THEN
+	    Texts.Open(text);
+	    REPEAT
+	       IF ch = 0X THEN
+		  ch := ASCII.nl;
+	       END;
+	       Write.CharS(text, ch);
+	       IF ~GetByte(ch) THEN RETURN FALSE END;
+	    UNTIL ch = ASCII.nl;
+	    Streams.SetPos(text, 0);
+	 END;
+	 req.param := text;
+      END;
+      request := req;
+      RETURN TRUE
+   END GetRequest;
+
+BEGIN
+   Init;
+END FTPRequests.

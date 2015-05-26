@@ -1,0 +1,311 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Shards.om,v 1.3 1998/04/11 22:35:38 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: Shards.om,v $
+   Revision 1.3  1998/04/11  22:35:38  martin
+   optimizations in CombineLids improved
+
+   Revision 1.2  1998/04/07  15:37:59  martin
+   SomeLid removed, related code simplified
+
+   Revision 1.1  1995/12/22  15:14:43  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Shards;
+
+   IMPORT
+      NetIO, Objects, PersistentDisciplines, PersistentObjects,
+      Services, Streams;
+
+   TYPE
+      Lid = POINTER TO LidRec;
+      Pot = POINTER TO PotRec;
+
+      FitsProc = PROCEDURE (pot: Pot; lid: Lid): BOOLEAN;
+
+      SupplyProc = PROCEDURE (pot: Pot; VAR lid: Lid): BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    fits: FitsProc;
+	    supply: SupplyProc;
+	 END;
+
+      LidRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+      PotRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    if: Interface;
+	 END;
+
+      SuperLid = POINTER TO SuperLidRec;
+      SuperLidRec =
+	 RECORD
+	    (LidRec)
+	    lid1,
+	    lid2: Lid;
+	 END;
+
+      HardPot = POINTER TO HardPotRec;
+      HardPotRec =
+	 RECORD
+	    (PotRec)
+	 END;
+
+      EasyPot = POINTER TO EasyPotRec;
+      EasyPotRec =
+	 RECORD
+	    (PotRec)
+	 END;
+
+   VAR
+      lidType,
+      hardPotType,
+      easyPotType,
+      superLidType: Services.Type;
+      hardInterface,
+      easyInterface: Interface;
+
+   PROCEDURE Fits(pot: Pot; lid: Lid): BOOLEAN;
+   BEGIN
+      IF lid = NIL THEN
+	 RETURN pot IS EasyPot
+      ELSIF lid IS SuperLid THEN
+	 WITH lid: SuperLid DO
+	    RETURN Fits(pot, lid.lid1) OR Fits(pot, lid.lid2)
+	 END;
+      ELSE
+	 RETURN pot.if.fits(pot, lid)
+      END;
+   END Fits;
+
+   PROCEDURE Supply(pot: Pot; VAR lid: Lid): BOOLEAN;
+   BEGIN
+      RETURN (pot.if.supply # NIL) & pot.if.supply(pot, lid)
+   END Supply;
+
+   PROCEDURE Init(pot: Pot; if: Interface);
+   BEGIN
+      pot.if := if;
+   END Init;
+
+   PROCEDURE CombineLids(VAR lid: Lid; lid1, lid2: Lid);
+      VAR
+	 combi: SuperLid;
+
+      PROCEDURE Contains(lid1, lid2: Lid): BOOLEAN;
+      BEGIN
+	 IF lid1 = lid2 THEN
+	    RETURN TRUE
+	 ELSIF lid1 IS SuperLid THEN
+	    WITH lid1: SuperLid DO
+	       RETURN (lid1.lid1 = lid2) OR Contains(lid1.lid2, lid2)
+	    END;
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END Contains;
+
+   BEGIN
+      IF lid1 = NIL THEN
+	 lid := lid2;
+      ELSIF (lid2 = NIL) OR Contains(lid1, lid2) THEN
+	 lid := lid1;
+      ELSIF Contains(lid2, lid1) THEN
+	 lid := lid2;
+      ELSE
+	 NEW(combi);
+	 PersistentObjects.Init(combi, superLidType);
+	 IF lid1 IS SuperLid THEN
+	    WITH lid1: SuperLid DO
+	       combi.lid1 := lid1.lid1;
+	       CombineLids(combi.lid2, lid1.lid2, lid2);
+	    END;
+	 ELSE
+	    combi.lid1 := lid1;
+	    combi.lid2 := lid2;
+	 END;
+	 lid := combi;
+      END;
+   END CombineLids;
+
+   PROCEDURE Never(pot: Pot; lid: Lid): BOOLEAN;
+   BEGIN
+      RETURN FALSE
+   END Never;
+
+   PROCEDURE Always(pot: Pot; lid: Lid): BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END Always;
+
+   PROCEDURE CreateHardPot(VAR obj: PersistentObjects.Object);
+      VAR
+	 pot: HardPot;
+   BEGIN
+      NEW(pot);
+      PersistentObjects.Init(pot, hardPotType);
+      Init(pot, hardInterface);
+      obj := pot;
+   END CreateHardPot;
+
+   PROCEDURE CreateEasyPot(VAR obj: PersistentObjects.Object);
+      VAR
+	 pot: EasyPot;
+   BEGIN
+      NEW(pot);
+      PersistentObjects.Init(pot, easyPotType);
+      Init(pot, easyInterface);
+      obj := pot;
+   END CreateEasyPot;
+
+   PROCEDURE CreateSimplePot(VAR pot: Pot; permissive: BOOLEAN);
+   BEGIN
+      IF permissive THEN
+	 CreateEasyPot(pot);
+      ELSE
+	 CreateHardPot(pot);
+      END;
+   END CreateSimplePot;
+
+   PROCEDURE CreateSuperLid(VAR obj: PersistentObjects.Object);
+      VAR
+	 lid: SuperLid;
+   BEGIN
+      NEW(lid);
+      PersistentObjects.Init(lid, superLidType);
+      lid.lid1 := NIL;
+      lid.lid2 := NIL;
+      obj := lid;
+   END CreateSuperLid;
+
+   PROCEDURE CardComponents(lid: SuperLid): LONGINT;
+      VAR
+	 result: LONGINT;
+   BEGIN
+      result := 2;
+      WHILE lid.lid2 IS SuperLid DO
+	 lid := lid.lid2(SuperLid);
+	 INC(result);
+      END;
+      RETURN result
+   END CardComponents;
+
+   PROCEDURE ReadSuperLid(s: Streams.Stream;
+			   lid: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 components: LONGINT;
+      
+      PROCEDURE ReadComponents(lid: SuperLid; comp: LONGINT): BOOLEAN;
+      BEGIN
+	 IF ~PersistentObjects.GuardedRead(s, lidType, lid.lid2) THEN
+	    RETURN FALSE
+	 END;
+	 LOOP
+	    IF ~PersistentObjects.GuardedRead(s, lidType, lid.lid1) THEN
+	       RETURN FALSE
+	    END;
+	    IF comp <= 2 THEN
+	       RETURN TRUE
+	    END;
+	    CombineLids(lid.lid2, lid.lid1, lid.lid2);
+	    DEC(comp);
+	 END; (*LOOP*)
+      END ReadComponents;
+
+   BEGIN
+      IF ~NetIO.ReadLongInt(s, components) THEN
+	 RETURN FALSE
+      END;
+      RETURN ReadComponents(lid(SuperLid), components);
+   END ReadSuperLid;
+
+   PROCEDURE WriteSuperLid(s: Streams.Stream;
+			   lid: PersistentObjects.Object): BOOLEAN;
+
+      PROCEDURE WriteComponents(lid: SuperLid): BOOLEAN;
+      BEGIN
+	 IF lid.lid2 IS SuperLid THEN
+	    RETURN WriteComponents(lid.lid2(SuperLid)) &
+	       PersistentObjects.Write(s, lid.lid1)
+	 END;
+	 RETURN PersistentObjects.Write(s, lid.lid2) &
+	    PersistentObjects.Write(s, lid.lid1)
+      END WriteComponents;
+
+   BEGIN
+      WITH lid: SuperLid DO
+	 IF ~NetIO.WriteLongInt(s, CardComponents(lid) ) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN WriteComponents(lid)
+      END;
+   END WriteSuperLid;
+
+   PROCEDURE InitInterfaces;
+      VAR
+	 potType: Services.Type;
+	 face: PersistentObjects.Interface;
+   BEGIN
+      PersistentObjects.RegisterType(potType,
+	 "Shards.Pot", "PersistentDisciplines.Object", NIL);
+      PersistentObjects.RegisterType(lidType,
+	 "Shards.Lid", "PersistentDisciplines.Object", NIL);
+      NEW(face);
+      face.read := NIL;
+      face.write := NIL;
+      face.create := CreateEasyPot;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(easyPotType,
+	 "Shards.EasyPot", "Shards.Pot", face);
+      NEW(face);
+      face.read := NIL;
+      face.write := NIL;
+      face.create := CreateHardPot;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(hardPotType,
+	 "Shards.HardPot", "Shards.Pot", face);
+      NEW(face);
+      face.read := ReadSuperLid;
+      face.write := WriteSuperLid;
+      face.create := CreateSuperLid;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(superLidType,
+	 "Shards.SuperLid", "Shards.Lid", face);
+      NEW(hardInterface);
+      hardInterface.fits := Never;
+      hardInterface.supply := NIL;
+      NEW(easyInterface);
+      easyInterface.fits := Always;
+      easyInterface.supply := NIL;
+   END InitInterfaces;
+
+BEGIN
+   InitInterfaces;
+END Shards.

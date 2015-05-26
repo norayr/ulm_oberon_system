@@ -1,0 +1,2550 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysStorage.om,v 1.20 2004/09/16 13:41:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysStorage.om,v $
+   Revision 1.20  2004/09/16 13:41:28  borchert
+   if procedures FirstStack and NextStack added
+
+   Revision 1.19  2004/09/10 15:09:27  borchert
+   unified version for SPARC/Solaris and I386/Linux:
+    - minAlignment parameter moved to SysMemParams
+    - stack probe within StartOfCriticalRegion is now
+      survivable under Linux
+
+   Revision 1.18  2004/09/10 09:55:31  borchert
+   bug fix: off-by-one error for the calculation of granularity in
+            BuildSearchList caused an assertion to fail
+
+   Revision 1.17  2004/09/03 09:22:01  borchert
+   EndOfCriticalRegion no longer enforces that Storage.left is
+   smaller than storage.mapsize as now the Oberon compiler
+   assures that large allocations are directly passed to
+   AllocateWithTag
+
+   Revision 1.16  2004/05/20 18:29:48  borchert
+   switched from the regular to the internal operations of
+   SysSignalOperations to avoid the overhead caused by endless
+   conversions of signalsToBeBlocked from the external to the
+   internal format
+
+   Revision 1.15  2004/05/20 07:05:32  borchert
+   switch from reserve heap management to the use of multiple heaps
+   (based on code by Christian Ehrhardt)
+
+   Revision 1.14  2004/04/29 08:11:49  borchert
+   coroutine layout dependencies moved to SysCoroutines and SysStacks
+
+   Revision 1.13  2004/04/05 16:42:41  borchert
+   bug fix: within StartOfCriticalRegion the stack must be probed
+            before criticalRegionNestLevel _and_ before the
+            invocation of BlockSignals; otherwise we might end up
+            with a panic if the stack probe caused a signal to
+            be delivered
+
+   Revision 1.12  2004/04/04 14:51:49  borchert
+   bug fix: criticalRegionNestLevel must be incremented _before_
+            the stack is probed; otherwise RestoreSignalHandling might
+            be called twice, causing SIGSEGV to be (among others) in
+            the set of blocked signals
+
+   Revision 1.11  2004/01/16 09:19:45  borchert
+   bug fix: criticalRegionNestLevel was incremented before the
+            invocation of BlockSignals. This caused a panic if
+            a signal was delivered and the signal handler
+            attempted to allocate memory.
+
+   Revision 1.10  2004/01/15 10:21:14  borchert
+   bug fixes contributed by Christian Ehrhardt:
+    - BuildSearchList has to be called after ReturnCurrentRegion;
+      otherwise TreeSearch fails to find the region
+    - searchaddr has to be computed before the invocation of
+      StartOfCriticalRegion as StartOfCriticalRegion possibly
+      invokes SwitchRegion
+    - BuildSearchList could possibly go one object too far
+
+   Revision 1.9  2001/07/17 06:17:01  borchert
+   bug fix: StartOfCriticalRegion asserts now that the current
+            stack may be extended for a minimal amount without
+            running into the FaultHandler for SysSignals.SEGV
+
+   Revision 1.8  2001/06/18 07:55:14  borchert
+   bug fixes:
+     - accept exact fits only if it is not the last element out of the ring
+     - do not create fragments that are too small to be handled
+     - TreeSearch no longer returns TRUE for non-growing regions or
+       unallocated areas of a region
+     - mark mapped regions as allocated
+   improvement: build search lists to speed up the processing of addresses
+   some code cleanup
+
+   Revision 1.7  2001/02/06 07:17:44  borchert
+   - reserve heap region introduced to assure that there is enough
+     continuous address space available even for large intensities >= 6
+   - initiate GC also in case of stack and large region consumptions
+   - let PanicExit produce a core dump
+   - give up immediately in case of unsufficient address space instead
+     of growing until all memory resources are exhausted
+
+   Revision 1.6  2000/05/24  19:13:31  borchert
+   - adapted to SPARCv8 / Solaris 2.x
+   - bug fix in New: allocp was not set on exactly fitting blocks
+
+   Revision 1.5  1995/11/27  14:10:17  naegele
+   PROC ExamineObject: PROC GetArray is now used for Record-Arrays, too
+
+   Revision 1.4  1995/11/17  13:14:35  naegele
+   UntaggedStorage interface procedure
+      SetChunkSize (size: Size) : BOOLEAN  changed to
+      ChunkSize (size: Size) : Size
+   Storage interface procedure
+      SetChunkSize (size: Size) : BOOLEAN  changed to
+      ChunkSize (size: Size) : Size
+   after a garbage collection, all tag pointer marks are removed
+   before the garbage is deallocated
+
+   Revision 1.3  1994/07/19  12:14:00  naegele
+   intensity: SHORTINT changed to INTEGER
+
+   Revision 1.2  1994/04/05  12:08:15  naegele
+   it's now a copying garbage collector
+
+   Revision 1.1  1994/02/23  08:01:00  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/93
+   adapted to garbage collection -- HN 12/93
+   adapted to SPARCv8 / Solaris 2.6 -- AFB 5/99
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysStorage;
+
+   (* implementation with garbage collection for SPARCv8 / Solaris
+
+      this is a copying garbage collector
+
+      SysStorage adapts to the Storage interface and must be initialized
+      during the early runtime startup, preferably before the initial
+      allocation area of Storage gets consumed
+
+      because of mmap(2) we are able to allocate memory nearly at any
+      location in our address space; Memory is used for the address
+      space management
+
+      during its initialization, SysStorage sets the pagesize of Memory
+
+      some implementation dependencies have been moved to SysCoroutines
+      and SysStacks; this code should be as portable as possible across
+      the architectures we are actually using
+
+      implementation requirements:
+
+      a) SYS.SIZE(Storage.Address) = SYS.SIZE(Storage.Size)
+
+      b) type tag pointers precede the object
+
+      c) SYS.GET and SYS.PUT in this module are expected to read/write
+         4-byte words, so GET and PUT are used to read/write the
+         following types:
+            Storage.Address, Storage.Size, LONGINT
+         if GET and PUT cannot be used for one of these types
+         SYS.GET(addr, value) has to be replaced by
+         SYS.WMOVE(addr, SYS.ADR(value), SYS.SIZE(value_type) DIV wordSize))
+         and
+         SYS.PUT(addr, value) has to be replaced by
+         SYS.WMOVE(SYS.ADR(value), addr, SYS.SIZE(value_type) DIV wordSize))
+
+      d) the two 'least significant bits' of all type tag pointers must be 0
+      e) concerning coroutines:
+         1) the coroutine record does not contain pointers;
+	    its structure is analyzed by SysStacks;
+            a record of this type must not be allocated via NEW or SYS.NEW
+         2) there is only one preallocated coroutine stack (reserved via
+            SysSegments) which is the current coroutine (main stack);
+            it is not necessary that the coroutine record of the main stack
+            is allocated on its stack segment, but it must be static (see 1)
+         3) fixed, redzone-protected regions may be allocated using AllocStack
+            with mode = 0, but this implementation does not expect that such
+            stacks become coroutines
+         4) if AllocStack is used with mode < 0 or mode > 0 then it is assumed
+            that this stack region becomes a coroutine and the coroutine
+            record will be allocated by the caller at the beginning of the
+            stack:
+               mode < 0:  coroutine record is at ptr - SYS.SIZE(CoroutineRec)
+               mode > 0:  coroutine record is at ptr + addrSize
+   *)
+
+   IMPORT Coroutines, Disciplines, Events, Memory, Priorities, Process,
+      RelatedEvents, Sets, SigOps := SysSignalOperations, Storage,
+      SYS := SYSTEM, SysCoroutines, SysInts := SysInterrupts, SysIO,
+      SysMemory, SysMemParams, SysModules, SysProcess, SysSegments,
+      SysSignals, SysStacks, SysTypes, Types, UntaggedStorage;
+
+   TYPE
+      Address = Types.UntracedAddress;
+       (* the system dependent address type which must be one
+          of the integer types; SYS.WMOVE has to accept this type;
+       *)
+      Size = Types.Size;
+       (* integer type that is sufficiently large to specify any
+	  "number of bytes" specification which fits into the address space;
+          usually identical to Address
+       *)
+   CONST
+      wordSize = SYS.SIZE(INTEGER);
+         (* this implementation utilizes SYS.WMOVE at some places
+            which counts in words; wordSize specifies the size
+            of a "word" in bytes
+         *)
+      Nil = SYS.VAL(Address, NIL);
+      minAlignment = SysMemParams.minAlignment; (* minimal alignment necessary *)
+
+      tagOffset = - wordSize;
+	 (* offset relative to a pointer to access the tag pointer *)
+      tagAreaSize = minAlignment;
+	 (* number of bytes reserved for tag pointer (must be aligned) *)
+
+      (* formerly we used to take addrSize instead of tagOffset and tagAreaSize
+         because (-tagOffset) was equal to tagAreaSize:
+      *)
+      addrSize = SYS.SIZE(Address);
+	 (* must be identical to SYS.SIZE(Size) *)
+
+      bitsPerAddress = 8 * addrSize;
+         (* the largest memory size possible must be <= 2^bitsPerAddress-1 *)
+      kByte = 1024;
+      maxSize = ASH(1, bitsPerAddress - 2);
+
+      maxPrecision = 8 * kByte;
+         (* rounding precision (see PROC IsMapSize) *)
+      minMapSize = 16 * kByte;
+         (* minimum size for separate memory maps *)
+      minWorkSize = 128 * kByte;
+         (* SysStorage calls other modules which allocate memory;
+            to defend against recursion we make this many memory
+            available in advance before calling foreign modules;
+            if these foreign modules need more memory, we lose
+         *)
+      minChunkSize = 128 * kByte;
+         (* the minimal size of new memory chunks (larger chunks
+            are only allocated on request); large sizes saves
+            system calls
+         *)
+      maxNumberOfBlocks = 512;
+	 (* maximal number of memory segments to be allocated
+	    using NewRegularRegion in CopyingCollector;
+	    we need an upper limit because our memory usage
+	    that needs to be fed from the working region
+	    must be limited
+	 *)
+      minBlockSize = minChunkSize * 4;
+	 (* minimal size of memory segments to be allocated
+	    by NewRegularRegion from within CopyingCollector
+	 *)
+      minStackSize = 8 * kByte;
+         (* minimal size of memory chunks for growing stacks *)
+      minStartSizeOfNew = 1 * kByte;
+         (* we assume that New() is not used very often, and after
+            the first garbage collection, New() will have the
+            run time start up region under its control which is quite
+            large; so we make a small amount of memory available which
+            should make it possible (under normal circumstances) that
+            New() won't have to alloc additional memory from the
+            operating system before the first garbage collection
+            is finished
+         *)
+
+      tagMask = 4; (* mask for tag marks *)
+      markedTag = 1;
+         (* marks a tag pointer as 'not found' (indicates a 'special'-object)
+            special objects (see PROC Forward) are:
+            1) seperately mapped objects (which are not copied)
+            2) coroutine structures (normally allocated on its stack)
+         *)
+      copiedTag = 2;
+         (* marks a reference to a copied heap object; together with a
+	    NIL pointer this tag indicates a region with one page at
+	    the start reserved for a search list
+	  *)
+      foundTag = 3;
+         (* marks a tag pointer as 'found' (indicates a saved
+            'special'-object)
+         *)
+
+      devzero = "/dev/zero";
+         (* this file is opened during the initialisation phase and
+            used for mmap(2) calls -- the current implementation fails
+            completely if devzero cannot be opened
+         *)
+
+      stackExtensionSize = 8192;
+	 (* StartOfCriticalRegion asserts that the stack of the
+	    current coroutine can be extended at least by this
+	    amount to be safe from stack extension handling during
+	    critical regions
+	 *)
+
+   TYPE (* $O- $P- check for these definitions in GenTypes *)
+      DummyTag = POINTER TO DummyTagRec;
+         (* a dummy tag is needed for SYS.NEW *)
+      DummyTagRec =
+	 RECORD
+	    (* must conform to the dummy tag generated by the
+	       compiler, see GenTypes
+	    *)
+	    size: Size;
+	    module: Address;
+	    typeno: LONGINT;
+	    hierlen: LONGINT;
+	    sentinel: Size;
+	 END;
+      (* $O= $P= *)
+
+   CONST (* check for these constants in GenTypes *)
+      sizeOffset = 0;
+         (* check this offset in DummyTagRec *)
+      basetypeOffset = 4 * addrSize;
+         (* offset to basetypes, if tag is not a dummy tag *)
+
+      (* pointer list definitions *)
+
+      tagSimplePointer = 0;
+      tagPointerArray = 1;
+      tagOther = 2;
+      tagRecordArray = 3;
+
+      (* selector for tagOther *)
+      TmpPointerSY = 0;
+      SimpleAddressSY = 1;
+      AddressArraySY = 2;
+      TmpAddressSY = 3;
+
+      sentinel = MIN(Size); (* marks end of pointer list *)
+
+   TYPE
+      (* $O- $P- untagged, untraced in pointer lists *)
+      Region = POINTER TO RegionRec;
+      RegionRec = RECORD
+         next, prev: Region;    (* list links *)
+            (* fixed regions: regions with same sizeindex
+               stack regions: coroutine list
+            *)
+         start, end: Address;   (* search interval for binary tree *)
+            (* fixed region: [start, end) represents the entire region
+               stack region: [start, end) = [tagptr, tagptr+addrSize)
+                  => start points to the coroutine tag
+                     end points to the coroutine record
+            *)
+         addr: Address; len: Size;   (* free area *)
+            (* fixed regions: free area
+               stack regions: interval
+                  [addr, addr+len) (mode > 0)
+                  [addr-len, addr) (mode < 0)
+               represents the entire stack region
+            *)
+         left, right: Region;   (* binary tree links *)
+            (* currently unused in case of stacks *)
+         mode: SHORTINT;        (* <0: backward; =0: fixed; >0 forward *)
+         mapped: BOOLEAN;       (* FALSE identifies a preallocated area *)
+      END;
+      (* we define only one structure for both species of regions:
+         1) growing stack regions
+         2) fixed memory regions
+         this makes it possible to use the same procedures for the
+         region list management; we avoid type extensions because
+         objects of these type are untagged (PROC New is used for allocation)
+      *)
+      (* $O= $P= *)
+
+      (* we attach this data structure to the regions of memory *)
+      Attach = POINTER TO AttachRec;
+      AttachRec = RECORD
+         (Disciplines.DisciplineRec)
+         addr: Address;
+            (* id = RegionID => addr is a Region pointer to a stack region
+                                which is used by the SEGV-Handler
+               id = HeaderID => addr is a Header pointer to a fixed region
+                                which is used by Dispose
+            *)
+      END;
+
+      SizeIndex = SHORTINT;
+         (* 0..bitsPerAddress-1 *)
+
+      (* $O- $P- structure for memory allocation with New() and Dispose *)
+      Header = POINTER TO HeaderRec;
+      HeaderRec = RECORD
+         next: Header;
+         size: Size;
+      END;
+      (* $O= $P= *)
+
+   TYPE
+      StorageStatus = POINTER TO StorageStatusRec;
+      StorageStatusRec = RECORD
+         (Storage.StatusRec)
+         (* contains following public components:
+         collection: INTEGER;
+            (* = 0   garbage collection is enabled
+               > 0   garbage collection is disabled
+               init: 0
+            *)
+         intensity: INTEGER;
+            (* indicator for current garbage collection intensity
+               < 0   increased intensity
+               = 0   default (normal) intensity
+               > 0   decreased intensity
+               init: 0
+            *)
+         allocated: Size;
+            (* total number of bytes which are currently under
+               control of AllocateWithTag and GarbageCollection
+               init: size of start up region
+            *)
+         consumed: Size;
+            (* total number of bytes which are currently in use
+               (<= allocated)
+               init: 0 (important: GetStatus has to patch this value)
+            *)
+         chunksize: Size;
+            (* size of new memory chunks which will be allocated from the
+               operating system when more memory is needed
+               init: aligned maximum of pageSize and minChunkSize
+            *)
+         some private components are added: *)
+
+         mapped: Size;
+            (* number of bytes currently mapped seperately
+               init: 0
+            *)
+         worksize: Size;
+            (* current minimum working size
+               init: minWorkSize
+            *)
+         mapsize: Size;
+            (* current minimum mapping size
+               init: aligned maximum of pageSize and minMapSize
+            *)
+         precision: Size;
+            (* current rounding precision
+               init: aligned minimum of pageSize and maxPrecision
+            *)
+         stacksize: Size;
+            (* current stack chunk size
+               init: aligned maximum of pageSize and minStackSize
+            *)
+         alloclimit: Size;
+            (* maximum number of bytes which can be allocated between
+               two garbage collections
+               the value of alloclimit depends on the values of
+               intensity and chunksize:
+                  alloclimit = ASH(chunksize, intensity)
+               init: chunksize
+            *)
+         currentlimit: Size;
+            (* remaining number of bytes which can be allocated until
+               the next garbage collection should run
+               currentlimit may contain a negative value
+               init: alloclimit (important: if it would be public,
+                     GetStatus would have to patch this value)
+            *)
+	 stackcount: INTEGER;
+	    (* number of stacks allocated since the last garbage collection;
+	       GarbageCollection is invoked by AllocateStack if
+	       stackcount equals ASH(1, intensity)
+	    *)
+	 countOfMappedRegions: INTEGER;
+	    (* number of large (and therefore separately allocated) regions
+	       since the last garbage collection;
+	       GarbageCollection is invoked by AllocateWithTag if
+	       countOfMappedRegions >= ASH(1, intensity)
+	    *)
+      END;
+   
+      UntaggedStatusRec = RECORD
+         (UntaggedStorage.StatusRec)
+         (* contains following public components:
+         allocated: Size;
+            (* total number of bytes which are currently under
+               control of New and Dispose
+               init: minStartSizeOfNew
+            *)
+         consumed: Size;
+            (* total number of bytes which are currently in use
+               (<= allocated)
+               init: 0 (important: this value must be patched by
+                        adding the mapped componente in BytesGetStatus)
+            *)
+         chunksize: Size;
+            (* size of new memory chunks which will be allocated from the
+               operating system when more memory is needed
+               init: aligned maximum of pageSize and minChunkSize
+            *)
+            some private components are added: *)
+         mapped: Size;
+            (* number of bytes currently mapped seperately
+               init: 0
+            *)
+         mapsize: Size;
+            (* current minimum mapping size
+               init: aligned maximum of pagesize and minMapSize
+            *)
+         precision: Size;
+            (* current rounding precision
+               init: aligned minimum of pageSize and maxPrecision
+            *)
+      END;
+
+   VAR
+      (* private *)
+      errors: RelatedEvents.Object;
+         (* collects all our errors; if we raise an out of memory
+            event, i.e. Storage.outOfMemory, we pass this error list
+            for further utilisation
+         *)
+      initCompleted: BOOLEAN;
+         (* all allocation procedures deny their service until
+            the initialisation is completed; this defends against
+            unwanted recursion during the initialisation phase due
+            to a unsufficient preallocated area
+         *)
+      gc: Coroutines.Coroutine;
+         (* garbage collector coroutine *)
+      caller: Coroutines.Coroutine;
+         (* coroutine, which switched to the gc coroutine *)
+      lock: BOOLEAN;
+         (* locks the garbage collector's coroutine when it is active
+            this defends against recursion
+         *)
+      criticalRegionNestLevel: INTEGER;
+         (* defends against recursion, because during critical regions
+            we don't want calls of:
+            AllocateWithTag (i.e. if Memory needs more
+               memory than expected) and against interruptions of
+               high priority (e.g. if an event handler for SysSignals.SEGV
+               decides to allocate memory, he may lose)
+            GarbageCollection
+            AssureWorkingSize
+
+            critical regions may be nested when, for example, 
+            during a call of AllocateWithTag the stack has to be extended
+         *)
+      stackSizeProbed: BOOLEAN;
+	 (* lock that makes sure that we do not probe the stack
+	    size multiple times
+	 *)
+      signalsBlocked: BOOLEAN;
+	 (* lock that makes sure that signals are blocked only once
+	    and not multiple times
+	 *)
+      blockedSignals: SigOps.InternalSignalSet;
+         (* SysStorage blocks some signals in critical regions;
+            this variable allows to save and restore the
+            set of blocked signals
+         *)
+      signalsToBeBlocked: SigOps.InternalSignalSet;
+         (* the set of signals with priority < Priorities.storage;
+            computed during initialisation and used as set of blocked
+            signals in critical regions
+         *)
+      RegionID: Disciplines.Identifier;
+         (* SysStorage ID for Disciplines used by the SEGV-Handler *)
+      HeaderID: Disciplines.Identifier;
+         (* SysStorage ID for Disciplines used by Dispose *)
+      pageSize: Size;
+         (* this is the pagesize of our system; this may be different
+            for different invocations of our program but remains constant
+            during the runtime
+         *)
+      mappedFile: SysTypes.File;
+         (* is our "memory object" in the sense of mmap(2) *)
+      mapsOK: BOOLEAN;
+         (* specifies whether mappedFile is valid or not *)
+      regionInUse: Region;
+         (* regionInUse represents the region which is given by
+            [Storage.end - Storage.left, Storage.end)
+         *)
+      freeRegions: ARRAY bitsPerAddress OF Region;
+         (* freeregions[i] points to a list of fixed regions where
+               2^i <= len < 2^(i+1)
+         *)
+      consumedRegions: Region;
+         (* list of fixed regions with len = 0 *)
+      specialRegions: Region;
+         (* list of 'special'-objects (two species):
+            1) large objects with have its own mapped fixed region 
+            2) coroutine stack regions (mode # 0)
+         *)
+      stackIt: Region;
+	 (* iterator for FirstStack / NextStack *)
+      fixedTree: Region;
+         (* all allocated fixed regions are organized in a binary tree *)
+      storage: StorageStatusRec;
+         (* stores public and private status variables *)
+
+   VAR (* for storage management with New and Dispose *)
+      base: ARRAY minStartSizeOfNew OF BYTE;
+         (* at start, the free list consists of this little memory region *)
+      allocp: Header;
+         (* current pointer into free list *)
+      headerSize: Size;
+         (* this is the aligned maximum of SYS.SIZE(HeaderRec) and addrSize *)
+      untagged: UntaggedStatusRec;
+         (* stores public and private status variables *)
+
+   (* =================================================================== *)
+
+   PROCEDURE PanicExit;
+      (* die this way if we don't have sufficient memory for
+         the proper termination procedure
+      *)
+   BEGIN
+      SysProcess.Abort;
+      SysProcess.Exit(255); SysProcess.Exit(255); LOOP END;
+   END PanicExit;
+
+   (* =========== memory mapping/allocation ============================== *)
+
+   PROCEDURE Align(VAR value: Size; boundary: Size);
+      (* align the size to the given boundary *)
+   BEGIN
+      value := (value + boundary-1) DIV boundary * boundary;
+   END Align;
+
+   PROCEDURE AlignPowerOf2(VAR size: Size; value: Size);
+      (* align the size to the next power of 2 >= pageSize *)
+   BEGIN
+      ASSERT(value <= maxSize);
+      size := pageSize;
+      WHILE size < value DO size := size * 2 END;
+   END AlignPowerOf2;
+
+   PROCEDURE IsMapSize(size, max, map, precision: Size) : BOOLEAN;
+      (* decides, if it is advantegous to create a seperate map *)
+      VAR
+         power: Size;
+   BEGIN
+      IF size >= max THEN RETURN TRUE END;   (* map necessary *)
+      IF size < precision THEN RETURN FALSE END; (* tiny object *)
+      Align(size, precision);
+      AlignPowerOf2(power,size);
+      RETURN (size >= map) & (size = power);
+   END IsMapSize;
+
+   PROCEDURE Map(addr: Address; numberOfBytes: Size;
+               errors: RelatedEvents.Object) : BOOLEAN;
+      (* allocate memory at [addr, addr + numberOfBytes)
+         return FALSE on failure an relate events to errors
+      *)
+      VAR
+         mapaddress: Address; (* return value of mmap(2) *)
+   BEGIN
+      RETURN mapsOK &
+             SysMemory.Map(addr, numberOfBytes,
+                           SysMemory.read + SysMemory.write,
+                           SysMemory.private + SysMemory.fixed,
+                           mappedFile, 0,
+                           mapaddress, errors) &
+             (mapaddress = addr)
+   END Map;
+
+   PROCEDURE Unmap(addr: Address; numberOfBytes: Size;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN mapsOK &
+             SysMemory.Unmap(addr, numberOfBytes, errors)
+   END Unmap;
+
+   PROCEDURE AllocInterval(VAR addr: Address; VAR size: Size; mode: SHORTINT;
+                           protect: BOOLEAN; VAR mregion: Memory.Region;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+      (* allocate an interval of the given size and mode *)
+      VAR
+         mapAddr: Address;
+         allocMode: Memory.AllocationMode;
+   BEGIN
+      IF mode = 0 THEN
+         allocMode := Memory.fixed;
+      ELSIF mode < 0 THEN
+         allocMode := Memory.growingBackward;
+      ELSE
+         allocMode := Memory.growingForward;
+      END;
+      IF protect THEN allocMode := allocMode + Memory.redzoneProtected END;
+      Align(size, pageSize);
+      IF Memory.AllocateRegion(size, allocMode, addr, mregion, errors) THEN
+         mapAddr := addr;
+         IF mode < 0 THEN DEC(mapAddr, size) END;
+         IF Map(mapAddr, size, errors) THEN RETURN TRUE END;
+         Memory.ReleaseRegion(mregion);
+      END;
+      RETURN FALSE;
+   END AllocInterval;
+
+   (* ======= region list management =============================== *)
+
+   PROCEDURE RemoveFromList(VAR list: Region; region: Region);
+   BEGIN
+      IF region.prev = NIL THEN
+         list := region.next;
+      ELSE
+         region.prev.next := region.next;
+      END;
+      IF region.next # NIL THEN
+         region.next.prev := region.prev;
+      END;
+      region.next := NIL; region.prev := NIL;
+   END RemoveFromList;
+
+   PROCEDURE PutIntoList(VAR list: Region; region: Region);
+      (* note that list is handled as a LIFO list *)
+   BEGIN
+      region.next := list; region.prev := NIL; list := region;
+      IF region.next # NIL THEN
+         region.next.prev := region;
+      END;
+   END PutIntoList;
+
+   PROCEDURE Log2(size: Size) : SizeIndex;
+      (* convert Size to SizeIndex *)
+      VAR
+         count: SizeIndex;
+   BEGIN
+      IF size = 0 THEN
+         RETURN bitsPerAddress
+      ELSIF (size < 0) OR (size >= ASH(1, bitsPerAddress - 2)) THEN
+         RETURN bitsPerAddress - 1
+      ELSE
+         count := 0;
+         WHILE size > 1 DO
+            INC(count); size := size DIV 2;
+         END;
+         RETURN count
+      END;
+   END Log2;
+
+   PROCEDURE ReturnRegion(region: Region);
+      VAR
+         list: Region;
+         sizeIndex: SizeIndex;
+   BEGIN
+      IF region.len > 0 THEN
+         (* put region into sorted list (ascending len) *)
+         sizeIndex := Log2(region.len);
+         list := freeRegions[sizeIndex];
+         IF (list = NIL) OR (list.len >= region.len) THEN
+            region.next := list; region.prev := NIL;
+            freeRegions[sizeIndex] := region;
+         ELSE
+            WHILE (list.next # NIL) & (list.next.len < region.len) DO
+               list := list.next;
+            END;
+            region.next := list.next; list.next := region;
+            region.prev := list;
+         END;
+         IF region.next # NIL THEN
+            region.next.prev := region;
+         END;
+      ELSE
+         PutIntoList(consumedRegions, region);
+      END;
+   END ReturnRegion;
+
+   PROCEDURE ReturnCurrentRegion;
+      VAR
+         nbytes: Size;
+   BEGIN
+      IF Storage.end # Nil THEN
+         nbytes := SYS.VAL(Size, Storage.end - Storage.left - regionInUse.addr);
+         DEC(storage.currentlimit, nbytes);
+         INC(storage.consumed, nbytes);
+         regionInUse.addr := Storage.end - Storage.left;
+         regionInUse.len := SYS.VAL(Size, regionInUse.end - regionInUse.addr);
+         Storage.end := Nil; Storage.left := 0;
+         ReturnRegion(regionInUse);
+         regionInUse := NIL;
+      END;
+   END ReturnCurrentRegion;
+
+   PROCEDURE SetCurrentRegion(region: Region);
+   BEGIN
+      regionInUse := region;
+      Storage.end := region.addr + region.len;
+      Storage.left := region.len;
+      region.next := NIL; region.prev := NIL;
+   END SetCurrentRegion;
+
+   PROCEDURE NumberOfWorkingRegions() : INTEGER;
+      VAR
+         region: Region;
+         sizeIndex: SizeIndex;
+	 count: INTEGER;
+   BEGIN
+      count := 0;
+      IF Storage.left > storage.worksize THEN
+	 INC(count);
+      END;
+      sizeIndex := Log2(storage.worksize);
+      WHILE sizeIndex < bitsPerAddress DO
+         region := freeRegions[sizeIndex];
+         WHILE region # NIL DO
+            IF region.len >= storage.worksize THEN
+	       INC(count);
+            END;
+            region := region.next;
+         END;
+         INC(sizeIndex);
+      END;
+      RETURN count
+   END NumberOfWorkingRegions;
+
+   PROCEDURE SeekRegion(size: Size; flag: BOOLEAN) : BOOLEAN;
+      (* flag = TRUE => change regionInUse in case of success *)
+      VAR
+         region: Region;
+         sizeIndex: SizeIndex;
+   BEGIN
+      sizeIndex := Log2(size);
+      WHILE sizeIndex < bitsPerAddress DO
+         region := freeRegions[sizeIndex];
+         WHILE region # NIL DO
+            IF region.len >= size THEN
+               IF flag THEN
+                  RemoveFromList(freeRegions[sizeIndex], region);
+                  ReturnCurrentRegion;
+                  SetCurrentRegion(region);
+               END;
+               RETURN TRUE;
+            END;
+            region := region.next;
+         END;
+         INC(sizeIndex);
+      END;
+      RETURN FALSE;
+   END SeekRegion;
+
+   PROCEDURE SwitchRegion(size: Size);
+      (* set Storage.end & Storage.left to a region
+         with len >= size, if possible;
+         otherwise we take the largest region which is available
+      *)
+      VAR
+         sizeIndex, sizeOfCurrentRegion: SizeIndex;
+         region: Region;
+   BEGIN
+      IF (Storage.left >= size) OR SeekRegion(size, TRUE) THEN RETURN END;
+      sizeIndex := Log2(size);
+      IF Storage.left > 0 THEN
+         sizeOfCurrentRegion := Log2(Storage.left);
+      ELSE
+         sizeOfCurrentRegion := 0;
+      END;
+      WHILE sizeIndex >= sizeOfCurrentRegion DO
+         region := freeRegions[sizeIndex];
+         IF region # NIL THEN   (* take the largest region *)
+            WHILE region.next # NIL DO region := region.next END;
+            IF region.len > Storage.left THEN
+               RemoveFromList(freeRegions[sizeIndex], region);
+               ReturnCurrentRegion;
+               SetCurrentRegion(region);
+               RETURN
+            END;
+         END;
+         DEC(sizeIndex);
+      END;
+      (* current region is not sufficient but still better than
+         any alternative
+      *)
+   END SwitchRegion;
+
+   PROCEDURE MoveLeft(to: Size);
+   BEGIN
+      DEC(Storage.end, Storage.left - to);
+      Storage.left := to;
+   END MoveLeft;
+
+   (* ====== procedures which open and close critical regions ========== *)
+
+   (* note that BlockSignals may be called multiple times
+      but that RestoreSignalHandling shall only be invoked
+      by the outmost nesting level;
+      this is necessary as we have to invoke BlockSignals
+      before we access the nesting level variable
+   *)
+
+   PROCEDURE BlockSignals;
+      VAR
+	 sigset: SigOps.InternalSignalSet;
+   BEGIN
+      SigOps.CopyInternalSet(signalsToBeBlocked, sigset);
+      SigOps.InternalBlock(sigset);
+      IF ~SYS.TAS(signalsBlocked) THEN
+	 SigOps.CopyInternalSet(sigset, blockedSignals);
+      END;
+   END BlockSignals;
+
+   PROCEDURE RestoreSignalHandling;
+   BEGIN
+      ASSERT(signalsBlocked);
+      SigOps.InternalSetMask(blockedSignals);
+      signalsBlocked := FALSE;
+   END RestoreSignalHandling;
+
+   (* the priority system of Events is not sufficient for protection
+      because even queued events need memory;
+      so we use the BSD signal blocking mechanism for all
+      signals with priority < Priorities.storage
+
+      additionally, during a garbage collection, we don't want
+      a) a call of AllocateWithTag (worksize bytes should be enough)
+      b) a call of GarbageCollection
+      c) that Storage.left does not contain the correct number of
+         bytes left in regionInUse (this is necessary, if we want
+         to map objects separately which are smaller than chunksize)
+         this value has to be corrected because mapsize could be
+         smaller than worksize
+      d) a call of AssureWorkingSize
+   *)
+
+   PROCEDURE StartOfCriticalRegion;
+      (* critical region set up (may be nested) *)
+
+      PROCEDURE ProbeStackSize;
+	 (* note that we need to perform this test within a
+	    separate procedure as Linux does not permit
+	    memory accesses beyond the current stack pointer
+	    for the kernel-managed main stack
+	 *)
+	 VAR
+	    probe: ARRAY stackExtensionSize OF CHAR;
+      BEGIN
+	 probe[0] := 0X;
+      END ProbeStackSize;
+
+   BEGIN (* StartOfCriticalRegion *)
+      IF ~SYS.TAS(stackSizeProbed) THEN
+	 (* assert that we may extend our stack by at least
+	    stackExtensionSize bytes without running into
+	    our FaultHandler for SysSignals.SEGV
+	 *)
+	 ProbeStackSize;
+      END;
+
+      BlockSignals; (* always, independent from the nesting level *)
+      INC(criticalRegionNestLevel);
+      IF criticalRegionNestLevel = 1 THEN
+         (* maximize Storage.left *)
+         IF Storage.end # Nil THEN
+            Storage.left :=
+	       SYS.VAL(Size, regionInUse.end - Storage.end + Storage.left);
+	    Storage.end := regionInUse.end;
+         END;
+         (* make some memory available *)
+         SwitchRegion(storage.worksize);
+         (* raise priority *)
+         Events.AssertPriority(Priorities.storage);
+      END;
+   END StartOfCriticalRegion;
+
+   PROCEDURE EndOfCriticalRegion;
+      (* restore the previous conditions in reverse order *)
+   BEGIN
+      DEC(criticalRegionNestLevel);
+      IF criticalRegionNestLevel = 0 THEN
+         (* restore previous priority *)
+         Events.ExitPriority;
+	 (*
+	    this is no longer enforced but (hopefully)
+	    considered by the alloclimit parameter of
+	    the compiler
+
+	    (* patch Storage.left value (Storage.left < mapsize) *)
+	    IF Storage.left >= storage.mapsize THEN
+	       MoveLeft(storage.mapsize - minAlignment);
+	    END;
+	 *)
+         (* force a call of AllocateWithTag, as soon as
+            storage.currentlimit becomes zero or less) *)
+         IF Storage.left > storage.currentlimit THEN
+            IF storage.currentlimit > 0 THEN
+	       MoveLeft(storage.currentlimit);
+            ELSE
+	       MoveLeft(0);
+            END;
+         END;
+	 stackSizeProbed := FALSE;
+	 RestoreSignalHandling;
+      END;
+   END EndOfCriticalRegion;
+
+   (* ======== interface procedure: Storage.GarbageCollection ============ *)
+
+   PROCEDURE GarbageCollection;   (* invoke garbage collection *)
+   BEGIN
+      IF initCompleted
+       & (storage.collection = 0)          (* collection is enabled *)
+       & (Events.GetPriority() <= Priorities.storage)
+           (* there is not something more important to do *)
+       & (criticalRegionNestLevel = 0)     (* but not in a critical region *)
+       & ~SYS.TAS(lock)                    (* coroutine is not active *)
+      THEN
+         SYS.CRSWITCH(gc);
+         lock := FALSE;
+      END;
+   END GarbageCollection;
+
+   PROCEDURE^ AssureWorkingSize;  (* forward declaration *)
+
+   (* ======= interface procedure: UntaggedStorage.Dispose ============= *)
+
+   PROCEDURE Dispose(ptr: Address);
+   (* deallocates an object which was allocated by New() *)
+      VAR
+         status: Memory.Status;
+         mregion: Memory.Region;
+         attach: Attach;
+         p, q: Header;
+         ap, aq, aqn: Address;
+   BEGIN
+      IF ~initCompleted THEN RETURN END;
+      StartOfCriticalRegion;
+      IF ptr MOD pageSize = 0 THEN (* this could be mapped *)
+         Memory.GetStatus(ptr, status, mregion);
+         IF (mregion # NIL) & (status = Memory.stAllocated)
+          & Disciplines.Seek(mregion, HeaderID, attach) THEN
+            (* deallocate associated memory area *)
+            p := SYS.VAL(Header, attach.addr);
+            IF Unmap(ptr, p.size, errors) THEN
+               Memory.ReleaseRegion(mregion);
+            END;
+            DEC(untagged.allocated, p.size);
+            DEC(untagged.mapped, p.size);
+            (* prepare p.size and ptr value for deallocation of p^ *)
+            p.size := headerSize;
+            ptr := SYS.VAL(Address, p) + headerSize;
+         END;
+      END;
+      (* put p into free list *)
+      p := SYS.VAL(Header, ptr - headerSize);
+      DEC(untagged.consumed, p.size);
+      q := allocp; ap := SYS.VAL(Address, p);
+      LOOP
+         aq := SYS.VAL(Address,q); aqn := SYS.VAL(Address,q.next);
+         IF ((ap > aq) & (ap < aqn)) OR
+            ((aq >= aqn) & ((ap > aq) OR (ap < aqn))) THEN EXIT END;
+         q := q.next;
+      END; (* of LOOP *)
+      IF ap + p.size = aqn THEN (* link with next element *)
+         INC(p.size, q.next.size); p.next := q.next.next;
+      ELSE
+         p.next := q.next;
+      END;
+      IF aq + q.size = ap THEN  (* link with previous element *)
+         INC(q.size,p.size); q.next := p.next;
+      ELSE
+         q.next := p;
+      END;
+      allocp := q;
+      EndOfCriticalRegion;
+      AssureWorkingSize;
+   END Dispose;
+
+   (* ======= interface procedure: UntaggedStorage.Use ================== *)
+
+   PROCEDURE Use(ptr: Address; size: Size);
+      (* put interval [ptr, ptr+size) into free list of New *)
+      VAR
+         p: Header;
+   BEGIN
+      IF ~initCompleted THEN RETURN END;
+      size := size DIV headerSize * headerSize;
+      IF size > headerSize THEN          (* we can use it *)
+         p := SYS.VAL(Header, ptr);
+         p.size := size;
+         StartOfCriticalRegion;
+         Dispose(ptr + headerSize);
+         INC(untagged.consumed, size);   (* Dispose decremented it *)
+         INC(untagged.allocated, size);
+         EndOfCriticalRegion;
+         AssureWorkingSize;
+      END;
+   END Use;
+
+   (* ======= interface procedure: UntaggedStorage.New ================== *)
+
+   PROCEDURE New(size: Size) : Address;
+      (* allocate size bytes of memory not affected by garbage collection *)
+      VAR
+         mregion: Memory.Region;
+         attach: Attach;
+         nbytes: Size;
+         p, q: Header;
+         addr: Address;
+         ismapped: BOOLEAN;
+         pass: INTEGER;
+   BEGIN
+      Align(size, minAlignment);
+      ismapped := IsMapSize(size, untagged.chunksize - headerSize,
+                            untagged.mapsize, untagged.precision)
+                  & initCompleted;
+      nbytes := headerSize;
+      IF ~ismapped THEN INC(nbytes, size) END;
+      pass := 0;
+      LOOP (* try to allocate *)
+         StartOfCriticalRegion;
+         q := allocp; p := q.next;
+         LOOP (* circular first fit, beginning at allocp *)
+            IF (p.size > nbytes) OR
+		  (* accept exact fits only if it is not the last
+		     element out of the ring
+		  *)
+		  (p.size = nbytes) & (p.next # p) THEN
+	       (* fitting element found *)
+               IF ismapped &
+		     ~AllocInterval(addr, size, 0, FALSE, mregion, errors) THEN
+                  EXIT (* of inner LOOP *)
+               END;
+               (* no error => commit allocation *)
+	       IF p.size - nbytes <= headerSize THEN
+		  (* do not create fragments that are too small
+		     to be handled
+		  *)
+		  nbytes := p.size; (* take whole element *)
+	       END;
+               INC(untagged.consumed, nbytes);
+               IF p.size = nbytes THEN      (* exact *)
+                  q.next := p.next;
+		  allocp := q; (* bug fix afb 3/2000 *)
+               ELSE
+                  DEC(p.size, nbytes);
+		  ASSERT(p.size >= headerSize);
+                  p := SYS.VAL(Header, SYS.VAL(Address,p)+p.size);
+               END;
+               IF ismapped THEN
+                  p.size := size;
+                  NEW(attach); attach.id := HeaderID;
+                  attach.addr := SYS.VAL(Address, p);
+                  Disciplines.Add(mregion, attach);
+                  INC(untagged.allocated, size);
+                  INC(untagged.mapped, size);
+               ELSE
+                  p.size := nbytes;
+                  addr := SYS.VAL(Address, p) + headerSize;
+               END;
+               IF size > 0 THEN SYS.WCLEAR(addr, size DIV wordSize) END;
+               EndOfCriticalRegion;
+               AssureWorkingSize;
+               RETURN addr;
+            ELSIF p = allocp THEN       (* no free element found *)
+               IF ~initCompleted THEN PanicExit END;
+               IF ~AllocInterval(addr, untagged.chunksize, 0, FALSE,
+                                 mregion, errors) THEN
+                  EXIT (* of inner LOOP *)
+               END;
+               Use(addr, untagged.chunksize);
+               p := allocp;
+            END;
+            q := p; p := p.next;
+         END; (* of LOOP *)
+         EndOfCriticalRegion;
+         IF pass > 1 THEN 
+            AssureWorkingSize; RETURN Nil;
+         END;
+         GarbageCollection; INC(pass);
+      END; (* of LOOP *)
+   END New;
+
+   (* ======= interface procedure: UntaggedStorage.GetStatus =========== *)
+
+   PROCEDURE UntaggedGetStatus(VAR status: UntaggedStorage.Status);
+   (* return status information *)
+   BEGIN
+      IF ~initCompleted THEN PanicExit END;
+      NEW(status); status^ := untagged;
+      (* patch consumed value by adding the mapped componente *)
+      INC(status.consumed, untagged.mapped);
+   END UntaggedGetStatus;
+
+   (* ======= interface procedure: UntaggedStorage.ChunkSize ======== *)
+
+   PROCEDURE UntaggedChunkSize(size: Size) : Size;
+      (* set/get memory chunk size *)
+      VAR
+         power: Size;
+   BEGIN
+      IF ~initCompleted THEN PanicExit END;
+      IF size # 0 THEN                        (* change it *)
+         power := maxSize;
+         IF size < power THEN
+            AlignPowerOf2(power, size);
+         END;
+         (* protection like this should be useful ...
+            StartOfCriticalRegion;
+         *)
+         untagged.chunksize := power;
+         (* ... if more variables are changed
+            EndOfCriticalRegion;
+            AssureWorkingSize;
+         *)
+      END;
+      RETURN untagged.chunksize;
+   END UntaggedChunkSize;
+
+   (* =============================================================== *)
+
+   PROCEDURE InitRegion(region: Region; addr: Address; size: Size;
+                        mode: SHORTINT; mapped: BOOLEAN);
+   BEGIN
+      region.addr := addr; region.len := size;
+      IF mode = 0 THEN         (* fixed region *)
+         region.start := addr; region.end := addr + size;
+      ELSIF mode < 0 THEN      (* backward growing stack *)
+         region.end := addr - SYS.SIZE(SysCoroutines.CoroutineRec);
+         region.start := region.end - tagAreaSize;
+      ELSE                     (* forward growing stack *)
+         region.start := addr; region.end := addr + tagAreaSize;
+      END;
+      region.next := NIL; region.prev := NIL;
+      region.left := NIL; region.right := NIL;
+      region.mode := mode; region.mapped := mapped;
+   END InitRegion;
+
+   PROCEDURE NewRegion(VAR region: Region; size: Size;
+                       mode: SHORTINT) : BOOLEAN;
+      (* allocates a new region with size bytes and the given mode *)
+      VAR
+         mregion: Memory.Region;
+         attach: Attach;
+         addr: Address;
+   BEGIN
+      region := SYS.VAL(Region, New(SYS.SIZE(RegionRec)));
+      IF region # NIL THEN
+         IF AllocInterval(addr, size, mode, (mode # 0), mregion, errors) THEN
+            InitRegion(region, addr, size, mode, (* mapped = *) TRUE);
+            IF mode = 0 THEN    (* new fixed region *)
+               INC(storage.allocated, size);
+            ELSE                (* new stack region *)
+               NEW(attach); attach.id := RegionID;
+               attach.addr := SYS.VAL(Address, region);
+               Disciplines.Add(mregion, attach);
+            END;
+            RETURN TRUE
+         END;
+         Dispose(SYS.VAL(Address, region));
+      END;
+      RETURN FALSE
+   END NewRegion;
+
+   PROCEDURE DeallocRegionList(VAR list: Region);
+      (* deallocates a list of regions *)
+      VAR
+         region: Region;
+         mregion: Memory.Region;
+         status: Memory.Status;
+   BEGIN
+      (* must not call SwitchRegion *)
+      WHILE list # NIL DO
+         region := list; list := list.next;
+         IF region.mode = 0 THEN       (* fixed region *)
+            region.len := SYS.VAL(Size, region.end - region.start);
+            region.addr := region.start;
+            DEC(storage.allocated, region.len);
+         ELSE                          (* stack region *)
+            IF region.mode < 0 THEN DEC(region.addr, region.len) END;
+            (* fix bookkeeping about interrupted coroutines *)
+            DEC(SysInts.interrupts, SysInts.GetNumberOfInterrupts(
+                SYS.VAL(Coroutines.Coroutine, region.end)));
+         END;
+         IF region.mapped THEN  (* region was allocated by us *)
+            Memory.GetStatus(region.addr, status, mregion);
+            IF (mregion # NIL) & (status = Memory.stAllocated) &
+                  Unmap(region.addr, region.len, errors) THEN
+               Memory.ReleaseRegion(mregion);
+            END;
+         ELSE                   (* preallocated area *)
+            (* normally, this must be the start up region which we
+               put into the free list of New()
+               (a later reallocation (with mapping) of the run
+               time start region could lead to problems)
+            *)
+            IF region.mode = 0 THEN Use(region.addr, region.len) END;
+         END;
+         Dispose(SYS.VAL(Address, region));
+      END;
+   END DeallocRegionList;
+
+   (* ============ regions with search lists ============================= *)
+
+   (* layout of regular regions that include a search list:
+
+      region.start --> +---------------------+
+                       |     tag area        |
+		       | tag = Nil+copiedTag |
+		       +---------------------+
+		       |   # of entries      |
+		       +---------------------+
+		       |     1st entry       |
+		       +---------------------+
+		       |     2nd entry       |
+		       +---------------------+
+		       |        ...          |
+		       +---------------------+
+		       |    last entry       |
+		       +---------------------+
+		       |     possibly        |
+		       |   unused slots      |
+		       +---------------------+ <-- region.start + pageSize
+		       |                     |
+		       |        ...          |
+		       |                     |
+		       +---------------------+
+   *)
+
+   PROCEDURE NewRegularRegion(VAR region: Region; size: Size) : BOOLEAN;
+      (* like NewRegion but including the allocation of a search list
+	 which allows addresses pointing into the middle of an object
+	 to be mapped efficiently to ordinary object pointers;
+	 based on code of Christian Ehrhardt
+      *)
+   BEGIN
+      IF ~NewRegion(region, size, (* mode = *) 0) THEN RETURN FALSE END;
+      IF (size < minChunkSize) OR (size < pageSize*2) THEN
+	 (* too small *)
+	 RETURN TRUE
+      END;
+      INC(region.addr, pageSize); DEC(region.len, pageSize);
+      (* note that we need to enforce a 32 bit integer type for PUT
+	 as Nil and copiedTag are both small constants
+      *)
+      SYS.PUT(region.start + tagAreaSize + tagOffset,
+	 SYS.VAL(Types.Int32, Nil + copiedTag));
+      (* no entries yet: *)
+      SYS.PUT(region.start + tagAreaSize, SYS.VAL(Types.Int32, 0));
+      RETURN TRUE
+   END NewRegularRegion;
+
+   PROCEDURE BuildSearchList(region: Region);
+      (* construct a search list for the given region
+	 (which must have been created by NewRegularRegion);
+	 based on an idea by Christian Ehrhardt
+      *)
+      VAR
+	 searchlistlen: LONGINT;
+	 searchlistcount: Types.Int32;
+	 ptrval, next, tagptr: Address;
+	 size, granularity: Size;
+	 slotptr: Address; (* pointer to next slot in list *)
+   BEGIN
+      searchlistlen := (pageSize - tagAreaSize - addrSize) DIV addrSize;
+      granularity := SYS.VAL(Size,
+	 (region.addr - region.start - pageSize) DIV searchlistlen) + 1;
+      ptrval := region.start + pageSize;
+      SYS.GET(ptrval + tagAreaSize + tagOffset, tagptr);
+      ASSERT(~ODD(tagptr));
+      next := ptrval;
+      size := 0;
+      slotptr := region.start + tagAreaSize + addrSize;
+      searchlistcount := 0;
+      LOOP
+	 IF ptrval + size >= region.addr THEN
+	    (* last allocated object within this region *)
+	    EXIT
+	 END;
+	 IF ptrval >= next THEN
+	    SYS.PUT(slotptr, ptrval); INC(slotptr, addrSize);
+	    INC(searchlistcount);
+	    next := SYS.VAL(Address, granularity + ptrval);
+	 END;
+	 (* jump from object to object *)
+	 INC(ptrval, size);
+	 SYS.GET(ptrval + tagAreaSize + tagOffset, tagptr);
+	 IF tagptr MOD tagMask # 0 THEN
+	    ASSERT(tagptr MOD tagMask = copiedTag);
+	    (* follow the pointer to the original tag *)
+	    tagptr := tagptr - tagptr MOD tagMask;
+	    SYS.GET(tagptr + tagOffset, tagptr);
+	 END;
+	 SYS.GET(tagptr + sizeOffset, size); INC(size, tagAreaSize);
+      END;
+      ASSERT((searchlistcount > 0) & (searchlistcount <= searchlistlen));
+      SYS.PUT(region.start + tagAreaSize, searchlistcount);
+   END BuildSearchList;
+
+   PROCEDURE FindObject(region: Region; addrval: Address; VAR ptrval: Address);
+      (* addrval is a non-NIL address out of the given region;
+         return a pointer to the object the address points to
+      *)
+      VAR
+	 searchlist: Address;
+	 searchlistcount: LONGINT;
+	 tagptr: Address;
+	 new, min, max: LONGINT;
+	 objectaddr: Address;
+	 size: Size;
+   BEGIN
+      (* region contains the object *)
+      objectaddr := region.start;
+      SYS.GET(objectaddr + tagAreaSize + tagOffset, tagptr);
+      IF tagptr = Nil + copiedTag THEN
+	 SYS.GET(objectaddr + tagAreaSize, searchlistcount);
+	 IF searchlistcount = 0 THEN
+	    BuildSearchList(region);
+	    SYS.GET(region.start + tagAreaSize, searchlistcount);
+	 END;
+	 (* boost search by utilizing searchlist *)
+	 searchlist := region.start + tagAreaSize + addrSize;
+	 min := 0; max := searchlistcount - 1;
+	 WHILE min < max DO
+	    new := (min + max + 1) DIV 2;  (* min < new <= max *)
+	    SYS.GET(searchlist + new*addrSize, objectaddr);
+	    IF objectaddr > addrval THEN
+	       (* Note: this may cause
+		     searchlist[max] <= addrval
+		  but in this case we will just go through the
+		  ELSE branch until min = max
+	       *)
+	       max := new - 1; (* newmax < max *)
+	    ELSE
+	       min := new;     (* newmin > min *)
+	    END;
+	 END;
+	 SYS.GET(searchlist + min*addrSize, objectaddr);
+	 ASSERT((objectaddr >= region.start) & (objectaddr <= addrval));
+	 SYS.GET(objectaddr + tagAreaSize + tagOffset, tagptr);
+      END;
+      (* linear search *)
+      size := 0;
+      REPEAT
+	 (* jump from object to object *)
+	 INC(objectaddr, size);
+	 SYS.GET(objectaddr + tagAreaSize + tagOffset, tagptr);
+	 IF tagptr MOD tagMask # 0 THEN
+	    ASSERT(tagptr MOD tagMask = copiedTag);
+	    (* follow the pointer to the original tag *)
+	    SYS.GET(tagptr - copiedTag + tagOffset, tagptr);
+	 END;
+	 SYS.GET(tagptr + sizeOffset, size); INC(size, tagAreaSize);
+      UNTIL objectaddr + size > addrval;
+      ptrval := objectaddr;
+   END FindObject;
+
+   (* ============ binary tree management ================================ *)
+
+   PROCEDURE PutIntoTree(VAR tree: Region; region: Region);
+      (* insert region into tree *)
+      VAR
+         p: Region;
+   BEGIN
+      region.left := NIL; region.right := NIL;
+      IF tree = NIL THEN
+         tree := region;
+      ELSE
+         p := tree;
+         LOOP
+            IF region.start < p.start THEN
+               IF p.left = NIL THEN p.left := region; RETURN END;
+               p := p.left;
+            ELSE
+               IF p.right = NIL THEN p.right := region; RETURN END;
+               p := p.right;
+            END;
+         END; (* of LOOP *)
+      END;
+   END PutIntoTree;
+
+   PROCEDURE TreeSearch(addr: Address; tree: Region;
+                        VAR region: Region) : BOOLEAN;
+      (* search the region into which addr is pointing;
+	 return FALSE if addr points outside of allocated areas
+	 or into growing regions
+      *)
+   BEGIN
+      region := tree;
+      WHILE region # NIL DO
+         IF addr < region.start THEN
+            region := region.left;
+         ELSIF addr >= region.end THEN
+            region := region.right;
+	 ELSIF (region.mode # 0) OR (addr >= region.addr) THEN
+	    (* not a fixed region or
+	       addr points into the unallocated area of region
+	    *)
+	    RETURN FALSE
+         ELSE
+            RETURN TRUE (* addr points into region *)
+         END;
+      END;
+      RETURN FALSE
+   END TreeSearch;
+
+   (* =================================================================== *)
+
+   PROCEDURE Raise(type: Events.EventType; message: Events.Message;
+                   errors: RelatedEvents.Object);
+   VAR
+      event: Storage.Event;
+   BEGIN
+      NEW(event);
+      event.message := message; event.type := type;
+      event.errors := errors;
+      Events.Raise(event);
+   END Raise;
+
+   PROCEDURE OutOfMemory;
+      (* generate "out of memory" event, if possible;
+         this is a point of no return
+      *)
+      VAR
+         numberOfBytes: Size;
+         region: Region;
+   BEGIN
+      StartOfCriticalRegion;
+      numberOfBytes := storage.chunksize;
+      WHILE (numberOfBytes >= pageSize) &
+            ~NewRegion(region, numberOfBytes, 0) DO
+         DEC(numberOfBytes, pageSize);
+      END;
+      IF numberOfBytes > 0 THEN
+         ReturnRegion(region); PutIntoTree(fixedTree, region);
+      END;
+      WHILE criticalRegionNestLevel > 0 DO
+         EndOfCriticalRegion;
+      END;
+      SwitchRegion(storage.worksize);
+      IF Storage.left >= pageSize THEN
+         lock := TRUE;         (* no garbage collection *)
+         Raise(Storage.outOfMemory, "out of memory", errors);
+      END;
+      PanicExit;
+   END OutOfMemory;
+
+   (* ================ copying garbage collector ========================= *)
+
+   PROCEDURE CopyingCollector;
+      (* copying garbage collection *)
+      VAR
+         workRegion: Region; (* reserve region, to be used after the GC *)
+         aliveRegions, region, found: Region;
+	 freeHeaps, usedHeaps, nextHeap: Region;
+         sizeIndex: SizeIndex;
+         module: SysModules.Module;
+         tag: Address;
+         size: Size;
+         ready: BOOLEAN;
+	 blocksize: Size; (* size of the to be allocated memory blocks *)
+
+         (* variables controlling Forward *)
+         regionScan: Address;
+
+      PROCEDURE ExamineObject(addr, ptrList, pc: Address);
+         (* examines the pointer list of an object *)
+         VAR
+            offset, recsize: Size;
+            selector: LONGINT;
+            beginAddr,endAddr: Address;
+            elementCount, index: LONGINT;
+            ptr, rectag: Address;
+            dummytag: DummyTag;
+
+         PROCEDURE Forward(root: Address);
+            (* standardforwarding algorithm
+               root addresses (!) the pointer to be checked
+            *)
+            VAR
+               region: Region;
+               source, tag: Address;
+               size: Size;
+         BEGIN
+            SYS.GET(root, source);
+            IF source = Nil THEN
+               RETURN      (* object saved earlier *)
+            END;
+            SYS.GET(source + tagOffset, tag); (* tag pointer *)
+            IF ODD(tag) THEN   (* special object found *)
+               IF tag MOD tagMask = markedTag THEN
+                  SYS.PUT(source + tagOffset,
+		     tag+foundTag-markedTag); (* mark as found *)
+               END;
+            ELSE
+               IF tag MOD tagMask # copiedTag THEN
+                  (* new object found that has to be copied *)
+                  SYS.GET(tag+sizeOffset, size);
+		  (* select another region if the currently used
+		     one does not provide enough space
+		  *)
+		  IF regionInUse.end - regionInUse.addr <
+			size + tagAreaSize THEN
+		     regionInUse := freeHeaps;
+		     ASSERT(regionInUse # NIL);
+		     RemoveFromList(freeHeaps, regionInUse);
+		     PutIntoList(usedHeaps, regionInUse);
+		     ASSERT(regionInUse.end - regionInUse.addr >=
+			size + tagAreaSize);
+		  END;
+                  SYS.WMOVE(source - tagAreaSize, regionInUse.addr,
+		     (size + tagAreaSize) DIV wordSize);
+                  IF tag = source + size - SYS.SIZE(DummyTagRec) THEN
+		     (* tag belongs to copied object (SYS.NEW)
+			so tag ptr in dest region must be updated
+		     *)
+                     SYS.PUT(regionInUse.addr + tagAreaSize + tagOffset,
+		             regionInUse.addr + tagAreaSize +
+			     size - SYS.SIZE(DummyTagRec));
+                  END;
+                  tag := regionInUse.addr + tagAreaSize + copiedTag;
+		  INC(regionInUse.addr, size + tagAreaSize);
+		  (* store new address as tag ptr *)
+                  SYS.PUT(source + tagOffset, tag);
+               END;
+               SYS.PUT(root, tag - copiedTag); (* correct root pointer *)
+            END;
+         END Forward;
+
+         PROCEDURE ForwardAddress(addr: Address);
+            VAR
+               addrval, ptrval, tagptr: Address;
+               offset: Size;
+               region: Region;
+         BEGIN
+            SYS.GET(addr, addrval);
+            (* compute the object into which addrval points *)
+            IF (addrval # Nil) & TreeSearch(addrval, fixedTree, region) THEN
+               SYS.GET(region.start + tagAreaSize + tagOffset, tagptr);
+               IF ODD(tagptr) THEN  (* special object *)
+		  ptrval := region.start;
+	       ELSE
+		  FindObject(region, addrval, ptrval);
+               END;
+               INC(ptrval, tagAreaSize);
+               offset := SYS.VAL(Size, addrval - ptrval);
+               Forward(SYS.ADR(ptrval));
+               SYS.PUT(addr, ptrval + offset);
+            END;
+         END ForwardAddress;
+
+         PROCEDURE GetArray(VAR ptr: Address; VAR elementCount: LONGINT);
+            VAR
+               numberOfDimensions: LONGINT;
+               dopeAddr: Address;
+               dimension, length: LONGINT;
+         BEGIN
+            SYS.GET(ptrList, elementCount); INC(ptrList, SYS.SIZE(LONGINT));
+            IF elementCount < 0 THEN
+               numberOfDimensions := ABS(elementCount);
+               SYS.GET(ptrList, elementCount);
+               INC(ptrList, SYS.SIZE(LONGINT));
+               SYS.GET(addr + offset, ptr);
+               (* scan dope vector and calculate # of elements *)
+               dopeAddr := addr + offset + addrSize;
+               dimension := 0;
+               WHILE dimension < numberOfDimensions DO
+                  SYS.GET(dopeAddr, length);
+                  elementCount := elementCount * length;
+                  INC(dopeAddr, SYS.SIZE(LONGINT)); INC(dimension);
+               END;
+            ELSE
+               ptr := addr + offset;
+            END;
+         END GetArray;
+
+      BEGIN (* ExamineObject *)
+         IF pc = Nil THEN     (* not a procedure tag *)
+            (* ptrList addresses the type tag *)
+            dummytag := SYS.VAL(DummyTag, ptrList);
+            INC(ptrList, basetypeOffset + dummytag.hierlen * addrSize);
+         END;
+         LOOP
+            SYS.GET(ptrList, offset); INC(ptrList, SYS.SIZE(Size));
+            IF offset = sentinel THEN EXIT END;
+            selector := offset MOD SYS.SIZE(Size);
+            DEC(offset, selector);
+            CASE selector OF
+            | tagSimplePointer:
+               Forward(addr + offset);
+            | tagPointerArray:
+               GetArray(ptr, elementCount);
+               index := 0;
+               WHILE index < elementCount DO
+                  Forward(ptr); INC(ptr, addrSize); INC(index);
+               END;
+            | tagRecordArray:
+               GetArray(ptr, elementCount);
+               SYS.GET(ptrList, rectag); INC(ptrList, addrSize);
+               SYS.GET(rectag+sizeOffset, recsize);
+               index := 0;
+               WHILE index < elementCount DO
+                  ExamineObject(ptr, rectag, Nil);
+                  INC(ptr, recsize); INC(index);
+               END;
+            | tagOther:
+               SYS.GET(ptrList, selector); INC(ptrList, SYS.SIZE(LONGINT));
+               CASE selector OF
+               | TmpPointerSY:
+                  SYS.GET(ptrList, beginAddr); INC(ptrList, addrSize);
+                  SYS.GET(ptrList, endAddr); INC(ptrList, addrSize);
+                  IF (pc >= beginAddr) & (pc < endAddr) THEN
+                     Forward(addr + offset);
+                  END;
+               | SimpleAddressSY:
+                  ForwardAddress(addr + offset);
+               | AddressArraySY:
+                  GetArray(ptr, elementCount);
+                  index := 0;
+                  WHILE index < elementCount DO
+                     ForwardAddress(ptr);
+                     INC(ptr, addrSize); INC(index);
+                  END;
+               | TmpAddressSY:
+                  SYS.GET(ptrList, beginAddr); INC(ptrList, addrSize);
+                  SYS.GET(ptrList, endAddr); INC(ptrList, addrSize);
+                  IF (pc >= beginAddr) & (pc < endAddr) THEN
+                     ForwardAddress(addr + offset);
+                  END;
+               END; (* of CASE *)
+            END; (* of CASE *)
+         END; (* of LOOP *)
+      END ExamineObject;
+
+      PROCEDURE ExamineCoroutine(cr: Coroutines.Coroutine);
+         (* examine coroutine stack *)
+         VAR
+	    stack: SysStacks.Stack;
+            base, top, tag, pc: Address;
+
+         PROCEDURE SeekTag(pc: Address; VAR tag: Address) : BOOLEAN;
+            VAR
+               module: SysModules.Module;
+               block: SysModules.BlockList;
+         BEGIN
+            module := SysModules.modules;
+            WHILE module # NIL DO
+               IF (pc >= module.begin) & (pc < module.end) THEN
+                  block := module.blocks;
+                  WHILE block # NIL DO
+                     IF (pc >= block.begin) & (pc < block.end) THEN
+                        tag := block.tag;
+                        RETURN TRUE
+                     END;
+                     block := block.next;
+                  END;
+               END;
+               module := module.next;
+            END;
+            RETURN FALSE
+         END SeekTag;
+
+      BEGIN (* ExamineCoroutine *)
+	 SysStacks.Open(stack, cr);
+	 WHILE SysStacks.Next(stack, base, top, pc) DO
+            IF ~SeekTag(pc, tag) THEN (* bug *) RETURN END;
+            ExamineObject(base, tag, pc);
+         END;
+      END ExamineCoroutine;
+
+   BEGIN (* CopyingCollector *)
+      (* compute the required size of the new regions *)
+      size := SYS.VAL(Size, Storage.end - Storage.left - regionInUse.addr) +
+	      storage.consumed + storage.worksize;
+      (* adding worksize is necessary, because calls of
+	 Memory.AllocateRegion consume memory and deallocation
+	 of the old region is allowed to do that, too
+      *)
+      IF size < storage.chunksize THEN
+	 size := storage.chunksize;
+      END;
+      (* workRegion is a reserve region *)
+      IF ~NewRegularRegion(workRegion, storage.chunksize) THEN
+	 (* give up as long as we have some memory left for proper cleanup *)
+	 OutOfMemory;
+      END;
+
+      freeHeaps := NIL; usedHeaps := NIL; nextHeap := NIL;
+
+      (* allocate enough regions to accomodate all to be copied objects *)
+      blocksize := size DIV maxNumberOfBlocks;
+      IF blocksize < minBlockSize THEN
+	 blocksize := minBlockSize;
+      END;
+      (* allocate space for possible fragmentation and
+	 the search block in front of the region
+      *)
+      INC(blocksize, pageSize + minChunkSize);
+      Align(blocksize, pageSize);
+      WHILE size > 0 DO
+	 IF ~NewRegularRegion(region, blocksize) THEN
+	    DeallocRegionList(workRegion);
+	    DeallocRegionList(freeHeaps);
+	    (* we prefer to give up; this is better than to
+	       consume all remaining memory available
+	    *)
+	    OutOfMemory;
+	 END;
+	 (* it's not necessary to bring region into fixedTree ...
+	    PutIntoTree(fixedTree, region);
+	    ... because addresses on the stack cannot refer that new region
+	 *)
+	 PutIntoList(freeHeaps, region);
+	 DEC(size, blocksize - pageSize - minChunkSize);
+      END;
+
+      (* this is the point of no RETURN;
+	 no memory is available;
+	 any use of foreign modules is forbidden
+	 as we are now cracking all pointer structures
+      *)
+      ReturnCurrentRegion;
+      (* Storage.end := Nil; Storage.left := 0; regionInUse := NIL *)
+
+      (* select the first of the pre-allocated regions *)
+      region := freeHeaps;
+      RemoveFromList(freeHeaps, region);
+      PutIntoList(usedHeaps, region);
+      regionInUse := region;
+
+      (* mark tag pointers of our special objects as `not found' *)
+      region := specialRegions; aliveRegions := NIL;
+      WHILE region # NIL DO
+	 (* get tag ptr *)
+	 SYS.GET(region.start + tagAreaSize + tagOffset, tag);
+	 IF (region.mode # 0) & (region.end = SYS.VAL(Address, gc)) THEN
+	    (* gc stack is ignored *)
+	    SYS.PUT(region.start + tagAreaSize + tagOffset, tag+foundTag);
+	    aliveRegions := region; region := region.next;
+	    RemoveFromList(specialRegions, aliveRegions);
+	 ELSE
+	    SYS.PUT(region.start + tagAreaSize + tagOffset, tag+markedTag);
+	    region := region.next;
+	 END;
+      END;
+
+      (* first, examine the global data of all linked modules *)
+      module := SysModules.modules;
+      WHILE module # NIL DO
+	 IF module.vars # Nil THEN
+	    (* module.vars points to the tag *)
+	    SYS.GET(module.vars, tag);
+	    ExamineObject(module.vars - tagOffset, tag, Nil);
+	 END;
+	 module := module.next;
+      END;
+
+      (* this is our plan:
+
+	 all found objects have to be checked whether they contain
+	 pointers to objects which are not saved at this time
+
+	 living 'mapped'- and 'stack'-regions are removed from list
+	 specialRegions and put into list aliveRegions (which
+	 contains already the garbage collector's stack)
+	 other living objects are copied into regionInUse
+
+	 garbage collection is finished, if all copied objects are
+	 checked (destScan = destNext), and neither a new stack region
+	 nor a new 'mapped'-object has been found
+      *)
+
+      (* check gc coroutine structure, if it would contain pointers:
+	 SYS.GET(aliveRegions.start, tag);
+	 ExamineObject(aliveRegions.end, tag-foundTag, Nil);
+      *)
+
+      nextHeap := regionInUse;
+      regionScan := nextHeap.start;
+      SYS.GET(regionScan + tagAreaSize + tagOffset, tag);
+      IF tag = Nil + copiedTag THEN
+         INC(regionScan, pageSize);
+      END;
+
+      REPEAT
+	 ready := TRUE;
+	 (* go through list of regions with already copied objects;
+	    only the very first heap in this list can still grow
+	    and new heaps are inserted at the front;
+	    hence we are moving backwards from the oldest heaps
+	    up to the heap added last
+	 *)
+	 LOOP
+	    WHILE regionScan # nextHeap.addr DO
+	       SYS.GET(regionScan + tagAreaSize + tagOffset, tag);
+	       SYS.GET(tag + sizeOffset, size);
+	       ExamineObject(regionScan + tagAreaSize, tag, Nil);
+	       INC(regionScan, size + tagAreaSize);
+	    END;
+	    nextHeap.len := SYS.VAL(Size, nextHeap.end - nextHeap.addr);
+	    IF nextHeap.prev = NIL THEN
+	       EXIT
+	    END;
+	    ASSERT(nextHeap # regionInUse);
+	    nextHeap := nextHeap.prev;
+	    regionScan := nextHeap.start;
+	    SYS.GET(regionScan + tagAreaSize + tagOffset, tag);
+	    IF tag = Nil + copiedTag THEN
+	       INC(regionScan, pageSize);
+	    END;
+	 END;
+	 ASSERT(nextHeap = regionInUse);
+	 region := specialRegions;
+	 WHILE region # NIL DO
+	    SYS.GET(region.start + tagAreaSize + tagOffset, tag);
+	    IF tag MOD tagMask = foundTag THEN
+	       IF region.mode # 0 THEN  (* new living coroutine stack *)
+		  (* check coroutine structure if it would contain pointer:
+		     ExamineObject(region.end, tag-foundTag, Nil);
+		  *)
+		  ExamineCoroutine(SYS.VAL(Coroutines.Coroutine, region.end));
+	       ELSE
+		  ExamineObject(region.start+tagAreaSize, tag-foundTag, Nil);
+	       END;
+	       ready := FALSE; found := region; region := region.next;
+	       RemoveFromList(specialRegions, found);
+	       PutIntoList(aliveRegions, found);
+	    ELSE
+	       region := region.next;
+	    END;
+	 END;
+      UNTIL ready;
+
+      (* garbage collection is finished, and we desperately hope
+	 that all pointer have correct values;
+
+	 some memory is available in workRegion;
+	 foreign modules can be used again (to deallocate the old regions)
+	 but SwitchRegion is forbidden (the global region variables
+	 have to be updated first)
+      *)
+
+      (* make some memory available; with multiple heap regions it is
+         possible that the last region used (regionInUse) is entirely
+	 filled
+       *)
+      regionInUse := workRegion;
+      Storage.left := regionInUse.len;
+      Storage.end := regionInUse.addr + Storage.left;
+
+      fixedTree := NIL;   (* fixed region tree is built completely new *)
+      PutIntoTree(fixedTree, workRegion);
+
+      (* repair tag pointer values and update binary tree *)
+      storage.mapped := 0;
+      region := aliveRegions;
+      WHILE region # NIL DO
+	 IF region.mode = 0 THEN      (* not a coroutine stack *)
+	    PutIntoTree(fixedTree, region);
+	    INC(storage.mapped, region.len);
+	 END;
+	 (* repair tag pointer *)
+	 SYS.GET(region.start + tagAreaSize + tagOffset, tag);
+	 ASSERT(tag MOD tagMask = foundTag);
+	 SYS.PUT(region.start + tagAreaSize + tagOffset, tag-foundTag);
+	 region := region.next;
+      END;
+
+      (* deallocate the garbage *)
+      sizeIndex := 0;
+      WHILE sizeIndex < bitsPerAddress DO
+	 DeallocRegionList(freeRegions[sizeIndex]);
+	 INC(sizeIndex);
+      END;
+      DeallocRegionList(consumedRegions);
+      DeallocRegionList(specialRegions);
+      (* return unused regions that were allocated for the new heap *)
+      DeallocRegionList(freeHeaps);
+
+      storage.consumed := 0;
+      WHILE usedHeaps # NIL DO
+         region := usedHeaps;
+         RemoveFromList(usedHeaps, region);
+         PutIntoTree(fixedTree, region);
+	 (* regionInUse is no longer on this list *)
+	 ReturnRegion(region);
+	 INC(storage.consumed, region.addr - region.start);
+      END;
+
+      specialRegions := aliveRegions;
+      
+      (* situation after updating the region list variables:
+	 regionInUse:     contains all objects allocated after the
+	                  real garbage collection; this is the region
+			  formerly known as workRegion;
+	 consumedRegions: contains all entirely filled new heap regions
+	 specialRegions:  contains all living 'mapped' objects and stacks
+	 freeRegions:     contains all new heap regions that couldn't be
+	                  filled entirely
+      *)
+   END CopyingCollector;
+
+   (* ==================================================================== *)
+
+   PROCEDURE GarbageCollector;
+      VAR
+         raised: BOOLEAN;
+   BEGIN
+      SYS.CRSPAWN(gc, minChunkSize + Coroutines.defaultsize);
+	 (* care is to be taken as this coroutine stack is unable
+	    to grow as long it is within the critical region
+	 *)
+      caller := Coroutines.source;
+      (* caller is a global variable, because we ignore the garbage
+         collectors stack
+      *)
+      LOOP
+         (* PROC Raise (and perhaps an event handler is allowed to call
+            AllocateWithTag via NEW because lock is TRUE
+            why not making SwitchRegion(worksize) here?
+            when Raise returns we can not be sure, that there is sufficient
+            memory left for us
+         *)
+         raised := Events.GetPriority() <=
+                   Events.GetEventPriority(Process.startOfGarbageCollection);
+         IF raised THEN
+            Raise(Process.startOfGarbageCollection,
+                  "start of garbage collection", NIL);
+         END;
+         StartOfCriticalRegion;
+         IF SysInts.interrupts = 0 THEN (* do it *)
+            CopyingCollector;
+         END;
+         storage.currentlimit := storage.alloclimit;
+	 storage.stackcount := 0;
+	 storage.countOfMappedRegions := 0;
+         EndOfCriticalRegion;
+         IF raised THEN
+            Raise(Process.endOfGarbageCollection,
+                  "end of garbage collection", NIL);
+         END;
+         SYS.CRSWITCH(caller); (* return to calling routine *)
+         caller := Coroutines.source;
+      END; (* of LOOP *)
+   END GarbageCollector;
+
+   (* ==================================================================== *)
+
+   PROCEDURE AssureWorkingSize;
+      (* assure that we have at least one region in freeregions
+         with a free capacity of worksize
+      *)
+      VAR
+         region: Region;
+   BEGIN
+      (* it is important that AssureWorkingSize does not invoke the
+         garbage collection because AllocateWithTag calls AssureWorkingSize
+         while having some memory allocated with no pointer onto it
+         (a garbage collection would not save that object)
+      *)
+      IF (criticalRegionNestLevel = 0)
+         (* during critical regions we do not need AssureWorkingSize *)
+       & ~SeekRegion(storage.worksize, FALSE) THEN
+         StartOfCriticalRegion;
+         IF ~NewRegularRegion(region, storage.chunksize) THEN
+            OutOfMemory;
+         END;
+         ReturnRegion(region); PutIntoTree(fixedTree, region);
+         EndOfCriticalRegion;
+      END;
+   END AssureWorkingSize;
+
+   (* ============ segment violation signal handler ===================== *)
+
+   PROCEDURE FaultHandler(event: Events.Event);
+      (* handler for SysSignals.SIGSEGV which is possibly raised
+         if stacks grow into not yet allocated areas
+      *)
+      CONST
+         maperr = 1; (* check this constant against <sys/machsig.h> *)
+      VAR
+         mregion: Memory.Region; (* memory region of event.addr *)
+         status: Memory.Status;
+         attach: Attach;
+         region: Region;
+         newsize: Size;
+         addr: Address;
+   BEGIN
+      (* it is important that FaultHandler does not invoke
+         the garbage collection (see PROC AssureWorkingSize)
+      *)
+      IF ~initCompleted OR (lock & (criticalRegionNestLevel # 0)) THEN
+         (* main stack too small or unfinished garbage collection *)
+         PanicExit;
+      END;
+      WITH event: SysSignals.Event DO
+         IF event.fixed THEN RETURN END; (* somebody else has done it *)
+         IF event.sigcode # maperr THEN RETURN END;
+         addr := event.addr;
+         StartOfCriticalRegion;
+         Memory.GetStatus(addr, status, mregion);
+         IF (mregion # NIL)
+          & ((status = Memory.stThreatened) OR (status = Memory.stReserved))
+            (* it is an extensible region which may grow towards
+               the memory location at `addr';
+            *)
+          & Disciplines.Seek(mregion, RegionID, attach) THEN
+            (* and it is one of our growing stacks *)
+            region := SYS.VAL(Region, attach.addr);
+            IF region.mode < 0 THEN
+               newsize := SYS.VAL(Size, region.addr - addr);
+            ELSE
+               newsize := SYS.VAL(Size, addr - region.addr);
+            END;
+            INC(newsize, storage.stacksize);
+            Align(newsize, pageSize);
+            IF region.mode < 0 THEN
+               addr := region.addr - newsize;
+            ELSE
+               addr := region.addr + region.len;
+            END;
+            IF ~Memory.ExtendRegion(mregion, newsize, errors) OR
+		  ~Map(addr, newsize-region.len, errors) THEN
+               OutOfMemory;
+            END;
+            region.len := newsize; event.fixed := TRUE;
+         END;
+         EndOfCriticalRegion;
+      END; (* of WITH *)
+      AssureWorkingSize;
+   END FaultHandler;
+
+   (* ====== interface procedure: Storage.AllocateWithTag =============== *)
+
+   PROCEDURE AllocateWithTag(VAR ptr: Address; tag: Address; size: Size);
+      VAR
+         region: Region;
+         dummyTag: DummyTag;
+         pass: INTEGER;
+	 mappedRegion: BOOLEAN;
+   BEGIN
+      IF ~initCompleted OR (lock & (criticalRegionNestLevel # 0)) THEN
+         (* start up region too small or unfinished garbage collection *)
+         PanicExit;
+      END;
+      IF criticalRegionNestLevel # 0 THEN OutOfMemory END;
+         (* there was more memory consumed than we expected *)
+      mappedRegion := IsMapSize(size, storage.mapsize,
+                         storage.mapsize, storage.precision);
+      IF mappedRegion THEN
+	 INC(storage.countOfMappedRegions);
+      END;
+      IF (storage.countOfMappedRegions >= ASH(1, storage.intensity)) OR
+	    (storage.currentlimit -
+		  SYS.VAL(Size, Storage.end - Storage.left - regionInUse.addr)
+	       <= 0) THEN
+         GarbageCollection;
+      END;
+      Align(size, minAlignment);
+      pass := 0;
+      LOOP
+         StartOfCriticalRegion;
+	 IF mappedRegion THEN
+            (* create new `mapped' region *)
+            IF NewRegion(region, size, 0) THEN
+	       (* mark it as allocated *)
+	       region.len := 0; region.addr := region.end;
+               PutIntoList(specialRegions, region);
+               PutIntoTree(fixedTree, region);
+               DEC(storage.currentlimit, region.len);
+               INC(storage.mapped, region.len);
+               ptr := region.start;
+               EXIT (* with success *)
+            END;
+            (* last change: try a garbage collection *)
+         ELSE                               (* size < chunksize *)
+            region := NIL;
+            IF (Storage.left - size >= storage.worksize)
+               (* current region is more than enough *)
+            OR (((Storage.left >= size) OR SeekRegion(size, TRUE))
+                & SeekRegion(storage.worksize, FALSE))
+               (* region becomes full but an additional region is left *)
+            OR NewRegularRegion(region, storage.chunksize)
+               (* allocation of a new region was successful *)
+            THEN       (* allocate it ... *)
+               IF region # NIL THEN   (* NewRegion was called *)
+                  PutIntoTree(fixedTree, region);
+                  ReturnCurrentRegion; SetCurrentRegion(region);
+               END;
+               ptr := Storage.end - Storage.left;
+               DEC(Storage.left, size);
+               EXIT (* with success *)
+            END;
+            (* we are in serious problems:
+               it's unlikely that a garbage collection can help here
+               garbage collection intensity has been too low
+            *)
+         END;
+         IF pass > 1 THEN OutOfMemory ELSE INC(pass) END;
+         EndOfCriticalRegion;
+         GarbageCollection;
+      END; (* of LOOP *)
+      IF size > 0 THEN SYS.WCLEAR(ptr, size DIV wordSize) END; (* zero area *)
+      IF tag = Nil THEN                   (* called via SYS.NEW *)
+         (* allocate tag behind the requested area *)
+         tag := ptr + size - SYS.SIZE(DummyTagRec);
+         dummyTag := SYS.VAL(DummyTag, tag);
+         dummyTag.size := size - tagAreaSize; dummyTag.module := Nil;
+         dummyTag.typeno := 0; dummyTag.hierlen := 0;
+         dummyTag.sentinel := sentinel;
+      END;
+      SYS.PUT(ptr + tagAreaSize + tagOffset, tag);  (* store tag pointer *)
+      INC(ptr, tagAreaSize);  (* points now to free area *)
+      EndOfCriticalRegion;
+      AssureWorkingSize;
+   END AllocateWithTag;
+
+   (* ====== interface procedure: Storage.AllocateStack ================= *)
+
+   PROCEDURE AllocateStack(VAR ptr: Address; size: Size; mode: SHORTINT);
+      VAR
+         region: Region;
+         pass: INTEGER;
+         mregion: Memory.Region;
+         addr: Address;
+   BEGIN
+      IF ~initCompleted THEN PanicExit END;
+      INC(storage.stackcount);
+      IF storage.stackcount >= ASH(1, storage.intensity) THEN
+	 GarbageCollection;
+      END;
+      pass := 0;
+      LOOP
+         StartOfCriticalRegion;
+         IF mode = 0 THEN     (* this is not a coroutine stack *)
+            IF AllocInterval(addr, size, mode, TRUE, mregion, errors) THEN
+               ptr := addr;
+               EXIT (* with success *)
+            END;
+         ELSIF NewRegion(region, size, mode) THEN
+            PutIntoList(specialRegions, region);
+            ptr := region.addr;
+            EXIT (* with success *)
+         END;
+         (* stack allocation has failed
+            it is unlikely that garbage collection can help here
+            but why shouldn't we try it?
+         *)
+         IF pass > 1 THEN OutOfMemory ELSE INC(pass) END;
+         EndOfCriticalRegion;
+         GarbageCollection;
+      END; (* of LOOP *)
+      EndOfCriticalRegion;
+      AssureWorkingSize;
+   END AllocateStack;
+
+   (* ======= interface procedure: Storage.EnableCollection ==============*)
+
+   PROCEDURE EnableCollection;
+   BEGIN
+      IF ~initCompleted THEN RETURN END;
+      (* if there were more than one call of DisableCollection in a row
+         without calling EnableCollection between, EnableCollection must
+         be called as many times as DisableCollection before, to switch
+         on garbage collection
+      *)
+      IF storage.collection > 0 THEN
+         (* garbage collection is switched off *)
+         DEC(storage.collection);
+      END;
+   END EnableCollection;
+
+   (* ======= interface procedure: Storage.DisableCollection =========== *)
+
+   PROCEDURE DisableCollection;
+   BEGIN
+      IF ~initCompleted THEN RETURN END;
+      (* a single call of DisableCollection guarantees that
+         garbage collection is switched off
+      *)
+      INC(storage.collection);
+   END DisableCollection;
+
+   (* ======= interface procedure: Storage.Intensity =====================*)
+
+   PROCEDURE Intensity(offset: INTEGER) : INTEGER;
+      (* increase/decrease current garbage collection frequency
+         adds offset to the current intensity indicator
+            offset < 0 => increase current intensity
+            offset = 0 => return current intensity
+            offset > 0 => decrease current intensity
+         example (sets frequency to default value):
+            frequency = Intensity(-Intensity(0)); 
+      *)
+      VAR
+         diff: Size;
+   BEGIN
+      IF ~initCompleted THEN RETURN 0 END;
+      StartOfCriticalRegion;
+      INC(storage.intensity, offset);
+      diff := storage.alloclimit - storage.currentlimit;
+      storage.alloclimit := ASH(storage.chunksize, storage.intensity);
+      IF storage.alloclimit < pageSize THEN
+         IF storage.intensity < 0 THEN  (* ASH produced "underflow" *)
+            storage.alloclimit := pageSize;
+         ELSE                           (* ASH produced "overflow" *)
+            storage.alloclimit := ASH(1, bitsPerAddress-2);
+         END;
+      END;
+      IF storage.currentlimit >= storage.alloclimit THEN
+         storage.currentlimit := storage.alloclimit;
+      ELSE
+         storage.currentlimit := storage.alloclimit - diff;
+      END;
+      EndOfCriticalRegion;
+      AssureWorkingSize;
+      RETURN storage.intensity;
+   END Intensity;
+
+   (* ======= interface procedure: Storage.GetStatus =====================*)
+
+   PROCEDURE GetStatus(VAR status: Storage.Status);
+      (* return storage status information *)
+      VAR
+         new: Size;
+	 stat: StorageStatus; (* little hack for GCProfile *)
+   BEGIN
+      IF ~initCompleted THEN PanicExit END;
+      NEW(stat); stat^ := storage;
+      status := stat;
+      (* patch consumed componente *)
+      new := SYS.VAL(Size, Storage.end - Storage.left - regionInUse.addr);
+      INC(status.consumed, new + storage.mapped);
+      (* if currentlimit would be public, patch it like this:
+         DEC(status.currentlimit, new);
+      *)
+   END GetStatus;
+
+   (* ======= interface procedure: Storage.ChunkSize =================*)
+
+   PROCEDURE ChunkSize(size: Size) : Size;
+      (* set/get memory chunk size *)
+      VAR
+         power: Size;
+   BEGIN
+      IF ~initCompleted THEN PanicExit END;
+      IF size # 0 THEN                         (* change it *)
+         IF size < storage.worksize THEN
+            size := storage.worksize;          (* minimum value *)
+         END;
+         power := maxSize;
+         IF size < power THEN
+            AlignPowerOf2(power, size);
+         END;
+         StartOfCriticalRegion;
+         storage.chunksize := power;
+         storage.intensity := Intensity(0); (* update storage.alloclimit *)
+         EndOfCriticalRegion;
+         AssureWorkingSize;
+      END;
+      RETURN storage.chunksize;
+   END ChunkSize;
+
+   PROCEDURE FirstStack;
+   BEGIN
+      stackIt := specialRegions;
+   END FirstStack;
+
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+   BEGIN
+      WHILE (stackIt # NIL) & (stackIt.mode = 0) DO
+	 stackIt := stackIt.next;
+      END;
+      IF stackIt = NIL THEN RETURN FALSE END;
+      cr := SYS.VAL(Coroutines.Coroutine, stackIt.end);
+      stackIt := stackIt.next;
+      RETURN TRUE
+   END NextStack;
+
+   (* -------------------------------------------------------------------- *)
+
+   PROCEDURE Init;
+      VAR
+         segment: SysSegments.Segment;
+         index, numberOfSegments: INTEGER;
+         allocMode: Memory.AllocationMode;
+         mregion: Memory.Region;
+         (* attach: Attach; *)
+         interrupted: BOOLEAN; (* this return value is ignored *)
+         if: Storage.Interface;
+         uif: UntaggedStorage.Interface;
+         sizeIndex: SizeIndex;
+         signal: SysSignals.Signal;
+         addr: Address;
+	 toBeBlocked: SigOps.SignalSet;
+   BEGIN
+      lock := TRUE;                (* lock garbage collector *)
+      storage.collection := 0;
+      stackSizeProbed := FALSE;
+      criticalRegionNestLevel := 1;
+      (* simulate a critical region (New calls
+         Start/EndOfCriticalRegion and AssureWorkingSize what we do
+         not want during the init phase)
+      *)
+      RegionID := Disciplines.Unique();
+      HeaderID := Disciplines.Unique();
+
+      (* set pagesize value *)
+      pageSize := SysMemory.GetPageSize();
+      Memory.SetPageSize(pageSize);
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+
+      (* init UntaggedStorage variables *)
+      allocp := SYS.VAL(Header, SYS.ADR(base));
+      allocp.size := minStartSizeOfNew; allocp.next := allocp;
+      headerSize := SYS.SIZE(HeaderRec); Align(headerSize, minAlignment);
+      untagged.chunksize := minChunkSize;
+      Align(untagged.chunksize, pageSize);
+      untagged.precision := maxPrecision;
+      Align(untagged.precision, minAlignment);
+      IF pageSize < untagged.precision THEN
+         untagged.precision := pageSize;
+      END;
+      untagged.mapsize := minMapSize; Align(untagged.mapsize, pageSize);
+      untagged.allocated := minStartSizeOfNew;
+      untagged.consumed := 0; untagged.mapped := 0;
+
+      (* get a file descriptor which may be used for mmap(2) calls *)
+      mapsOK := SysIO.Open(mappedFile, devzero, SysIO.rdwr, errors,
+                         (* retry = *) TRUE, interrupted);
+
+      (* compute set of signals which is to be blocked during
+         critical regions
+      *)
+      Sets.InitSet(toBeBlocked);
+      signal := 1;
+      WHILE signal < SysSignals.nsigs DO
+         IF (SysSignals.eventType[signal] # NIL) &
+               (Events.GetEventPriority(SysSignals.eventType[signal]) <
+               Priorities.storage) THEN
+	    Sets.Incl(toBeBlocked, signal);
+         END;
+         INC(signal);
+      END;
+      SigOps.ConvertSetToInternalSet(toBeBlocked, signalsToBeBlocked);
+      signalsBlocked := FALSE;
+
+      sizeIndex := 0;
+      WHILE sizeIndex < bitsPerAddress DO
+         freeRegions[sizeIndex] := NIL;
+         INC(sizeIndex);
+      END;
+      consumedRegions := NIL; fixedTree := NIL;
+      regionInUse := SYS.VAL(Region, New(SYS.SIZE(RegionRec)));
+      specialRegions := SYS.VAL(Region, New(SYS.SIZE(RegionRec)));
+      stackIt := NIL;
+
+      (* reserve preallocated segments *)
+      numberOfSegments := SysSegments.NumberOfSegments();
+      index := 0;
+      WHILE index < numberOfSegments DO
+         SysSegments.GetSegment(index, segment);
+         addr := segment.addr;
+         Align(segment.size, pageSize);
+         IF segment.mode = 0 THEN
+            allocMode := Memory.fixed;
+         ELSIF segment.mode < 0 THEN
+            DEC(addr, segment.size);
+            allocMode := Memory.growingBackward;
+         ELSE
+            allocMode := Memory.growingForward;
+         END;
+         Memory.ReserveRegion(segment.addr, segment.size, allocMode, mregion);
+         IF (SYS.ADR(addr) >= addr) & (SYS.ADR(addr) < addr + segment.size)
+         THEN   (* it's the current coroutine stack *)
+            InitRegion(specialRegions, segment.addr, segment.size,
+                       segment.mode, (* mapped = *) FALSE);
+            specialRegions.end := SYS.VAL(Address, Coroutines.current);
+            specialRegions.start := specialRegions.end - tagAreaSize;
+            (* if FaultHandler would be responsible for current coroutine:
+               NEW(attach); attach.id := RegionID;
+               attach.addr := SYS.VAL(Address, specialRegions);
+               Disciplines.Add(mregion, attach);
+            *)
+         ELSIF (Storage.end - Storage.left >= addr) &
+	       (Storage.end - Storage.left < addr + segment.size)
+         THEN   (* it's the start up region *)
+            InitRegion(regionInUse, segment.addr, segment.size,
+                       segment.mode, (* mapped = *) FALSE);
+            fixedTree := regionInUse;
+            storage.allocated := segment.size;
+         END;
+         INC(index);
+      END;
+
+      storage.precision := maxPrecision;
+      Align(storage.precision, minAlignment);
+      IF pageSize < storage.precision THEN storage.precision := pageSize END;
+      storage.mapsize := minMapSize; Align(storage.mapsize, pageSize);
+      (* storage.precision <= pageSize <= storage.mapsize *)
+      storage.stacksize := minStackSize; Align(storage.stacksize, pageSize);
+
+      storage.worksize := minWorkSize;
+      storage.chunksize := 2 * minWorkSize;
+      IF storage.chunksize < storage.allocated THEN
+         storage.chunksize := storage.allocated;
+      END;
+      IF storage.chunksize < minChunkSize THEN
+         storage.chunksize := minChunkSize;
+      END;
+      AlignPowerOf2(storage.chunksize, storage.chunksize);
+      (* storage.chunksize >= run time start region
+         storage.chunksize >= minChunkSize
+         storage.chunksize >> storage.worksize
+         storage.chunksize is a power of 2
+         storage.chunksize MOD pageSize = 0
+      *)
+      storage.intensity := 0;
+      storage.alloclimit := storage.chunksize;
+      storage.currentlimit := storage.alloclimit;
+      storage.consumed := 0; storage.mapped := 0;
+      storage.stackcount := 0;
+      storage.countOfMappedRegions := 0;
+
+      if.alloc := AllocateWithTag;
+      if.allocStack := AllocateStack;
+      if.garbageCollection := GarbageCollection;
+      if.enable := EnableCollection;
+      if.disable := DisableCollection;
+      if.intensity := Intensity;
+      if.getStatus := GetStatus;
+      if.chunkSize := ChunkSize;
+      if.firstStack := FirstStack;
+      if.nextStack := NextStack;
+      Storage.Init(if);
+
+      uif.new := New;
+      uif.dispose := Dispose;
+      uif.use := Use;
+      uif.getStatus := UntaggedGetStatus;
+      uif.chunkSize := UntaggedChunkSize;
+      UntaggedStorage.Init(uif);
+
+      Events.Handler(SysSignals.SEGV, FaultHandler);
+
+      criticalRegionNestLevel := 0;
+      initCompleted := TRUE;
+      (* now allocate some additional memory in advance *)
+      AssureWorkingSize;
+      (* a call of AllocateStack follows now *)
+
+      GarbageCollector;      (* install coroutine *)
+      lock := FALSE;         (* now with garbage collection *)
+   END Init;
+
+BEGIN
+   initCompleted := FALSE; Init;
+END SysStorage.

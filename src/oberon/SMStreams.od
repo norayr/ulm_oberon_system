@@ -1,0 +1,120 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SMStreams.od,v 1.2 1994/09/21 13:46:20 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SMStreams.od,v $
+   Revision 1.2  1994/09/21  13:46:20  borchert
+   - open condition added (see Networks)
+   - AcceptCondition renamed to CreateAcceptCondition
+
+   Revision 1.1  1994/02/23  07:23:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Till Franke 10/1993
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SMStreams;
+
+   IMPORT Conditions, Events, Networks, RelatedEvents,
+	  Streams, SysTypes;
+
+   CONST		(* Errorcodes for streams *)
+      MRingError = 0;
+      SRingError = 1;
+      PartnerNotAliveError = 2;
+      WriteAfterCloseError = 3;
+      DeadlockError = 4;
+      NotAloneError = 5;
+      ConnectionNotReadyError = 6;
+      errorcodes = 7;
+
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec = RECORD (Streams.StreamRec) END;
+
+      ErrorCode=SHORTINT;
+      ErrorEvent=POINTER TO ErrorEventRec;
+      ErrorEventRec=RECORD
+	  (Events.EventRec)
+	  errorcode:ErrorCode;
+      END;
+
+   VAR
+      error : Events.EventType;
+      errormsg : ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE Open(VAR s:Streams.Stream;
+		   filename:ARRAY OF CHAR;
+		   bufmode:Streams.BufMode;
+		   errors:RelatedEvents.Object):BOOLEAN;
+		   (* open a shared memory stream.
+		    * directory entry filename must exist
+		    *)
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 filename: ARRAY OF CHAR);
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Networks.Socket;
+			      VAR address: ARRAY OF CHAR;
+			      size: SysTypes.Size;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Listen(VAR socket:Networks.Socket;filename:ARRAY OF CHAR;
+		   size:SysTypes.Size;
+		   errors:RelatedEvents.Object):BOOLEAN;
+		   (* create a stream to be accepted later *)
+
+   PROCEDURE Accept(socket:Networks.Socket;VAR s:Streams.Stream;
+		    bufmode:Streams.BufMode):BOOLEAN;
+		   (* wait until connection is valid 
+		    * returns FALSE if socket
+		    * is not an SMStreams.Socket
+		    *)
+
+   PROCEDURE CreateAcceptCondition(s:Streams.Stream;
+			           VAR cond:Conditions.Condition);
+		   (* creates a condition to wait for the partner to
+		    * open the stream 
+		    *)
+
+   PROCEDURE Release(socket:Networks.Socket);
+		   (* Releases the resources attached to
+		    * the socket
+		    *)
+
+   (* Interface to Networks *)
+
+   PROCEDURE CreateAddress(VAR address : Networks.Address;
+			   filename : ARRAY OF CHAR;
+			   size : SysTypes.Size);
+   PROCEDURE ConvertAddress(address : Networks.Address;
+			    VAR filename : ARRAY OF CHAR;
+			    VAR size : SysTypes.Size);
+   PROCEDURE SetAddress(address : Networks.Address;
+			filename : ARRAY OF CHAR;
+			size : SysTypes.Size);
+
+END SMStreams.

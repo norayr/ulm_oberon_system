@@ -1,0 +1,116 @@
+FTPUnixFileSystems(3)         Ulm's Oberon System        FTPUnixFileSystems(3)
+
+
+
+[1mNAME[0m
+       FTPUnixFileSystems - present selected UNIX file hierarchy for FTP
+
+[1mSYNOPSIS[0m
+       PROCEDURE AddHandler(session: FTPSessions.Session; root: ARRAY OF CHAR);
+       PROCEDURE PermitUploads(session: FTPSessions.Session);
+       PROCEDURE PermitUpdates(session: FTPSessions.Session);
+
+
+[1mDESCRIPTION[0m
+       [4mFTPUnixFileSystems[24m  provides a handler for [4mFTPSessions(3)[24m that presents
+       a selected file hierarchy of a UNIX file system for the FTP protocol.
+
+       [4mAddHandler[24m installs the support for following FTP commands  in  confor-
+       mance to RFC 959 that allows to access the directory designated by [4mroot[0m
+       and all sub-directories thereof.  A  pseudo  chroot  jail  on  base  of
+       [4mFTPUnixPaths(3)[24m  is  established  that  maps ``..'' of [4mroot[24m to [4mroot[24m and
+       interpretes all symbolic links below [4mroot[24m relative to [4mroot[24m.
+
+       By default, read-only access is provided that may be extended by [4mPermi-[0m
+       [4mtUploads[24m which allows non-destructive uploads that prohibit any changes
+       of existing files and [4mPermitUpdates[24m that  enables  unrestricted  access
+       (inside the pseudo chroot jail).
+
+       Following FTP commands are handled:
+
+       ·      [4mFTPCommands.allo[24m  is  responded  by a short message that [1mALLO [22mis
+              obsolete.
+
+       ·      [4mFTPCommands.appe[24m and [4mFTPCommands.stor[24m are supported, if  permit-
+              ted.
+
+       ·      [4mFTPCommands.cdup[24m  is equivalent to [4mFTPCommands.cwd[24m with an argu-
+              ment of ``..''.
+
+       ·      [4mFTPCommands.cwd[24m changes the current directory of a  FTP  session
+              (but not that of the server process).
+
+       ·      [4mFTPCommands.list[24m  and  [4mFTPCommands.nlst[24m:  Directory  listings on
+              base of [4mFTPUnixDirLister(3)[24m.
+
+       ·      [4mFTPCommands.mdtm[24m and [4mFTPCommands.size[24m: File attribute  inquiries
+              in  conformance  to  ``Extensions to FTP'' by the FTPEXT Working
+              Group   of   the   IETF,    see    [1mhttp://www.ietf.org/internet-[0m
+              [1mdrafts/draft-ietf-ftpext-mlst-12.txt[22m.
+
+       ·      [4mFTPCommands.mkd[24m and [4mFTPCommands.rmd[24m are supported, if permitted.
+
+       ·      [4mFTPCommands.mode[24m: The only  supported  transfer  mode  is  ``S''
+              (stream mode).
+
+       ·      [4mFTPCommands.pwd[24m:  Prints  the current working directory as abso-
+              lute path (beginning with ``/'') that is interpreted relative to
+              [4mroot[24m.
+
+       ·      [4mFTPCommands.rnfr[24m  and  [4mFTPCommands.rnto[24m are supported in case of
+              unrestricted write access ([4mPermitUpdates[24m).
+
+       ·      [4mFTPCommands.rest[24m: File positions beside [1m0 [22mare accepted in binary
+              mode only.
+
+       ·      [4mFTPCommands.stru[24m:  The  only  supported  file structure is ``F''
+              (text file).
+
+       ·      [4mFTPCommands.syst[24m is answered with ``UNIX Type: L8''.
+
+       ·      [4mFTPCommands.type[24m: The only accepted transfer  types  are  ``A'',
+              ``A  N'' (ASCII mode with LF to CR-LF conversion or vice-versa),
+              ``I'', and ``L 8'' (binary mode without conversions).
+
+       ·      [4mFTPCommands.xcup[24m,  [4mFTPCommands.xcwd[24m,  [4mFTPCommands.xmkd[24m,  [4mFTPCom-[0m
+              [4mmands.xpwd[24m, [4mFTPCommands.xrmd[24m are supported in conformance to RFC
+              775 and equivalent to their counterparts of RFC 959.
+
+[1mDIAGNOSTICS[0m
+       [4mFTPUnixFileSystems[24m does not  generate  error  events  on  its  own  but
+       relates  all  error  events  to [4msession[24m where they may be evaluated and
+       logged later by [4mFTPLoggers(3)[24m and [4mFTPLogPrinter(3)[24m.
+
+[1mSECURITY CONSIDERATIONS[0m
+       "/" should never be passed to [4mroot[24m. This enables otherwise a large num-
+       ber  of attacks on various devices in [1m/dev [22mor conflicts with other pro-
+       cesses in directories like [1m/tmp [22mthat are  writable  for  everybody.  In
+       general,  [4mroot[24m  should  be  restricted to private sub-directories where
+       information leaks provide no security threat and uploaded files are not
+       considered  as executable files or program text without further checks.
+       Even read-only accesses to home directories are  to  be  considered  as
+       dangerous  as  they  open  access to otherwise secret informations like
+       [1m.ssh/identity [22m(see [4mssh(1)[24m).  [4mAddHandler[24m, however, accepts  anything  as
+       [4mroot[24m.
+
+       All response texts generated by [4mFTPUnixFileSystems[24m avoid leakage of the
+       path of [4mroot[24m and detailed error messages that are directly derived from
+       error  events. Instead all pathnames are presented relative to [4mroot[24m and
+       standard error messages are given in case of  failures.  More  informa-
+       tions may be taken from the logs.
+
+       The  security considerations of [4mFTPUnixDirLister(3)[24m and [4mFTPUnixPaths(3)[0m
+       apply.
+
+[1mSEE ALSO[0m
+       [4mFTPDataStreams(3)[24m     implementation of FTP data channels
+       [4mFTPUnixDirLister(3)[24m   built-in generation of directory and  file  list-
+                             ings
+       [4mFTPUnixPaths(3)[24m       support of pseudo chroot jail
+
+[1mBUGS[0m
+       [4mFTPCommands.stou[24m is not yet implemented.
+
+
+
+Release 0.5                Last change: 10 July 2003     FTPUnixFileSystems(3)

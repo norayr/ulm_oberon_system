@@ -1,0 +1,124 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysUname.om,v 1.1 2001/03/07 17:29:06 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysUname.om,v $
+   Revision 1.1  2001/03/07 17:29:06  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysUname;
+
+   IMPORT RelatedEvents, Sys, SYS := SYSTEM, SysConversions, SysErrors;
+
+   (* this implementation assumes that the strings returned by uname(2)
+      do not change during the lifetime of a process
+   *)
+
+   CONST
+      namelen = 65; (* see _SYS_NMLN in /usr/include/sys/utsname.h *)
+      cstructsize = namelen * 6;
+   TYPE
+      CStruct = ARRAY cstructsize OF CHAR;
+   CONST
+      buflen = SYS.SIZE(CStruct); (* like cstructsize but aligned *)
+   TYPE
+      Buffer = ARRAY buflen OF CHAR;
+      Name = ARRAY namelen OF CHAR;
+      UTSname =
+	 RECORD
+	    sysname, nodename, release, version, machine: Name;
+	 END;
+   VAR
+      initialized: BOOLEAN;
+      utsname: UTSname;
+
+   (* === private procedures ============================================ *)
+
+   PROCEDURE Uname(VAR name: UTSname);
+      VAR
+	 buffer: Buffer;
+	 d0, d1: INTEGER;
+
+      PROCEDURE Get (VAR n : Name; idx : INTEGER);
+         VAR
+	    i : INTEGER;
+      BEGIN
+         i := 0;
+         idx := idx * namelen;
+	 WHILE i < namelen DO
+	    n[i] := buffer[idx+i];
+	    INC (i);
+	 END;
+      END Get;
+
+   BEGIN
+      IF SYS.UNIXCALL(Sys.newuname, d0, d1, SYS.ADR(buffer)) THEN
+         Get (name.sysname, 0);
+	 Get (name.nodename, 1);
+	 Get (name.release, 2);
+	 Get (name.version, 3);
+	 Get (name.machine, 4);
+      ELSE
+	 SysErrors.Raise(NIL, d0, Sys.uname, "");
+	 name.sysname := ""; name.nodename := "";
+	 name.release := ""; name.version := "";
+	 name.machine := "";
+      END;
+   END Uname;
+
+   PROCEDURE Init;
+   BEGIN
+      IF initialized THEN RETURN END; initialized := TRUE;
+      Uname(utsname);
+   END Init;
+
+   (* === exported procedures =========================================== *)
+
+   PROCEDURE GetSysName(VAR name: ARRAY OF CHAR);
+   BEGIN
+      Init; COPY(utsname.sysname, name);
+   END GetSysName;
+
+   PROCEDURE GetNodeName(VAR name: ARRAY OF CHAR);
+   BEGIN
+      Init; COPY(utsname.nodename, name);
+   END GetNodeName;
+
+   PROCEDURE GetRelease(VAR name: ARRAY OF CHAR);
+   BEGIN
+      Init; COPY(utsname.release, name);
+   END GetRelease;
+
+   PROCEDURE GetVersion(VAR name: ARRAY OF CHAR);
+   BEGIN
+      Init; COPY(utsname.version, name);
+   END GetVersion;
+
+   PROCEDURE GetMachine(VAR name: ARRAY OF CHAR);
+   BEGIN
+      Init; COPY(utsname.machine, name);
+   END GetMachine;
+
+BEGIN
+   initialized := FALSE;
+END SysUname.

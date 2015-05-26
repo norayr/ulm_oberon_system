@@ -1,0 +1,232 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XAtoms.om,v 1.1 2005/04/08 16:37:22 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XAtoms.om,v $
+   Revision 1.1  2005/04/08 16:37:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XAtoms;
+
+   IMPORT ConstStrings, Disciplines, XDisplays, XObjects;
+
+   TYPE
+      Atom = POINTER TO AtomRec;
+      AtomRec =
+	 RECORD
+	    (XObjects.ObjectRec)
+	    id: XDisplays.AtomID;
+	    name: ConstStrings.String;
+	    next: Atom;
+	 END;
+
+   CONST
+      hashtablen = 512;
+   TYPE
+      BucketTable = ARRAY hashtablen OF Atom;
+      DisplayDiscipline = POINTER TO DisplayDisciplineRec;
+      DisplayDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    domain: ConstStrings.Domain;
+	    array: XObjects.Array;
+	    bucket: BucketTable;
+	 END;
+   VAR
+      ddid: Disciplines.Identifier;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE CreateAtom(VAR atom: Atom;
+			dd: DisplayDiscipline;
+                        id: XDisplays.AtomID;
+			name: ARRAY OF CHAR);
+      VAR
+	 cs: ConstStrings.String;
+	 hashval: INTEGER;
+   BEGIN
+      ConstStrings.CreateD(cs, dd.domain, name);
+      NEW(atom); XObjects.Init(atom, id);
+      atom.name := cs; atom.id := id;
+      hashval := SHORT(cs.hashval MOD hashtablen);
+      atom.next := dd.bucket[hashval];
+      dd.bucket[hashval] := atom;
+      XObjects.Add(dd.array, atom);
+   END CreateAtom;
+
+
+   PROCEDURE GetDisplayDiscipline(display: XDisplays.Display;
+                                  VAR dd: DisplayDiscipline);
+      VAR
+	 index: INTEGER;
+
+      PROCEDURE Pre(name: ARRAY OF CHAR; id: XDisplays.AtomID);
+	 VAR
+	    atom: Atom;
+      BEGIN
+	 CreateAtom(atom, dd, id, name);
+      END Pre;
+
+      PROCEDURE InitPredefinedAtoms;
+      BEGIN
+	 Pre("PRIMARY", 1);
+	 Pre("SECONDARY", 2);
+	 Pre("ARC", 3);
+	 Pre("ATOM", 4);
+	 Pre("BITMAP", 5);
+	 Pre("CARDINAL", 6);
+	 Pre("COLORMAP", 7);
+	 Pre("CURSOR", 8);
+	 Pre("CUT_BUFFER0", 9);
+	 Pre("CUT_BUFFER1", 10);
+	 Pre("CUT_BUFFER2", 11);
+	 Pre("CUT_BUFFER3", 12);
+	 Pre("CUT_BUFFER4", 13);
+	 Pre("CUT_BUFFER5", 14);
+	 Pre("CUT_BUFFER6", 15);
+	 Pre("CUT_BUFFER7", 16);
+	 Pre("DRAWABLE", 17);
+	 Pre("FONT", 18);
+	 Pre("INTEGER", 19);
+	 Pre("PIXMAP", 20);
+	 Pre("POINT", 21);
+	 Pre("RECTANGLE", 22);
+	 Pre("RESOURCE_MANAGER", 23);
+	 Pre("RGB_COLOR_MAP", 24);
+	 Pre("RGB_BEST_MAP", 25);
+	 Pre("RGB_BLUE_MAP", 26);
+	 Pre("RGB_DEFAULT_MAP", 27);
+	 Pre("RGB_GRAY_MAP", 28);
+	 Pre("RGB_GREEN_MAP", 29);
+	 Pre("RGB_RED_MAP", 30);
+	 Pre("STRING", 31);
+	 Pre("VISUALID", 32);
+	 Pre("WINDOW", 33);
+	 Pre("WM_COMMAND", 34);
+	 Pre("WM_HINTS", 35);
+	 Pre("WM_CLIENT_MACHINE", 36);
+	 Pre("WM_ICON_NAME", 37);
+	 Pre("WM_ICON_SIZE", 38);
+	 Pre("WM_NAME", 39);
+	 Pre("WM_NORMAL_HINTS", 40);
+	 Pre("WM_SIZE_HINTS", 41);
+	 Pre("WM_ZOOM_HINTS", 42);
+	 Pre("MIN_SPACE", 43);
+	 Pre("NORM_SPACE", 44);
+	 Pre("MAX_SPACE", 45);
+	 Pre("END_SPACE", 46);
+	 Pre("SUPERSCRIPT_X", 47);
+	 Pre("SUPERSCRIPT_Y", 48);
+	 Pre("SUBSCRIPT_X", 49);
+	 Pre("SUBSCRIPT_Y", 50);
+	 Pre("UNDERLINE_POSITION", 51);
+	 Pre("UNDERLINE_THICKNESS", 52);
+	 Pre("STRIKEOUT_ASCENT", 53);
+	 Pre("STRIKEOUT_DESCENT", 54);
+	 Pre("ITALIC_ANGLE", 55);
+	 Pre("X_HEIGHT", 56);
+	 Pre("QUAD_WIDTH", 57);
+	 Pre("WEIGHT", 58);
+	 Pre("POINT_SIZE", 59);
+	 Pre("RESOLUTION", 60);
+	 Pre("COPYRIGHT", 61);
+	 Pre("NOTICE", 62);
+	 Pre("FONT_NAME", 63);
+	 Pre("FAMILY_NAME", 64);
+	 Pre("FULL_NAME", 65);
+	 Pre("CAP_HEIGHT", 66);
+	 Pre("WM_CLASS", 67);
+	 Pre("WM_TRANSIENT_FOR", 68);
+      END InitPredefinedAtoms;
+
+   BEGIN (* GetDisplayDiscipline *)
+      IF ~Disciplines.Seek(display, ddid, dd) THEN
+	 NEW(dd); dd.id := ddid;
+	 ConstStrings.CreateDomain(dd.domain);
+	 XObjects.CreateArray(dd.array, 0, 0);
+	 index := 0;
+	 WHILE index < hashtablen DO
+	    dd.bucket[index] := NIL;
+	    INC(index);
+	 END;
+	 InitPredefinedAtoms;
+	 Disciplines.Add(display, dd);
+      END;
+   END GetDisplayDiscipline;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE LookupByID(display: XDisplays.Display;
+                        id: XDisplays.AtomID;
+			VAR atom: Atom) : BOOLEAN;
+      VAR
+	 dd: DisplayDiscipline;
+	 name: ARRAY 512 OF CHAR;
+	 cs: ConstStrings.String;
+   BEGIN
+      GetDisplayDiscipline(display, dd);
+      IF ~XObjects.Lookup(dd.array, id, atom) THEN
+	 IF ~XDisplays.GetAtomName(display, id, name) THEN
+	    RETURN FALSE
+	 END;
+	 CreateAtom(atom, dd, id, name);
+      END;
+      RETURN TRUE
+   END LookupByID;
+
+   PROCEDURE LookupByName(display: XDisplays.Display;
+                          name: ARRAY OF CHAR;
+			  onlyIfExists: BOOLEAN;
+			  VAR atom: Atom) : BOOLEAN;
+      VAR
+	 dd: DisplayDiscipline;
+	 cs: ConstStrings.String;
+	 hashval: INTEGER;
+	 a: Atom;
+	 id: XDisplays.AtomID;
+   BEGIN
+      GetDisplayDiscipline(display, dd);
+      ConstStrings.CreateD(cs, dd.domain, name);
+      hashval := SHORT(cs.hashval MOD hashtablen);
+      a := dd.bucket[hashval];
+      WHILE (a # NIL) & (a.name # cs) DO
+	 a := a.next;
+      END;
+      IF a = NIL THEN
+	 IF ~XDisplays.InternAtom(display, name, onlyIfExists, id) THEN
+	    RETURN FALSE
+	 END;
+	 CreateAtom(a, dd, id, name);
+      END;
+      atom := a;
+      RETURN TRUE
+   END LookupByName;
+
+   PROCEDURE GetName(atom: Atom; VAR name: ARRAY OF CHAR);
+   BEGIN
+      ConstStrings.Extract(name, atom.name);
+   END GetName;
+
+BEGIN
+   ddid := Disciplines.Unique();
+END XAtoms.

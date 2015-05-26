@@ -1,0 +1,475 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixFiles.om,v 1.3 1995/01/04 17:02:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixFiles.om,v $
+   Revision 1.3  1995/01/04  17:02:03  borchert
+   support of Services added
+
+   Revision 1.2  1994/07/05  13:08:58  borchert
+   UnixFiles blocks now the current task instead of the current process
+   Streams.stdin/Streams.stdout get only tied if they are line buffered
+
+   Revision 1.1  1994/02/23  07:27:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 6/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixFiles;
+
+   IMPORT Clocks, Conditions, Events, Priorities, RelatedEvents,
+      Services, StreamConditions, Streams, SYS := SYSTEM, SysErrors, SysIO,
+      SysSockets, SysStat, SysTypes, Tasks, TimeConditions, Times,
+      UnixFileConditions;
+
+   (* this module sets Streams.stdin, Streams.stdout, and Streams.stderr
+      during initialization
+   *)
+
+   CONST
+      illegalMode = 0; (* mode doesn't equal one of legal modes given below *)
+      invalidFd = 1; (* invalid file descriptor given to OpenFd *)
+      errorcodes = 2;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   CONST
+      (* standard file descriptors *)
+      stdin = 0;
+      stdout = 1;
+      stderr = 2;
+
+   CONST read = 0; write = 1; rdwr = 2; create = 4; condcreate = 8;
+   TYPE Mode = SHORTINT; (* read, write, rdwr,
+			    read+create, write+create, rdwr+create,
+			    read+condcreate, write+condcreate, rdwr+condcreate
+			 *)
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    file: SysTypes.File;  (* (read-only) associated file descriptor *)
+	    interrupted: BOOLEAN; (* EINTR for last operation? *)
+	    retry: BOOLEAN; (* retry on interrupts? *)
+	    (* private part *)
+	    if: Streams.Interface;
+	    readCond, writeCond: Conditions.Condition;
+	    exceptions: RelatedEvents.Object;
+	       (* queue events here and decice then whether to
+		  propagate them or not
+	       *)
+	    wouldblock: BOOLEAN;
+	    blocking: BOOLEAN;
+	 END;
+
+   VAR
+      if: Streams.Interface;
+      type: Services.Type; (* UnixFiles.Stream *)
+
+   (* ==== private procedures ===================================== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.SetPriority(error, Priorities.liberrors);
+      errormsg[illegalMode] := "illegal opening mode";
+      errormsg[invalidFd] := "invalid file descriptor";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(from, queue);
+      RelatedEvents.AppendQueue(to, queue);
+   END ForwardErrors;
+
+   PROCEDURE WouldBlock(errors: RelatedEvents.Object) : BOOLEAN;
+      (* check for error messages which indicate that the operation
+	 would block (we set all our fds in non-blocking mode) and
+	 remove them
+      *)
+      VAR
+	 event: Events.Event;
+	 p, prev, queue: RelatedEvents.Queue;
+	 wouldblock: BOOLEAN; removed: BOOLEAN;
+   BEGIN
+      wouldblock := FALSE;
+      RelatedEvents.GetQueue(errors, queue);
+      p := queue; prev := NIL; removed := FALSE;
+      WHILE p # NIL DO
+	 IF p.event IS SysErrors.Event THEN
+	    event := p.event;
+	    WITH event: SysErrors.Event DO
+	       IF (event.errno = SysErrors.wouldblock) OR
+		     (event.errno = SysErrors.again) OR
+		     (event.errno = SysErrors.inprogress) THEN
+		  wouldblock := TRUE;
+		  IF prev = NIL THEN
+		     queue := p.next;
+		  ELSE
+		     prev.next := p.next;
+		  END;
+		  removed := TRUE;
+	       END;
+	    END;
+	 END;
+	 IF removed THEN
+	    removed := FALSE;
+	 ELSE
+	    prev := p;
+	 END;
+	 p := p.next;
+      END;
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN wouldblock
+   END WouldBlock;
+
+   (* ==== interface procedures =================================== *)
+
+   PROCEDURE ReadBuf(s: Streams.Stream; buf: SysTypes.Address;
+		     cnt: SysTypes.Count) : SysTypes.Count;
+      VAR
+	 count: SysTypes.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.blocking THEN
+	    Tasks.WaitFor(s.readCond);
+	 END;
+	 LOOP
+	    count := SysIO.Read(s.file, buf, cnt, s.exceptions,
+				s.retry, s.interrupted);
+	    IF (count >= 0) OR ~WouldBlock(s.exceptions) THEN
+	       ForwardErrors(s.exceptions, s);
+	       RETURN count
+	    END;
+	    Tasks.WaitFor(s.readCond);
+	 END;
+      END;
+   END ReadBuf;
+
+   PROCEDURE WriteBuf(s: Streams.Stream; buf: SysTypes.Address;
+		      cnt: SysTypes.Count) : SysTypes.Count;
+      VAR
+	 count: SysTypes.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.blocking THEN
+	    Tasks.WaitFor(s.writeCond);
+	 END;
+	 LOOP
+	    count := SysIO.Write(s.file, buf, cnt,
+				 s.exceptions, s.retry, s.interrupted);
+	    IF (count >= 0) OR ~WouldBlock(s.exceptions) THEN
+	       ForwardErrors(s.exceptions, s);
+	       RETURN count
+	    END;
+	    Tasks.WaitFor(s.writeCond);
+	 END;
+      END;
+   END WriteBuf;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+      VAR
+	 count: SysTypes.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.blocking THEN
+	    Tasks.WaitFor(s.readCond);
+	 END;
+	 LOOP
+	    count := SysIO.Read(s.file, SYS.ADR(byte), SYS.SIZE(BYTE),
+			        s.exceptions, s.retry, s.interrupted);
+	    IF count = SYS.SIZE(BYTE) THEN
+	       RETURN TRUE
+	    ELSIF ~WouldBlock(s.exceptions) THEN
+	       ForwardErrors(s.exceptions, s);
+	       RETURN FALSE
+	    END;
+	    Tasks.WaitFor(s.readCond);
+	 END;
+      END;
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+      VAR
+	 count: SysTypes.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.blocking THEN
+	    Tasks.WaitFor(s.writeCond);
+	 END;
+	 LOOP
+	    count := SysIO.Write(s.file, SYS.ADR(byte), SYS.SIZE(BYTE),
+			         s.exceptions, s.retry, s.interrupted);
+	    IF count = SYS.SIZE(BYTE) THEN
+	       RETURN TRUE
+	    ELSIF ~WouldBlock(s.exceptions) THEN
+	       ForwardErrors(s.exceptions, s);
+	       RETURN FALSE
+	    END;
+	    Tasks.WaitFor(s.writeCond);
+	 END;
+      END;
+   END Write;
+
+   PROCEDURE Seek(s: Streams.Stream;
+		  offset: SysTypes.Count; whence: Streams.Whence) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 RETURN SysIO.Seek(s.file, offset, whence, s)
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR offset: SysTypes.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 RETURN SysIO.Tell(s.file, offset, s)
+      END;
+   END Tell;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 RETURN SysIO.Close(s.file, s, s.retry, s.interrupted)
+      END;
+   END Close;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Stream DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+	       UnixFileConditions.Create(msg.condition,
+					 s, s.file, msg.operation);
+	       msg.stream := s;
+	       msg.msgProcessed := TRUE;
+	    END;
+	 ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       msg.wouldblock := ~UnixFileConditions.Test(
+				    s, s.file, msg.operation, msg.errors);
+	       msg.msgProcessed := TRUE;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   PROCEDURE InitIF(VAR fileIF: Streams.Interface);
+   BEGIN
+      NEW(fileIF);
+      fileIF.addrread := ReadBuf;
+      fileIF.addrwrite := WriteBuf;
+      fileIF.read := Read;
+      fileIF.write := Write;
+      fileIF.seek := Seek;
+      fileIF.tell := Tell;
+      fileIF.close := Close;
+      fileIF.handler := Handler;
+   END InitIF;
+
+   (* ============ exported procedures ============================== *)
+
+   PROCEDURE OpenFd(VAR s: Streams.Stream; fd: SysTypes.File;
+		    mode: Mode; bufmode: Streams.BufMode;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 caps: Streams.CapabilitySet;
+	 newfile: Stream;
+	 statbuf: SysStat.StatRec;
+	 flags: SET;
+
+      PROCEDURE Seekable(fd: SysIO.File) : BOOLEAN;
+	 VAR
+	    filetype: SET;
+      BEGIN
+	 IF SysIO.Isatty(fd) THEN
+	    RETURN FALSE
+	 END;
+	 filetype := statbuf.mode * SysStat.type;
+	 RETURN (filetype # SysStat.fifo) & (filetype # SysStat.socket)
+      END Seekable;
+
+   BEGIN
+      IF ~SysStat.Fstat(fd, statbuf, errors) THEN
+	 Error(errors, invalidFd); RETURN FALSE
+      END;
+      caps := {Streams.addrio, Streams.close, Streams.handler};
+      CASE mode OF
+      | read:  INCL(caps, Streams.read);
+      | write: INCL(caps, Streams.write);
+      | rdwr:  caps := caps + {Streams.read, Streams.write};
+      ELSE
+	 Error(errors, illegalMode); RETURN FALSE
+      END;
+      IF Seekable(fd) THEN
+	 caps := caps + {Streams.seek, Streams.tell, Streams.holes};
+      END;
+      NEW(newfile);
+      Services.Init(newfile, type);
+      Streams.Init(newfile, if, caps, bufmode);
+      newfile.file := fd; newfile.if := if;
+      newfile.interrupted := FALSE; newfile.retry := TRUE;
+      IF (mode = read) OR (mode = rdwr) THEN
+	 UnixFileConditions.Create(newfile.readCond, NIL, fd,
+	    StreamConditions.read);
+      END;
+      IF (mode = write) OR (mode = rdwr) THEN
+	 UnixFileConditions.Create(newfile.writeCond, NIL, fd,
+	    StreamConditions.write);
+      END;
+      (* we don't enforce nonblocking mode here because the fd
+	 may be inherited from our parent process (eg the shell)
+	 which may come into trouble in case of non-blocking IO
+	 (eg the shell would just exit)
+      *)
+      newfile.blocking := ~SysIO.FcntlGet(fd, SysIO.getfl, flags, errors) OR
+		          (SysIO.ndelay * flags = {});
+      RelatedEvents.QueueEvents(newfile);
+      NEW(newfile.exceptions); RelatedEvents.QueueEvents(newfile.exceptions);
+      s := newfile;
+      RETURN TRUE
+   END OpenFd;
+
+   PROCEDURE Open(VAR s: Streams.Stream; filename: ARRAY OF CHAR;
+		  mode: Mode; bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* filename must be 0X-terminated *)
+      CONST
+	 rwrwrw = 1B6H; (* rw-rw-rw- = 666B *)
+	 accessMask = 4;
+      VAR
+	 fd: SysIO.File;
+	 interrupted: BOOLEAN;
+	 createFile: BOOLEAN;
+	 condcreateFile: BOOLEAN;
+	 modes: SET;
+	 accessMode, openMode: Mode;
+	 createModes: SET;
+	 flags: SET;
+   BEGIN
+      accessMode := mode MOD accessMask;
+      openMode := mode - accessMode;
+
+      CASE openMode OF
+      | 0:           createFile := FALSE; condcreateFile := FALSE;
+      | create:      createFile := TRUE; condcreateFile := FALSE;
+      | condcreate:  createFile := FALSE; condcreateFile := TRUE;
+      ELSE
+	 Error(errors, illegalMode); RETURN FALSE
+      END;
+
+      filename[LEN(filename)-1] := 0X; (* at least now we have a 0X *)
+      CASE accessMode OF
+      | write: modes := SysIO.wronly;
+      | read:  modes := SysIO.rdonly;
+      | rdwr:  modes := SysIO.rdwr;
+      ELSE
+	 Error(errors, illegalMode); RETURN FALSE
+      END;
+      createModes := {};
+      IF createFile THEN
+	 createModes := SysIO.creat + SysIO.trunc;
+      ELSIF condcreateFile THEN
+	 createModes := SysIO.creat;
+      END;
+      IF createModes # {} THEN
+	 IF ~SysIO.OpenCreat(fd, filename,
+	                     modes + createModes, rwrwrw,
+			     errors, (* retry = *) TRUE, interrupted) THEN
+	    RETURN FALSE
+	 END;
+      ELSE
+	 IF ~SysIO.Open(fd, filename, modes,
+			errors, (* retry = *) TRUE, interrupted) THEN
+	    RETURN FALSE
+	 END;
+      END;
+      IF ~SysIO.Isatty(fd) &
+	       (* don't set tty devices into non-blocking mode;
+		  this leads to troubles for shells and other programs
+		  using this tty later
+	       *)
+	    SysIO.FcntlGet(fd, SysIO.getfl, flags, errors) &
+	    SysIO.FcntlSet(fd, SysIO.setfl, flags + SysIO.ndelay,
+			   errors, (* retry = *) TRUE, interrupted) THEN
+	 (* fd is now non-blocking, blocking system calls will
+	    now return SysErrors.wouldblock OR SysErrors.again
+	 *)
+      END;
+      RETURN OpenFd(s, fd, accessMode, bufmode, errors)
+   END Open;
+
+   PROCEDURE InitStd;
+
+      PROCEDURE Connect(VAR s: Streams.Stream; fd: SysTypes.File; mode: Mode);
+	 VAR
+	    bufmode: Streams.BufMode;
+	    news: Stream;
+      BEGIN
+	 IF (fd = stderr) OR SysIO.Isatty(fd) THEN
+	    bufmode := Streams.linebuf;
+	 ELSE
+	    bufmode := Streams.onebuf;
+	 END;
+	 IF OpenFd(news, fd, mode, bufmode, NIL) THEN
+	    s := news;
+	 END;
+      END Connect;
+
+   BEGIN
+      Connect(Streams.stdin, stdin, rdwr);
+      Connect(Streams.stdout, stdout, rdwr);
+      Connect(Streams.stderr, stderr, write);
+      IF (Streams.GetBufMode(Streams.stdin) = Streams.linebuf) &
+	    (Streams.GetBufMode(Streams.stdout) = Streams.linebuf) THEN
+	 Streams.Tie(Streams.stdin, Streams.stdout);
+      END;
+   END InitStd;
+
+BEGIN
+   InitErrorHandling;
+   InitIF(if);
+   Services.CreateType(type, "UnixFiles.Stream", "Streams.Stream");
+   InitStd;
+END UnixFiles.

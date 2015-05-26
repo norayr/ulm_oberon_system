@@ -1,0 +1,75 @@
+UnixDirectories(3)        Ulm's Oberon System:  Sun 3       UnixDirectories(3)
+
+
+
+[1mNAME[0m
+       UnixDirectories - read UNIX directory entries
+
+[1mSYNOPSIS[0m
+       CONST dirsize = 255; (* BSD file system *)
+       CONST namelength = dirsize+1;
+       TYPE FileName = ARRAY namelength OF CHAR;
+       TYPE Inode = LONGINT;
+       TYPE Entry =
+          RECORD
+             inode: Inode;
+             name: FileName;
+          END;
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE StreamRec = RECORD (Streams.StreamRec) END;
+       PROCEDURE Open(VAR dir: Streams.Stream; dirname: ARRAY OF CHAR;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mUnixDirectories[24m  is  an  interface for reading directory entries.  [4mOpen[0m
+       opens directory [4mdirname[24m for reading ([4mdirname[24m  must  be  0X-terminated).
+       The stream is unbuffered and positions in the sense of [4mStreams.Seek[24m and
+       [4mStreams.Tell[24m are not necessarily byte positions.  Thus, only  positions
+       returned  by  [4mStreams.Tell[24m  are valid parameters of [4mStreams.Seek[24m.  [4mOpen[0m
+       returns [1mFALSE [22mif [4mdirname[24m cannot be opened or if [4mdirname[24m is not a direc-
+       tory (some implementations check for this).  The stream returns records
+       of type [4mEntry[24m.
+
+
+[1mEXAMPLE[0m
+       Following example prints all the filenames of the given directory:
+
+       PROCEDURE ListFiles(dirname: ARRAY OF CHAR);
+          VAR
+             dir: Streams.Stream;
+             entry: UnixDirectories.Entry;
+       BEGIN
+          IF UnixDirectories.Open(dir, dirname, NIL) THEN
+             WHILE Streams.Read(dir, entry) DO
+             Write.Line(entry.name);
+             END;
+             Streams.Release(dir);
+          ELSE
+             (* cannot open dirname *)
+          END;
+       END ListFiles;
+
+
+[1mDIAGNOSTICS[0m
+       Errors during the access of the stream are  converted  into  events  of
+       [4mRelatedEvents(3)[24m.  By default, these events are being queued.
+
+       During the initialization time, [4mUnixDirectories[24m checks several internal
+       conversion formats of [4mSysConversions(3)[24m against record  sizes  as  com-
+       puted by the compiler.
+
+[1mSEE ALSO[0m
+       [4mRelatedEvents(3)[24m   handling of error events
+       [4mScanDir(3)[24m         scan directory by use of wildcards
+       [4mStreams(3)[24m         stream operations
+
+[1mBUGS[0m
+       Not  every implementation of [4mOpen[24m checks [4mdirname[24m for being a directory.
+
+       The constant [4mdirsize[24m and the field components of [4mEntry[24m with the  excep-
+       tion of [4mname[24m depend on the UNIX version.
+
+
+
+Release 0.5                Last change: 10 July 2003        UnixDirectories(3)

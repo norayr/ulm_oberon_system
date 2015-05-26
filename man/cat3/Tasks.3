@@ -1,0 +1,183 @@
+Tasks(3)                      Ulm's Oberon System                     Tasks(3)
+
+
+
+[1mNAME[0m
+       Tasks - general task management
+
+[1mSYNOPSIS[0m
+       CONST taskGroupMismatch = 0;
+       CONST dispatchTerminatedTask = 1;
+       CONST wrongScheduler = 2;
+       CONST invalidSet = 3;
+       CONST errorcodes = 4;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       TYPE Task = POINTER TO TaskRec;
+       TYPE TaskRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE TaskGroup = POINTER TO TaskGroupRec;
+       TYPE TaskGroupRec = RECORD (Disciplines.ObjectRec) END;
+
+       (* codes returned by the dispatch procedure *)
+       CONST terminate = 0;
+       CONST suspend = 1;
+       CONST waitfor = 2;
+
+       TYPE CreateProc = PROCEDURE (VAR task: Task; cr: Coroutines.Coroutine);
+
+       PROCEDURE Current() : Task;
+       PROCEDURE CurrentGroup() : TaskGroup;
+
+       PROCEDURE InitGroup(tg: TaskGroup);
+       PROCEDURE Init(task: Task; cr: Coroutines.Coroutine; tg: TaskGroup);
+       PROCEDURE Dispatch(tg: TaskGroup; task: Task;
+                          setOfTrueConditions: Conditions.ConditionSet;
+                          VAR code: SHORTINT;
+                          VAR conditionSet: Conditions.ConditionSet);
+
+       PROCEDURE Suspend;
+       PROCEDURE Select(conditionSet: Conditions.ConditionSet;
+                        VAR setOfTrueConditions: Conditions.ConditionSet);
+       PROCEDURE WaitForOneOf(conditionSet: Conditions.ConditionSet);
+       PROCEDURE WaitFor(condition: Conditions.Condition);
+       PROCEDURE Terminate;
+       PROCEDURE Disconnect;
+
+       PROCEDURE Create(VAR task: Task; cr: Coroutines.Coroutine);
+       PROCEDURE SetupDefaultGroup(create: CreateProc);
+
+
+[1mDESCRIPTION[0m
+       [4mTasks[24m  offers  synchronisation  primitives  for  tasks and is a general
+       interface for task schedulers.  Each task is represented by a coroutine
+       which is free to use and to create other coroutines which do not corre-
+       spond necessarily to a [4mTask[24m.  Tasks are organized in  groups  and  each
+       group  is controlled by a scheduler.  The scheduler itself belongs to a
+       task of another group.  Thus, multiple and  concurrent  schedulers  are
+       possible.
+
+   [1mTask primitives[0m
+       Tasks  are  not  created  by  [4mTasks[24m  directly but by one of the running
+       schedulers.  Because these schedulers  are  not  always  known  or  the
+       choice  of  a  scheduler does not matter, [4mTasks[24m supports a default task
+       group.  This default task group may be announced  by  [4mSetupDefaultGroup[0m
+       (this  is  currently  done by [4mSysMain(3)[24m).  [4mCreate[24m causes then [4mcr[24m to be
+       passed to the [4mcreate[24m interface procedure which is expected to create  a
+       new  task for [4mcr[24m which is returned in [4mtask[24m.  All tasks created via [4mcre-[0m
+       [4mate[24m should belong to one default task group which is a  direct  descen-
+       dant of the main task group.
+
+       Tasks are in one of four states:
+       [4mready[24m        Tasks  in  this  state are ready to run.  Their associated
+                    scheduler decides  (via  [4mDispatch[24m)  when  this  task  will
+                    become active.  This is the initial state of newly created
+                    coroutines.
+       [4mrunning[24m      The state of the currently running coroutine.  This  state
+                    is  only  left  by  one of the primitives [4mSelect[24m, [4mWaitFor[24m,
+                    [4mWaitForOneOf[24m, [4mSuspend[24m, or [4mTerminate[24m.
+       [4mwaiting[24m      Tasks which are waiting for conditions to become [1mTRUE  [22mare
+                    in this state.
+       [4mterminated[24m   This  is  the final state which is reached only by calling
+                    [4mTerminate[24m or [4mDisconnect[24m by the coroutine itself.
+
+       [4mSelect[24m, [4mWaitForOneOf[24m, and [4mWaitFor[24m cause a state transition from [4mrunning[0m
+       to  [4mwaiting[24m  until one of the given conditions becomes [1mTRUE [22m(see [4mCondi-[0m
+       [4mtions(3)[24m).  Then the state will change from [4mwaiting[24m to  [4mready[24m.   [4mSelect[0m
+       returns  the  set of true conditions in [4msetOfTrueConditions[24m.  Note that
+       neither [4mSelect[24m nor [4mWaitForOneOf[24m accept an empty condition set or [1mNIL[22m.
+
+       [4mSuspend[24m causes a state transition from [4mrunning[24m to [4mready[24m.
+
+       [4mTerminate[24m is the final point of no return of a  coroutine.   Note  that
+       the  procedure  body of a coroutine must not return and that coroutines
+       can only terminate themselves.
+
+       Alternatively, if [4mDisconnect[24m is used instead of [4mTerminate[24m, the task  is
+       still  considered terminated but the coroutine may be switched to again
+       and/or assigned to a new task.
+
+       [4mCurrent[24m returns the current task  and  [4mCurrentGroup[24m  the  current  task
+       group.
+
+   [1mSchedulers[0m
+       The main task group consists only of the main task which represents the
+       main coroutine (i.e. [4mCoroutines.main[24m).  The scheduler of the main  task
+       group  is  [1mNIL[22m,  i.e.  [4mTerminate[24m  causes  program  termination, [4mSuspend[0m
+       returns immediately and [4mSelect[24m, [4mWaitForOneOf[24m  and  [4mWaitFor[24m  pass  their
+       condition set (condition resp.) to [4mConditions.WaitFor[24m.
+
+       A scheduler (usually represented by a module) consists of three parts:
+
+       ·      initialization (i.e. creation of a new task group),
+
+       ·      setup  (at  least one task should be placed here in the new task
+              group), and
+
+       ·      the start of the scheduler.
+
+       Additionally, group members should be allowed to  create  new  members.
+       The procedure which represents the scheduler should return to the call-
+       ing procedure if all members are terminated but  should  not  terminate
+       itself.
+
+       A  new  task  group  is  to be initialized by [4mInitGroup[24m.  Note that the
+       allocation of [4mtg[24m is to be done in advance because most schedulers  need
+       an  extension  of [4mTaskGroup[24m.  The current task becomes the scheduler of
+       the new task group.
+
+       [4mInit[24m initializes a new task and associates it with a  coroutine  and  a
+       task  group.   The coroutine must have been created in advance but from
+       the viewpoint of [4mTasks[24m it does not matter  whether  the  coroutine  was
+       already  running  or not.  [4mInit[24m initializes the [4merrors[24m component of the
+       task and calls [4mRelatedEvents.QueueEvents[24m for it.  Task  related  errors
+       errors  should  be  related to the [4merrors[24m component instead to the task
+       itself.
+
+       The task which represents the scheduler is free to select  one  of  its
+       group  members  and  to  dispatch  it  by a call to [4mDispatch[24m.  [4mDispatch[0m
+       returns [4mcode[24m and, if [4mcode[24m equals [4mwaitfor[24m, the associated [4mconditionSet[24m:
+       [4mterminate[24m   requires the task to be removed from the  group,  i.e.  the
+                   task must not be dispatched again.
+       [4msuspend[24m     the  suspending task gratefully gives control to the sched-
+                   uler in the hope to become active again.
+       [4mwaitfor[24m     the suspending task waits for [4mconditionSet[24m.
+
+       [4mTerminate[24m, [4mSuspend[24m and [4mSelect[24m determine the return values  of  [4mDispatch[0m
+       ([4mcode[24m and [4mconditionSet[24m) and return to the scheduler of the current task
+       group.
+
+[1mDIAGNOSTICS[0m
+       Some of the possible errors lead to following error events:
+       [4mtaskGroupMismatch[24m        an error which is  generated  by  [4mDispatch[24m  if
+                                task and task group do not match.
+       [4mdispatchTerminatedTask[24m   is  generated if [4mDispatch[24m is called for a task
+                                which is already terminated.
+       [4mwrongScheduler[24m           is generated if  the  scheduler  of  the  task
+                                passed to [4mDispatch[24m is not the current task.
+       [4minvalidSet[24m               is raised if an empty condition set was passed
+                                to [4mSelect[24m or [4mWaitForOneOf[24m.
+       These events are passed to [4mRelatedEvents(3)[24m (and related  to  the  task
+       group)  which (by default) passes them to [4mEvents(3)[24m where they are ini-
+       tially  ignored.   Error  events  are  raised  with  priority   [4mPriori-[0m
+       [4mties.liberrors[24m.
+
+[1mSEE ALSO[0m
+       [4mConditions(3)[24m      general interface for conditions
+       [4mCoroutines(3)[24m      interface to coroutines
+       [4mEvents(3)[24m          event handling and priority system
+       [4mRelatedEvents(3)[24m   task  related events and errors which are related to
+                          the task group
+       [4mSchedulers(3)[24m      framework for schedulers
+       [4mSYSTEM(3)[24m          coroutine   primitives   [1mSYSTEM.CRSPAWN   [22mand   [1mSYS-[0m
+                          [1mTEM.CRSWITCH[0m
+
+
+
+Release 0.5                Last change: 3 June 2004                   Tasks(3)

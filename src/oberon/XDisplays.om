@@ -1,0 +1,4630 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2007 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XDisplays.om,v 1.1 2005/04/20 16:08:24 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: XDisplays.om,v $
+   Revision 1.1  2005/04/20 16:08:24  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XDisplays;
+
+   IMPORT ASCII, Conditions, Disciplines, DNSRecords, DNSResolvers,
+      DNSStdResolvers, Errors, EventConditions, Events, IPv4Addresses,
+      IPv4TCPSockets, Jobs, LocalSemaphores, MemOps, MemStreams, Objects,
+      RelatedEvents, Resources, Scan, Semaphores, Sets, Signals,
+      StreamConditions, Streams, Strings, SubStreams, SYS := SYSTEM, Tasks,
+      Types, UnixDomainSockets, UnixEnvironment, UnixHost, Write, XAuthority;
+
+   TYPE
+      Display = POINTER TO DisplayRec;
+
+   CONST
+      (* X event types *)
+      keyPress = 0;
+      keyRelease = 1;
+      buttonPress = 2;
+      buttonRelease = 3;
+      enterWindow = 4;
+      leaveWindow = 5;
+      pointerMotion = 6;
+      pointerMotionHint = 7;
+      button1Motion = 8;
+      button2Motion = 9;
+      button3Motion = 10;
+      button4Motion = 11;
+      button5Motion = 12;
+      buttonMotion = 13;
+      keymapState = 14;
+      exposure = 15;
+      visibilityChange = 16;
+      structureNotify = 17;
+      resizeRedirect = 18;
+      substructureNotify = 19;
+      substructureRedirect = 20;
+      focusChange = 21;
+      propertyChange = 22;
+      colormapChange = 23;
+      ownerGrabButton = 24;
+      eventTypes = 25;
+   TYPE
+      EventType = SHORTINT; (* keyPress .. eventTypes *)
+      EventTypeSet = SET; (* OF EventType *)
+      EventTypeName = ARRAY 32 OF CHAR;
+   VAR
+      eventTypeName: ARRAY eventTypes OF EventTypeName;
+
+   CONST
+      shiftKey = 0;
+      lockKey = 1;
+      controlKey = 2;
+      mod1Key = 3;
+      mod2Key = 4;
+      mod3Key = 5;
+      mod4Key = 6;
+      mod5Key = 7;
+      button1Key = 8;
+      button2Key = 9;
+      button3Key = 10;
+      button4Key = 11;
+      button5Key = 12;
+      specialKeys = 13;
+   TYPE
+      Key = SHORTINT; (* shiftKey .. button5Key *)
+      KeySet = SET; (* OF Key *)
+      KeyName = ARRAY 16 OF CHAR;
+   VAR
+      keyName: ARRAY specialKeys OF KeyName;
+
+   CONST
+      keys = 256;
+      setlen = keys DIV (MAX(SET) + 1);
+   TYPE
+      KeymapStateSet = ARRAY setlen OF SET;
+
+   TYPE
+      WindowID = Types.Int32;
+      PixmapID = Types.Int32;
+      DrawableID = Types.Int32;
+      ResourceID = Types.Int32;
+      AtomID = Types.Int32;
+      ColormapID = Types.Int32;
+      VisualID = Types.Int32;
+      FontID = Types.Int32;
+      FontableID = Types.Int32;
+      GContextID = Types.Int32;
+      Pixel = Types.Int32;
+      Keysym = Types.Int32;
+      Keycode = INTEGER;
+
+   CONST
+      (* request op codes *)
+      createWindow = 1;
+      changeWindowAttributes = 2;
+      getWindowAttributes = 3;
+      mapWindow = 8;
+      configureWindow = 12;
+      getGeometry = 14;
+      internAtom = 16;
+      getAtomName = 17;
+      changeProperty = 18;
+      getProperty = 20;
+      openFont = 45;
+      closeFont = 46;
+      queryFont = 47;
+      listFonts = 49;
+      getFontPath = 52;
+      createGC = 55;
+      changeGC = 56;
+      copyGC = 57;
+      setDashes = 58;
+      freeGC = 60;
+      clearArea = 61;
+      polyPoint = 64;
+      polyLine = 65;
+      polyArc = 68;
+      fillPoly = 69;
+      polyText8 = 74;
+      allocColor = 84;
+      lookupColor = 92;
+      listExtensions = 99;
+      getKeyboardMapping = 101;
+
+   CONST
+      (* visibility *)
+      unobscured = 0;
+      partiallyObscured = 1;
+      fullyObscured = 2;
+   TYPE
+      VisibilityState = INTEGER; (* unObscured .. fullyObscured *)
+
+   CONST
+      (* X event codes used by server generated packets;
+         note that codes 0 and 1 are reserved for errors and replies
+      *)
+      keyPressEvent = 2;
+      keyReleaseEvent = 3;
+      buttonPressEvent = 4;
+      motionNotifyEvent = 6;
+      enterNotifyEvent = 7;
+      leaveNotifyEvent = 8;
+      focusInEvent = 9;
+      focusOutEvent = 10;
+      keymapNotifyEvent = 11;
+      exposeEvent = 12;
+      graphicsExposeEvent = 13;
+      noExposeEvent = 14;
+      visibilityNotifyEvent = 15;
+      createNotifyEvent = 16;
+      destroyNotifyEvent = 17;
+      unmapNotifyEvent = 18;
+      mapNotifyEvent = 19;
+      mapRequestEvent = 20;
+      reparentNotifyEvent = 21;
+      configureNotifyEvent = 22;
+      configureRequestEvent = 23;
+      gravityNotifyEvent = 24;
+      resizeRequestEvent = 25;
+      circulateNotifyEvent = 26;
+      circulateRequestEvent = 27;
+      propertyNotifyEvent = 28;
+      selectionClearEvent = 29;
+      selectionRequestEvent = 30;
+      selectionNotifyEvent = 31;
+      colormapNotifyEvent = 32;
+      clientMessageEvent = 33;
+      mappingNotifyEvent = 34;
+      events = 35;
+   TYPE
+      XEventCode = INTEGER; (* keyPressEvent .. mappingNotifyEvent *)
+      XEventName = ARRAY 32 OF CHAR;
+   VAR
+      xeventName: ARRAY events OF XEventName;
+   TYPE
+      XEvent = POINTER TO XEventRec;
+      XEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: XEventCode;
+	    sequenceNumber: INTEGER;
+	    display: Display;
+	 END;
+      ButtonPressEvent = POINTER TO ButtonPressEventRec;
+      ButtonPressEventRec =
+	 RECORD
+	    (XEventRec)
+	    button: INTEGER;
+	    timestamp: Types.Int32;
+	    root, event, child: WindowID;
+	    rootx, rooty, eventx, eventy: INTEGER;
+	    state: KeySet;
+	    sameScreen: BOOLEAN;
+	 END;
+      CirculateNotifyEvent = POINTER TO CirculateNotifyEventRec;
+      CirculateNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window: WindowID;
+	    place: INTEGER; (* top = 0, bottom = 1 *)
+	 END;
+      CirculateRequestEvent = POINTER TO CirculateRequestEventRec;
+      CirculateRequestEventRec =
+	 RECORD
+	    (XEventRec)
+	    parent, window: WindowID;
+	    place: INTEGER; (* top = 0, bottom = 1 *)
+	 END;
+      ClientMessageEvent = POINTER TO ClientMessageEventRec;
+      ClientMessageEventRec =
+	 RECORD
+	    (XEventRec)
+	    format: INTEGER; (* 8, 16, or 32 *)
+	    window: WindowID;
+	    msgtype: AtomID;
+	    data: Streams.Stream;
+	 END;
+      ColormapNotifyEvent = POINTER TO ColormapNotifyEventRec;
+      ColormapNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    window: WindowID;
+	    colormap: ColormapID;
+	    new: BOOLEAN;
+	    state: INTEGER;
+	 END;
+      ConfigureNotifyEvent = POINTER TO ConfigureNotifyEventRec;
+      ConfigureNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window, aboveSibling: WindowID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    borderWidth: INTEGER;
+	    overrideRedirect: BOOLEAN;
+	 END;
+      ConfigureRequestEvent = POINTER TO ConfigureRequestEventRec;
+      ConfigureRequestEventRec =
+	 RECORD
+	    (XEventRec)
+	    stackMode: INTEGER;
+	       (*
+		  0: Above
+		  1: Below
+		  2: TopIf
+		  3: BottomIf
+		  4: Opposite
+	       *)
+	    parent, window, sibling: WindowID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    borderWidth: INTEGER;
+	    valueMask: SET;
+	       (*
+		  0: x
+		  1: y
+		  2: width
+		  3: height
+		  4: borderWidth
+		  5: sibling
+		  6: stackMode
+	       *)
+	 END;
+      CreateNotifyEvent = POINTER TO CreateNotifyEventRec;
+      CreateNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    parent, window: WindowID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    borderWidth: INTEGER;
+	    overrideRedirect: BOOLEAN;
+	 END;
+      DestroyNotifyEvent = POINTER TO DestroyNotifyEventRec;
+      DestroyNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window: WindowID;
+	 END;
+      EnterOrLeaveNotifyEvent = POINTER TO EnterOrLeaveNotifyEventRec;
+      EnterOrLeaveNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    detail: INTEGER;
+	       (*
+		  0: Ancestor
+		  1: Virtual
+		  2: Inferior
+		  3: Nonlinear
+		  4: NonlinearVirtual
+	       *)
+	    time: Types.Int32;
+	    root, event, child: WindowID;
+	    rootx, rooty: INTEGER;
+	    eventx, eventy: INTEGER;
+	    state: KeySet;
+	    mode: INTEGER;
+	       (*
+		  0: Normal
+		  1: Grab
+		  2: Ungrab
+	       *)
+	    sameScreen: BOOLEAN;
+	    focus: BOOLEAN;
+	 END;
+      ExposeEvent = POINTER TO ExposeEventRec;
+      ExposeEventRec =
+	 RECORD
+	    (XEventRec)
+	    window: WindowID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    count: INTEGER;
+	 END;
+      FocusEvent = POINTER TO FocusEventRec;
+      FocusEventRec =
+	 RECORD
+	    (XEventRec)
+	    detail: INTEGER;
+	       (*
+		  0: Ancestor
+		  1: Virtual
+		  2: Inferior
+		  3: Nonlinear
+		  4: NonlinearVirtual
+		  5: Pointer
+		  6: PointerRoot
+		  7: None
+	       *)
+	    event: WindowID;
+	    mode: INTEGER;
+	       (*
+		  0: Normal
+		  1: Grab
+		  2: WhileGrabbed
+	       *)
+	 END;
+      GraphicsExposeEvent = POINTER TO GraphicsExposeEventRec;
+      GraphicsExposeEventRec =
+	 RECORD
+	    (XEventRec)
+	    drawable: DrawableID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    majorOpcode, minorOpcode: INTEGER;
+	    count: INTEGER;
+	 END;
+      GravityNotifyEvent = POINTER TO GravityNotifyEventRec;
+      GravityNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window: WindowID;
+	    x, y: INTEGER;
+	 END;
+      KeymapNotifyEvent = POINTER TO KeymapNotifyEventRec;
+      KeymapNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    keys: KeymapStateSet;
+	 END;
+      KeyEvent = POINTER TO KeyEventRec;
+      KeyEventRec =
+	 RECORD
+	    (XEventRec)
+	    keycode: INTEGER;
+	    time: Types.Int32;
+	    root, event, child: WindowID;
+	    rootx, rooty: INTEGER;
+	    eventx, eventy: INTEGER;
+	    state: KeySet;
+	    sameScreen: BOOLEAN;
+	 END;
+      MapNotifyEvent = POINTER TO MapNotifyEventRec;
+      MapNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window: WindowID;
+	    overrideRedirect: BOOLEAN;
+	 END;
+      MappingNotifyEvent = POINTER TO MappingNotifyEventRec;
+      MappingNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    request: INTEGER;
+	       (*
+		  0: Modifier
+		  1: Keyboard
+		  2: Pointer
+	       *)
+	    firstKeycode: INTEGER;
+	    count: INTEGER;
+	 END;
+      MapRequestEvent = POINTER TO MapRequestEventRec;
+      MapRequestEventRec =
+	 RECORD
+	    (XEventRec)
+	    parent, window: WindowID;
+	 END;
+      MotionNotifyEvent = POINTER TO MotionNotifyEventRec;
+      MotionNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    detail: INTEGER;
+	       (*
+		  0: Normal
+		  1: Hint
+	       *)
+	    time: Types.Int32;
+	    root, event, child: WindowID;
+	    rootx, rooty: INTEGER;
+	    eventx, eventy: INTEGER;
+	    state: KeySet;
+	    sameScreen: BOOLEAN;
+	 END;
+      NoExposeEvent = POINTER TO NoExposeEventRec;
+      NoExposeEventRec =
+	 RECORD
+	    (XEventRec)
+	    drawable: DrawableID;
+	    majorOpcode, minorOpcode: INTEGER;
+	 END;
+      PropertyNotifyEvent = POINTER TO PropertyNotifyEventRec;
+      PropertyNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    window: WindowID;
+	    atom: AtomID;
+	    time: Types.Int32;
+	    state: INTEGER;
+	       (*
+		  0: NewValue
+		  1: Deleted
+	       *)
+	 END;
+      ReparentNotifyEvent = POINTER TO ReparentNotifyEventRec;
+      ReparentNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window, parent: WindowID;
+	    x, y: INTEGER;
+	    overrideRedirect: BOOLEAN;
+	 END;
+      ResizeRequestEvent = POINTER TO ResizeRequestEventRec;
+      ResizeRequestEventRec =
+	 RECORD
+	    (XEventRec)
+	    window: WindowID;
+	    width, height: INTEGER;
+	 END;
+      SelectionClearEvent = POINTER TO SelectionClearEventRec;
+      SelectionClearEventRec =
+	 RECORD
+	    (XEventRec)
+	    time: Types.Int32;
+	    owner: WindowID;
+	    selection: AtomID;
+	 END;
+      SelectionNotifyEvent = POINTER TO SelectionNotifyEventRec;
+      SelectionNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    time: Types.Int32;
+	    requestor: WindowID;
+	    selection: AtomID;
+	    target: AtomID;
+	    property: AtomID;
+	 END;
+      SelectionRequestEvent = POINTER TO SelectionRequestEventRec;
+      SelectionRequestEventRec =
+	 RECORD
+	    (XEventRec)
+	    time: Types.Int32;
+	    owner, requestor: WindowID;
+	    selection: AtomID;
+	    target: AtomID;
+	    property: AtomID;
+	 END;
+      UnmapNotifyEvent = POINTER TO UnmapNotifyEventRec;
+      UnmapNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    event, window: WindowID;
+	    fromConfigure: BOOLEAN;
+	 END;
+      VisibilityNotifyEvent = POINTER TO VisibilityNotifyEventRec;
+      VisibilityNotifyEventRec =
+	 RECORD
+	    (XEventRec)
+	    window: WindowID;
+	    state: VisibilityState;
+	 END;
+   TYPE
+      EventParserProc = PROCEDURE (s: Streams.Stream;
+                                   display: Display;
+				   VAR event: XEvent);
+      EventName = ARRAY 32 OF CHAR;
+   VAR
+      eventParser: ARRAY 256 OF EventParserProc;
+      eventName: ARRAY 256 OF EventName;
+
+   CONST
+      gravityForget = 0;
+      gravityUnmap = 0;
+      gravityNorthWest = 1;
+      gravityNorth = 2;
+      gravityNorthEast = 3;
+      gravityWest = 4;
+      gravityCenter = 5;
+      gravityEast = 6;
+      gravitySouthWest = 7;
+      gravitySouth = 8;
+      gravitySouthEast = 9;
+      gravityStatic = 10;
+   TYPE
+      Gravity = INTEGER;
+
+   CONST
+      (* value-mask for CreateWindow *)
+      atBackgroundPixmap = 0;
+      atBackgroundPixel = 1;
+      atBorderPixmap = 2;
+      atBorderPixel = 3;
+      atBitGravity = 4;
+      atWinGravity = 5;
+      atBackingStore = 6;
+      atBackingPlanes = 7;
+      atBackingPixel = 8;
+      atOverrideRedirect = 9;
+      atSaveUnder = 10;
+      atEventMask = 11;
+      atDoNotPropagateMask = 12;
+      atColormap = 13;
+      atCursor = 14;
+      attributes = 15;
+
+   TYPE
+      WindowAttributeSet = SET;
+      WindowAttributes = POINTER TO WindowAttributesRec;
+      WindowAttributesRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    defined: WindowAttributeSet;
+	    backgroundPixmap: PixmapID;
+	    backgroundPixel: Types.Int32;
+	    borderPixmap: PixmapID;
+	    borderPixel: Types.Int32;
+	    bitGravity: Gravity;
+	    winGravity: Gravity;
+	    backingStore: INTEGER;
+	    backingPlanes: Types.Int32;
+	    backingPixel: Types.Int32;
+	    overrideRedirect: BOOLEAN;
+	    saveUnder: BOOLEAN;
+	    eventMask: EventTypeSet;
+	    doNotPropagateMask: EventTypeSet;
+	    colormap: ColormapID;
+	    cursor: Types.Int32;
+	 END;
+      ExtraWindowAttributes = POINTER TO ExtraWindowAttributesRec;
+	 (* returned by GetWindowAttributes *)
+      ExtraWindowAttributesRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    visual: VisualID;
+	    class: INTEGER;
+	    mapIsInstalled: BOOLEAN;
+	    mapState: INTEGER;
+	    allEventMasks: EventTypeSet;
+	 END;
+      Geometry = POINTER TO GeometryRec;
+      GeometryRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    depth: INTEGER;
+	    root: WindowID;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    borderWidth: INTEGER;
+	 END;
+
+   CONST
+      (* stack modes *)
+      smAbove = 0;
+      smBelow = 1;
+      smTopIf = 2;
+      smBottomIf = 3;
+      smOpposite = 4;
+      stackmodes = 5;
+   TYPE
+      StackMode = INTEGER; (* smAbove .. smOpposite *)
+   CONST
+      (* set of configuration variables for ConfigureWindow *)
+      cwX = 0;
+      cwY = 1;
+      cwWidth = 2;
+      cwHeight = 3;
+      cwBorderWidth = 4;
+      cwSibling = 5;
+      cwStackMode = 6;
+      cwAttributes = 7;
+   TYPE
+      ConfigureWindowParameterSet = SET; (* OF cwX .. cwStackMode *)
+      ConfigureWindowParameters = POINTER TO ConfigureWindowParametersRec;
+      ConfigureWindowParametersRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    defined: ConfigureWindowParameterSet;
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    borderWidth: INTEGER;
+	    sibling: WindowID;
+	    stackMode: StackMode;
+	 END;
+
+   CONST
+      (* value-mask for CreateGC *)
+      gcFunction = 0;
+      gcPlaneMask = 1;
+      gcForeground = 2;
+      gcBackground = 3;
+      gcLineWidth = 4;
+      gcLineStyle = 5;
+      gcCapStyle = 6;
+      gcJoinStyle = 7;
+      gcFillStyle = 8;
+      gcFillRule = 9;
+      gcTile = 10;
+      gcStipple = 11;
+      gcTileStippleXOrigin = 12;
+      gcTileStippleYOrigin = 13;
+      gcFont = 14;
+      gcSubwindowMode = 15;
+      gcGraphicsExposures = 16;
+      gcClipXOrigin = 17;
+      gcClipYOrigin = 18;
+      gcClipMask = 19;
+      gcDashOffset = 20;
+      gcDashes = 21;
+      gcArcMode = 22;
+      gcAttributes = 23;
+      gcAll = {gcFunction .. gcArcMode};
+      (* GC functions *)
+      gcfClear = 0;
+      gcfAnd = 1;
+      gcfAndReverse = 2;
+      gcfCopy = 3;
+      gcfAndInverted = 4;
+      gcfNoOp = 5;
+      gcfXor = 6;
+      gcfOr = 7;
+      gcfNor = 8;
+      gcfEquiv = 9;
+      gcfInvert = 10;
+      gcfOrReverse = 11;
+      gcfCopyInverted = 12;
+      gcfOrInverted = 13;
+      gcfNand = 14;
+      gcfSet = 15;
+      (* GC line styles *)
+      gclsSolid = 0;
+      gclsOnOffDash = 1;
+      gclsDoubleDash = 2;
+      (* GC cap styles *)
+      gccsNotLast = 0;
+      gccsButt = 1;
+      gccsRound = 2;
+      gccsProjecting = 3;
+      (* GC join styles *)
+      gcjsMiter = 0;
+      gcjsRound = 1;
+      gcjsBevel = 2;
+      (* GC fill styles *)
+      gcfsSolid = 0;
+      gcfsTiled = 1;
+      gcfsStippled = 2;
+      (* GC fill rule *)
+      gcfrEvenOdd = 0;
+      gcfrWinding = 1;
+      (* GC subwindow mode *)
+      gcswClipByChildren = 0;
+      gcswIncludeInferiors = 1;
+      (* GC arc modes *)
+      gcswChord = 0;
+      gcswPieSlice = 1;
+   TYPE
+      GraphicalContextAttributeSet = SET; (* OF gcFunction .. gcArcMode *)
+      GCFunction = INTEGER; (* gcfClear .. gcfSet *)
+      LineStyle = INTEGER; (* gclsSolid .. gclsDoubleDash *)
+      CapStyle = INTEGER; (* gccsNotLast .. gccsProjecting *)
+      JoinStyle = INTEGER; (* gcjsMiter .. gcjsBevel *)
+      FillStyle = INTEGER; (* gcfsSolid .. gcfsStippled *)
+      FillRule = INTEGER; (* gcfrEvenOdd .. gcfrWinding *)
+      SubWindowMode = INTEGER; (* gcswClipByChildren .. gcswIncludeInferiors *)
+      ArcMode = INTEGER; (* gcswChord .. gcswPieSlice *)
+      GraphicalContextAttributes = POINTER TO GraphicalContextAttributesRec;
+      GraphicalContextAttributesRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    defined: GraphicalContextAttributeSet;
+	    function: GCFunction;
+	    planeMask: Types.Int32;
+	    foreground: Pixel;
+	    background: Pixel;
+	    lineWidth: INTEGER;
+	    lineStyle: LineStyle;
+	    capStyle: CapStyle;
+	    joinStyle: JoinStyle;
+	    fillStyle: FillStyle;
+	    fillRule: FillRule;
+	    tile: PixmapID;
+	    stipple: PixmapID;
+	    tileStippleXOrigin: INTEGER;
+	    tileStippleYOrigin: INTEGER;
+	    font: FontID;
+	    subwindowMode: SubWindowMode;
+	    graphicsExposures: BOOLEAN;
+	    clipXOrigin: INTEGER;
+	    clipYOrigin: INTEGER;
+	    clipMask: PixmapID;
+	    dashOffset: INTEGER;
+	    dashes: INTEGER;
+	    arcmode: ArcMode;
+	 END;
+
+   TYPE
+      RGBColor =
+	 RECORD
+	    red, green, blue: INTEGER;
+	 END;
+
+   CONST
+      (* shape values; used by FillPoly *)
+      complex = 0;
+      nonconvex = 1;
+      convex = 2;
+   TYPE
+      Shape = INTEGER;
+   CONST
+      (* values for coordinate-mode: *)
+      origin = 0;
+      previous = 1;
+   TYPE
+      CoordinateMode = INTEGER;
+
+   TYPE
+      ListOfPoints = POINTER TO ListOfPointsRec;
+      ListOfPointsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    x, y: INTEGER;
+	    next: ListOfPoints;
+	 END;
+
+   TYPE
+      ListOfDashes = POINTER TO ListOfDashesRec;
+      ListOfDashesRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    len: INTEGER;
+	    next: ListOfDashes;
+	 END;
+   TYPE
+      ListOfArcs = POINTER TO ListOfArcsRec;
+      ListOfArcsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* enclosing rectangle *)
+	    x, y: INTEGER;
+	    width, height: INTEGER;
+	    (* angles in degrees (0-359) scaled by 64;
+	       counter-clockwise if positive,
+	       clockwise if negative
+	    *)
+	    angle1, angle2: INTEGER;
+	    next: ListOfArcs;
+	 END;
+   CONST
+      maxkeysyms = specialKeys;
+   TYPE
+      KeyboardMapping = POINTER TO KeyboardMappingRec;
+      KeyboardMappingRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    keycode: Keycode;
+	    keysyms: ARRAY maxkeysyms OF Keysym;
+	    next: KeyboardMapping;
+	 END;
+   CONST
+      (* kinds of ListOfTextItems *)
+      textItem = 0;
+      fontItem = 1;
+   TYPE
+      ListOfTextItems = POINTER TO ListOfTextItemsRec;
+      ListOfTextItemsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: ListOfTextItems;
+	    kind: SHORTINT; (* textItem or fontItem *)
+	    (* kind = textItem *)
+	    text: ARRAY 254 OF CHAR;
+	    delta: INTEGER;
+	    (* kind = fontItem *)
+	    font: FontID;
+	 END;
+
+   TYPE
+      ListOfStrings = POINTER TO ListOfStringsRec;
+      ListOfStringsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: ListOfStrings;
+	    string: ARRAY 256 OF CHAR;
+	 END;
+
+   TYPE
+      ListOfFontProperties = POINTER TO ListOfFontPropertiesRec;
+      ListOfFontPropertiesRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    atom: AtomID;
+	    value: Types.Int32;
+	    next: ListOfFontProperties;
+	 END;
+      CharInfo = POINTER TO CharInfoRec;
+      CharInfoRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    leftSideBearing: INTEGER;
+	    rightSideBearing: INTEGER;
+	    characterWidth: INTEGER;
+	    ascent: INTEGER;
+	    descent: INTEGER;
+	    attributes: INTEGER;
+	    next: CharInfo;
+	 END;
+      FontInfo = POINTER TO FontInfoRec;
+      FontInfoRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    drawDirection: INTEGER;
+	       (* 0: LeftToRight
+	          1: RightToLeft
+	       *)
+	    minCharOrByte2: INTEGER;
+	    maxCharOrByte2: INTEGER;
+	    minByte1: INTEGER;
+	    maxByte1: INTEGER;
+	    allCharsExist: BOOLEAN;
+	    defaultChar: INTEGER;
+	    minBounds: CharInfo;
+	    maxBounds: CharInfo;
+	    fontAscent: INTEGER;
+	    fontDescent: INTEGER;
+	    properties: ListOfFontProperties;
+	 END;
+
+   CONST
+      replaceProperty = 0;
+      prependProperty = 1;
+      appendProperty = 2;
+      propertyChangeModes = 3;
+   TYPE
+      PropertyChangeMode = SHORTINT; (* replaceProperty ... *)
+      Data = POINTER TO DataRec;
+      DataRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    type: AtomID;
+	    format: INTEGER; (* 0, 8, 16, 32 *)
+	    len: Streams.Count;
+	    data: Streams.Stream;
+	 END;
+      Property = POINTER TO PropertyRec;
+      PropertyRec =
+	 RECORD
+	    (DataRec)
+	    name: AtomID;
+	 END;
+
+   CONST
+      (* X error types *)
+      requestError = 1;
+      valueError = 2;
+      windowError = 3;
+      pixmapError = 4;
+      atomError = 5;
+      cursorError = 6;
+      fontError = 7;
+      matchError = 8;
+      drawableError = 9;
+      accessError = 10;
+      allocError = 11;
+      colormapError = 12;
+      gContextError = 13;
+      idChoiceError = 14;
+      nameError = 15;
+      lengthError = 16;
+      implementationError = 17;
+      xErrors = 18;
+   TYPE
+      XErrorCode = INTEGER; (* requestError .. unknownError *)
+      ErrorCodeName = ARRAY 32 OF CHAR;
+   VAR
+      errorCodeName: ARRAY xErrors OF ErrorCodeName;
+   TYPE
+      XErrorEvent = POINTER TO XErrorEventRec;
+      XErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    display: Display;
+	    code: XErrorCode;
+	    sequenceNumber: INTEGER;
+	    majorOpcode, minorOpcode: INTEGER;
+	    errorParameter: Types.Int32;
+	    packet: Streams.Stream;
+	 END;
+   VAR
+      xErrorEventType: Events.EventType;
+
+   TYPE
+      Format = POINTER TO FormatRec;
+      FormatRec =
+	 RECORD
+	    depth: INTEGER;
+	    bitsPerPixel: INTEGER;
+	    scanlinePad: INTEGER;
+	    next: Format;
+	 END;
+      Visual = POINTER TO VisualRec;
+      VisualRec =
+	 RECORD
+	    visualID: Types.Int32;
+	    class: INTEGER;
+	    bitsPerRGBValue: INTEGER;
+	    colormapEntries: INTEGER;
+	    redMask: Types.Int32;
+	    greenMask: Types.Int32;
+	    blueMask: Types.Int32;
+	    next: Visual;
+	 END;
+      Depth = POINTER TO DepthRec;
+      DepthRec =
+	 RECORD
+	    depth: INTEGER;
+	    visuals: Visual;
+	    next: Depth;
+	 END;
+      Screen = POINTER TO ScreenRec;
+      ScreenRec =
+	 RECORD
+	    root: WindowID;
+	    colormap: ColormapID;
+	    whitePixel: PixmapID;
+	    blackPixel: PixmapID;
+	    currentInputMasks: Types.Int32;
+	    widthInPixels: INTEGER;
+	    heightInPixels: INTEGER;
+	    widthInMillimeters: INTEGER;
+	    heightInMillimeters: INTEGER;
+	    minInstalledMaps: INTEGER;
+	    maxInstalledMaps: INTEGER;
+	    rootVisual: Types.Int32;
+	    backingStores: INTEGER;
+	    saveUnders: BOOLEAN;
+	    rootDepth: INTEGER;
+	    depths: Depth;
+	    (* private *)
+	    next: Screen;
+	 END;
+      Server = POINTER TO ServerRec;
+      ServerRec =
+	 RECORD
+	    major, minor: INTEGER;
+	    releaseNumber: Types.Int32;
+	    resourceIDbase: Types.Int32;
+	    resourceIDmask: Types.Int32;
+	    motionBufferSize: Types.Int32;
+	    maximumRequestLength: INTEGER;
+	    numberOfScreens: INTEGER;
+	    numberOfFormats: INTEGER;
+	    imageByteOrder: INTEGER;
+	    bitmapFormatBitOrder: INTEGER;
+	    bitmapFormatScanlineUnit: INTEGER;
+	    bitmapFormatScanlinePad: INTEGER;
+	    minKeyCode, maxKeyCode: INTEGER;
+	    vendor: ARRAY 128 OF CHAR;
+	    listOfFormats: Format;
+	    listOfScreens: Screen;
+	 END;
+
+   CONST
+      sequenceNumbers = 10000H; (* # of distinct sequence numbers *)
+   TYPE
+      OpenRequest = POINTER TO OpenRequestRec;
+      OpenRequestRec =
+	 RECORD
+	    sequenceNumber: INTEGER;
+	    signal: Signals.Signal;
+	    reply: Streams.Stream;
+	    xerror: XErrorEvent;
+	    next: OpenRequest;
+	 END;
+
+   TYPE
+      DisplayRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    address: ARRAY 128 OF CHAR;
+	    server: Server;
+	    screen: Screen; (* selected stream *)
+	    s: Streams.Stream;
+	    mutex: Semaphores.Semaphore; (* for read/write access of s *)
+	    nextSequenceNumber: INTEGER;
+	    openRequests: OpenRequest;
+	    eventType: ARRAY 256 OF Events.EventType;
+	    id: Types.Int32; (* counter for resource ids *)
+	    closed: BOOLEAN;
+	 END;
+
+   CONST
+      (* errors while connecting to X server  *)
+      connectionRejected = 0;
+      invalidDisplaySpecification = 1;
+      missingDisplaySpecification = 2;
+      invalidScreenNumber = 3;
+      localConnectionFailed = 4;
+      networkConnectionFailed = 5;
+      greetingFailed = 6;
+      invalidWelcome = 7;
+      noSuchScreenNumber = 8;
+      (* errors during a running X session *)
+      outOfResourceIDs = 9;
+      errors = 10;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+      ConnectionErrorEvent = POINTER TO ConnectionErrorEventRec;
+      ConnectionErrorEventRec =
+	 RECORD
+	    (ErrorEventRec)
+	    address: ARRAY 80 OF CHAR;
+	    reason: ARRAY 128 OF CHAR;
+	 END;
+      SessionErrorEvent = POINTER TO SessionErrorEventRec;
+      SessionErrorEventRec =
+	 RECORD
+	    (ErrorEventRec)
+	    display: Display;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   TYPE
+      InputHandlerJob = POINTER TO InputHandlerJobRec;
+      InputHandlerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    display: Display;
+	 END;
+   TYPE
+      DeliverEventJob = POINTER TO DeliverEventJobRec;
+      DeliverEventJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    event: Events.Event;
+	 END;
+
+   (* === general error handling =========================================== *)
+
+   PROCEDURE Error(display: Display;
+                   errorcode: ErrorCode);
+      VAR
+	 event: SessionErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.display := display;
+      RelatedEvents.Raise(display, event);
+   END Error;
+
+   PROCEDURE ConnectionError(errors: RelatedEvents.Object;
+                             errorcode: ErrorCode;
+			     ds: Streams.Stream;
+		             reason: ARRAY OF CHAR);
+      VAR
+	 event: ConnectionErrorEvent;
+	 ok: BOOLEAN;
+	 ss: Streams.Stream;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      IF ds = NIL THEN
+	 event.address := "";
+      ELSE
+	 Strings.Open(ss, event.address);
+	 Streams.SetPos(ds, 0);
+	 ok := Streams.Copy(ds, ss, -1);
+      END;
+      COPY(reason, event.reason);
+      RelatedEvents.Raise(errors, event);
+   END ConnectionError;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      IF event IS ConnectionErrorEvent THEN
+	 WITH event: ConnectionErrorEvent DO
+	    IF event.address # "" THEN
+	       Write.StringS(s, "X display ");
+	       Write.CharS(s, ASCII.quote);
+	       Write.StringS(s, event.address);
+	       Write.CharS(s, ASCII.quote);
+	       Write.StringS(s, ": ");
+	    END;
+	    Write.StringS(s, event.message);
+	    IF event.reason # "" THEN
+	       Write.StringS(s, ": ");
+	       Write.StringS(s, event.reason);
+	    END;
+	 END;
+      ELSIF event IS SessionErrorEvent THEN
+	 WITH event: SessionErrorEvent DO
+	    Write.StringS(s, event.message);
+	 END;
+      ELSE
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE WriteXError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: XErrorEvent DO
+	 IF event.display.address # "" THEN
+	    Write.StringS(s, "X display ");
+	    Write.CharS(s, ASCII.quote);
+	    Write.StringS(s, event.display.address);
+	    Write.CharS(s, ASCII.quote);
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, event.message);
+	 Write.StringS(s, " on X opcode (");
+	 Write.IntS(s, event.majorOpcode, 1);
+	 Write.CharS(s, ",");
+	 Write.IntS(s, event.minorOpcode, 1);
+	 Write.StringS(s, ") for ");
+	 Write.IntS(s, event.errorParameter, 1);
+      END;
+   END WriteXError;
+
+   (* === private procedures =============================================== *)
+
+   PROCEDURE Card(set: SET) : INTEGER;
+      VAR
+	 count: INTEGER;
+	 index: INTEGER;
+   BEGIN
+      count := 0; index := 0;
+      WHILE index <= MAX(SET) DO
+	 IF index IN set THEN
+	    INC(count);
+	 END;
+	 INC(index);
+      END;
+      RETURN count
+   END Card;
+
+   PROCEDURE ConvertIntToSet32(int: Types.Int32) : SET;
+      VAR
+	 set: SET;
+	 index: INTEGER;
+   BEGIN
+      IF Types.msbIsMax = 1 THEN
+	 set := SYS.VAL(SET, int);
+      ELSE
+	 set := {};
+	 index := 0;
+	 WHILE index < 32 DO
+	    IF ODD(int) THEN
+	       INCL(set, index);
+	    END;
+	    int := int DIV 2;
+	    INC(index);
+	 END;
+      END;
+      RETURN set
+   END ConvertIntToSet32;
+
+   PROCEDURE ConvertSet32ToInt(set: SET) : Types.Int32;
+      VAR
+	 int: Types.Int32;
+	 index: INTEGER;
+	 mask: Types.Int32;
+   BEGIN
+      IF Types.msbIsMax = 1 THEN
+	 int := SYS.VAL(Types.Int32, set);
+      ELSE
+	 index := 0; mask := 1; int := 0;
+	 WHILE index < 32 DO
+	    IF index IN set THEN
+	       int := int + mask;
+	    END;
+	    mask := mask * 2;
+	    INC(index);
+	 END;
+      END;
+      RETURN int
+   END ConvertSet32ToInt;
+
+   PROCEDURE ConvertIntToSet16(int: INTEGER) : KeySet;
+      VAR
+	 set: KeySet;
+	 index: INTEGER;
+   BEGIN
+      set := {};
+      index := 0;
+      WHILE index < 16 DO
+	 IF ODD(int) THEN
+	    INCL(set, index);
+	 END;
+	 int := int DIV 2;
+	 INC(index);
+      END;
+      RETURN set
+   END ConvertIntToSet16;
+
+   PROCEDURE ConvertSet16ToInt(set: KeySet) : INTEGER;
+      VAR
+	 int: INTEGER;
+	 index: INTEGER;
+	 mask: INTEGER;
+   BEGIN
+      index := 0; mask := 1; int := 0;
+      WHILE index < 16 DO
+	 IF index IN set THEN
+	    int := int + mask;
+	 END;
+	 mask := mask * 2;
+	 INC(index);
+      END;
+      RETURN int
+   END ConvertSet16ToInt;
+
+   PROCEDURE Pad(len: LONGINT) : INTEGER;
+   BEGIN
+      RETURN SHORT((4 - (len MOD 4)) MOD 4)
+   END Pad;
+
+   PROCEDURE WritePad(s: Streams.Stream; len: LONGINT) : BOOLEAN;
+   BEGIN
+      WHILE len > 0 DO
+	 IF ~Streams.WriteByte(s, 0X) THEN RETURN FALSE END;
+	 DEC(len);
+      END;
+      RETURN TRUE
+   END WritePad;
+
+   PROCEDURE WriteCard8(s: Streams.Stream; card8: INTEGER) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, CHR(card8 MOD 256))
+   END WriteCard8;
+
+   PROCEDURE WriteBool(s: Streams.Stream; bool: BOOLEAN) : BOOLEAN;
+   BEGIN
+      IF bool THEN
+	 RETURN WriteCard8(s, 1)
+      ELSE
+	 RETURN WriteCard8(s, 0)
+      END;
+   END WriteBool;
+
+   PROCEDURE WriteCard16(s: Streams.Stream; card16: INTEGER) : BOOLEAN;
+      VAR
+	 byte1, byte2: BYTE;
+   BEGIN
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    byte1 := CHR(card16 DIV 256 MOD 256);
+	    byte2 := CHR(card16 MOD 256);
+      | Types.littleEndian:
+	    byte1 := CHR(card16 MOD 256);
+	    byte2 := CHR(card16 DIV 256 MOD 256);
+      END;
+      RETURN Streams.WriteByte(s, byte1) & Streams.WriteByte(s, byte2)
+   END WriteCard16;
+
+   PROCEDURE WriteInt16(s: Streams.Stream; int16: INTEGER) : BOOLEAN;
+      VAR
+	 i16: Types.Int16;
+   BEGIN
+      ASSERT((int16 >= MIN(Types.Int16)) & (int16 <= MAX(Types.Int16)));
+      i16 := Types.ToInt16(int16);
+      RETURN Streams.Write(s, i16)
+   END WriteInt16;
+
+   PROCEDURE WriteCard32(s: Streams.Stream; card32: Types.Int32) : BOOLEAN;
+   BEGIN
+      RETURN Streams.Write(s, card32)
+   END WriteCard32;
+
+   PROCEDURE WriteFont(s: Streams.Stream; font: FontID) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, CHR(font DIV 1000000H MOD 100H)) &
+             Streams.WriteByte(s, CHR(font DIV 10000H MOD 100H)) &
+             Streams.WriteByte(s, CHR(font DIV 100H MOD 100H)) &
+             Streams.WriteByte(s, CHR(font MOD 100H))
+   END WriteFont;
+
+   PROCEDURE WriteString8(s: Streams.Stream;
+                          VAR buf: ARRAY OF BYTE; (* read-only *)
+			  len: LONGINT) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, buf, 0, len) &
+	     WritePad(s, Pad(len))
+   END WriteString8;
+
+   PROCEDURE WriteString8WithoutPadding(s: Streams.Stream;
+                          VAR buf: ARRAY OF BYTE; (* read-only *)
+			  len: LONGINT) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, buf, 0, len)
+   END WriteString8WithoutPadding;
+
+   PROCEDURE WriteAttributes(s: Streams.Stream;
+                             ats: WindowAttributes) : BOOLEAN;
+      VAR
+	 valueMask: Types.Int32;
+	 atIndex: INTEGER;
+	 value: Types.Int32;
+   BEGIN
+      valueMask := ConvertSet32ToInt(ats.defined);
+      IF ~WriteCard32(s, valueMask) THEN RETURN FALSE END;
+      atIndex := 0;
+      WHILE atIndex < attributes DO
+	 IF atIndex IN ats.defined THEN
+	    CASE atIndex OF
+            | atBackgroundPixmap:
+		  value := ats.backgroundPixmap;
+            | atBackgroundPixel:
+		  value := ats.backgroundPixel;
+            | atBorderPixmap:
+		  value := ats.borderPixmap;
+            | atBorderPixel:
+		  value := ats.borderPixel;
+            | atBitGravity:
+		  value := ats.bitGravity;
+            | atWinGravity:
+		  value := ats.winGravity;
+            | atBackingStore:
+		  value := ats.backingStore;
+            | atBackingPlanes:
+		  value := ats.backingPlanes;
+            | atBackingPixel:
+		  value := ats.backingPixel;
+            | atOverrideRedirect:
+		  value := SYS.VAL(SHORTINT, ats.overrideRedirect);
+            | atSaveUnder:
+		  value := SYS.VAL(SHORTINT, ats.saveUnder);
+            | atEventMask:
+		  value := ConvertSet32ToInt(ats.eventMask);
+            | atDoNotPropagateMask:
+		  value := ConvertSet32ToInt(ats.doNotPropagateMask);
+            | atColormap:
+		  value := ats.colormap;
+            | atCursor:
+		  value := ats.cursor;
+	    END;
+	    IF ~WriteCard32(s, value) THEN RETURN FALSE END;
+	 END;
+	 INC(atIndex);
+      END;
+      RETURN TRUE
+   END WriteAttributes;
+
+   PROCEDURE WriteGCAttributes(s: Streams.Stream;
+                               ats: GraphicalContextAttributes) : BOOLEAN;
+      VAR
+	 valueMask: Types.Int32;
+	 atIndex: INTEGER;
+	 value: Types.Int32;
+   BEGIN
+      valueMask := ConvertSet32ToInt(ats.defined);
+      IF ~WriteCard32(s, valueMask) THEN RETURN FALSE END;
+      atIndex := 0;
+      WHILE atIndex < gcAttributes DO
+	 IF atIndex IN ats.defined THEN
+	    CASE atIndex OF
+            | gcFunction:
+		  value := ats.function;
+            | gcPlaneMask:
+		  value := ats.planeMask;
+            | gcForeground:
+		  value := ats.foreground;
+            | gcBackground:
+		  value := ats.background;
+            | gcLineWidth:
+		  value := ats.lineWidth;
+            | gcLineStyle:
+		  value := ats.lineStyle;
+            | gcCapStyle:
+		  value := ats.capStyle;
+            | gcJoinStyle:
+		  value := ats.joinStyle;
+            | gcFillStyle:
+		  value := ats.fillStyle;
+            | gcFillRule:
+		  value := ats.fillRule;
+            | gcTile:
+		  value := ats.tile;
+            | gcStipple:
+		  value := ats.stipple;
+            | gcTileStippleXOrigin:
+		  value := ats.tileStippleXOrigin;
+            | gcTileStippleYOrigin:
+		  value := ats.tileStippleYOrigin;
+            | gcFont:
+		  value := ats.font;
+            | gcSubwindowMode:
+		  value := ats.subwindowMode;
+            | gcGraphicsExposures:
+		  value := SYS.VAL(SHORTINT, ats.graphicsExposures);
+            | gcClipXOrigin:
+		  value := ats.clipXOrigin;
+            | gcClipYOrigin:
+		  value := ats.clipYOrigin;
+            | gcClipMask:
+		  value := ats.clipMask;
+            | gcDashOffset:
+		  value := ats.dashOffset;
+            | gcDashes:
+		  value := ats.dashes;
+            | gcArcMode:
+		  value := ats.arcmode;
+	    END;
+	    IF ~WriteCard32(s, value) THEN RETURN FALSE END;
+	 END;
+	 INC(atIndex);
+      END;
+      RETURN TRUE
+   END WriteGCAttributes;
+
+   PROCEDURE WriteConfigureWindowParameters(s: Streams.Stream;
+                               ats: ConfigureWindowParameters) : BOOLEAN;
+      VAR
+	 valueMask: INTEGER;
+	 atIndex: INTEGER;
+	 value: Types.Int32;
+   BEGIN
+      valueMask := ConvertSet16ToInt(ats.defined);
+      IF ~WriteCard16(s, valueMask) OR ~WritePad(s, 2) THEN RETURN FALSE END;
+      atIndex := 0;
+      WHILE atIndex < cwAttributes DO
+	 IF atIndex IN ats.defined THEN
+	    CASE atIndex OF
+	    | cwX:
+		  value := ats.x;
+	    | cwY:
+		  value := ats.y;
+	    | cwWidth:
+		  value := ats.width;
+	    | cwHeight:
+		  value := ats.height;
+	    | cwBorderWidth:
+		  value := ats.borderWidth;
+	    | cwSibling:
+		  value := ats.sibling;
+	    | cwStackMode:
+		  value := ats.stackMode;
+	    END;
+	    IF ~WriteCard32(s, value) THEN RETURN FALSE END;
+	 END;
+	 INC(atIndex);
+      END;
+      RETURN TRUE
+   END WriteConfigureWindowParameters;
+
+   PROCEDURE ReadPad(s: Streams.Stream; len: LONGINT) : BOOLEAN;
+      VAR
+	 pad: BYTE;
+   BEGIN
+      WHILE len > 0 DO
+	 IF ~Streams.ReadByte(s, pad) THEN RETURN FALSE END;
+	 DEC(len);
+      END;
+      RETURN TRUE
+   END ReadPad;
+
+   PROCEDURE ReadBool(s: Streams.Stream; VAR bool: BOOLEAN) : BOOLEAN;
+      VAR
+	 byte: CHAR;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+      CASE byte OF
+      | 0X: bool := FALSE; RETURN TRUE
+      | 1X: bool := TRUE; RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ReadBool;
+
+   PROCEDURE ReadCard8(s: Streams.Stream; VAR card8: INTEGER) : BOOLEAN;
+      VAR
+	 byte: CHAR;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+      card8 := ORD(byte);
+      RETURN TRUE
+   END ReadCard8;
+
+   PROCEDURE ReadEventCode(s: Streams.Stream; VAR card8: INTEGER) : BOOLEAN;
+      VAR
+	 card: INTEGER;
+   BEGIN
+      IF ~ReadCard8(s, card) THEN RETURN FALSE END;
+      card8 := card MOD 128;
+      RETURN TRUE
+   END ReadEventCode;
+
+   PROCEDURE ReadCard16(s: Streams.Stream; VAR card16: INTEGER) : BOOLEAN;
+      VAR
+	 byte1, byte2: BYTE;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte1) OR ~Streams.ReadByte(s, byte2) THEN
+	 RETURN FALSE
+      END;
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    card16 := ORD(byte1) * 256 + ORD(byte2);
+      | Types.littleEndian:
+	    card16 := ORD(byte2) * 256 + ORD(byte1);
+      END;
+      RETURN TRUE
+   END ReadCard16;
+
+   PROCEDURE ReadInt16(s: Streams.Stream; VAR int16: INTEGER) : BOOLEAN;
+      VAR
+	 i16: Types.Int16;
+   BEGIN
+      IF ~Streams.Read(s, i16) THEN RETURN FALSE END;
+      int16 := i16;
+      RETURN TRUE
+   END ReadInt16;
+
+   PROCEDURE ReadCard32(s: Streams.Stream; VAR card32: Types.Int32) : BOOLEAN;
+   BEGIN
+      RETURN Streams.Read(s, card32)
+   END ReadCard32;
+
+   PROCEDURE ReadString8(s: Streams.Stream;
+                         VAR buf: ARRAY OF BYTE;
+			 len: LONGINT) : BOOLEAN;
+      VAR
+	 nbytes: LONGINT;
+   BEGIN
+      IF len >= LEN(buf) THEN
+	 (* actual stuff is longer than our buffer:
+	    we fill just the buffer and skip the rest;
+	    note that we will leave space for a terminating null-byte
+	 *)
+	 nbytes := LEN(buf) - 1;
+	 IF ~Streams.ReadPart(s, buf, 0, nbytes) THEN RETURN FALSE END;
+	 RETURN ReadPad(s, len - nbytes)
+      ELSE
+	 IF ~Streams.ReadPart(s, buf, 0, len) THEN RETURN FALSE END;
+	 (* assure 0X-termination in case of strings *)
+	 buf[len] := 0X;
+	 RETURN TRUE
+      END;
+   END ReadString8;
+
+   PROCEDURE ReadListOfStrings(s: Streams.Stream;
+                               VAR list: ListOfStrings;
+			       len: LONGINT) : BOOLEAN;
+      VAR
+	 strlen: INTEGER;
+	 head, tail, member: ListOfStrings;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE len > 0 DO
+	 IF ~ReadCard8(s, strlen) THEN RETURN FALSE END;
+	 NEW(member); member.next := NIL;
+	 IF ~ReadString8(s, member.string, strlen) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := member;
+	 ELSE
+	    tail.next := member;
+	 END;
+	 tail := member;
+	 DEC(len);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfStrings;
+
+   PROCEDURE ReadFormat(s: Streams.Stream; VAR format: Format) : BOOLEAN;
+   BEGIN
+      NEW(format); format.next := NIL;
+      RETURN ReadCard8(s, format.depth) &
+             ReadCard8(s, format.bitsPerPixel) &
+	     ReadCard8(s, format.scanlinePad) &
+	     ReadPad(s, 5)
+   END ReadFormat;
+
+   PROCEDURE ReadListOfFormats(s: Streams.Stream;
+                               numberOfFormats: INTEGER;
+			       VAR list: Format) : BOOLEAN;
+      VAR
+	 head, tail, format: Format;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfFormats > 0 DO
+	 IF ~ReadFormat(s, format) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := format;
+	 ELSE
+	    tail.next := format;
+	 END;
+	 tail := format;
+	 DEC(numberOfFormats);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfFormats;
+
+   PROCEDURE ReadVisual(s: Streams.Stream; VAR visual: Visual) : BOOLEAN;
+   BEGIN
+      NEW(visual); visual.next := NIL;
+      RETURN ReadCard32(s, visual.visualID) &
+             ReadCard8(s, visual.class) &
+	     ReadCard8(s, visual.bitsPerRGBValue) &
+	     ReadCard16(s, visual.colormapEntries) &
+	     ReadCard32(s, visual.redMask) &
+	     ReadCard32(s, visual.greenMask) &
+	     ReadCard32(s, visual.blueMask) &
+	     ReadPad(s, 4)
+   END ReadVisual;
+
+   PROCEDURE ReadListOfVisuals(s: Streams.Stream;
+                               numberOfVisuals: INTEGER;
+			       VAR list: Visual) : BOOLEAN;
+      VAR
+	 head, tail, visual: Visual;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfVisuals > 0 DO
+	 IF ~ReadVisual(s, visual) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := visual;
+	 ELSE
+	    tail.next := visual;
+	 END;
+	 tail := visual;
+	 DEC(numberOfVisuals);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfVisuals;
+
+   PROCEDURE ReadDepth(s: Streams.Stream; VAR depth: Depth) : BOOLEAN;
+      VAR
+	 numberOfVisuals: INTEGER;
+   BEGIN
+      NEW(depth); depth.next := NIL;
+      RETURN ReadCard8(s, depth.depth) &
+             ReadPad(s, 1) &
+	     ReadCard16(s, numberOfVisuals) &
+	     ReadPad(s, 4) &
+	     ReadListOfVisuals(s, numberOfVisuals, depth.visuals)
+   END ReadDepth;
+
+   PROCEDURE ReadListOfDepths(s: Streams.Stream;
+			      numberOfDepths: INTEGER;
+                              VAR list: Depth) : BOOLEAN;
+      VAR
+	 head, tail, depth: Depth;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfDepths > 0 DO
+	 IF ~ReadDepth(s, depth) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := depth;
+	 ELSE
+	    tail.next := depth;
+	 END;
+	 tail := depth;
+	 DEC(numberOfDepths);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfDepths;
+
+   PROCEDURE ReadScreen(s: Streams.Stream; VAR screen: Screen) : BOOLEAN;
+      VAR
+	 numberOfDepths: INTEGER;
+   BEGIN
+      NEW(screen); screen.next := NIL;
+      RETURN ReadCard32(s, screen.root) &
+             ReadCard32(s, screen.colormap) &
+	     ReadCard32(s, screen.whitePixel) &
+	     ReadCard32(s, screen.blackPixel) &
+	     ReadCard32(s, screen.currentInputMasks) &
+	     ReadCard16(s, screen.widthInPixels) &
+	     ReadCard16(s, screen.heightInPixels) &
+	     ReadCard16(s, screen.widthInMillimeters) &
+	     ReadCard16(s, screen.heightInMillimeters) &
+	     ReadCard16(s, screen.minInstalledMaps) &
+	     ReadCard16(s, screen.maxInstalledMaps) &
+	     ReadCard32(s, screen.rootVisual) &
+	     ReadCard8(s, screen.backingStores) &
+	     ReadBool(s, screen.saveUnders) &
+	     ReadCard8(s, screen.rootDepth) &
+	     ReadCard8(s, numberOfDepths) &
+	     ReadListOfDepths(s, numberOfDepths, screen.depths)
+   END ReadScreen;
+
+   PROCEDURE ReadListOfScreens(s: Streams.Stream;
+			       numberOfScreens: INTEGER;
+                               VAR list: Screen) : BOOLEAN;
+      VAR
+	 head, tail, screen: Screen;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfScreens > 0 DO
+	 IF ~ReadScreen(s, screen) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := screen;
+	 ELSE
+	    tail.next := screen;
+	 END;
+	 tail := screen;
+	 DEC(numberOfScreens);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfScreens;
+
+   PROCEDURE ReadFontProperty(s: Streams.Stream;
+                              VAR property: ListOfFontProperties) : BOOLEAN;
+   BEGIN
+      NEW(property); property.next := NIL;
+      RETURN ReadCard32(s, property.atom) &
+             ReadCard32(s, property.value)
+   END ReadFontProperty;
+
+   PROCEDURE ReadListOfFontProperties(s: Streams.Stream;
+				      numberOfProperties: INTEGER;
+                                      VAR list: ListOfFontProperties) : BOOLEAN;
+      VAR
+	 head, tail, property: ListOfFontProperties;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfProperties > 0 DO
+	 IF ~ReadFontProperty(s, property) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := property;
+	 ELSE
+	    tail.next := property;
+	 END;
+	 tail := property;
+	 DEC(numberOfProperties);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfFontProperties;
+
+   PROCEDURE ReadCharInfo(s: Streams.Stream;
+                          VAR charInfo: CharInfo) : BOOLEAN;
+   BEGIN
+      NEW(charInfo); charInfo.next := NIL;
+      RETURN ReadInt16(s, charInfo.leftSideBearing) &
+             ReadInt16(s, charInfo.rightSideBearing) &
+	     ReadInt16(s, charInfo.characterWidth) &
+	     ReadInt16(s, charInfo.ascent) &
+	     ReadInt16(s, charInfo.descent) &
+	     ReadCard16(s, charInfo.attributes)
+   END ReadCharInfo;
+
+   PROCEDURE ReadListOfCharInfos(s: Streams.Stream;
+                                 numberOfCharInfos: Types.Int32;
+				 VAR list: CharInfo) : BOOLEAN;
+      VAR
+	 head, tail, charInfo: CharInfo;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE numberOfCharInfos > 0 DO
+	 IF ~ReadCharInfo(s, charInfo) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := charInfo;
+	 ELSE
+	    tail.next := charInfo;
+	 END;
+	 tail := charInfo;
+	 DEC(numberOfCharInfos);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfCharInfos;
+
+   PROCEDURE ^GetEventType(display: Display;
+                          type: INTEGER;
+			  VAR eventType: Events.EventType);
+
+   PROCEDURE ReadButtonPressEvent(s: Streams.Stream;
+				  display: Display;
+                                  VAR event: XEvent);
+      VAR
+	 ev: ButtonPressEvent;
+	 state: INTEGER;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = buttonPressEvent) &
+            ReadCard8(s, ev.button) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.timestamp) &
+	    ReadCard32(s, ev.root) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.child) &
+	    ReadCard16(s, ev.rootx) &
+	    ReadCard16(s, ev.rooty) &
+	    ReadCard16(s, ev.eventx) &
+	    ReadCard16(s, ev.eventy) &
+	    ReadCard16(s, state) &
+	    ReadBool(s, ev.sameScreen);
+      ASSERT(ok);
+      ev.state := ConvertIntToSet16(state);
+      GetEventType(display, buttonPressEvent, ev.type);
+      COPY(eventName[buttonPressEvent], ev.message);
+      event := ev;
+   END ReadButtonPressEvent;
+
+   PROCEDURE ReadCirculateNotifyEvent(s: Streams.Stream;
+                                      display: Display;
+				      VAR event: XEvent);
+      VAR
+	 ev: CirculateNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = circulateNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadPad(s, 4) &
+	    ReadCard8(s, ev.place);
+      ASSERT(ok);
+      GetEventType(display, circulateNotifyEvent, ev.type);
+      COPY(eventName[circulateNotifyEvent], ev.message);
+      event := ev;
+   END ReadCirculateNotifyEvent;
+
+   PROCEDURE ReadCirculateRequestEvent(s: Streams.Stream;
+                                       display: Display;
+				       VAR event: XEvent);
+      VAR
+	 ev: CirculateRequestEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = circulateRequestEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.parent) &
+	    ReadCard32(s, ev.window) &
+	    ReadPad(s, 4) &
+	    ReadCard8(s, ev.place);
+      ASSERT(ok);
+      GetEventType(display, circulateRequestEvent, ev.type);
+      COPY(eventName[circulateRequestEvent], ev.message);
+      event := ev;
+   END ReadCirculateRequestEvent;
+
+   PROCEDURE ReadClientMessageEvent(s: Streams.Stream;
+                                    display: Display;
+				    VAR event: XEvent);
+      VAR
+	 ev: ClientMessageEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = clientMessageEvent) &
+            ReadCard8(s, ev.format) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.msgtype) &
+	    SubStreams.Open(ev.data, s, 12, 20, display);
+      ASSERT(ok);
+      GetEventType(display, clientMessageEvent, ev.type);
+      COPY(eventName[clientMessageEvent], ev.message);
+      event := ev;
+   END ReadClientMessageEvent;
+
+   PROCEDURE ReadColormapNotifyEvent(s: Streams.Stream;
+                                     display: Display;
+				     VAR event: XEvent);
+      VAR
+	 ev: ColormapNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = colormapNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.colormap) &
+	    ReadBool(s, ev.new) &
+	    ReadCard8(s, ev.state);
+      ASSERT(ok);
+      GetEventType(display, colormapNotifyEvent, ev.type);
+      COPY(eventName[colormapNotifyEvent], ev.message);
+      event := ev;
+   END ReadColormapNotifyEvent;
+
+   PROCEDURE ReadConfigureNotifyEvent(s: Streams.Stream;
+                                      display: Display;
+				      VAR event: XEvent);
+      VAR
+	 ev: ConfigureNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = configureNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.aboveSibling) &
+	    ReadInt16(s, ev.x) &
+	    ReadInt16(s, ev.y) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height) &
+	    ReadCard16(s, ev.borderWidth) &
+	    ReadBool(s, ev.overrideRedirect);
+      ASSERT(ok);
+      GetEventType(display, configureNotifyEvent, ev.type);
+      COPY(eventName[configureNotifyEvent], ev.message);
+      event := ev;
+   END ReadConfigureNotifyEvent;
+
+   PROCEDURE ReadConfigureRequestEvent(s: Streams.Stream;
+                                       display: Display;
+				       VAR event: XEvent);
+      VAR
+	 ev: ConfigureRequestEvent;
+	 ok: BOOLEAN;
+	 valueMask: INTEGER;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = configureRequestEvent) &
+            ReadCard8(s, ev.stackMode) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.parent) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.sibling) &
+	    ReadInt16(s, ev.x) &
+	    ReadInt16(s, ev.y) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height) &
+	    ReadCard16(s, ev.borderWidth) &
+	    ReadCard16(s, valueMask);
+      ASSERT(ok);
+      ev.valueMask := ConvertIntToSet16(valueMask);
+      GetEventType(display, configureRequestEvent, ev.type);
+      COPY(eventName[configureRequestEvent], ev.message);
+      event := ev;
+   END ReadConfigureRequestEvent;
+
+   PROCEDURE ReadCreateNotifyEvent(s: Streams.Stream;
+                                   display: Display;
+				   VAR event: XEvent);
+      VAR
+	 ev: CreateNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = createNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.parent) &
+	    ReadCard32(s, ev.window) &
+	    ReadInt16(s, ev.x) &
+	    ReadInt16(s, ev.y) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height) &
+	    ReadCard16(s, ev.borderWidth) &
+	    ReadBool(s, ev.overrideRedirect);
+      ASSERT(ok);
+      GetEventType(display, createNotifyEvent, ev.type);
+      COPY(eventName[createNotifyEvent], ev.message);
+      event := ev;
+   END ReadCreateNotifyEvent;
+
+   PROCEDURE ReadDestroyNotifyEvent(s: Streams.Stream;
+                                    display: Display;
+				    VAR event: XEvent);
+      VAR
+	 ev: DestroyNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = destroyNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window);
+      ASSERT(ok);
+      GetEventType(display, destroyNotifyEvent, ev.type);
+      COPY(eventName[destroyNotifyEvent], ev.message);
+      event := ev;
+   END ReadDestroyNotifyEvent;
+
+   PROCEDURE ReadEnterOrLeaveNotifyEvent(s: Streams.Stream;
+                                         display: Display;
+				         VAR event: XEvent);
+      VAR
+	 ev: EnterOrLeaveNotifyEvent;
+	 ok: BOOLEAN;
+	 state: INTEGER;
+	 bitset: INTEGER;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) &
+	       (ev.code IN {enterNotifyEvent, leaveNotifyEvent}) &
+            ReadCard8(s, ev.detail) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.root) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.child) &
+	    ReadInt16(s, ev.rootx) &
+	    ReadInt16(s, ev.rooty) &
+	    ReadInt16(s, ev.eventx) &
+	    ReadInt16(s, ev.eventy) &
+	    ReadCard16(s, state) &
+            ReadCard8(s, ev.mode) &
+            ReadCard8(s, bitset);
+      ASSERT(ok);
+      ev.state := ConvertIntToSet16(state);
+      ev.focus := ODD(bitset); bitset := bitset DIV 2;
+      ev.sameScreen := ODD(bitset);
+      GetEventType(display, ev.code, ev.type);
+      COPY(eventName[ev.code], ev.message);
+      event := ev;
+   END ReadEnterOrLeaveNotifyEvent;
+
+   PROCEDURE ReadExposeEvent(s: Streams.Stream;
+                             display: Display;
+			     VAR event: XEvent);
+      VAR
+	 ev: ExposeEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = exposeEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard16(s, ev.x) &
+	    ReadCard16(s, ev.y) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height) &
+	    ReadCard16(s, ev.count);
+      ASSERT(ok);
+      GetEventType(display, exposeEvent, ev.type);
+      COPY(eventName[exposeEvent], ev.message);
+      event := ev;
+   END ReadExposeEvent;
+
+   PROCEDURE ReadFocusEvent(s: Streams.Stream;
+                            display: Display;
+			    VAR event: XEvent);
+      VAR
+	 ev: FocusEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) &
+	       (ev.code IN {focusInEvent, focusOutEvent}) &
+            ReadCard8(s, ev.detail) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+            ReadCard8(s, ev.mode);
+      ASSERT(ok);
+      GetEventType(display, ev.code, ev.type);
+      COPY(eventName[ev.code], ev.message);
+      event := ev;
+   END ReadFocusEvent;
+
+   PROCEDURE ReadGraphicsExposeEvent(s: Streams.Stream;
+                                     display: Display;
+			             VAR event: XEvent);
+      VAR
+	 ev: GraphicsExposeEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = graphicsExposeEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.drawable) &
+	    ReadCard16(s, ev.x) &
+	    ReadCard16(s, ev.y) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height) &
+	    ReadCard16(s, ev.minorOpcode) &
+	    ReadCard16(s, ev.count) &
+	    ReadCard8(s, ev.majorOpcode);
+      ASSERT(ok);
+      GetEventType(display, graphicsExposeEvent, ev.type);
+      COPY(eventName[graphicsExposeEvent], ev.message);
+      event := ev;
+   END ReadGraphicsExposeEvent;
+
+   PROCEDURE ReadGravityNotifyEvent(s: Streams.Stream;
+                                    display: Display;
+			            VAR event: XEvent);
+      VAR
+	 ev: GravityNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = gravityNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard16(s, ev.x) &
+	    ReadCard16(s, ev.y);
+      ASSERT(ok);
+      GetEventType(display, gravityNotifyEvent, ev.type);
+      COPY(eventName[gravityNotifyEvent], ev.message);
+      event := ev;
+   END ReadGravityNotifyEvent;
+
+   PROCEDURE ReadKeymapNotifyEvent(s: Streams.Stream;
+                                   display: Display;
+			           VAR event: XEvent);
+      VAR
+	 ev: KeymapNotifyEvent;
+	 ok: BOOLEAN;
+	 key: INTEGER;
+	 set8: INTEGER;
+	 i: INTEGER;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = keymapNotifyEvent);
+      ASSERT(ok);
+      Sets.InitSet(ev.keys);
+      key := 8; (* the first 8 bits are not included in this event *)
+      WHILE key < keys DO
+	 ok := ReadCard8(s, set8); ASSERT(ok);
+	 i := 0;
+	 WHILE i < 8 DO
+	    IF ODD(set8) THEN
+	       Sets.Incl(ev.keys, key);
+	    END;
+	    set8 := set8 DIV 2;
+	    INC(i); INC(key);
+	 END;
+      END;
+      GetEventType(display, keymapNotifyEvent, ev.type);
+      COPY(eventName[keymapNotifyEvent], ev.message);
+      event := ev;
+   END ReadKeymapNotifyEvent;
+
+   PROCEDURE ReadKeyEvent(s: Streams.Stream;
+                          display: Display;
+			  VAR event: XEvent);
+      VAR
+	 ev: KeyEvent;
+	 ok: BOOLEAN;
+	 state: INTEGER;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) &
+	       (ev.code IN {keyPressEvent, keyReleaseEvent}) &
+            ReadCard8(s, ev.keycode) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.root) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.child) &
+	    ReadInt16(s, ev.rootx) &
+	    ReadInt16(s, ev.rooty) &
+	    ReadInt16(s, ev.eventx) &
+	    ReadInt16(s, ev.eventy) &
+	    ReadCard16(s, state) &
+	    ReadBool(s, ev.sameScreen);
+      ASSERT(ok);
+      ev.state := ConvertIntToSet16(state);
+      GetEventType(display, ev.code, ev.type);
+      COPY(eventName[ev.code], ev.message);
+      event := ev;
+   END ReadKeyEvent;
+
+   PROCEDURE ReadMapNotifyEvent(s: Streams.Stream;
+                                display: Display;
+				VAR event: XEvent);
+      VAR
+	 ev: MapNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = mapNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadBool(s, ev.overrideRedirect);
+      ASSERT(ok);
+      GetEventType(display, mapNotifyEvent, ev.type);
+      COPY(eventName[mapNotifyEvent], ev.message);
+      event := ev;
+   END ReadMapNotifyEvent;
+
+   PROCEDURE ReadMappingNotifyEvent(s: Streams.Stream;
+                                    display: Display;
+			            VAR event: XEvent);
+      VAR
+	 ev: MappingNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = mappingNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard8(s, ev.request) &
+	    ReadCard8(s, ev.firstKeycode) &
+	    ReadCard8(s, ev.count);
+      ASSERT(ok);
+      GetEventType(display, mappingNotifyEvent, ev.type);
+      COPY(eventName[mappingNotifyEvent], ev.message);
+      event := ev;
+   END ReadMappingNotifyEvent;
+
+   PROCEDURE ReadMapRequestEvent(s: Streams.Stream;
+                                 display: Display;
+			         VAR event: XEvent);
+      VAR
+	 ev: MapRequestEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = mapRequestEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.parent) &
+	    ReadCard32(s, ev.window);
+      ASSERT(ok);
+      GetEventType(display, mapRequestEvent, ev.type);
+      COPY(eventName[mapRequestEvent], ev.message);
+      event := ev;
+   END ReadMapRequestEvent;
+
+   PROCEDURE ReadMotionNotifyEvent(s: Streams.Stream;
+				   display: Display;
+                                   VAR event: XEvent);
+      VAR
+	 ev: MotionNotifyEvent;
+	 state: INTEGER;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = motionNotifyEvent) &
+            ReadCard8(s, ev.detail) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.root) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.child) &
+	    ReadCard16(s, ev.rootx) &
+	    ReadCard16(s, ev.rooty) &
+	    ReadCard16(s, ev.eventx) &
+	    ReadCard16(s, ev.eventy) &
+	    ReadCard16(s, state) &
+	    ReadBool(s, ev.sameScreen);
+      ASSERT(ok);
+      ev.state := ConvertIntToSet16(state);
+      GetEventType(display, motionNotifyEvent, ev.type);
+      COPY(eventName[motionNotifyEvent], ev.message);
+      event := ev;
+   END ReadMotionNotifyEvent;
+
+   PROCEDURE ReadNoExposeEvent(s: Streams.Stream;
+                                 display: Display;
+			         VAR event: XEvent);
+      VAR
+	 ev: NoExposeEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = noExposeEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.drawable) &
+	    ReadCard16(s, ev.minorOpcode) &
+	    ReadCard8(s, ev.majorOpcode);
+      ASSERT(ok);
+      GetEventType(display, noExposeEvent, ev.type);
+      COPY(eventName[noExposeEvent], ev.message);
+      event := ev;
+   END ReadNoExposeEvent;
+
+   PROCEDURE ReadPropertyNotifyEvent(s: Streams.Stream;
+				     display: Display;
+				     VAR event: XEvent);
+      VAR
+	 ev: PropertyNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = propertyNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.atom) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard8(s, ev.state);
+      ASSERT(ok);
+      GetEventType(display, propertyNotifyEvent, ev.type);
+      COPY(eventName[propertyNotifyEvent], ev.message);
+      event := ev;
+   END ReadPropertyNotifyEvent;
+
+   PROCEDURE ReadReparentNotifyEvent(s: Streams.Stream;
+				     display: Display;
+				     VAR event: XEvent);
+      VAR
+	 ev: ReparentNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = reparentNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard32(s, ev.parent) &
+	    ReadInt16(s, ev.x) &
+	    ReadInt16(s, ev.y) &
+	    ReadBool(s, ev.overrideRedirect);
+      ASSERT(ok);
+      GetEventType(display, reparentNotifyEvent, ev.type);
+      COPY(eventName[reparentNotifyEvent], ev.message);
+      event := ev;
+   END ReadReparentNotifyEvent;
+
+   PROCEDURE ReadResizeRequestEvent(s: Streams.Stream;
+				    display: Display;
+				    VAR event: XEvent);
+      VAR
+	 ev: ResizeRequestEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = resizeRequestEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard16(s, ev.width) &
+	    ReadCard16(s, ev.height);
+      ASSERT(ok);
+      GetEventType(display, resizeRequestEvent, ev.type);
+      COPY(eventName[resizeRequestEvent], ev.message);
+      event := ev;
+   END ReadResizeRequestEvent;
+
+   PROCEDURE ReadSelectionClearEvent(s: Streams.Stream;
+				     display: Display;
+				     VAR event: XEvent);
+      VAR
+	 ev: SelectionClearEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = selectionClearEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.owner) &
+	    ReadCard32(s, ev.selection);
+      ASSERT(ok);
+      GetEventType(display, selectionClearEvent, ev.type);
+      COPY(eventName[selectionClearEvent], ev.message);
+      event := ev;
+   END ReadSelectionClearEvent;
+
+   PROCEDURE ReadSelectionNotifyEvent(s: Streams.Stream;
+				      display: Display;
+				      VAR event: XEvent);
+      VAR
+	 ev: SelectionNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = selectionNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.requestor) &
+	    ReadCard32(s, ev.selection) &
+	    ReadCard32(s, ev.target) &
+	    ReadCard32(s, ev.property);
+      ASSERT(ok);
+      GetEventType(display, selectionNotifyEvent, ev.type);
+      COPY(eventName[selectionNotifyEvent], ev.message);
+      event := ev;
+   END ReadSelectionNotifyEvent;
+
+   PROCEDURE ReadSelectionRequestEvent(s: Streams.Stream;
+				       display: Display;
+				       VAR event: XEvent);
+      VAR
+	 ev: SelectionRequestEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = selectionRequestEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.time) &
+	    ReadCard32(s, ev.owner) &
+	    ReadCard32(s, ev.requestor) &
+	    ReadCard32(s, ev.selection) &
+	    ReadCard32(s, ev.target) &
+	    ReadCard32(s, ev.property);
+      ASSERT(ok);
+      GetEventType(display, selectionRequestEvent, ev.type);
+      COPY(eventName[selectionRequestEvent], ev.message);
+      event := ev;
+   END ReadSelectionRequestEvent;
+
+   PROCEDURE ReadUnmapNotifyEvent(s: Streams.Stream;
+                                  display: Display;
+				  VAR event: XEvent);
+      VAR
+	 ev: UnmapNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = unmapNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.event) &
+	    ReadCard32(s, ev.window) &
+	    ReadBool(s, ev.fromConfigure);
+      ASSERT(ok);
+      GetEventType(display, unmapNotifyEvent, ev.type);
+      COPY(eventName[unmapNotifyEvent], ev.message);
+      event := ev;
+   END ReadUnmapNotifyEvent;
+
+   PROCEDURE ReadVisibilityNotifyEvent(s: Streams.Stream;
+                                       display: Display;
+				       VAR event: XEvent);
+      VAR
+	 ev: VisibilityNotifyEvent;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(ev);
+      ok := ReadEventCode(s, ev.code) & (ev.code = visibilityNotifyEvent) &
+            ReadPad(s, 1) &
+	    ReadCard16(s, ev.sequenceNumber) &
+	    ReadCard32(s, ev.window) &
+	    ReadCard8(s, ev.state);
+      ASSERT(ok);
+      GetEventType(display, visibilityNotifyEvent, ev.type);
+      COPY(eventName[visibilityNotifyEvent], ev.message);
+      event := ev;
+   END ReadVisibilityNotifyEvent;
+
+   PROCEDURE Disconnect(display: Display);
+      VAR
+	 request: OpenRequest;
+   BEGIN
+      IF ~SYS.TAS(display.closed) THEN
+	 Semaphores.P(display.mutex);
+	 Streams.Release(display.s);
+	 Semaphores.V(display.mutex);
+	 Resources.Notify(display, Resources.terminated);
+	 (* deliver signals for open requests to
+	    avoid hanging tasks
+	 *)
+	 request := display.openRequests;
+	 display.openRequests := NIL;
+	 WHILE request # NIL DO
+	    Signals.Raise(request.signal);
+	    request := request.next;
+	 END;
+      END;
+   END Disconnect;
+
+   PROCEDURE CreateErrorEvent(display: Display;
+                              s: Streams.Stream;
+			      VAR event: XErrorEvent);
+      VAR
+	 code: INTEGER; (* general code, should be 0 *)
+	 errorCode: INTEGER; (* error code *)
+	 sequenceNumber: INTEGER;
+	 errorParameter: Types.Int32;
+	 majorOpcode, minorOpcode: INTEGER;
+	 ok: BOOLEAN;
+	 msg: Streams.Stream;
+   BEGIN
+      ok := ReadCard8(s, code) & ReadCard8(s, errorCode) &
+            ReadCard16(s, sequenceNumber) &
+	    ReadCard32(s, errorParameter) &
+	    ReadCard16(s, minorOpcode) &
+	    ReadCard8(s, majorOpcode);
+      ASSERT(ok);
+      Streams.SetPos(s, 0);
+      NEW(event);
+      event.type := xErrorEventType;
+      Strings.Open(msg, event.message);
+      Write.StringS(msg, "X Error ");
+      IF (errorCode >= 1) & (errorCode < LEN(errorCodeName)) THEN
+	 Write.StringS(msg, errorCodeName[errorCode]);
+      ELSE
+	 Write.IntS(msg, errorCode, 1);
+      END;
+      event.display := display;
+      event.code := errorCode;
+      event.sequenceNumber := sequenceNumber;
+      event.majorOpcode := majorOpcode;
+      event.minorOpcode := minorOpcode;
+      event.errorParameter := errorParameter;
+      event.packet := s;
+   END CreateErrorEvent;
+
+   PROCEDURE NextSequenceNumber(display: Display);
+   BEGIN
+      display.nextSequenceNumber :=
+	 (display.nextSequenceNumber + 1) MOD sequenceNumbers;
+   END NextSequenceNumber;
+
+   PROCEDURE InsertOpenRequest(display: Display; VAR request: OpenRequest);
+      VAR
+	 openRequest: OpenRequest;
+   BEGIN
+      NEW(openRequest);
+      openRequest.sequenceNumber := display.nextSequenceNumber;
+      NextSequenceNumber(display);
+      Signals.Create(openRequest.signal);
+      openRequest.reply := NIL;
+      openRequest.next := display.openRequests;
+      display.openRequests := openRequest;
+      request := openRequest;
+   END InsertOpenRequest;
+
+   PROCEDURE DeliverEvent(job: Jobs.Job);
+   BEGIN
+      WITH job: DeliverEventJob DO
+	 Events.Raise(job.event);
+      END;
+   END DeliverEvent;
+
+   PROCEDURE Raise(event: Events.Event);
+      VAR
+	 job: DeliverEventJob;
+   BEGIN
+      NEW(job); job.event := event;
+      Jobs.Submit(job, DeliverEvent);
+   END Raise;
+
+   PROCEDURE InputHandler(job: Jobs.Job);
+      CONST
+	 maxpacketlen = 512;
+	 minlen = 32;
+      TYPE
+	 Packet = POINTER TO ARRAY maxpacketlen OF BYTE;
+      VAR
+	 display: Display;
+	 in: Streams.Stream;
+	 readCondition: Conditions.Condition;
+	 termCondition: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 eventType: Events.EventType;
+	 resEvent: Resources.Event;
+	 packet: Packet;
+	 nbytes: Streams.Count;
+	 prevInput: Streams.Stream; (* previous input, may be NIL *)
+	 prevCount: Streams.Count; (* length of prevInput, if # NIL *)
+	 newInput: Streams.Stream; (* represents new input packet *)
+	 joinedInput: Streams.Stream; (* tied from prevInput & newInput *)
+	 exactLength: Streams.Count; (* exact response length, if known *)
+	 lengthKnown: BOOLEAN;
+	 code: INTEGER; (* code of first byte of response *)
+	 sequenceNumber: INTEGER; (* in case of server replies *)
+
+      PROCEDURE JoinStreams;
+	 VAR
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := SubStreams.Join(joinedInput,
+	    prevInput, newInput, display);
+	 ASSERT(ok);
+      END JoinStreams;
+
+      PROCEDURE SendResponse(s: Streams.Stream);
+	 VAR
+	    prevRequest, request: OpenRequest;
+	    parser: EventParserProc;
+	    event: XEvent;
+	    errorEvent: XErrorEvent;
+
+	 PROCEDURE FindOpenRequest(sequenceNumber: INTEGER;
+	                           VAR request: OpenRequest) : BOOLEAN;
+	    VAR
+	       prevRequest: OpenRequest;
+	 BEGIN
+	    prevRequest := NIL; request := display.openRequests;
+	    WHILE (request # NIL) &
+		  (request.sequenceNumber # sequenceNumber) DO
+	       prevRequest := request;
+	       request := request.next;
+	    END;
+	    IF request = NIL THEN RETURN FALSE END;
+	    (* remove open request out of the linear list *)
+	    IF prevRequest = NIL THEN
+	       display.openRequests := request.next;
+	    ELSE
+	       prevRequest.next := request.next;
+	    END;
+	    RETURN TRUE
+	 END FindOpenRequest;
+
+      BEGIN (* SendResponse *)
+	 CASE code OF
+	 | 0:
+	       CreateErrorEvent(display, s, errorEvent);
+	       IF FindOpenRequest(sequenceNumber, request) THEN
+		  request.reply := NIL;
+		  request.xerror := errorEvent;
+		  Signals.Raise(request.signal);
+	       ELSE
+		  RelatedEvents.Raise(display, errorEvent);
+	       END;
+	 | 1:
+	       IF FindOpenRequest(sequenceNumber, request) THEN
+		  request.reply := s;
+		  request.xerror := NIL;
+		  Signals.Raise(request.signal);
+	       END;
+	 | 2..255:
+	       (* the most significant bit is set if this event
+		  was generated by SendEvent
+	       *)
+	       code := code MOD 128;
+	       parser := eventParser[code];
+	       IF parser # NIL THEN
+		  parser(s, display, event);
+		  event.display := display;
+		  Raise(event);
+	       END;
+	 END;
+      END SendResponse;
+
+      PROCEDURE Split(s: Streams.Stream;
+		      cutoff, nbytes: Streams.Count;
+                      VAR part1, part2: Streams.Stream);
+	 VAR
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := SubStreams.Open(part1, s, 0, cutoff, display) &
+	       SubStreams.Open(part2, s, cutoff, nbytes - cutoff, display);
+	 ASSERT(ok);
+      END Split;
+
+      PROCEDURE InspectHeader;
+	 (* take a look at the header of a packet of which at least
+	    the first 32 bytes are visible and set following variables:
+	       exactLength: exact length of the entire response packet
+	       lengthKnown: is set to TRUE
+	       code: integer representing the first byte of the packet
+	 *)
+	 VAR
+	    extraLength: Types.Int32;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := ReadCard8(joinedInput, code); ASSERT(ok);
+	 IF code = 0 THEN
+	    (* error packet *)
+	    exactLength := 32;
+	    ok := ReadPad(joinedInput, 1) &
+		  ReadCard16(joinedInput, sequenceNumber);
+	    ASSERT(ok);
+	 ELSIF code = 1 THEN
+	    (* reply to a request *)
+	    ok := ReadPad(joinedInput, 1) &
+		  ReadCard16(joinedInput, sequenceNumber) &
+		  ReadCard32(joinedInput, extraLength);
+	    ASSERT(ok);
+	    exactLength := 32 + extraLength * 4;
+	 ELSE
+	    (* event packet *)
+	    exactLength := 32;
+	 END;
+	 lengthKnown := TRUE;
+	 Streams.SetPos(joinedInput, 0);
+      END InspectHeader;
+
+   BEGIN (* InputHandler *)
+      display := job(InputHandlerJob).display; in := display.s;
+      IF display.closed THEN RETURN END;
+      Conditions.CreateSet(conditions);
+      StreamConditions.Create(readCondition, in, StreamConditions.read);
+      IF readCondition = NIL THEN
+	 (* the input stream is apparently already closed *)
+	 RETURN
+      END;
+      Conditions.Incl(conditions, readCondition);
+      Resources.TakeInterest(display, eventType);
+      EventConditions.Create(termCondition, eventType);
+      Conditions.Incl(conditions, termCondition);
+      prevInput := NIL; prevCount := 0; lengthKnown := FALSE;
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 IF EventConditions.TestAndGet(termCondition, resEvent) THEN
+	    IF resEvent.change = Resources.terminated THEN
+	       EXIT
+	    END;
+	 ELSE
+	    (* input stream is ready for reading;
+	       note that we are just allowed to read in this case
+	       to avoid a locked display stream as
+	       write operations occur in parallel
+	    *)
+	    NEW(packet);
+	    Semaphores.P(display.mutex);
+	    nbytes := Streams.ReadPacket(in, packet^, 0, maxpacketlen);
+	    Semaphores.V(display.mutex);
+	    IF nbytes = 0 THEN
+	       Disconnect(display); EXIT
+	    END;
+	    MemStreams.Open(newInput, SYS.ADR(packet^),
+	       nbytes, MemStreams.read);
+	    (* join streams, if there is input left
+	       from previous read operations
+	    *)
+	    IF prevInput = NIL THEN
+	       joinedInput := newInput;
+	    ELSE
+	       JoinStreams;
+	       INC(nbytes, prevCount);
+	       prevInput := NIL; prevCount := 0;
+	    END;
+	    (* process all packets in joinedInput *)
+	    LOOP
+	       IF nbytes < minlen THEN EXIT END;
+	       IF ~lengthKnown THEN
+		  InspectHeader;
+	       END;
+	       IF nbytes < exactLength THEN EXIT END;
+	       IF nbytes = exactLength THEN
+		  SendResponse(joinedInput);
+		  lengthKnown := FALSE;
+		  joinedInput := NIL;
+		  EXIT
+	       END;
+	       Split(joinedInput, exactLength, nbytes, prevInput, newInput);
+	       SendResponse(prevInput);
+	       DEC(nbytes, exactLength);
+	       lengthKnown := FALSE;
+	       joinedInput := newInput; prevInput := NIL;
+	    END;
+	    (* keep rest of unprocessed input in prevInput *)
+	    IF joinedInput # NIL THEN
+	       prevInput := joinedInput; prevCount := nbytes;
+	       joinedInput := NIL;
+	    END;
+	 END;
+      END;
+      EventConditions.Drop(termCondition);
+   END InputHandler;
+
+   PROCEDURE GetConnection(VAR s: Streams.Stream;
+			   ds: Streams.Stream; (* display spec as stream *)
+                           VAR auth: XAuthority.AuthRec;
+			   VAR server: Server;
+			   VAR screenNumber: INTEGER;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 XPort = 6000;
+	 socketpath = "/tmp/.X11-unix/X";
+	 major = 11; minor = 0; (* desired X11 protocol *)
+      VAR
+	 hostname: DNSRecords.Name;
+	 displayNumber: INTEGER;
+	 gotAuth: BOOLEAN;
+
+      PROCEDURE ParseDisplay(s: Streams.Stream;
+                             VAR hostname: ARRAY OF CHAR;
+			     VAR display: INTEGER;
+			     VAR screenNumber: INTEGER) : BOOLEAN;
+      BEGIN
+	 (* first try the full format including screen number *)
+	 Scan.S3(s, "%[^:]:%d.%d", hostname, display, screenNumber);
+	 IF s.count = 3 THEN RETURN TRUE END;
+	 (* as next try the same without screen number *)
+	 screenNumber := 0;
+	 Streams.SetPos(s, 0);
+	 Scan.S2(s, "%[^:]:%d", hostname, display);
+	 IF s.count = 2 THEN RETURN TRUE END;
+	 RETURN FALSE
+      END ParseDisplay;
+
+      PROCEDURE SetDisplayNumber;
+	 VAR ds: Streams.Stream;
+      BEGIN
+	 NEW(auth.number);
+	 auth.number.string[0] := 0X; Strings.Open(ds, auth.number.string);
+	 Write.IntS(ds, displayNumber, 0);
+	 Streams.Release(ds);
+	 auth.number.len := SHORT(Strings.Len(auth.number.string));
+      END SetDisplayNumber;
+
+      PROCEDURE GetAuth(address: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 IF address # "" THEN
+	    NEW(auth.address);
+	    COPY(address, auth.address.string);
+	    auth.address.len := SHORT(Strings.Len(auth.address.string));
+	 END;
+	 IF XAuthority.GetAuthByAddr(auth, errors) THEN
+	    IF auth.name = NIL THEN NEW(auth.name); auth.name.len := 0; END;
+	    IF auth.data = NIL THEN NEW(auth.data); auth.data.len := 0; END;
+	    RETURN TRUE
+	 ELSE
+	    NEW(auth.name); auth.name.len := 0;
+	    NEW(auth.data); auth.data.len := 0;
+	    RETURN FALSE
+	 END;
+      END GetAuth;
+
+      PROCEDURE TryLocalHostnames;
+	 VAR
+	    hostname: ARRAY 512 OF CHAR;
+      BEGIN
+	 auth.family := XAuthority.familyLocal;
+	 UnixHost.GetHostName(hostname);
+	 gotAuth := GetAuth(hostname);
+	 IF ~gotAuth THEN
+	    UnixHost.GetFullyQualifiedHostName(hostname);
+	    gotAuth := GetAuth(hostname);
+	 END;
+      END TryLocalHostnames;
+
+      PROCEDURE TryLocalConnection() : BOOLEAN;
+	 VAR
+	    socketname: ARRAY 512 OF CHAR;
+	    sns: Streams.Stream;
+      BEGIN
+	 socketname[0] := 0X; Strings.Open(sns, socketname);
+	 Write.StringS(sns, socketpath); Write.IntS(sns, displayNumber, 0);
+	 Streams.Release(sns);
+	 IF ~UnixDomainSockets.Open(s, socketname, Streams.onebuf, errors) THEN
+	    RETURN FALSE
+	 END;
+	 TryLocalHostnames;
+	 RETURN TRUE
+      END TryLocalConnection;
+
+      PROCEDURE TryNetworkConnection() : BOOLEAN;
+	 VAR
+	    addresses: DNSResolvers.IPv4AddressList;
+	    ipaddr: IPv4Addresses.Address;
+	    hs: Streams.Stream;
+
+	 PROCEDURE Try(ipaddr: IPv4Addresses.Address) : BOOLEAN;
+	    VAR
+	       socketaddr: IPv4Addresses.SocketAddress;
+	       myhostname: DNSRecords.Name;
+	 BEGIN
+	    IPv4Addresses.SetPort(socketaddr, XPort + displayNumber);
+	    socketaddr.host := ipaddr;
+	    IF ~IPv4TCPSockets.Open(s, socketaddr, Streams.onebuf, errors) THEN
+	       RETURN FALSE
+	    END;
+	    NEW(auth.address);
+	    IF (hostname = "localhost") OR (hostname = "127.0.0.1") THEN
+	       (* in case of localhost we have to lookup
+		  the hostname in the authorization db
+		  with auth.family set to familyLocal
+	       *)
+	       TryLocalHostnames;
+	    ELSE
+	       auth.address.len := SHORT(SYS.SIZE(IPv4Addresses.Address));
+	       MemOps.Copy(SYS.ADR(ipaddr), SYS.ADR(auth.address.string),
+		  auth.address.len);
+	       auth.family := XAuthority.familyInternet;
+	       gotAuth := GetAuth("");
+	    END;
+	    RETURN TRUE
+	 END Try;
+
+      BEGIN (* TryNetworkConnection *)
+	 IF ~DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+	       hostname, addresses, errors) THEN
+	    Strings.Open(hs, hostname);
+	    IF IPv4Addresses.ReadText(hs, ipaddr) & Try(ipaddr) THEN
+	       RETURN TRUE
+	    END;
+	    RETURN FALSE
+	 END;
+	 WHILE addresses # NIL DO
+	    IF Try(addresses.addr) THEN RETURN TRUE END;
+	    addresses := addresses.next;
+	 END;
+	 RETURN FALSE
+      END TryNetworkConnection;
+
+      PROCEDURE SendGreeting() : BOOLEAN;
+	 VAR
+	    bytesex: CHAR;
+      BEGIN
+	 CASE Types.byteorder OF
+	 | Types.bigEndian:
+	       bytesex := "B";
+	 | Types.littleEndian:
+	       bytesex := "l";
+	 END;
+	 RETURN Streams.WriteByte(s, bytesex) &
+		WritePad(s, 1) &
+	        WriteCard16(s, major) &
+	        WriteCard16(s, minor) &
+		WriteCard16(s, auth.name.len) &
+		WriteCard16(s, auth.data.len) &
+		WritePad(s, 2) &
+		WriteString8(s, auth.name.string, auth.name.len) &
+		WriteString8(s, auth.data.string, auth.data.len) &
+		Streams.Flush(s)
+      END SendGreeting;
+
+      PROCEDURE ReadResponse() : BOOLEAN;
+	 VAR
+	    success: BOOLEAN;
+	    len: INTEGER;
+	    units: INTEGER;
+	    reason: ARRAY 128 OF CHAR;
+	    serverMajor, serverMinor: INTEGER;
+	    releaseNumber: Types.Int32;
+	    resourceIDbase: Types.Int32;
+	    resourceIDmask: Types.Int32;
+	    motionBufferSize: Types.Int32;
+	    vendorLength: INTEGER;
+	    maximumRequestLength: INTEGER;
+	    numberOfScreens: INTEGER;
+	    numberOfFormats: INTEGER;
+	    imageByteOrder: INTEGER;
+	    bitmapFormatBitOrder: INTEGER;
+	    bitmapFormatScanlineUnit: INTEGER;
+	    bitmapFormatScanlinePad: INTEGER;
+	    minKeyCode, maxKeyCode: INTEGER;
+	    vendor: ARRAY 128 OF CHAR;
+	    listOfFormats: Format;
+	    listOfScreens: Screen;
+      BEGIN
+	 IF ~ReadBool(s, success) THEN
+	    ConnectionError(errors, invalidWelcome, ds, "");
+	    RETURN FALSE
+	 END;
+	 IF success THEN
+	    IF ~ReadPad(s, 1) OR
+		  ~ReadCard16(s, serverMajor) OR
+		  ~ReadCard16(s, serverMinor) OR
+		  ~ReadCard16(s, units) OR
+		  ~ReadCard32(s, releaseNumber) OR
+		  ~ReadCard32(s, resourceIDbase) OR
+		  ~ReadCard32(s, resourceIDmask) OR
+		  ~ReadCard32(s, motionBufferSize) OR
+		  ~ReadCard16(s, vendorLength) OR
+		  ~ReadCard16(s, maximumRequestLength) OR
+		  ~ReadCard8(s, numberOfScreens) OR
+		  ~ReadCard8(s, numberOfFormats) OR
+		  ~ReadCard8(s, imageByteOrder) OR
+		  ~ReadCard8(s, bitmapFormatBitOrder) OR
+		  ~ReadCard8(s, bitmapFormatScanlineUnit) OR
+		  ~ReadCard8(s, bitmapFormatScanlinePad) OR
+		  ~ReadCard8(s, minKeyCode) OR
+		  ~ReadCard8(s, maxKeyCode) OR
+		  ~ReadPad(s, 4) OR
+		  ~ReadString8(s, vendor, vendorLength) OR
+		  ~ReadPad(s, Pad(vendorLength)) OR
+		  ~ReadListOfFormats(s, numberOfFormats, listOfFormats) OR
+		  ~ReadListOfScreens(s, numberOfScreens, listOfScreens) THEN
+	       ConnectionError(errors, invalidWelcome, ds, "");
+	       RETURN FALSE
+	    END;
+	    NEW(server);
+	    server.major := serverMajor;
+	    server.minor := serverMinor;
+	    server.releaseNumber := releaseNumber;
+	    server.resourceIDbase := resourceIDbase;
+	    server.resourceIDmask := resourceIDmask;
+	    server.motionBufferSize := motionBufferSize;
+	    server.maximumRequestLength := maximumRequestLength;
+	    server.numberOfScreens := numberOfScreens;
+	    server.numberOfFormats := numberOfFormats;
+	    server.imageByteOrder := imageByteOrder;
+	    server.bitmapFormatBitOrder := bitmapFormatBitOrder;
+	    server.bitmapFormatScanlineUnit := bitmapFormatScanlineUnit;
+	    server.bitmapFormatScanlinePad := bitmapFormatScanlinePad;
+	    server.minKeyCode := minKeyCode;
+	    server.maxKeyCode := maxKeyCode;
+	    COPY(vendor, server.vendor);
+	    server.listOfFormats := listOfFormats;
+	    server.listOfScreens := listOfScreens;
+	    RETURN TRUE
+	 ELSE
+	    IF ~ReadCard8(s, len) OR
+		  ~ReadCard16(s, serverMajor) OR
+		  ~ReadCard16(s, serverMinor) OR
+		  ~ReadCard16(s, units) OR
+		  ~ReadString8(s, reason, units * 4) THEN
+	       ConnectionError(errors, invalidWelcome, ds, "");
+	       RETURN FALSE (* because of read error *)
+	    END;
+	    ConnectionError(errors, connectionRejected, ds, reason);
+	    RETURN FALSE (* because we weren't successful *)
+	 END;
+      END ReadResponse;
+
+   BEGIN (* GetConnection *)
+      IF ~ParseDisplay(ds, hostname, displayNumber, screenNumber) THEN
+	 ConnectionError(errors, invalidDisplaySpecification, ds, "");
+	 RETURN FALSE
+      END;
+      IF screenNumber < 0 THEN
+	 ConnectionError(errors, invalidScreenNumber, ds, "");
+	 RETURN FALSE
+      END;
+      SetDisplayNumber;
+      gotAuth := FALSE;
+      IF hostname = "" THEN
+	 IF ~TryLocalConnection() THEN
+	    ConnectionError(errors, localConnectionFailed, ds, "");
+	    RETURN FALSE
+	 END;
+      ELSE
+	 IF ~TryNetworkConnection() THEN
+	    ConnectionError(errors, networkConnectionFailed, ds, "");
+	    RETURN FALSE
+	 END;
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~SendGreeting() THEN
+	 ConnectionError(errors, greetingFailed, ds, "");
+	 Streams.Release(s);
+	 RETURN FALSE
+      END;
+      IF ~ReadResponse() THEN
+	 Streams.Release(s);
+	 RETURN FALSE
+      END;
+      IF screenNumber >= server.numberOfScreens THEN
+	 ConnectionError(errors, noSuchScreenNumber, ds, "");
+	 Streams.Release(s);
+	 RETURN FALSE
+      END;
+      ASSERT(s # NIL);
+      RETURN TRUE
+   END GetConnection;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change IN {Resources.terminated, Resources.unreferenced} THEN
+	    Disconnect(event.resource(Display));
+	 END;
+      END;
+   END TerminationHandler;
+
+   (* === module initialization ============================================ *)
+
+   PROCEDURE Init;
+      VAR
+	 index: INTEGER;
+   BEGIN
+      (* names of event types *)
+      eventTypeName[keyPress] := "KeyPress";
+      eventTypeName[keyRelease] := "KeyRelease";
+      eventTypeName[buttonPress] := "ButtonPress";
+      eventTypeName[buttonRelease] := "ButtonRelease";
+      eventTypeName[enterWindow] := "EnterWindow";
+      eventTypeName[leaveWindow] := "LeaveWindow";
+      eventTypeName[pointerMotion] := "PointerMotion";
+      eventTypeName[pointerMotionHint] := "PointerMotionHint";
+      eventTypeName[button1Motion] := "Button1Motion";
+      eventTypeName[button2Motion] := "Button2Motion";
+      eventTypeName[button3Motion] := "Button3Motion";
+      eventTypeName[button4Motion] := "Button4Motion";
+      eventTypeName[button5Motion] := "Button5Motion";
+      eventTypeName[buttonMotion] := "ButtonMotion";
+      eventTypeName[keymapState] := "KeymapState";
+      eventTypeName[exposure] := "Exposure";
+      eventTypeName[visibilityChange] := "VisibilityChange";
+      eventTypeName[structureNotify] := "StructureNotify";
+      eventTypeName[resizeRedirect] := "ResizeRedirect";
+      eventTypeName[substructureNotify] := "SubstructureNotify";
+      eventTypeName[substructureRedirect] := "SubstructureRedirect";
+      eventTypeName[focusChange] := "FocusChange";
+      eventTypeName[propertyChange] := "PropertyChange";
+      eventTypeName[colormapChange] := "ColormapChange";
+      eventTypeName[ownerGrabButton] := "OwnerGrabButton";
+      (* names of error codes *)
+      errorCodeName[0] := "invalid";
+      errorCodeName[requestError] := "Request";
+      errorCodeName[valueError] := "Value";
+      errorCodeName[windowError] := "Window";
+      errorCodeName[pixmapError] := "Pixmap";
+      errorCodeName[atomError] := "Atom";
+      errorCodeName[cursorError] := "Cursor";
+      errorCodeName[fontError] := "Font";
+      errorCodeName[matchError] := "Match";
+      errorCodeName[drawableError] := "Drawable";
+      errorCodeName[accessError] := "Access";
+      errorCodeName[allocError] := "Alloc";
+      errorCodeName[colormapError] := "Colormap";
+      errorCodeName[gContextError] := "GContext";
+      errorCodeName[idChoiceError] := "IDChoice";
+      errorCodeName[nameError] := "Name";
+      errorCodeName[lengthError] := "Length";
+      errorCodeName[implementationError] := "Implementation";
+      Events.Define(xErrorEventType);
+      Errors.AssignWriteProcedure(xErrorEventType, WriteXError);
+      (* names of special keys *)
+      keyName[shiftKey] := "Shift";
+      keyName[lockKey] := "Lock";
+      keyName[controlKey] := "Control";
+      keyName[mod1Key] := "Mod1";
+      keyName[mod2Key] := "Mod2";
+      keyName[mod3Key] := "Mod3";
+      keyName[mod4Key] := "Mod4";
+      keyName[mod5Key] := "Mod5";
+      keyName[button1Key] := "Button1";
+      keyName[button2Key] := "Button2";
+      keyName[button3Key] := "Button3";
+      keyName[button4Key] := "Button4";
+      keyName[button5Key] := "Button5";
+      (* initialize eventParser array *)
+      index := 0;
+      WHILE index < LEN(eventParser) DO
+	 eventParser[index] := NIL;
+	 INC(index);
+      END;
+      eventParser[buttonPressEvent] := ReadButtonPressEvent;
+      eventParser[circulateNotifyEvent] := ReadCirculateNotifyEvent;
+      eventParser[circulateRequestEvent] := ReadCirculateRequestEvent;
+      eventParser[clientMessageEvent] := ReadClientMessageEvent;
+      eventParser[colormapNotifyEvent] := ReadColormapNotifyEvent;
+      eventParser[configureNotifyEvent] := ReadConfigureNotifyEvent;
+      eventParser[configureRequestEvent] := ReadConfigureRequestEvent;
+      eventParser[createNotifyEvent] := ReadCreateNotifyEvent;
+      eventParser[destroyNotifyEvent] := ReadDestroyNotifyEvent;
+      eventParser[enterNotifyEvent] := ReadEnterOrLeaveNotifyEvent;
+      eventParser[exposeEvent] := ReadExposeEvent;
+      eventParser[focusInEvent] := ReadFocusEvent;
+      eventParser[focusOutEvent] := ReadFocusEvent;
+      eventParser[graphicsExposeEvent] := ReadGraphicsExposeEvent;
+      eventParser[gravityNotifyEvent] := ReadGravityNotifyEvent;
+      eventParser[keymapNotifyEvent] := ReadKeymapNotifyEvent;
+      eventParser[keyPressEvent] := ReadKeyEvent;
+      eventParser[keyReleaseEvent] := ReadKeyEvent;
+      eventParser[leaveNotifyEvent] := ReadEnterOrLeaveNotifyEvent;
+      eventParser[mapNotifyEvent] := ReadMapNotifyEvent;
+      eventParser[mappingNotifyEvent] := ReadMappingNotifyEvent;
+      eventParser[mapRequestEvent] := ReadMapRequestEvent;
+      eventParser[motionNotifyEvent] := ReadMotionNotifyEvent;
+      eventParser[noExposeEvent] := ReadNoExposeEvent;
+      eventParser[propertyNotifyEvent] := ReadPropertyNotifyEvent;
+      eventParser[reparentNotifyEvent] := ReadReparentNotifyEvent;
+      eventParser[resizeRequestEvent] := ReadResizeRequestEvent;
+      eventParser[selectionClearEvent] := ReadSelectionClearEvent;
+      eventParser[selectionNotifyEvent] := ReadSelectionNotifyEvent;
+      eventParser[selectionRequestEvent] := ReadSelectionRequestEvent;
+      eventParser[unmapNotifyEvent] := ReadUnmapNotifyEvent;
+      eventParser[visibilityNotifyEvent] := ReadVisibilityNotifyEvent;
+      (* initialize X event names *)
+      xeventName[0] := ""; xeventName[1] := "";
+      xeventName[keyPressEvent] := "KeyPress";
+      xeventName[keyReleaseEvent] := "KeyRelease";
+      xeventName[buttonPressEvent] := "ButtonPress";
+      xeventName[motionNotifyEvent] := "MotionNotify";
+      xeventName[enterNotifyEvent] := "EnterNotify";
+      xeventName[leaveNotifyEvent] := "LeaveNotify";
+      xeventName[focusInEvent] := "FocusIn";
+      xeventName[focusOutEvent] := "FocusOut";
+      xeventName[keymapNotifyEvent] := "KeymapNotify";
+      xeventName[exposeEvent] := "Expose";
+      xeventName[graphicsExposeEvent] := "GraphicsExpose";
+      xeventName[noExposeEvent] := "NoExpose";
+      xeventName[visibilityNotifyEvent] := "VisibilityNotify";
+      xeventName[createNotifyEvent] := "CreateNotify";
+      xeventName[destroyNotifyEvent] := "DestroyNotify";
+      xeventName[unmapNotifyEvent] := "UnmapNotify";
+      xeventName[mapNotifyEvent] := "MapNotify";
+      xeventName[mapRequestEvent] := "MapRequest";
+      xeventName[reparentNotifyEvent] := "ReparentNotify";
+      xeventName[configureNotifyEvent] := "ConfigureNotify";
+      xeventName[configureRequestEvent] := "ConfigureRequest";
+      xeventName[gravityNotifyEvent] := "GravityNotify";
+      xeventName[resizeRequestEvent] := "ResizeRequest";
+      xeventName[circulateNotifyEvent] := "CirculateNotify";
+      xeventName[circulateRequestEvent] := "CirculateRequest";
+      xeventName[propertyNotifyEvent] := "PropertyNotify";
+      xeventName[selectionClearEvent] := "SelectionClear";
+      xeventName[selectionRequestEvent] := "SelectionRequest";
+      xeventName[selectionNotifyEvent] := "SelectionNotify";
+      xeventName[colormapNotifyEvent] := "ColormapNotify";
+      xeventName[clientMessageEvent] := "ClientMessage";
+      xeventName[mappingNotifyEvent] := "MappingNotify";
+      (* initialize error handling *)
+      Events.Define(error);
+      errormsg[connectionRejected] := "display rejected by X server";
+      errormsg[invalidDisplaySpecification] :=
+	 "invalid display specification";
+      errormsg[missingDisplaySpecification] :=
+	 "missing display specification";
+      errormsg[invalidScreenNumber] :=
+	 "invalid screen number";
+      errormsg[localConnectionFailed] :=
+	 "display to local X server failed";
+      errormsg[networkConnectionFailed] :=
+	 "display to remote X server failed";
+      errormsg[greetingFailed] :=
+	 "initial greeting to X server could not be sent";
+      errormsg[invalidWelcome] :=
+	 "initial response by X server was invalid";
+      errormsg[noSuchScreenNumber] :=
+	 "no such screen number";
+      errormsg[outOfResourceIDs] :=
+	 "out of resource ids";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END Init;
+
+   (* === public procedures ================================================ *)
+
+   PROCEDURE GetNumberOfScreens(display: Display) : INTEGER;
+   BEGIN
+      RETURN display.server.numberOfScreens
+   END GetNumberOfScreens;
+
+   PROCEDURE SetScreen(display: Display; screenNumber: INTEGER);
+      VAR
+	 screen: Screen;
+   BEGIN
+      ASSERT((screenNumber >= 0) &
+	 (screenNumber < display.server.numberOfScreens));
+      screen := display.server.listOfScreens;
+      WHILE screenNumber > 0 DO
+	 screen := screen.next;
+	 DEC(screenNumber);
+      END;
+      display.screen := screen;
+   END SetScreen;
+
+   PROCEDURE GetScreenNumber(display: Display) : INTEGER;
+      VAR
+	 screenNumber: INTEGER;
+	 screen: Screen;
+   BEGIN
+      screenNumber := 0;
+      screen := display.server.listOfScreens;
+      WHILE screen # display.screen DO
+	 INC(screenNumber);
+	 screen := screen.next;
+      END;
+      RETURN screenNumber
+   END GetScreenNumber;
+
+   PROCEDURE Open(VAR display: Display;
+                  address: ARRAY OF CHAR;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 auth: XAuthority.AuthRec;
+	 server: Server;
+	 displ: Display;
+	 displayNumber: INTEGER;
+	 eventType: Events.EventType;
+	 type: INTEGER;
+	 inputHandler: InputHandlerJob;
+	 ds, ds2: Streams.Stream; (* display stream *)
+	 ok: BOOLEAN;
+   BEGIN
+      IF address # "" THEN
+	 Strings.Open(ds, address);
+      ELSIF ~UnixEnvironment.Open(ds, "DISPLAY") THEN
+	 ConnectionError(errors, missingDisplaySpecification, NIL, "");
+	 RETURN FALSE
+      END;
+      IF ~GetConnection(s, ds, auth, server, displayNumber, errors) THEN
+	 RETURN FALSE
+      END;
+      ASSERT(s # NIL);
+      NEW(displ); RelatedEvents.QueueEvents(displ);
+      displ.address := ""; Strings.Open(ds2, displ.address);
+      Streams.SetPos(ds, 0);
+      ok := Streams.Copy(ds, ds2, -1);
+      displ.s := s; displ.server := server;
+      SetScreen(displ, displayNumber);
+      LocalSemaphores.Create(displ.mutex);
+      displ.closed := FALSE;
+      Resources.TakeInterest(displ, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      displ.nextSequenceNumber := 1;
+      displ.openRequests := NIL;
+      displ.id := 0;
+      type := 0;
+      WHILE type < 256 DO
+	 displ.eventType[type] := NIL;
+	 INC(type);
+      END;
+      NEW(inputHandler); inputHandler.display := displ;
+      Jobs.Submit(inputHandler, InputHandler);
+      display := displ;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE Flush(display: Display) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      ok := Streams.Flush(display.s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display);
+      END;
+      RETURN ok
+   END Flush;
+
+   PROCEDURE GetVendor(display: Display;
+                       VAR vendor: ARRAY OF CHAR);
+   BEGIN
+      COPY(display.server.vendor, vendor);
+   END GetVendor;
+
+   PROCEDURE GetProtocolVersion(display: Display;
+                                VAR major, minor: INTEGER);
+   BEGIN
+      major := display.server.major;
+      minor := display.server.minor;
+   END GetProtocolVersion;
+
+   PROCEDURE GetRootWindow(display: Display) : WindowID;
+   BEGIN
+      RETURN display.screen.root
+   END GetRootWindow;
+
+   PROCEDURE GetWidth(display: Display) : INTEGER;
+   BEGIN
+      RETURN display.screen.widthInPixels
+   END GetWidth;
+
+   PROCEDURE GetHeight(display: Display) : INTEGER;
+   BEGIN
+      RETURN display.screen.heightInPixels
+   END GetHeight;
+
+   PROCEDURE GetWhitePixel(display: Display) : PixmapID;
+   BEGIN
+      RETURN display.screen.whitePixel
+   END GetWhitePixel;
+
+   PROCEDURE GetBlackPixel(display: Display) : PixmapID;
+   BEGIN
+      RETURN display.screen.blackPixel
+   END GetBlackPixel;
+
+   PROCEDURE GetDefaultColormap(display: Display) : ColormapID;
+   BEGIN
+      RETURN display.screen.colormap
+   END GetDefaultColormap;
+
+   PROCEDURE GetMinKeyCode(display: Display) : Keycode;
+   BEGIN
+      RETURN display.server.minKeyCode
+   END GetMinKeyCode;
+
+   PROCEDURE GetMaxKeyCode(display: Display) : Keycode;
+   BEGIN
+      RETURN display.server.maxKeyCode
+   END GetMaxKeyCode;
+
+   PROCEDURE GetResourceIDRange(display: Display;
+                                VAR resourceIDbase: ResourceID;
+				VAR resourceIDmask: ResourceID);
+   BEGIN
+      resourceIDbase := display.server.resourceIDbase;
+      resourceIDmask := display.server.resourceIDmask;
+   END GetResourceIDRange;
+
+   PROCEDURE GetEventType(display: Display;
+                          type: INTEGER;
+			  VAR eventType: Events.EventType);
+   BEGIN
+      IF display.eventType[type] = NIL THEN
+	 Events.Define(display.eventType[type]);
+	 Events.Handler(display.eventType[type], Events.NilHandler);
+      END;
+      eventType := display.eventType[type];
+   END GetEventType;
+
+   PROCEDURE Close(display: Display);
+   BEGIN
+      Disconnect(display);
+   END Close;
+
+   (* === X11 Protocol Requests ========================================== *)
+
+   PROCEDURE AllocColor(display: Display;
+                        cmap: ColormapID;
+			desiredColor: RGBColor;
+			VAR pixel: Pixel;
+			VAR actualColor: RGBColor) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 returnedColor: RGBColor;
+	 p: Pixel;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, allocColor) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4) & (* request length *)
+	    WriteCard32(s, cmap) &
+	    WriteCard16(s, desiredColor.red) &
+	    WriteCard16(s, desiredColor.green) &
+	    WriteCard16(s, desiredColor.blue) &
+	    WritePad(s, 2) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) &
+	    ReadCard16(s, returnedColor.red) &
+	    ReadCard16(s, returnedColor.green) &
+	    ReadCard16(s, returnedColor.blue) &
+	    ReadPad(s, 2) &
+	    ReadCard32(s, p);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      pixel := p;
+      actualColor := returnedColor;
+      RETURN TRUE
+   END AllocColor;
+
+   PROCEDURE ChangeGC(display: Display;
+                      gc: GContextID;
+		      gcats: GraphicalContextAttributes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, changeGC) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + Card(gcats.defined)) & (* request length *)
+	    WriteCard32(s, gc) &
+	    WriteGCAttributes(s, gcats);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END ChangeGC;
+
+   PROCEDURE ChangeProperty(display: Display;
+                            window: WindowID;
+			    property: Property;
+			    mode: PropertyChangeMode) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 len: INTEGER;
+	 pad: INTEGER;
+	 numberOfUnits: INTEGER;
+   BEGIN
+      ASSERT((mode >= 0) & (mode < propertyChangeModes));
+      len := SHORT(property.len); ASSERT(len >= 0); pad := Pad(len);
+      CASE property.format OF
+      |  8: numberOfUnits := len;
+      | 16: numberOfUnits := len DIV 2; ASSERT(len MOD 2 = 0);
+      | 32: numberOfUnits := len DIV 4; ASSERT(len MOD 4 = 0);
+      END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, changeProperty) &
+	    WriteCard8(s, mode) &
+	    WriteCard16(s, 6 + (len + pad) DIV 4) & (* request length *)
+	    WriteCard32(s, window) &
+	    WriteCard32(s, property.name) &
+	    WriteCard32(s, property.type) &
+	    WriteCard8(s, property.format) &
+	    WritePad(s, 3) &
+	    WriteCard32(s, numberOfUnits) &
+	    Streams.Seek(property.data, 0, Streams.fromStart) &
+	    Streams.Copy(property.data, s, len) &
+	    WritePad(s, pad);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END ChangeProperty;
+
+   PROCEDURE ChangeWindowAttributes(display: Display;
+                                    window: WindowID;
+				    winats: WindowAttributes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, changeWindowAttributes) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + Card(winats.defined)) & (* request length *)
+	    WriteCard32(s, window) &
+	    WriteAttributes(s, winats);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END ChangeWindowAttributes;
+
+   PROCEDURE ClearArea(display: Display;
+                       win: WindowID;
+		       x, y: INTEGER;
+		       width, height: INTEGER;
+		       exposures: BOOLEAN) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, clearArea) &
+	    WriteBool(s, exposures) &
+	    WriteCard16(s, 4) & (* request length *)
+	    WriteCard32(s, win) &
+	    WriteCard16(s, x) &
+	    WriteCard16(s, y) &
+	    WriteCard16(s, width) &
+	    WriteCard16(s, height);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END ClearArea;
+
+   PROCEDURE CloseFont(display: Display;
+                       fid: FontID) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, closeFont) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, fid);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END CloseFont;
+
+   PROCEDURE ConfigureWindow(display: Display;
+                             window: WindowID;
+			     ats: ConfigureWindowParameters) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, configureWindow) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + Card(ats.defined)) & (* request length *)
+	    WriteCard32(s, window) &
+	    WriteConfigureWindowParameters(s, ats);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END ConfigureWindow;
+
+   PROCEDURE CopyGC(display: Display;
+                    src, dst: GContextID;
+		    mask: GraphicalContextAttributeSet) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 valueMask: Types.Int32;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      valueMask := ConvertSet32ToInt(mask);
+      s := display.s;
+      ok := WriteCard8(s, copyGC) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4) & (* request length *)
+	    WriteCard32(s, src) &
+	    WriteCard32(s, dst) &
+	    WriteCard32(s, valueMask);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END CopyGC;
+
+   PROCEDURE CreateGC(display: Display;
+                      cid: GContextID;
+		      drawable: DrawableID;
+		      gcats: GraphicalContextAttributes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, createGC) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4 + Card(gcats.defined)) & (* request length *)
+	    WriteCard32(s, cid) &
+	    WriteCard32(s, drawable) &
+	    WriteGCAttributes(s, gcats);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END CreateGC;
+
+   PROCEDURE CreateWindow(display: Display;
+                          wid, parent: WindowID;
+			  class: INTEGER;
+			  depth: INTEGER;
+			  visual: VisualID;
+			  x, y: INTEGER;
+			  width, height: INTEGER;
+			  borderWidth: INTEGER;
+			  winats: WindowAttributes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, createWindow) &
+	    WriteCard8(s, 0) & (* take depth from parent *)
+	    WriteCard16(s, 8 + Card(winats.defined)) & (* request length *)
+	    WriteCard32(s, wid) &
+	    WriteCard32(s, parent) &
+	    WriteInt16(s, x) &
+	    WriteInt16(s, y) &
+	    WriteCard16(s, width) &
+	    WriteCard16(s, height) &
+	    WriteCard16(s, borderWidth) &
+	    WriteCard16(s, class) &
+	    WriteCard32(s, visual) &
+	    WriteAttributes(s, winats);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END CreateWindow;
+
+   PROCEDURE FillPoly(display: Display;
+                      drawable: DrawableID;
+		      gc: GContextID;
+		      shape: Shape;
+		      coordinateMode: CoordinateMode;
+		      points: ListOfPoints) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfPoints;
+   BEGIN
+      p := points; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 p := p.next;
+      END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, fillPoly) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4 + count) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc) &
+	    WriteCard8(s, shape) &
+	    WriteCard8(s, coordinateMode) &
+	    WritePad(s, 2);
+      p := points;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteInt16(s, p.x) & WriteInt16(s, p.y);
+	 p := p.next;
+      END;
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END FillPoly;
+
+   PROCEDURE FreeGC(display: Display;
+                    gc: GContextID) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, freeGC) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, gc);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END FreeGC;
+
+   PROCEDURE GetAtomName(display: Display;
+                         atom: AtomID;
+			 VAR name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getAtomName) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, atom) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard16(s, len) &
+	    ReadPad(s, 22) &
+	    ReadString8(s, name, len);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END GetAtomName;
+
+   PROCEDURE GetFontPath(display: Display;
+                         VAR path: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getFontPath) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 1) & (* request length *)
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard16(s, len) &
+	    ReadPad(s, 22) &
+	    ReadListOfStrings(s, path, len);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END GetFontPath;
+
+   PROCEDURE GetGeometry(display: Display;
+                         drawable: DrawableID;
+			 VAR geometry: Geometry) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 geo: Geometry;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getGeometry) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      NEW(geo);
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+            ReadCard8(s, geo.depth) &
+	    ReadPad(s, 2 + 4) & (* sequence number and reply length *)
+	    ReadCard32(s, geo.root) &
+	    ReadInt16(s, geo.x) &
+	    ReadInt16(s, geo.y) &
+	    ReadCard16(s, geo.width) &
+	    ReadCard16(s, geo.height) &
+	    ReadCard16(s, geo.borderWidth);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      geometry := geo;
+      RETURN TRUE
+   END GetGeometry;
+
+   PROCEDURE GetKeyboardMapping(display: Display;
+                                firstKeycode: Keycode;
+				count: INTEGER;
+				VAR keysymsPerKeycode: INTEGER;
+				VAR mapping: KeyboardMapping) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: Types.Int32;
+	 head, tail, member: KeyboardMapping;
+	 keycode: Keycode; i: INTEGER;
+	 keysym: Keysym;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getKeyboardMapping) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard8(s, firstKeycode) &
+	    WriteCard8(s, count) &
+	    WritePad(s, 2) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+            ReadCard8(s, keysymsPerKeycode) &
+	    ReadPad(s, 2) & (* sequence number *)
+	    ReadCard32(s, len) &
+	    ReadPad(s, 24);
+      IF keysymsPerKeycode = 0 THEN RETURN FALSE END;
+      head := NIL; tail := NIL; keycode := firstKeycode;
+      WHILE ok & (len > 0) DO
+	 i := SHORT(len MOD keysymsPerKeycode);
+	 IF i = 0 THEN
+	    NEW(member);
+	    member.keycode := keycode; INC(keycode);
+	    member.next := NIL;
+	    IF tail = NIL THEN
+	       head := member;
+	    ELSE
+	       tail.next := member;
+	    END;
+	    tail := member;
+	 END;
+	 ok := ReadCard32(s, keysym);
+	 IF ok & (i < maxkeysyms) THEN
+	    member.keysyms[i] := keysym;
+	 END;
+	 DEC(len);
+      END;
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      mapping := head;
+      RETURN TRUE
+   END GetKeyboardMapping;
+
+   PROCEDURE GetProperty(display: Display;
+                         window: WindowID;
+			 name: AtomID;
+			 type: AtomID;
+			 longOffset, longLength: Types.Int32;
+			 delete: BOOLEAN;
+			 VAR property: Property;
+			 VAR bytesAfter: Types.Int32) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 format: INTEGER;
+	 p: Property;
+	 bytesLeft: Types.Int32;
+	 numberOfUnits: Types.Int32;
+	 numberOfBytes: Types.Int32;
+	 currentPos: Streams.Count;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getProperty) &
+            WriteBool(s, delete) &
+	    WriteCard16(s, 6) & (* request length *)
+	    WriteCard32(s, window) &
+	    WriteCard32(s, name) &
+	    WriteCard32(s, type) &
+	    WriteCard32(s, longOffset) &
+	    WriteCard32(s, longLength) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      NEW(p); p.name := name;
+      s := request.reply;
+      ok := ReadPad(s, 1) &
+            ReadCard8(s, p.format) &
+	    ReadPad(s, 2 + 4) & (* sequence number and reply length *)
+	    ReadCard32(s, p.type) & (* actual type *)
+	    ReadCard32(s, bytesLeft) &
+	    ReadCard32(s, numberOfUnits);
+      IF ok THEN
+	 CASE format OF
+	 |  0: numberOfBytes := 0;
+	 |  8: numberOfBytes := numberOfUnits;
+	 | 16: numberOfBytes := numberOfUnits * 2;
+	 | 32: numberOfBytes := numberOfUnits * 4;
+	 ELSE
+	    ok := FALSE;
+	 END;
+	 IF ok & (numberOfBytes > 0) THEN
+	    Streams.GetPos(s, currentPos);
+	    ok := SubStreams.Open(p.data, s, currentPos,
+		     numberOfBytes, display);
+	    p.len := numberOfBytes;
+	 ELSE
+	    p.data := NIL; p.len := 0;
+	 END;
+      END;
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      bytesAfter := bytesLeft; property := p;
+      RETURN TRUE
+   END GetProperty;
+
+   PROCEDURE GetWindowAttributes(display: Display;
+                                 window: WindowID;
+				 VAR winats: WindowAttributes;
+				 VAR extra: ExtraWindowAttributes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 ats: WindowAttributes;
+	 xats: ExtraWindowAttributes;
+	 allEventMasks, yourEventMask, doNotPropagateMask: Types.Int32;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getWindowAttributes) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, window) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      NEW(ats); NEW(xats);
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+            ReadCard8(s, ats.backingStore) &
+	    ReadPad(s, 2 + 4) & (* sequence number and reply length *)
+	    ReadCard32(s, xats.visual) &
+	    ReadCard16(s, xats.class) &
+	    ReadCard8(s, ats.bitGravity) &
+	    ReadCard8(s, ats.winGravity) &
+	    ReadCard32(s, ats.backingPlanes) &
+	    ReadCard32(s, ats.backingPixel) &
+	    ReadBool(s, ats.saveUnder) &
+	    ReadBool(s, xats.mapIsInstalled) &
+	    ReadCard8(s, xats.mapState) &
+	    ReadBool(s, ats.overrideRedirect) &
+	    ReadCard32(s, ats.colormap) &
+	    ReadCard32(s, allEventMasks) &
+	    ReadCard32(s, yourEventMask) &
+	    ReadCard32(s, doNotPropagateMask);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      ats.eventMask := ConvertIntToSet32(yourEventMask);
+      ats.doNotPropagateMask := ConvertIntToSet32(doNotPropagateMask);
+      xats.allEventMasks := ConvertIntToSet32(allEventMasks);
+      ats.defined := {
+	 atBackingStore, atBitGravity, atWinGravity,
+	 atBackingPlanes, atBackingPixel,
+	 atSaveUnder, atEventMask, atDoNotPropagateMask
+      };
+      winats := ats;
+      extra := xats;
+      RETURN TRUE
+   END GetWindowAttributes;
+
+   PROCEDURE InternAtom(display: Display;
+                        name: ARRAY OF CHAR;
+			onlyIfExists: BOOLEAN;
+			VAR atom: AtomID) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+	 pad: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      len := SHORT(Strings.Len(name));
+      pad := Pad(len);
+      ok := WriteCard8(s, internAtom) &
+            WriteBool(s, onlyIfExists) &
+	    WriteCard16(s, 2 + (len + pad) DIV 4) & (* request length *)
+	    WriteCard16(s, len) &
+	    WritePad(s, 2) &
+	    WriteString8(s, name, len) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard32(s, atom);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END InternAtom;
+
+   PROCEDURE ListExtensions(display: Display;
+                            VAR extensions: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, listExtensions) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 1) & (* request length *)
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+	    ReadCard8(s, len) &
+	    ReadPad(s, 30) &
+	    ReadListOfStrings(s, extensions, len);
+      RETURN ok
+   END ListExtensions;
+
+   PROCEDURE ListFonts(display: Display;
+		       pattern: ARRAY OF CHAR;
+		       maxnames: INTEGER;
+                       VAR fonts: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+	 pad: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      len := SHORT(Strings.Len(pattern));
+      pad := Pad(len);
+      ok := WriteCard8(s, listFonts) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2 + (len + pad) DIV 4) & (* request length *)
+	    WriteCard16(s, maxnames) &
+	    WriteCard16(s, len) &
+	    WriteString8(s, pattern, len) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard16(s, len) &
+	    ReadPad(s, 22) &
+	    ReadListOfStrings(s, fonts, len);
+      RETURN ok
+   END ListFonts;
+
+   PROCEDURE LookupColor(display: Display;
+                         cmap: ColormapID;
+			 name: ARRAY OF CHAR;
+			 VAR exact, visual: RGBColor) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 len: LONGINT;
+	 request: OpenRequest;
+	 exactRed, exactGreen, exactBlue: INTEGER;
+	 visualRed, visualGreen, visualBlue: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      len := Strings.Len(name);
+      ok := WriteCard8(s, lookupColor) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, SHORT(3 + (len + Pad(len)) DIV 4)) &
+	    WriteCard32(s, cmap) &
+	    WriteCard16(s, SHORT(len)) &
+	    WritePad(s, 2) &
+	    WriteString8(s, name, len) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) &
+	    ReadCard16(s, exactRed) &
+	    ReadCard16(s, exactGreen) &
+	    ReadCard16(s, exactBlue) &
+	    ReadCard16(s, visualRed) &
+	    ReadCard16(s, visualGreen) &
+	    ReadCard16(s, visualBlue);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      exact.red := exactRed;
+      exact.green := exactGreen;
+      exact.blue := exactBlue;
+      visual.red := visualRed;
+      visual.green := visualGreen;
+      visual.blue := visualBlue;
+      RETURN TRUE
+   END LookupColor;
+
+   PROCEDURE MapWindow(display: Display;
+                       window: WindowID) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, mapWindow) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard32(s, window) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END MapWindow;
+
+   PROCEDURE OpenFont(display: Display;
+                      fid: FontID;
+		      name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 len, pad: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      len := SHORT(Strings.Len(name));
+      pad := Pad(len);
+      ok := WriteCard8(s, openFont) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + (len + pad) DIV 4) & (* request length *)
+	    WriteCard32(s, fid) &
+	    WriteCard16(s, len) &
+	    WritePad(s, 2) &
+	    WriteString8(s, name, len);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END OpenFont;
+
+   PROCEDURE PolyArc(display: Display;
+                     drawable: DrawableID;
+		     gc: GContextID;
+		     arcs: ListOfArcs) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfArcs;
+   BEGIN
+      IF arcs = NIL THEN RETURN TRUE END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      p := arcs; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 p := p.next;
+      END;
+      s := display.s;
+      ok := WriteCard8(s, polyArc) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + 3 * count) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc);
+      p := arcs;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteInt16(s, p.x) & WriteInt16(s, p.y) &
+	       WriteCard16(s, p.width) & WriteCard16(s, p.height) &
+	       WriteInt16(s, p.angle1) & WriteInt16(s, p.angle2);
+	 p := p.next;
+      END;
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END PolyArc;
+
+   PROCEDURE PolyLine(display: Display;
+                      drawable: DrawableID;
+		      gc: GContextID;
+		      coordinateMode: INTEGER;
+		      points: ListOfPoints) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfPoints;
+   BEGIN
+      IF points = NIL THEN RETURN TRUE END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      p := points; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 p := p.next;
+      END;
+      s := display.s;
+      ok := WriteCard8(s, polyLine) &
+	    WriteCard8(s, coordinateMode) &
+	    WriteCard16(s, 3 + count) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc);
+      p := points;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteInt16(s, p.x) & WriteInt16(s, p.y);
+	 p := p.next;
+      END;
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END PolyLine;
+
+   PROCEDURE PolyPoint(display: Display;
+                       drawable: DrawableID;
+		       gc: GContextID;
+		       coordinateMode: INTEGER;
+		       points: ListOfPoints) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfPoints;
+   BEGIN
+      IF points = NIL THEN RETURN TRUE END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      p := points; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 p := p.next;
+      END;
+      s := display.s;
+      ok := WriteCard8(s, polyPoint) &
+	    WriteCard8(s, coordinateMode) &
+	    WriteCard16(s, 3 + count) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc);
+      p := points;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteInt16(s, p.x) & WriteInt16(s, p.y);
+	 p := p.next;
+      END;
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END PolyPoint;
+
+   PROCEDURE PolyText8(display: Display;
+                       drawable: DrawableID;
+		       gc: GContextID;
+		       x, y: INTEGER;
+		       items: ListOfTextItems) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count, pad: INTEGER;
+	 p: ListOfTextItems;
+	 len: INTEGER;
+   BEGIN
+      IF items = NIL THEN RETURN TRUE END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      p := items; count := 0;
+      WHILE p # NIL DO
+	 CASE p.kind OF
+	 | textItem:
+	    INC(count, 2 + Strings.Len(p.text));
+	 | fontItem:
+	    INC(count, 5);
+	 END;
+	 p := p.next;
+      END;
+      pad := Pad(count);
+      s := display.s;
+      ok := WriteCard8(s, polyText8) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4 + (count + pad) DIV 4) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc) &
+	    WriteInt16(s, x) &
+	    WriteInt16(s, y);
+      p := items;
+      WHILE ok & (p # NIL) DO
+	 CASE p.kind OF
+	 | textItem:
+	       len := SHORT(Strings.Len(p.text));
+	       ok := WriteCard8(s, len) &
+	             WriteCard8(s, p.delta) &
+		     WriteString8WithoutPadding(s, p.text, len);
+	 | fontItem:
+	       ok := WriteCard8(s, 255) &
+	             WriteFont(s, p.font);
+	 END;
+	 p := p.next;
+      END;
+      ok := ok & WritePad(s, pad);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END PolyText8;
+
+   PROCEDURE QueryFont(display: Display;
+                       font: FontableID;
+		       VAR fontInfo: FontInfo;
+		       VAR charInfos: CharInfo) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 fi: FontInfo;
+	 numberOfFontProperties: INTEGER;
+	 numberOfCharInfos: Types.Int32;
+	 cinfos: CharInfo;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, queryFont) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 2) &
+	    WriteCard32(s, font) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      NEW(fi);
+      ok := ReadPad(s, 8) &
+	    ReadCharInfo(s, fi.minBounds) &
+	    ReadPad(s, 4) &
+	    ReadCharInfo(s, fi.maxBounds) &
+	    ReadPad(s, 4) &
+	    ReadCard16(s, fi.minCharOrByte2) &
+	    ReadCard16(s, fi.maxCharOrByte2) &
+	    ReadCard16(s, fi.defaultChar) &
+	    ReadCard16(s, numberOfFontProperties) &
+	    ReadCard8(s, fi.drawDirection) &
+	    ReadCard8(s, fi.minByte1) &
+	    ReadCard8(s, fi.maxByte1) &
+	    ReadBool(s, fi.allCharsExist) &
+	    ReadInt16(s, fi.fontAscent) &
+	    ReadInt16(s, fi.fontDescent) &
+	    ReadCard32(s, numberOfCharInfos) &
+	    ReadListOfFontProperties(s, numberOfFontProperties, fi.properties) &
+	    ReadListOfCharInfos(s, numberOfCharInfos, cinfos);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      fontInfo := fi; charInfos := cinfos;
+      RETURN TRUE
+   END QueryFont;
+
+   PROCEDURE SetDashes(display: Display;
+		       gc: GContextID;
+		       dashOffset: INTEGER;
+		       dashes: ListOfDashes) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfDashes;
+	 pad: INTEGER;
+   BEGIN
+      ASSERT(dashes # NIL);
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      p := dashes; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 ASSERT(p.len > 0);
+	 p := p.next;
+      END;
+      pad := Pad(count);
+      s := display.s;
+      ok := WriteCard8(s, setDashes) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 3 + (count + pad) DIV 4) & (* request length *)
+	    WriteCard32(s, gc) &
+	    WriteCard16(s, dashOffset) &
+	    WriteCard16(s, count);
+      p := dashes;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteCard8(s, p.len);
+	 p := p.next;
+      END;
+      ok := ok & WritePad(s, pad);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END SetDashes;
+
+BEGIN
+   Init;
+END XDisplays.

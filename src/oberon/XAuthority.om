@@ -1,0 +1,328 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XAuthority.om,v 1.4 2007/02/19 19:52:42 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XAuthority.om,v $
+   Revision 1.4  2007/02/19 19:52:42  borchert
+   bug fix: interpret two byte integers always in big-endian byte order
+
+   Revision 1.3  2005/03/24 13:11:37  borchert
+   improved error handling
+
+   Revision 1.2  2005/03/15 21:01:34  borchert
+   SysConversions does no longer support small data types
+   on the SPARC architecture
+
+   Revision 1.1  1994/07/13 07:06:04  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XAuthority;
+
+   IMPORT DNSResolvers, DNSStdResolvers, Errors, Events, IPv4Addresses,
+      MemOps, Priorities, RelatedEvents, Streams, Strings, SYS := SYSTEM,
+      Types, UnixEnvironment, UnixFiles, Write;
+
+   (* code derived from X11 source code *)
+
+   CONST
+      (* configuration parameters *)
+      envParam = "XAUTHORITY";    (* points to authority file *)
+      authFile = ".Xauthority";   (* authority file in home-directory *)
+      maxfieldlen = 512;          (* maximal field length *)
+
+   CONST
+      (* family values taken from /usr/openwin/include/X11/{X.h,Xauth.h} *)
+      familyInternet = 0;         (* corresponds to Sockets.afINET *)
+      familyDECnet = 1;           (* corresponds to Sockets.afDECnet *)
+      familyChaos = 2;            (* corresponds to Sockets.afCHAOS *)
+      familyLocal = 256;          (* corresponds to Sockets.afUNIX *)
+      familyWild = 65535;         (* matches any family *)
+   TYPE
+      Family = INTEGER;           (* one of familyXXX *)
+
+   TYPE
+      Field = POINTER TO FieldRec;
+      String = ARRAY maxfieldlen OF CHAR;
+      FieldRec =
+	 RECORD
+	    len: INTEGER;
+	    string: String;
+	 END;
+      AuthRec =
+	 RECORD
+	    family: Family;
+	    address: Field;
+	    number: Field;
+	    name: Field;
+	    data: Field;
+	 END;
+
+   CONST
+      authFileNotFound = 0; (* no authorization file found *)
+      noMatchingEntryFound = 1; (* no matching entry found *)
+      undefinedHome = 2; (* HOME is not defined in the environment *)
+      errorcodes = 3;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	    (* in case of noMatchingEntryFound: *)
+	    auth: AuthRec;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE WriteName(s: Streams.Stream; field: Field);
+   BEGIN
+      IF field.len < maxfieldlen THEN
+	 field.string[field.len] := 0X;
+      END;
+      Write.StringS(s, field.string);
+   END WriteName;
+
+   PROCEDURE WriteAddr(s: Streams.Stream; field: Field);
+      VAR
+	 ipaddr: IPv4Addresses.Address;
+   BEGIN
+      MemOps.Copy(SYS.ADR(field.string), SYS.ADR(ipaddr),
+	 SYS.SIZE(IPv4Addresses.Address));
+      IPv4Addresses.WriteText(s, ipaddr);
+   END WriteAddr;
+
+   PROCEDURE WriteHost(s: Streams.Stream; field: Field);
+      (* there is no clear distinction between host names
+	 and IP addresses, hence we have to guess
+      *)
+      VAR
+	 addresses: DNSResolvers.IPv4AddressList;
+   BEGIN
+      IF field.len # SYS.SIZE(IPv4Addresses.Address) THEN
+	 WriteName(s, field); RETURN
+      END;
+      field.string[field.len] := 0X;
+      IF Strings.Len(field.string) # field.len THEN
+	 WriteAddr(s, field); RETURN
+      END;
+      IF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+	    field.string, addresses, RelatedEvents.null) THEN
+	 WriteName(s, field);
+      ELSE
+	 WriteAddr(s, field);
+      END;
+   END WriteHost;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN (* WriteError *)
+      WITH event: ErrorEvent DO
+	 IF (event.errorcode = noMatchingEntryFound) &
+	       ((event.auth.family = familyInternet) OR
+		  (event.auth.family = familyLocal)) THEN
+	    CASE event.auth.family OF
+	    | familyInternet:
+		  WriteHost(s, event.auth.address);
+	    | familyLocal:
+		  WriteName(s, event.auth.address);
+	    END;
+	    IF event.auth.number # NIL THEN
+	       Write.CharS(s, ":");
+	       WriteName(s, event.auth.number);
+	    END;
+	    IF event.auth.family = familyLocal THEN
+	       Write.StringS(s, "/unix");
+	    END;
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE NoMatchingEntryFound(errors: RelatedEvents.Object;
+				  auth: AuthRec);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[noMatchingEntryFound];
+      event.errorcode := noMatchingEntryFound;
+      event.auth := auth;
+      RelatedEvents.Raise(errors, event);
+   END NoMatchingEntryFound;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[authFileNotFound] := "no authorization file found";
+      errormsg[noMatchingEntryFound] := "no matching entry found";
+      errormsg[undefinedHome] := "HOME is not defined in the environment";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE GetFileName(VAR filename: ARRAY OF CHAR;
+			 errors: RelatedEvents.Object);
+      (* an empty filename is returned if no suitable file has been found *)
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF UnixEnvironment.String(envParam, filename) THEN RETURN END;
+      IF UnixEnvironment.String("HOME", filename) THEN
+	 Strings.Open(s, filename); RelatedEvents.Forward(s, errors);
+	 Streams.SetPos(s, Strings.Len(filename));
+	 IF filename[0] # 0X THEN
+	    Write.CharS(s, "/");
+	 END;
+	 Write.StringS(s, authFile);
+	 Streams.Release(s);
+      ELSE
+	 Error(errors, undefinedHome);
+	 filename[0] := 0X;
+      END;
+   END GetFileName;
+
+   PROCEDURE ReadUnsignedShortInt(s: Streams.Stream;
+				  VAR int: INTEGER) : BOOLEAN;
+      (* read a unsigned two-byte integer from s
+	 in big-endian byte order
+      *)
+      VAR
+	 byte1, byte2: BYTE;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte1) OR
+	    ~Streams.ReadByte(s, byte2) THEN
+	 RETURN FALSE
+      END;
+      int := ORD(byte1) * 100H + ORD(byte2);
+      RETURN TRUE
+   END ReadUnsignedShortInt;
+
+   PROCEDURE ReadField(s: Streams.Stream; VAR field: Field) : BOOLEAN;
+      (* read one field from the input stream;
+	 fields begin with a length field which is followed by the data;
+	 return TRUE if successful
+      *)
+      VAR
+	 len: INTEGER;
+   BEGIN
+      IF ~ReadUnsignedShortInt(s, len) THEN RETURN FALSE END;
+      IF len > 0 THEN
+	 IF field = NIL THEN
+	    NEW(field);
+	 END;
+	 field.len := len;
+	 IF ~Streams.ReadPart(s, field.string, 0, len) THEN RETURN FALSE END;
+      ELSE
+	 field := NIL;
+      END;
+      RETURN TRUE
+   END ReadField;
+
+   PROCEDURE ReadEntry(s: Streams.Stream; VAR authrec: AuthRec) : BOOLEAN;
+   BEGIN
+      RETURN ReadUnsignedShortInt(s, authrec.family) &
+	     ReadField(s, authrec.address) &
+	     ReadField(s, authrec.number) &
+	     ReadField(s, authrec.name) &
+	     ReadField(s, authrec.data)
+   END ReadEntry;
+
+   PROCEDURE EqualFields(field1, field2: Field) : BOOLEAN;
+      (* compare TRUE if both fields are equal *)
+      VAR
+	 index: INTEGER;
+   BEGIN
+      IF field1.len # field2.len THEN RETURN FALSE END;
+      index := 0;
+      WHILE index < field1.len DO
+	 IF ORD(field1.string[index]) # ORD(field2.string[index]) THEN
+	    RETURN FALSE
+	 END;
+	 INC(index);
+      END;
+      RETURN TRUE
+   END EqualFields;
+
+   PROCEDURE GetAuthByAddr(VAR auth: AuthRec;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 authFile: ARRAY 512 OF CHAR;
+	 authfp: Streams.Stream;
+	 entry: AuthRec;
+
+      PROCEDURE Match(auth1, auth2: AuthRec) : BOOLEAN;
+
+	 (* two authorization records matches when
+	    all fields except data matches;
+	    fields matches if they either equal or wildcard
+	    (i.e. familyWild or empty field)
+	 *)
+
+	 PROCEDURE MatchFields(field1, field2: Field) : BOOLEAN;
+	 BEGIN
+	    RETURN (field1 = NIL) OR (field2 = NIL) OR
+		   (field1.len = 0) OR (field2.len = 0) OR
+		   EqualFields(field1, field2)
+	 END MatchFields;
+
+      BEGIN
+	 RETURN ((auth1.family = auth2.family) OR
+		 (auth1.family = familyWild) OR (auth2.family = familyWild)) &
+		MatchFields(auth1.address, auth2.address) &
+		MatchFields(auth1.number, auth2.number) &
+		MatchFields(auth1.name, auth2.name)
+      END Match;
+
+   BEGIN (* GetAuthByAddr *)
+      GetFileName(authFile, errors);
+      IF authFile[0] = 0X THEN RETURN FALSE END;
+      IF ~UnixFiles.Open(authfp, authFile, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Error(errors, authFileNotFound); RETURN FALSE
+      END;
+      RelatedEvents.Forward(authfp, errors);
+      WHILE ReadEntry(authfp, entry) DO
+	 IF Match(auth, entry) THEN
+	    auth := entry; RETURN TRUE
+	 END;
+      END;
+      NoMatchingEntryFound(errors, auth); RETURN FALSE
+   END GetAuthByAddr;
+
+BEGIN
+   InitErrorHandling;
+END XAuthority.

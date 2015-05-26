@@ -1,0 +1,786 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysIPC.om,v 1.1 1994/02/23 07:59:27 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysIPC.om,v $
+   Revision 1.1  1994/02/23  07:59:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysIPC;
+
+   (* System V interprocess communication:
+      semaphores, messages, and shared memory
+
+      not all commands and permissions are valid for every UNIX version
+   *)
+
+   IMPORT Assertions, Disciplines, Events, Priorities, Memory, RelatedEvents,
+      Strings, SysErrors, Sys, SYS := SYSTEM, SysConversions,
+      SysProcess, SysTypes, SysStat;
+
+   CONST
+      private = 0;		(* private key *)
+
+      (* mode bits *)
+      (* alloc not supported by linux *)
+      creat = { 9 };		(* create entry if key doesn't exist *)
+      excl = { 10 };		(* fail if key exists *)
+      nowait = { 11 };		(* error if request must wait *)
+
+      (* control commands *)
+      rmid = 0;			(* remove identifier *)
+      set = 1;			(* set options *)
+      stat = 2;			(* get options *)
+      (* SHM_INFO/IPC_INFO isn't supported. *)
+
+      (* permission definitions *)
+      read = { SysStat.uread };		(* read permission for owner *)
+      write = { SysStat.uwrite };	(* write permission for owner *)
+      (* rwait and wwait not supported on linux *)
+
+      (* shared memory: operation flags *)
+      readwrite = {};		(* attach read/write *)
+      rdonly = { 12 };		(* attach read-only (else read-write) *)
+      rnd = { 13 };		(* round attach address to shmlba *)
+      remap = { 14 };           (* take over region on attach (linux only) *)
+
+      (* messages: operation flags *)
+      noerror = { 11 };		(* no error if big message *)
+
+      (* semaphore operation flags *)
+      undo = { 10 };		(* set up adjust on exit entry *)
+
+      (* system constants *)
+      shmlba = 4096;		(* segment low boundary address multiple
+                                 * SHMLBA == PAGESIZE == 4096 *)
+
+   TYPE
+      Key = LONGINT;		(* corresponds to key_t from sys/types.h *)
+      Size = SysTypes.Count;
+      Modes = SET;
+      Identifier = LONGINT;
+      Address = SysTypes.UntracedAddress;
+      ProcessId = SysProcess.ProcessId;
+      Time = SysTypes.Time;
+      MessageType = LONGINT;
+      SemVal = INTEGER;
+
+      (* common IPC access structure *)
+      Access =
+	 RECORD
+	    key: Key;
+	    uid: INTEGER;	(* owner's user id *)
+	    gid: INTEGER;	(* owner's group id *)
+	    cuid: INTEGER;	(* creator's user id *)
+	    cgid: INTEGER;	(* creator's group id *)
+	    mode: Modes;	(* access modes *)
+	    seq: INTEGER;	(* slot usage sequence number *)
+	 END;
+      AccessStruct = ARRAY 16 OF BYTE;
+   CONST
+      AccessFormat = "ll=key/4*iS=uid,gid,cuid,cgid/SS=mode/iS=seq";
+   VAR
+      accessFmt: SysConversions.Format;
+
+   TYPE
+      SharedMemRec =		(* struct shmid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    segsz: Size;	(* segment size in bytes *)
+	    atime: Time;	(* last shmat time *)
+	    dtime: Time;	(* last shmdt time *)
+	    ctime: Time;	(* last change time *)
+	    cpid: ProcessId;	(* pid of creator *)
+	    lpid: ProcessId;	(* pid of last shmop *)
+	    nattach: INTEGER;	(* current # attached *)
+	 END;
+      SharedMemStruct = ARRAY 48 OF BYTE;
+   CONST
+      (* SharedMemRecFormat = AccessFormat + SharedMemRecFormat2 *)
+      SharedMemRecFormat2 = "/li=segsz/3*ll=atime,dtime,ctime/3*iS=cpid,lpid,nattach";
+   VAR
+      sharedmemrecFmt: SysConversions.Format;
+
+   TYPE
+      QueueRec =		(* struct msqid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    first: Address;	(* ptr to first message on q *)
+	    last: Address;	(* ptr to last message on q *)
+	    stime: Time;	(* last msgsnd time *)
+	    rtime: Time;	(* last msgrcv time *)
+	    ctime: Time;	(* last change time *)
+	    (* 2 wait_queue pointers *)
+	    cbytes: INTEGER;	(* current # bytes on q *)
+	    qnum: INTEGER;	(* # of messages on q *)
+	    qbytes: INTEGER;	(* max # of bytes on q *)
+	    lspid: ProcessId;	(* pid of last msgsnd *)
+	    lrpid: ProcessId;	(* pid of last msgrcv *)
+	 END;
+      QueueStruct = ARRAY 54 OF BYTE;
+   CONST
+      (* QueueRecFormat = AccessFormat + QueueRecFormat2 *)
+      QueueRecFormat2 = "/2*aa=first,last/3*ll=[src]time/2*-a=wwait,rwait/5*iS=cbytes,qnum,qbytes,l[sr]pid";
+   VAR
+      queuerecFmt: SysConversions.Format;
+
+   TYPE
+      SemaphoreRec =		(* struct semid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    otime: Time;	(* last semop time *)
+	    ctime: Time;	(* last change time *)
+	    base: Address;	(* ptr to first semaphore in set *)
+	    (* Ignored items:
+	     * struct semqueue * sem_pending
+	     * struct sem_queue **sem_pending_last
+	     * struct sem_undo * undo *)
+	    nsems: INTEGER;	(* # of semaphores in set *)
+	 END;
+      SemaphoreStruct = ARRAY 42 OF BYTE;
+   CONST
+      (* SemaphoreRecFormat = AccessFormat + SemaphoreRecFormat2 *)
+      SemaphoreRecFormat2 = "2*ll=[oc]time/aa=base/3-a=ignored/ii=nsems";
+   VAR
+      semaphorerecFmt: SysConversions.Format;
+
+   TYPE
+      SemOperation =		(* struct sembuf *)
+	 RECORD
+	    num: INTEGER;	(* semaphore # *)
+	    op: INTEGER;	(* semaphore operation *)
+	    flags: SET;		(* operation flags *)
+	 END;
+
+      (* ipc system call ids *)
+   CONST
+      semop  =  1; semget =  2; semctl =  3;
+      msgsnd = 11; msgrcv = 12; msgget = 13; msgctl = 14;
+      shmat  = 21; shmdt  = 13; shmget = 14; shmctl = 15;
+
+
+      (* semctl command definitions *)
+      getncnt = 14; getpid = 11; getval = 12; getall = 13;
+      getzcnt = 15; setval = 16; setall = 17;
+
+   VAR
+      conferror: Events.EventType;
+	 (* this event is raised on internal errors during
+	    initialization time;
+	    priority: Priorities.assertions
+	 *)
+
+   TYPE
+      SegmentInfo = POINTER TO SegmentInfoRec;
+      SegmentInfoRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    addr: Address;
+	    size: Size;
+	    shmid: Identifier;
+	 END;
+   VAR
+      seginfoID: Disciplines.Identifier;
+
+   (* ==== error handling ================================================= *)
+
+   CONST
+      noSharedSegment = 0;
+	 (* given address does not belong to a shared memory segment *)
+      errorcodes = 1;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[noSharedSegment] :=
+	 "given address does not belong to a shared memory segment";
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* ==== shared memory ================================================== *)
+
+   PROCEDURE ShmGet(VAR shmid: Identifier;
+		    key: Key; size: Size; shmflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, shmget, key, size, shmflg) THEN
+	 shmid := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmGet");
+	 RETURN FALSE
+      END;
+   END ShmGet;
+
+   PROCEDURE ShmCtl(shmid: Identifier;
+		    cmd: INTEGER; VAR buf: SharedMemRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 localbuf: SharedMemStruct;
+	 d0, d1: INTEGER;
+   BEGIN
+      (* Note: We only support three commands: rmid, set and stat.
+       * rmid doesn't pass or return structures, set only passes
+       * and stat only returns a SharedMemRec. *)
+      IF cmd = set THEN
+	 SysConversions.ByFmtToC(buf, localbuf, sharedmemrecFmt);
+      END;
+      (* Note: A pointer is always the fourth argument. *)
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, shmctl,
+		      shmid, cmd, 0, SYS.ADR(localbuf)) THEN
+	 IF cmd = stat THEN
+	    SysConversions.ByFmtFromC(localbuf, buf, sharedmemrecFmt);
+	 END;
+	 RETURN TRUE
+      ELSE
+	 CASE cmd OF
+	 | rmid:  SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmCtl rmid");
+	 | set:   SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmCtl set");
+	 | stat:  SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmCtl stat");
+	 | ELSE   SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmCtl ???");
+	 END;
+	 RETURN FALSE
+      END;
+   END ShmCtl;
+
+   PROCEDURE ShmRemove(shmid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      (* A pointer is always the fourth argument. *)
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, shmctl, shmid, rmid, 0, NIL) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmRemove");
+	 RETURN FALSE
+      END;
+   END ShmRemove;
+
+   PROCEDURE ShmAttach(shmid: Identifier;
+		       VAR shmaddr: Address; shmflg: Modes;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* note that shmaddr is an out-parameter and thus
+	 determined by the implementation
+      *)
+      VAR
+	 d0, d1: INTEGER;
+	 statbuf: SharedMemRec;
+	 segmentSize: Size;
+	 region: Memory.Region;
+	 info: SegmentInfo;
+   BEGIN
+      (* allocate the necessary address space for the segment
+	 by Memory.AllocateRegion which itself needs the
+	 size of the segment
+      *)
+      IF ~ShmCtl(shmid, stat, statbuf, errors) THEN RETURN FALSE END;
+      segmentSize := statbuf.segsz; Memory.AlignSize(segmentSize);
+      IF ~Memory.AllocateRegion(segmentSize, Memory.fixed +
+					     Memory.redzoneProtected,
+				shmaddr, region, errors) THEN
+	 RETURN FALSE
+      END;
+      shmflg := shmflg - rnd; (* remove rnd flag *)
+      (* Note: Silly calling convention of sys_ipc. *)
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, shmat, shmid, SYS.ADR (shmaddr), shmflg, shmaddr) THEN
+	 NEW(info);
+	 info.addr := shmaddr; info.size := segmentSize; info.shmid := shmid;
+	 info.id := seginfoID; Disciplines.Add(region, info);
+	 RETURN TRUE
+      ELSE
+	 Memory.ReleaseRegion(region);
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmAttach");
+	 RETURN FALSE
+      END;
+   END ShmAttach;
+
+   PROCEDURE ShmDetach(shmaddr: Address;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+	 status: Memory.Status;
+	 region: Memory.Region;
+	 seginfo: SegmentInfo;
+   BEGIN
+      Memory.GetStatus(shmaddr, status, region);
+      IF (status # Memory.stAllocated) OR
+	    ~Disciplines.Seek(region, seginfoID, seginfo) THEN
+	 Error(errors, noSharedSegment); RETURN FALSE
+      END;
+      shmaddr := seginfo.addr; (* take start address *)
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, shmdt, 0, 0, 0, shmaddr) THEN
+	 Memory.ReleaseRegion(region);
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.ShmDetach");
+	 RETURN FALSE
+      END;
+   END ShmDetach;
+
+   (* ==== messages ======================================================= *)
+
+   PROCEDURE MsgGet(VAR msqid: Identifier; key: Key; msgflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, msgget, key, msgflg) THEN
+	 msqid := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgGet");
+	 RETURN FALSE
+      END;
+   END MsgGet;
+
+   PROCEDURE MsgCtl(msqid: Identifier;
+		    cmd: INTEGER; VAR buf: QueueRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* valid cmds: stat & set *)
+      VAR
+	 localbuf: QueueStruct;
+	 d0, d1: INTEGER;
+   BEGIN
+      IF cmd = set THEN
+	 SysConversions.ByFmtToC(buf, localbuf, queuerecFmt);
+      END;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1,
+		      msgctl, msqid, cmd, 0, SYS.ADR(localbuf)) THEN
+	 IF cmd = stat THEN
+	    SysConversions.ByFmtFromC(localbuf, buf, queuerecFmt);
+	 END;
+	 RETURN TRUE
+      ELSE
+	 CASE cmd OF
+	 | rmid:  SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgCtl rmid");
+	 | set:   SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgCtl set");
+	 | stat:  SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgCtl stat");
+	 | ELSE   SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgCtl ???");
+	 END;
+	 RETURN FALSE
+      END;
+   END MsgCtl;
+
+   PROCEDURE MsgRemove(msgqid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, msgctl, msgqid, rmid, 0, 0) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgRemove");
+	 RETURN FALSE
+      END;
+   END MsgRemove;
+
+   PROCEDURE MsgSend(msgqid: Identifier;
+		     msg: ARRAY OF BYTE; msgsz: Size; msgflg: Modes;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      (* msgsz defaults to LEN(msg) - SYS.SIZE(MessageType) *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF msgsz < SYS.SIZE(MessageType) THEN
+	 msgsz := LEN(msg) - SYS.SIZE(MessageType);
+      END;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, msgsnd,
+		      msgqid, msgsz, msgflg, SYS.ADR(msg)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgSend");
+	 RETURN FALSE
+      END;
+   END MsgSend;
+
+   (* FIXME: Does the caller really pass the MessageType? *)
+   PROCEDURE MsgReceive(msgqid: Identifier;
+			VAR msg: ARRAY OF BYTE; msgtype: MessageType;
+			msgflg: Modes;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* msgsz is set to LEN(msg) - SYSTEM.SIZE(MessageType) *)
+      VAR
+	 msgsz: Size;
+	 d0, d1: INTEGER;
+	 (* Note: ipc_kludge is defined as follows:
+	  * struct ipc_kludge {
+	  *         struct msgbuf *msgp;
+	  *         long msgtyp;
+	  * };
+	  * The message type is passed *both ways* through the first
+	  * word in the array pointed to by msgp.
+	  *)
+	 ipckludge : ARRAY 8 OF BYTE;
+	 mgstype : MessageType;
+
+   BEGIN
+      msgsz := LEN(msg) - SYS.SIZE(MessageType);
+      SYS.GET (SYS.ADR (msg), msgtype);
+      SYS.PUT (SYS.ADR (ipckludge)+4, msgtype);
+      SYS.PUT (SYS.ADR (ipckludge), SYS.ADR (msg));
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, msgrcv,
+		      msgqid, msgsz, msgflg, SYS.ADR (ipckludge)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.MsgReceive");
+	 RETURN FALSE
+      END;
+   END MsgReceive;
+
+   (* ==== semaphores ===================================================== *)
+
+   PROCEDURE SemGet(VAR semid: Identifier; key: Key;
+		    nsems: INTEGER; semflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semget, key, nsems, semflg) THEN
+	 semid := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGet");
+	 RETURN FALSE
+      END;
+   END SemGet;
+
+   PROCEDURE SemStat(semid: Identifier; VAR buf: SemaphoreRec;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 localbuf: SemaphoreStruct;
+	 addr : Address;
+	 d0, d1: INTEGER;
+   BEGIN
+      (* Note: semnum is 0. This is ok for stat, set and rmid because
+       * semnum is ignored in these cases. The semaphore special commands
+       * need semnum. *)
+      addr := SYS.ADR (localbuf);
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1,
+		      semctl, semid, 0, stat, SYS.ADR(addr)) THEN
+	 SysConversions.ByFmtFromC(localbuf, buf, semaphorerecFmt);
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemStat");
+	 RETURN FALSE
+      END;
+   END SemStat;
+
+   PROCEDURE SemSet(semid: Identifier; buf: SemaphoreRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 localbuf: SemaphoreStruct;
+	 addr : Address;
+	 d0, d1: INTEGER;
+   BEGIN
+      addr := SYS.ADR (localbuf);
+      SysConversions.ByFmtToC(buf, localbuf, semaphorerecFmt);
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1,
+		      semctl, semid, 0, set, SYS.ADR(addr)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemSet");
+	 RETURN FALSE
+      END;
+   END SemSet;
+
+   PROCEDURE SemRemove(semid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+	 addr : LONGINT;
+   BEGIN
+      addr := 0;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl, semid, 0, rmid, SYS.ADR (addr)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemRemove");
+	 RETURN FALSE
+      END;
+   END SemRemove;
+
+   PROCEDURE SemGetNCnt(semid: Identifier; semnum: INTEGER;
+			VAR ncnt: INTEGER;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* get # of processes sleeping for greater semval *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : LONGINT;
+   BEGIN
+      addr := 0;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, semnum, getncnt, SYS.ADR (addr)) THEN
+	 ncnt := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGetNCnt");
+	 RETURN FALSE
+      END;
+   END SemGetNCnt;
+
+   PROCEDURE SemGetPid(semid: Identifier; semnum: INTEGER;
+		       VAR pid: ProcessId;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get pid of last process to operate on semaphore *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : LONGINT;
+   BEGIN
+      addr := 0;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, semnum, getpid, SYS.ADR (addr)) THEN
+	 pid := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGetPid");
+	 RETURN FALSE
+      END;
+   END SemGetPid;
+
+   PROCEDURE SemGetVal(semid: Identifier; semnum: INTEGER;
+		       VAR semval: SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get semval of one semaphore *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : LONGINT;
+   BEGIN
+      addr := 0;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, semnum, getval, SYS.ADR(addr)) THEN
+	 semval := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGetVal");
+	 RETURN FALSE
+      END;
+   END SemGetVal;
+
+
+   PROCEDURE ShortToInt(VAR bytes: ARRAY OF BYTE);
+      VAR
+	 from, to: LONGINT;
+   BEGIN
+      from := LEN(bytes) DIV 2;
+      to := LEN(bytes);
+      WHILE from > 0 DO
+	 DEC(from, 2); DEC(to, 4);
+	 bytes[to] := bytes[from];
+	 bytes[to+1] := bytes[from+1];
+	 IF CHR(bytes[to+1]) >= 080X THEN
+	    bytes[to+2] := 0FFX;
+	    bytes[to+3] := 0FFX;
+	 ELSE
+	    bytes[to+2] := 0X;
+	    bytes[to+3] := 0X;
+	 END;
+      END;
+   END ShortToInt;
+
+   PROCEDURE IntToShort(VAR bytes: ARRAY OF BYTE);
+      VAR
+	 from, to: LONGINT;
+   BEGIN
+      from := 0;
+      to := 0;
+      WHILE from < LEN(bytes) DO
+	 bytes[to] := bytes[from]; INC(to); INC(from);
+	 bytes[to] := bytes[from]; INC(to); INC(from);
+	 INC(from, 2);
+      END;
+   END IntToShort;
+
+   PROCEDURE SemGetAll(semid: Identifier;
+		       VAR semvals: ARRAY OF SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get all semvals in set *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : Address;
+   BEGIN
+      addr := SYS.ADR (semvals);
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, 0, getall, SYS.ADR(addr)) THEN
+	 ShortToInt(semvals);
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGetAll");
+	 RETURN FALSE
+      END;
+   END SemGetAll;
+
+   PROCEDURE SemGetZCnt(semid: Identifier; semnum: INTEGER;
+			VAR zcnt: INTEGER;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* get # of processes sleeping for semval to become zero *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : LONGINT;
+   BEGIN
+      addr := 0;
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, semnum, getzcnt, SYS.ADR (addr)) THEN
+	 zcnt := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemGetZCnt");
+	 RETURN FALSE
+      END;
+   END SemGetZCnt;
+
+   PROCEDURE SemSetVal(semid: Identifier; semnum: INTEGER;
+		       semval: SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* set semval of one semaphore *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, semnum, setval, SYS.ADR(semval)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemSetVal");
+	 RETURN FALSE
+      END;
+   END SemSetVal;
+
+   PROCEDURE SemSetAll(semid: Identifier; semvals: ARRAY OF SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* set semvals of all semaphores in set *)
+      VAR
+	 d0, d1: INTEGER;
+	 addr : Address;
+   BEGIN
+      addr := SYS.ADR (semvals);
+      IntToShort(semvals);
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semctl,
+		      semid, 0, setall, SYS.ADR(addr)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemSetAll");
+	 RETURN FALSE
+      END;
+   END SemSetAll;
+
+   PROCEDURE SemOp(semid: Identifier;
+		   sops: ARRAY OF SemOperation; nsops: INTEGER;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* nsops defaults to LEN(sops) *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IntToShort(sops);
+      IF SYS.UNIXCALL(Sys.ipc, d0, d1, semop,
+		      semid, nsops, 0, SYS.ADR (sops)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.ipc, "SysIPC.SemOp");
+	 RETURN FALSE
+      END;
+   END SemOp;
+
+   PROCEDURE Init;
+      VAR
+	 format: ARRAY 256 OF CHAR;
+
+      PROCEDURE ConfError(msg: ARRAY OF CHAR);
+      BEGIN
+	 Assertions.Raise(NIL, conferror, "Init", msg);
+      END ConfError;
+
+   BEGIN
+      seginfoID := Disciplines.Unique();
+      Assertions.Define(conferror, "SysIPC");
+
+      IF SysConversions.OberonSize(AccessFormat) # SYS.SIZE(Access) THEN
+	 ConfError("AccessFormat does not match Access"); RETURN
+      END;
+      IF SysConversions.CSize(AccessFormat) > SYS.SIZE(AccessStruct) THEN
+	 ConfError("AccessStruct too small"); RETURN
+      END;
+      SysConversions.Compile(accessFmt, AccessFormat);
+
+      format := AccessFormat;
+      Strings.Concatenate(format, SharedMemRecFormat2);
+      IF SysConversions.OberonSize(format) # SYS.SIZE(SharedMemRec) THEN
+	 ConfError("SharedMemRecFormat does not match SharedMemRec");
+	 RETURN
+      END;
+      IF SysConversions.CSize(format) > SYS.SIZE(SharedMemStruct) THEN
+	 ConfError("SharedMemStruct too small"); RETURN
+      END;
+      SysConversions.Compile(sharedmemrecFmt, format);
+
+      format := AccessFormat;
+      Strings.Concatenate(format, QueueRecFormat2);
+      IF SysConversions.OberonSize(format) # SYS.SIZE(QueueRec) THEN
+	 ConfError("QueueRecFormat does not match QueueRec");
+	 RETURN
+      END;
+      IF SysConversions.CSize(format) > SYS.SIZE(QueueStruct) THEN
+	 ConfError("QueueStruct too small"); RETURN
+      END;
+      SysConversions.Compile(queuerecFmt, format);
+
+      format := AccessFormat;
+      Strings.Concatenate(format, SemaphoreRecFormat2);
+      IF SysConversions.OberonSize(format) # SYS.SIZE(SemaphoreRec) THEN
+	 ConfError("SemaphoreRecFormat does not match SemaphoreRec");
+	 RETURN
+      END;
+      IF SysConversions.CSize(format) > SYS.SIZE(SemaphoreStruct) THEN
+	 ConfError("SemaphoreStruct too small"); RETURN
+      END;
+      SysConversions.Compile(semaphorerecFmt, format);
+   END Init;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END SysIPC.

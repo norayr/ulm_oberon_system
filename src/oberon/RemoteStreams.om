@@ -1,0 +1,637 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteStrea.om,v 1.2 2004/09/03 09:56:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteStrea.om,v $
+   Revision 1.2  2004/09/03 09:56:46  borchert
+   bug fix: SetMode created local variable params instead of sd.params
+
+   Revision 1.1  1995/01/16  21:46:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteStreams;
+
+   IMPORT Disciplines, Events, Messages, NetIO, PersistentObjects,
+      RelatedEvents, RemoteObjects, Services, Streams, SYS := SYSTEM, Types;
+
+   TYPE
+      Stream = POINTER TO StreamRec; (* proxy object *)
+      StreamRec = RECORD (Streams.StreamRec) END;
+   CONST
+      streamcaps = {Streams.read, Streams.write, Streams.seek, Streams.tell};
+	 (* these capabilities are checked against the capabilities
+	    of the original stream
+	 *)
+      specialcaps = {Streams.bufio, Streams.flush};
+	 (* these capabilities are always given *)
+   VAR
+      streamsif: Streams.Interface;
+      streamType: Services.Type;
+
+   TYPE
+      StreamParameters = POINTER TO StreamParametersRec;
+      StreamParametersRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    caps: Streams.CapabilitySet;
+	    bufmode: Streams.BufMode;
+	 END;
+   VAR
+      streamParamsType: Services.Type;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+	 (* attached by SetMode to override default parameters of GetParams *)
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    params: StreamParameters;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   (* ==== message types =================================================== *)
+
+   CONST
+      read = 0; write = 1; seek = 2; tell = 3; trunc = 4; flush = 5;
+      buflen = 512;
+   TYPE
+      Mode = SHORTINT; (* read..flush *)
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+      IOByteMessage = POINTER TO IOByteMessageRec;
+      IOByteMessageRec =
+	 RECORD
+	    (MessageRec)
+	    mode: Mode; (* read or write *)
+	    byte: Types.Byte;
+	 END;
+      IOBufMessage = POINTER TO IOBufMessageRec;
+      IOBufMessageRec =
+	 RECORD
+	    (MessageRec)
+	    mode: Mode;
+	    count: Streams.Count;
+	    filled: BOOLEAN; (* is buf to be marshalled or not? *)
+	    buf: ARRAY buflen OF Types.Byte;
+	 END;
+      PosMessage = POINTER TO PosMessageRec;
+      PosMessageRec =
+	 RECORD
+	    (MessageRec)
+	    mode: Mode; (* seek, tell or trunc *)
+	    offset: Streams.Count;
+	    whence: Streams.Whence;
+	 END;
+      MiscMessage = POINTER TO MiscMessageRec;
+      MiscMessageRec =
+	 RECORD
+	    (MessageRec)
+	    mode: Mode; (* flush *)
+	 END;
+   VAR
+      iobytemsgType, iobufmsgType, posmsgType, miscmsgType: Services.Type;
+
+   (* ==== misc. procedures ================================================ *)
+
+   PROCEDURE CopyNBytes(source, dest: Types.Address;
+			nbytes: Streams.Count);
+      CONST
+	 wordlen = SYS.SIZE(LONGINT);
+      VAR
+	 byte: BYTE;
+	 srem, drem, nrem: LONGINT;
+	    (* integer division remains mod wordlen of source, dest and nbytes;
+	       WMOVE is effective only on word aligned data
+	    *)
+   BEGIN
+      srem := SYS.VAL(LONGINT, source) MOD wordlen;
+      drem := SYS.VAL(LONGINT, dest) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (drem = 0) & (srem = 0) & (nrem = 0) THEN
+	 SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSIF (srem = drem) & (nrem = wordlen-srem) & (nbytes>wordlen) THEN
+	 WHILE source MOD wordlen # 0 DO
+	    SYS.GET(source, byte); INC(source);
+	    SYS.PUT(dest, byte); INC(dest);
+	    DEC(nbytes);
+	 END;
+	 SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSE
+	 WHILE nbytes > 0 DO
+	    SYS.GET(source, byte); INC(source);
+	    SYS.PUT(dest, byte); INC(dest);
+	    DEC(nbytes);
+	 END;
+      END;
+   END CopyNBytes;
+
+   (* ==== stream object handler =========================================== *)
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+   BEGIN
+      WITH object: Streams.Stream DO
+	 IF message IS Message THEN
+	    message.processed := TRUE;
+	    RelatedEvents.Forward(object, message.errors);
+	    IF message IS IOByteMessage THEN
+	       WITH message: IOByteMessage DO
+		  CASE message.mode OF
+		  | read:
+			message.done := Streams.Read(object, message.byte);
+		  | write:
+			message.done := Streams.Write(object, message.byte);
+		  END;
+	       END;
+	    ELSIF message IS IOBufMessage THEN
+	       WITH message: IOBufMessage DO
+		  CASE message.mode OF
+		  | read:
+			message.count :=
+			   Streams.ReadPacket(object, message.buf,
+					      0, message.count);
+			message.filled := message.count > 0;
+			message.done := message.count > 0;
+		  | write:
+			message.done :=
+			   Streams.WritePart(object, message.buf,
+					     0, message.count);
+			message.count := object.count;
+			message.filled := FALSE;
+		  END;
+	       END;
+	    ELSIF message IS PosMessage THEN
+	       WITH message: PosMessage DO
+		  CASE message.mode OF
+		  | seek:
+			message.done :=
+			   Streams.Seek(object,
+				        message.offset, message.whence);
+		  | tell:
+			message.done :=
+			   Streams.Tell(object, message.offset);
+		  | trunc:
+			message.done :=
+			   Streams.Trunc(object, message.offset);
+		  END;
+	       END;
+	    ELSIF message IS MiscMessage THEN
+	       WITH message: MiscMessage DO
+		  IF message.mode = flush THEN
+		     message.done := Streams.Flush(object);
+		  END;
+	       END;
+	    ELSE
+	       message.processed := FALSE;
+	    END;
+	    RelatedEvents.Forward(object, NIL);
+	 END;
+      END;
+   END Handler;
+
+   (* ==== marshalling procedures ========================================== *)
+
+   PROCEDURE CreateStreamParameters(VAR object: PersistentObjects.Object);
+      VAR
+	 params: StreamParameters;
+   BEGIN
+      NEW(params);
+      PersistentObjects.Init(params, streamParamsType);
+      object := params;
+   END CreateStreamParameters;
+
+   PROCEDURE WriteStreamParameters(s: Streams.Stream;
+				   object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: StreamParameters DO
+	 RETURN NetIO.WriteSet(s, object.caps) &
+		NetIO.WriteShortInt(s, object.bufmode)
+      END;
+   END WriteStreamParameters;
+
+   PROCEDURE ReadStreamParameters(s: Streams.Stream;
+				  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: StreamParameters DO
+	 RETURN NetIO.ReadSet(s, object.caps) &
+		NetIO.ReadShortInt(s, object.bufmode)
+      END;
+   END ReadStreamParameters;
+
+   PROCEDURE WriteIOByteMessage(s: Streams.Stream;
+				msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: IOByteMessage DO
+	 RETURN NetIO.WriteShortInt(s, msg.mode) &
+		NetIO.WriteByte(s, msg.byte)
+      END;
+   END WriteIOByteMessage;
+
+   PROCEDURE ReadIOByteMessage(s: Streams.Stream;
+			       msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: IOByteMessage DO
+	 RETURN NetIO.ReadShortInt(s, msg.mode) &
+		NetIO.ReadByte(s, msg.byte)
+      END;
+   END ReadIOByteMessage;
+
+   PROCEDURE CreateIOByteMessage(VAR msg: PersistentObjects.Object);
+      VAR
+	 message: IOByteMessage;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, iobytemsgType);
+      msg := message;
+   END CreateIOByteMessage;
+
+   PROCEDURE WriteIOBufMessage(s: Streams.Stream;
+				msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: IOBufMessage DO
+	 RETURN NetIO.WriteShortInt(s, msg.mode) &
+		NetIO.WriteLongInt(s, msg.count) &
+		NetIO.WriteBoolean(s, msg.filled) &
+		(~msg.filled OR Streams.WritePart(s, msg.buf, 0, msg.count))
+      END;
+   END WriteIOBufMessage;
+
+   PROCEDURE ReadIOBufMessage(s: Streams.Stream;
+			       msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: IOBufMessage DO
+	 RETURN NetIO.ReadShortInt(s, msg.mode) &
+		NetIO.ReadLongInt(s, msg.count) &
+		NetIO.ReadBoolean(s, msg.filled) &
+		(~msg.filled OR Streams.ReadPart(s, msg.buf, 0, msg.count))
+      END;
+   END ReadIOBufMessage;
+
+   PROCEDURE CreateIOBufMessage(VAR msg: PersistentObjects.Object);
+      VAR
+	 message: IOBufMessage;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, iobufmsgType);
+      msg := message;
+   END CreateIOBufMessage;
+
+   PROCEDURE WritePosMessage(s: Streams.Stream;
+			     msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: PosMessage DO
+	 RETURN NetIO.WriteShortInt(s, msg.mode) &
+		NetIO.WriteLongInt(s, msg.offset) &
+		NetIO.WriteShortInt(s, msg.whence)
+      END;
+   END WritePosMessage;
+
+   PROCEDURE ReadPosMessage(s: Streams.Stream;
+			    msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: PosMessage DO
+	 RETURN NetIO.ReadShortInt(s, msg.mode) &
+		NetIO.ReadLongInt(s, msg.offset) &
+		NetIO.ReadShortInt(s, msg.whence)
+      END;
+   END ReadPosMessage;
+
+   PROCEDURE CreatePosMessage(VAR msg: PersistentObjects.Object);
+      VAR
+	 message: PosMessage;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, posmsgType);
+      msg := message;
+   END CreatePosMessage;
+
+   PROCEDURE WriteMiscMessage(s: Streams.Stream;
+			      msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: MiscMessage DO
+	 RETURN NetIO.WriteShortInt(s, msg.mode)
+      END;
+   END WriteMiscMessage;
+
+   PROCEDURE ReadMiscMessage(s: Streams.Stream;
+			     msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: MiscMessage DO
+	 RETURN NetIO.ReadShortInt(s, msg.mode)
+      END;
+   END ReadMiscMessage;
+
+   PROCEDURE CreateMiscMessage(VAR msg: PersistentObjects.Object);
+      VAR
+	 message: MiscMessage;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, miscmsgType);
+      msg := message;
+   END CreateMiscMessage;
+
+   (* ==== Streams interface procedures ==================================== *)
+
+   PROCEDURE ForwardErrors(msg: Messages.Message;
+			   object: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(object, queue);
+   END ForwardErrors;
+
+   PROCEDURE ReadByte(s: Streams.Stream; VAR byte: Types.Byte) : BOOLEAN;
+      VAR
+	 msg: IOByteMessage;
+   BEGIN
+      CreateIOByteMessage(msg);
+      msg.mode := read;
+      Messages.Send(s, msg);
+      IF msg.done THEN
+	 byte := msg.byte;
+	 RETURN TRUE
+      ELSE
+	 ForwardErrors(msg, s);
+	 RETURN FALSE
+      END;
+   END ReadByte;
+
+   PROCEDURE WriteByte(s: Streams.Stream; byte: Types.Byte) : BOOLEAN;
+      VAR msg: IOByteMessage;
+   BEGIN
+      CreateIOByteMessage(msg);
+      msg.mode := write;
+      msg.byte := byte;
+      Messages.Send(s, msg);
+      ForwardErrors(msg, s);
+      RETURN msg.done
+   END WriteByte;
+
+   PROCEDURE ReadBuf(s: Streams.Stream; VAR buf: ARRAY OF Types.Byte;
+		     off, cnt: Streams.Count) : Streams.Count;
+      VAR
+	 msg: IOBufMessage;
+   BEGIN
+      CreateIOBufMessage(msg);
+      msg.mode := read;
+      IF cnt > buflen THEN
+	 msg.count := buflen;
+      ELSE
+	 msg.count := cnt;
+      END;
+      msg.filled := FALSE;
+      Messages.Send(s, msg);
+      IF msg.done THEN
+	 IF msg.count > 0 THEN
+	    CopyNBytes(SYS.ADR(msg.buf), SYS.ADR(buf[off]), msg.count);
+	 END;
+	 RETURN msg.count
+      ELSE
+	 ForwardErrors(msg, s);
+	 RETURN 0
+      END;
+   END ReadBuf;
+
+   PROCEDURE WriteBuf(s: Streams.Stream; VAR buf: ARRAY OF Types.Byte;
+		      off, cnt: Streams.Count) : Streams.Count;
+      VAR
+	 msg: IOBufMessage;
+   BEGIN
+      CreateIOBufMessage(msg);
+      msg.mode := write;
+      IF cnt > buflen THEN
+	 cnt := buflen;
+      END;
+      msg.count := cnt;
+      msg.filled := TRUE;
+      CopyNBytes(SYS.ADR(buf[off]), SYS.ADR(msg.buf), msg.count);
+      Messages.Send(s, msg);
+      IF msg.done THEN
+	 RETURN msg.count
+      ELSE
+	 ForwardErrors(msg, s);
+	 RETURN 0
+      END;
+   END WriteBuf;
+
+   PROCEDURE Seek(s: Streams.Stream; offset: Streams.Count;
+		  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 msg: PosMessage;
+   BEGIN
+      CreatePosMessage(msg);
+      msg.mode := seek;
+      msg.offset := offset;
+      msg.whence := whence;
+      Messages.Send(s, msg);
+      ForwardErrors(msg, s);
+      RETURN msg.done
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR pos: Streams.Count) : BOOLEAN;
+      VAR
+	 msg: PosMessage;
+   BEGIN
+      CreatePosMessage(msg);
+      msg.mode := tell;
+      Messages.Send(s, msg);
+      IF msg.done THEN
+	 pos := msg.offset;
+	 RETURN TRUE
+      ELSE
+	 ForwardErrors(msg, s);
+	 RETURN FALSE
+      END;
+   END Tell;
+
+   PROCEDURE Trunc(s: Streams.Stream; length: Streams.Count) : BOOLEAN;
+      VAR
+	 msg: PosMessage;
+   BEGIN
+      CreatePosMessage(msg);
+      msg.mode := trunc;
+      msg.offset := length;
+      Messages.Send(s, msg);
+      ForwardErrors(msg, s);
+      RETURN msg.done
+   END Trunc;
+
+   PROCEDURE Flush(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 msg: MiscMessage;
+   BEGIN
+      CreateMiscMessage(msg);
+      msg.mode := flush;
+      Messages.Send(s, msg);
+      ForwardErrors(msg, s);
+      RETURN msg.done
+   END Flush;
+
+   (* ==== RemoteObjects interface ========================================= *)
+
+   PROCEDURE GetParams(object: Services.Object;
+		       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      WITH object: Streams.Stream DO
+	 IF Disciplines.Seek(object, sdID, sd) THEN
+	    params := sd.params;
+	 ELSE
+	    CreateStreamParameters(params);
+	    WITH params: StreamParameters DO
+	       params.caps := Streams.Capabilities(object);
+	       params.bufmode := Streams.GetBufMode(object);
+	       NEW(sd); sd.id := sdID; sd.params := params;
+	       Disciplines.Add(object, sd);
+	    END;
+	 END;
+	 mode := RemoteObjects.linked;
+      END;
+   END GetParams;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+			 params: PersistentObjects.Object);
+      VAR
+	 s: Stream;
+	 caps: Streams.CapabilitySet;
+	 bufmode: Streams.BufMode;
+   BEGIN
+      NEW(s); Services.Init(s, streamType);
+      IF (params # NIL) & (params IS StreamParameters) THEN
+	 WITH params: StreamParameters DO
+	    caps := params.caps;
+	    bufmode := params.bufmode;
+	 END;
+      ELSE
+	 caps := streamcaps;
+	 bufmode := Streams.onebuf;
+      END;
+      caps := caps * streamcaps + specialcaps;
+      Streams.Init(s, streamsif, caps, bufmode);
+      object := s;
+   END CreateProxy;
+
+   (* ==== initializations ================================================= *)
+
+   PROCEDURE Init;
+      VAR
+	 if: PersistentObjects.Interface;
+	 msgType: Services.Type;
+	 remoteObjIf: RemoteObjects.Interface;
+	 streamsType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.read := ReadStreamParameters;
+      if.write := WriteStreamParameters;
+      if.create := CreateStreamParameters;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(streamParamsType,
+	 "RemoteStreams.StreamParameters", "", if);
+
+      PersistentObjects.RegisterType(msgType,
+		     "RemoteStreams.Message", "Messages.Message", NIL);
+
+      NEW(if);
+      if.read := ReadIOByteMessage;
+      if.write := WriteIOByteMessage;
+      if.create := CreateIOByteMessage;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(iobytemsgType,
+			    "RemoteStreams.IOByteMessage",
+			    "RemoteStreams.Message", if);
+
+      NEW(if);
+      if.read := ReadIOBufMessage;
+      if.write := WriteIOBufMessage;
+      if.create := CreateIOBufMessage;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(iobufmsgType,
+			    "RemoteStreams.IOBufMessage",
+			    "RemoteStreams.Message", if);
+
+      NEW(if);
+      if.read := ReadPosMessage;
+      if.write := WritePosMessage;
+      if.create := CreatePosMessage;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(posmsgType,
+			    "RemoteStreams.PosMessage",
+			    "RemoteStreams.Message", if);
+
+      NEW(if);
+      if.read := ReadMiscMessage;
+      if.write := WriteMiscMessage;
+      if.create := CreateMiscMessage;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(miscmsgType,
+			   "RemoteStreams.MiscMessage",
+			   "RemoteStreams.Message", if);
+
+      NEW(streamsif);
+      streamsif.read := ReadByte; streamsif.write := WriteByte;
+      streamsif.bufread := ReadBuf; streamsif.bufwrite := WriteBuf;
+      streamsif.seek := Seek; streamsif.tell := Tell; streamsif.trunc := Trunc;
+      streamsif.flush := Flush;
+
+      sdID := Disciplines.Unique();
+
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := GetParams;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      Services.SeekType("Streams.Stream", streamsType);
+      RemoteObjects.Register(streamsType, remoteObjIf, RemoteObjects.serial);
+
+      Services.CreateType(streamType, "RemoteStreams.Stream",
+			  "Streams.Stream");
+   END Init;
+
+   (* ==== exported procedures ============================================= *)
+
+   PROCEDURE SetMode(s: Streams.Stream;
+		     caps: Streams.CapabilitySet;
+		     bufmode: Streams.BufMode);
+      (* sets for exported streams the parameters which are later
+	 used to create a proxy stream on the importing side;
+	 caps may be a subset of Streams.Capabilities(s):
+	 this allows to restrict the outside usage
+	 (e.g. from read-write to read-only)
+      *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(s, sdID, sd) THEN
+	 NEW(sd); sd.id := sdID;
+      END;
+      CreateStreamParameters(sd.params);
+      sd.params.caps := caps * Streams.Capabilities(s);
+      sd.params.bufmode := bufmode;
+      Disciplines.Add(s, sd);
+   END SetMode;
+
+BEGIN
+   Init;
+END RemoteStreams.

@@ -1,0 +1,290 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Compilers.om,v 1.1 2001/02/03 17:35:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Compilers.om,v $
+   Revision 1.1  2001/02/03 17:35:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Compilers;
+
+   IMPORT Architectures, Args, CompilerDatabases, CompilerKeys, CompilerLogs,
+      CompilerObjects, Disciplines, Iterators, ModularizedStructures,
+      Objects, RelatedEvents, Services, Sources := CompilerSources;
+
+   TYPE
+      Result = POINTER TO ResultRec;
+      ResultRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    header: CompilerObjects.Header;
+	    object: CompilerObjects.Object;
+	 END;
+
+      Compiler = POINTER TO CompilerRec;
+
+   TYPE
+      Context = POINTER TO ContextRec;
+      ContextRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    keys: CompilerKeys.Set;
+	    mtab: CompilerObjects.ModuleTable;
+	    tab: ModularizedStructures.ObjectTable;
+	    db: CompilerDatabases.Database;
+	    cachemode: CompilerObjects.CacheMode;
+	    log: CompilerLogs.Log;
+	 END;
+
+   TYPE
+      Pass1Proc = PROCEDURE (compiler: Compiler; context: Context;
+                             source: Sources.Source;
+		             VAR definition, module: Result) : BOOLEAN;
+      Pass2Proc = PROCEDURE (compiler: Compiler; context: Context;
+			     definition, module: CompilerObjects.Object;
+			     arch: Architectures.Architecture;
+		             updatesPermitted: BOOLEAN;
+			     VAR archdef, code: Result;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      DefineArgsProc = PROCEDURE (compiler: Compiler; args: Args.Arguments);
+
+      Pass1Interface = POINTER TO Pass1InterfaceRec;
+      Pass1InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    pass1: Pass1Proc;
+	    defineArgs: DefineArgsProc;
+	 END;
+      Pass2Interface = POINTER TO Pass2InterfaceRec;
+      Pass2InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    pass2: Pass2Proc;
+	    defineArgs: DefineArgsProc;
+	 END;
+   TYPE
+      Pass2List = POINTER TO Pass2ListRec;
+      Pass2ListRec =
+	 RECORD
+	    arch: Architectures.Architecture;
+	    if: Pass2Interface;
+	    next: Pass2List;
+	 END;
+      CompilerRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Pass1Interface;
+	    pass2list: Pass2List;
+	 END;
+
+   (* === private stuff ==================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "Compilers.Compiler", "");
+   END InitModule;
+
+   PROCEDURE IteratePass2List(it: Iterators.Iterator;
+                              ref: Iterators.Reference;
+			      mode: Iterators.Mode);
+      VAR
+	 member: Pass2List;
+   BEGIN
+      member := ref(Compiler).pass2list;
+      WHILE member # NIL DO
+	 Iterators.Yield(it, member.arch);
+	 member := member.next;
+      END;
+   END IteratePass2List;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Init(compiler: Compiler; if: Pass1Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.pass1 # NIL));
+      compiler.if := if;
+      compiler.pass2list := NIL;
+   END Init;
+
+   PROCEDURE Register(compiler: Compiler; arch: Architectures.Architecture;
+                      if: Pass2Interface);
+      VAR
+	 member: Pass2List;
+   BEGIN
+      ASSERT((arch # NIL) & (if # NIL) & (if.pass2 # NIL));
+      NEW(member); member.arch := arch; member.if := if;
+      member.next := compiler.pass2list; compiler.pass2list := member;
+   END Register;
+
+   PROCEDURE Pass1(compiler: Compiler; context: Context;
+                   source: Sources.Source;
+		   VAR definition, module: Result) : BOOLEAN;
+      (* process independent from any specific hardware or software
+         architecture ``source'' according to ``args'' and return the
+         result in ``definition'' (in case of definitions),
+	 in ``module'' (in case of modules), or in both (ETHZ model);
+	 in case of errors all events should be related to source
+	 (they should be of type CompilerErrors in case of syntax
+	 and semantic errors);
+	 return TRUE if successful
+      *)
+   BEGIN
+      IF compiler.if.pass1(compiler, context, source, definition, module) THEN
+	 IF definition # NIL THEN
+	    CompilerObjects.AddModule(context.mtab, definition.header,
+				      definition.object);
+	 END;
+	 IF module # NIL THEN
+	    CompilerObjects.AddModule(context.mtab,
+	                              module.header, module.object);
+	 END;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Pass1;
+
+   PROCEDURE Pass2(compiler: Compiler; context: Context;
+                   definition, module: CompilerObjects.Object;
+		   arch: Architectures.Architecture;
+		   updatesPermitted: BOOLEAN;
+		   VAR archdef, code: Result;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* generate an architecture-dependent symbol file and/or
+         generate code for the given module;
+	 note that definition may already be architecture-dependent
+	 (in this case updates are permitted if updatesPermitted is TRUE
+	 but definition
+	 *MUST NOT* be member of context.mtab and its key
+	 *MUST NOT* be member of context.keys);
+	 module may be NIL;
+	 return FALSE in case of failures and relate all
+	 error events to errors
+      *)
+      VAR
+	 member: Pass2List;
+	 combined: Architectures.Architecture;
+   BEGIN
+      ASSERT((arch # NIL) & (definition # NIL));
+      combined := NIL;
+      member := compiler.pass2list;
+      WHILE ~Architectures.Identical(arch, member.arch) DO
+	 member := member.next;
+      END;
+      IF member = NIL THEN
+	 member := compiler.pass2list;
+	 WHILE ~Architectures.Compatible(arch, member.arch, combined) DO
+	    member := member.next;
+	 END;
+      END;
+      IF member = NIL THEN
+	 RETURN FALSE (* not supported *)
+      END;
+      IF combined = NIL THEN
+	 combined := arch;
+      END;
+
+      IF member.if.pass2(compiler, context, definition, module, arch,
+			 updatesPermitted,
+                         archdef, code, errors) THEN
+	 ASSERT(updatesPermitted OR (archdef = NIL));
+	 IF archdef # NIL THEN
+	    CompilerObjects.AddModule(context.mtab, archdef.header,
+				      archdef.object);
+	 END;
+	 IF code # NIL THEN
+	    CompilerObjects.AddModule(context.mtab, code.header, code.object);
+	 END;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Pass2;
+
+   PROCEDURE DefineArgs(compiler: Compiler; args: Args.Arguments);
+      (* defines all arguments of `compiler' including those of all
+	 supported architectures
+      *)
+      VAR
+	 member: Pass2List;
+   BEGIN
+      ASSERT(args # NIL);
+      IF compiler.if.defineArgs # NIL THEN
+	 compiler.if.defineArgs(compiler, args);
+      END;
+      member := compiler.pass2list;
+      WHILE member # NIL DO
+	 IF member.if.defineArgs # NIL THEN
+	    member.if.defineArgs(compiler, args);
+	 END;
+	 member := member.next;
+      END;
+   END DefineArgs;
+
+   PROCEDURE CreateCopyOfContext(VAR newcontext: Context; orig: Context);
+   BEGIN
+      NEW(newcontext);
+      CompilerKeys.CreateSetCopy(newcontext.keys, orig.keys);
+      CompilerObjects.CreateCopyOfModuleTable(newcontext.mtab, orig.mtab);
+      ModularizedStructures.CreateCopyOfTable(newcontext.tab, orig.tab);
+      newcontext.db := orig.db;
+      newcontext.cachemode := orig.cachemode;
+      newcontext.log := orig.log;
+   END CreateCopyOfContext;
+
+   PROCEDURE SynchronizeContext(context, ext: Context);
+   BEGIN
+      CompilerKeys.Union(context.keys, context.keys, ext.keys);
+      CompilerObjects.SynchronizeModuleTable(context.mtab, ext.mtab);
+      ModularizedStructures.SynchronizeTable(context.tab, ext.tab);
+      ASSERT(context.db = ext.db);
+      ASSERT(context.cachemode = ext.cachemode);
+      ASSERT(context.log = ext.log);
+   END SynchronizeContext;
+
+   PROCEDURE Supported(compiler: Compiler;
+                       arch: Architectures.Architecture) : BOOLEAN;
+      (* return TRUE if `compiler' supports `arch' *)
+      VAR
+	 member: Pass2List;
+	 combined: Architectures.Architecture;
+   BEGIN
+      member := compiler.pass2list;
+      WHILE (member # NIL) &
+	    ~Architectures.Compatible(arch, member.arch, combined) DO
+	 member := member.next;
+      END;
+      RETURN member # NIL
+   END Supported;
+
+   PROCEDURE GetSupportedArchitectures(compiler: Compiler;
+                                       VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(it, IteratePass2List, compiler, 0);
+   END GetSupportedArchitectures;
+
+BEGIN
+   InitModule;
+END Compilers.

@@ -1,0 +1,102 @@
+ConstStrings(3)               Ulm's Oberon System              ConstStrings(3)
+
+
+
+[1mNAME[0m
+       ConstStrings - WORM-device for strings
+
+[1mSYNOPSIS[0m
+       TYPE String = POINTER TO StringRec;
+       TYPE StringRec =
+          RECORD
+             (Disciplines.ObjectRec)
+             (* read-only *)
+             len: Streams.Count;
+             hashval: LONGINT;
+          END;
+       TYPE Domain = POINTER TO DomainRec;
+       TYPE DomainRec = RECORD (Disciplines.ObjectRec) END;
+       VAR std: Domain; (* default domain *)
+
+       PROCEDURE CreateDomain(VAR domain: Domain);
+       PROCEDURE Init(VAR s: Streams.Stream);
+       PROCEDURE Close(s: Streams.Stream; VAR string: String);
+       PROCEDURE CloseD(s: Streams.Stream; domain: Domain; VAR string: String);
+       PROCEDURE Create(VAR string: String; s: ARRAY OF CHAR);
+       PROCEDURE CreateD(VAR string: String; domain: Domain; s: ARRAY OF CHAR);
+       PROCEDURE Open(VAR s: Streams.Stream; string: String);
+       PROCEDURE Compare(string1, string2: String) : INTEGER;
+       PROCEDURE Write(s: Streams.Stream; string: String);
+       PROCEDURE Extract(VAR s: ARRAY OF CHAR; string: String);
+
+
+[1mDESCRIPTION[0m
+       Strings  of  type  [4mConstStrings.String[24m are written once and can be read
+       multiply afterwards (WORM).  A string is opened for writing with  [4mInit[24m.
+       If  writing  is  completed [4mClose[24m or [4mCloseD[24m are to be called in order to
+       get a reference to the string.  [4mClose[24m and [4mCloseD[24m check  if  the  string
+       has  already  been  entered  into the table of the given domain ([4mstd[24m in
+       case of [4mClose[24m) and, if so, return  the  same  string  reference.   Thus
+       strings  of  the  same domain are equal iff their references are equal.
+       [4mClose[24m and [4mCloseD[24m store the length of the string and its hashvalue  into
+       the public components.  Afterwards the string can be read after opening
+       with [4mOpen[24m.  Note that [4mClose[24m and [4mCloseD[24m are used only  for  closing  the
+       initial   stream.    Streams  opened  by  [4mOpen[24m  are  to  be  closed  by
+       [4mStreams.Close[24m or [4mStreams.Release[24m.  [4mCreate[24m and [4mCreateD[24m handle the  stan-
+       dard  case  of  converting  character arrays to constant strings. Note,
+       however, that strings passed to [4mCreate[24m or  [4mCreateD[24m  must  be  0X-termi-
+       nated. (Otherwise an assertion will fail.)
+
+       [4mCompare[24m  returns  an  integer less than zero, equal to zero, or greater
+       than zero if [4mstring1[24m is less than,  equal,  or  greater  than  [4mstring2.[0m
+       Both strings may be of different domains.
+
+       [4mWrite[24m  copies  [4mstring[24m  to  [4ms[24m and returns the number of bytes written in
+       [4ms.count[24m.  [4mExtract[24m copies [4mstring[24m to the character array [4ms[24m.  The  result-
+       ing string is guaranteed to be 0X-terminated.
+
+[1mEXAMPLE[0m
+       The  following  example converts a given string into a string reference
+       of [4mConstStrings[24m:
+
+
+       PROCEDURE PutString(VAR string: ConstStrings.String;
+                           buf: ARRAY OF CHAR);
+          VAR
+             s: Streams.Stream;
+       BEGIN
+          ConstStrings.Init(s);
+          Write.StringS(s, buf);
+          ConstStrings.Close(s, string);
+       END PutString;
+
+
+       [4mGetString[24m copies the value of [4mstring[24m into [4mbuf[24m:
+
+
+       PROCEDURE GetString(string: ConstStrings.String;
+                           VAR buf: ARRAY OF CHAR);
+       BEGIN
+          ConstStrings.Open(s, string);
+          Strings.Read(buf, s);
+          Streams.Release(s);
+       END GetString;
+
+
+[1mSEE ALSO[0m
+       [4mIdentKeys(3)[24m   keys that are based on [4mConstStrings[0m
+       [4mRead(3)[24m        formatted reading from streams
+       [4mStreams(3)[24m     stream operations
+       [4mStrings(3)[24m     string operations
+       [4mTexts(3)[24m       more general in-memory streams
+       [4mWrite(3)[24m       formatted output operations on streams
+
+[1mBUGS[0m
+       Seeking on the initial stream is permitted but the current position  of
+       the  stream  must be left at the end of the written string which is not
+       necessarily the end of the stream.  This is required because  the  cur-
+       rent implementation of [4mClose[24m and [4mCloseD[24m reuses initial streams.
+
+
+
+Release 0.5                Last change: 25 June 2004           ConstStrings(3)

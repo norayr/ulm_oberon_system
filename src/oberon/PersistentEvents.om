@@ -1,0 +1,390 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentE.om,v 1.2 2004/09/10 16:40:47 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PersistentE.om,v $
+   Revision 1.2  2004/09/10 16:40:47  borchert
+   more credentials (i.e. pid and hostname) for the identification
+   of remote processes added
+
+   Revision 1.1  1996/01/04 17:16:30  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersistentEvents;
+
+   (* The persistence of events cannot be achieved easily: they aren't
+      extensions of PersistentObjects.Object, nor Services.Object, nor
+      Disciplines.Object but just of Objects.Object.
+
+      This module assumes a close relationship between event record
+      types and event types. The Init procedure may be called by any
+      module (which does not need to be the module which exports the
+      event type).
+
+      Just the message is preserved for unsupported events.
+   *)
+
+   IMPORT Disciplines, Errors, Events, Objects, NetIO, Priorities, Process,
+      RelatedEvents, Services, Streams, Strings, W := Write;
+
+   TYPE
+      WriteProc = PROCEDURE (s: Streams.Stream; event: Events.Event) : BOOLEAN;
+      ReadProc = PROCEDURE (s: Streams.Stream;
+                            VAR event: Events.Event) : BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    write: WriteProc;
+	    read: ReadProc;
+	 END;
+
+   CONST
+      bogusInput = 0;
+      unknownEventType = 1;
+      errors = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: SHORTINT;
+	    typeName: ARRAY 80 OF CHAR; (* in case of unknownEventType *)
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   TYPE
+      TypeDiscipline = POINTER TO TypeDisciplineRec;
+	 (* is attached to event types and to Services.Type *)
+      Type = POINTER TO TypeRec;
+      TypeRec =
+	 RECORD
+	    (Services.ObjectRec)
+	       (* note that despite to the intention of Services
+	          the Services.Type of this type is *NOT* constant,
+		  we create instead individual types for each Init
+	       *)
+	    if: Interface;
+	    stype: Services.Type;
+	    td: TypeDiscipline;
+	 END;
+
+   TYPE
+      TypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    type: Type;
+	 END;
+   VAR
+      tdID: Disciplines.Identifier;
+
+   CONST
+      (* encoding variants *)
+      nilSY = "N"; knownSY = "K"; unknownSY = "U";
+      eventSY = "E"; endSY = "$";
+
+   (* === non-persistent events whose messages have been preserved ======= *)
+
+   CONST
+      textlen = 256;
+   TYPE
+      Event = POINTER TO EventRec;
+      Text = ARRAY textlen OF CHAR;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    originatedBy: Process.Name;
+	    text: Text;
+	       (* contains output of Errors.Write of original event *)
+	 END;
+   VAR
+      eventType: Events.EventType;
+
+   (* ===== error handling =============================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+      PROCEDURE WriteString(s: Streams.Stream; string: ARRAY OF CHAR);
+      BEGIN
+	 IF ~Streams.WritePart(s, string, 0, Strings.Len(string)) THEN END;
+      END WriteString;
+
+   BEGIN
+      WITH event: ErrorEvent DO
+	 WriteString(s, event.message);
+	 IF event.code = unknownEventType THEN
+	    WriteString(s, ": ");
+	    WriteString(s, event.typeName);
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[bogusInput] := "event expected but got bogus input";
+      errormsg[unknownEventType] := "got locally unknown event type";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object;
+                   code: SHORTINT; typeName: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error; event.message := errormsg[code];
+      event.code := code; COPY(typeName, event.typeName);
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* ===== write & read for non-supported events ======================== *)
+
+   PROCEDURE WriteUnsupportedEvent(s: Streams.Stream;
+                                   event: Events.Event) : BOOLEAN;
+      VAR
+	 text: Text;
+	 t, ot: Streams.Stream;
+	 originatedBy: Process.Name;
+   BEGIN
+      IF event IS Event THEN
+	 WITH event: Event DO
+	    text := event.text;
+	    originatedBy := event.originatedBy;
+	 END;
+      ELSE
+	 text[0] := 0X; Strings.Open(t, text);
+	 Errors.Write(t, event); Streams.Release(t);
+	 originatedBy := "";
+	 Strings.Open(ot, originatedBy);
+	 W.StringS(ot, Process.name);
+	 IF (Process.id # "") OR (Process.host # "") THEN
+	    IF Process.id # "" THEN
+	       W.CharS(ot, "[");
+	       W.StringS(ot, Process.id);
+	       W.CharS(ot, "]");
+	    END;
+	    IF Process.host # "" THEN
+	       W.CharS(ot, "@");
+	       W.StringS(ot, Process.host);
+	    END;
+	    Streams.Release(ot);
+	 END;
+      END;
+      RETURN NetIO.WriteString(s, event.message) &
+	     NetIO.WriteString(s, text) &
+	     NetIO.WriteString(s, originatedBy)
+   END WriteUnsupportedEvent;
+
+   PROCEDURE ReadUnsupportedEvent(s: Streams.Stream;
+                                  VAR event: Events.Event) : BOOLEAN;
+      VAR
+	 message: Events.Message;
+	 text: Text;
+	 fev: Event;
+	 originatedBy: Process.Name;
+   BEGIN
+      IF NetIO.ReadString(s, message) & NetIO.ReadString(s, text) &
+	    NetIO.ReadString(s, originatedBy) THEN
+	 NEW(fev);
+	 fev.type := eventType;
+	 fev.message := message;
+	 fev.text := text;
+	 fev.originatedBy := originatedBy;
+	 event := fev;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ReadUnsupportedEvent;
+
+   PROCEDURE PrintUnsupportedEvent(s: Streams.Stream; event: Events.Event);
+
+      PROCEDURE WriteString(s: Streams.Stream;
+			    string: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string))
+      END WriteString;
+
+   BEGIN
+      WITH event: Event DO
+	 IF WriteString(s, event.originatedBy) &
+	       WriteString(s, ": ") &
+	       WriteString(s, event.text) THEN
+	 END;
+      END;
+   END PrintUnsupportedEvent;
+
+   (* ===== exported procedures ========================================== *)
+
+   PROCEDURE CreateType(VAR type: Type; name: ARRAY OF CHAR; if: Interface);
+      (* name should be qualified with the module name equal to
+         that of the calling module
+      *)
+      VAR
+	 stype: Services.Type;
+	 td: TypeDiscipline;
+   BEGIN
+      NEW(type);
+      Services.CreateType(stype, name, "");
+      Services.Init(type, stype);
+      type.if := if; type.stype := stype;
+      NEW(td); td.id := tdID; td.type := type;
+      type.td := td;
+      Disciplines.Add(stype, td);
+   END CreateType;
+
+   PROCEDURE Init(eventType: Events.EventType; type: Type);
+   BEGIN
+      Disciplines.Add(eventType, type.td);
+   END Init;
+
+   PROCEDURE Write(s: Streams.Stream; event: Events.Event) : BOOLEAN;
+
+      VAR
+	 type: Type;
+	 known: BOOLEAN;
+	 typeName: ARRAY 1024 OF CHAR;
+
+      PROCEDURE GetType(event: Events.Event; VAR type: Type) : BOOLEAN;
+	 VAR
+	    td: TypeDiscipline;
+      BEGIN
+	 IF event.type = NIL THEN RETURN FALSE END;
+	 IF ~Disciplines.Seek(event.type, tdID, td) THEN RETURN FALSE END;
+	 type := td.type;
+	 RETURN TRUE
+      END GetType;
+
+   BEGIN
+      IF event = NIL THEN
+	 RETURN NetIO.WriteChar(s, nilSY)
+      END;
+      known := GetType(event, type);
+      IF known THEN
+	 Services.GetTypeName(type.stype, typeName);
+	 RETURN NetIO.WriteChar(s, knownSY) &
+	        NetIO.WriteString(s, typeName) &
+	        type.if.write(s, event)
+      ELSE
+	 RETURN NetIO.WriteChar(s, unknownSY) &
+	        WriteUnsupportedEvent(s, event)
+      END;
+   END Write;
+
+   PROCEDURE Read(s: Streams.Stream; VAR event: Events.Event) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 typeName: ARRAY 1024 OF CHAR;
+	 stype: Services.Type;
+	 td: TypeDiscipline;
+   BEGIN
+      IF ~NetIO.ReadChar(s, sy) THEN RETURN FALSE END;
+      CASE sy OF
+      | nilSY:       event := NIL; RETURN TRUE
+      | knownSY:     IF ~NetIO.ReadString(s, typeName) THEN RETURN FALSE END;
+                     Services.SeekType(typeName, stype);
+		     IF (stype = NIL) OR
+			   ~Disciplines.Seek(stype, tdID, td) THEN
+			Error(s, unknownEventType, typeName);
+			RETURN FALSE
+		     END;
+		     RETURN td.type.if.read(s, event)
+      | unknownSY:   RETURN ReadUnsupportedEvent(s, event)
+      ELSE           Error(s, bogusInput, ""); RETURN FALSE
+      END;
+   END Read;
+
+   PROCEDURE WriteErrors(s: Streams.Stream;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      (* is intended for queued events only; writes the list
+	 of error messages which is attached to errors;
+	 the error list is not removed afterwards!
+      *)
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      IF (errors = NIL) OR ~RelatedEvents.EventsPending(errors) THEN
+	 RETURN Streams.WriteByte(s, endSY)
+      END;
+      RelatedEvents.GetQueue(errors, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+      WHILE queue # NIL DO
+	 IF ~Streams.WriteByte(s, eventSY) OR ~Write(s, queue.event) THEN
+	    RETURN FALSE
+	 END;
+	 queue := queue.next;
+      END;
+      RETURN Streams.WriteByte(s, endSY)
+   END WriteErrors;
+
+   PROCEDURE ReadErrors(s: Streams.Stream;
+			VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 queue, tail: RelatedEvents.Queue;
+	 element: RelatedEvents.Queue;
+	 event: Events.Event;
+   BEGIN
+      queue := NIL; tail := NIL;
+      WHILE Streams.ReadByte(s, sy) & (sy = eventSY) DO
+	 IF ~Read(s, event) THEN RETURN FALSE END;
+	 NEW(element);
+	 element.event := event;
+	 element.next := NIL;
+	 IF tail # NIL THEN
+	    tail.next := element;
+	 ELSE
+	    queue := element;
+	 END;
+	 tail := element;
+      END;
+      IF ~s.error & ~s.eof & (sy = endSY) THEN
+	 IF queue = NIL THEN
+	    errors := NIL;
+	 ELSE
+	    NEW(errors); RelatedEvents.QueueEvents(errors);
+	    RelatedEvents.AppendQueue(errors, queue);
+	 END;
+	 RETURN TRUE
+      ELSE
+	 IF ~s.error & ~s.eof THEN
+	    Error(s, bogusInput, "");
+	 END;
+	 RETURN FALSE
+      END;
+   END ReadErrors;
+
+BEGIN
+   tdID := Disciplines.Unique();
+   InitErrorHandling;
+   Events.Define(eventType);
+   Events.SetPriority(eventType, Priorities.liberrors);
+   Events.Ignore(eventType);
+   Errors.AssignWriteProcedure(eventType, PrintUnsupportedEvent);
+END PersistentEvents.

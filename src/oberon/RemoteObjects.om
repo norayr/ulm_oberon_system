@@ -1,0 +1,4047 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteObjec.om,v 1.24 2005/02/09 10:01:25 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteObjec.om,v $
+   Revision 1.24  2005/02/09 10:01:25  borchert
+   privateObject error code added
+
+   Revision 1.23  2004/09/14 15:41:01  borchert
+   bug fix: Terminator now removes all ports and closes all channels
+            in case of a termination (Process.termination,
+            Process.softTermination)
+
+   Revision 1.22  2004/09/10 16:43:08  borchert
+   TestActivationCondition returns now TRUE when terminateImmediately
+   becomes TRUE
+
+   Revision 1.21  2004/09/09 20:57:38  borchert
+   avoid floods of newly created tasks within NotifyProxyObjects
+   (this was an issue in case of closed channels with 1000+
+   proxy objects attached to it)
+
+   Revision 1.20  2004/05/21 07:06:16  borchert
+   improvements:
+    - the interface of Jobs is used instead of coroutine primitives
+      (code partially contributed by Christian Ehrhardt)
+    - pseudo random numbers are taken from RandomGenerators.unpredictable,
+      if possible
+
+   Revision 1.19  1998/04/09 15:50:33  borchert
+   bug fix: endless loop in Register (detected by Martin Hasch)
+
+   Revision 1.18  1998/03/24  23:08:04  borchert
+   RemoteObjects is now able to support any number of layers of
+   RemoteXXX modules like PersistentObjects provided that
+   all lower layers support the new initProxy if procedure;
+   if this if procedure is not given RemoteObjects behaves as before
+
+   Revision 1.17  1998/03/24  23:03:47  borchert
+   object listeners may now be terminated like other task groups
+
+   Revision 1.16  1998/02/04  12:35:49  borchert
+   bug fix: own objects references where only recognized for
+            sy = yourObjectSY but not for sy = longAddressSY
+            (instead an unsuccessful channel join was attempted)
+
+   Revision 1.15  1997/04/02  07:41:54  borchert
+   imported module Random has been renamed to RandomGenerators
+
+   Revision 1.14  1996/11/13  17:06:20  borchert
+   several bug fixes:
+   - notifications about state changes of Resources are to be done
+     in parallel in some cases do avoid dead locks (if the associated
+     events of Resources are processed asynchronously)
+   - SendReply did not check the channel validity after
+     Semaphores.P(channel.sema)
+   - the assertion at the beginning of MessageHandler was too hard:
+     there is a raising condition where the discipline is already
+     removed but the object has not been terminated (especially
+     if the termination is signalled in parallel)
+
+   Revision 1.13  1996/01/04  14:39:34  borchert
+   - CreateRegistrationCondition added to allow blocking until the
+     registration is finished
+   - interface for recovery mechanisms added: InstallRecoverHandler
+     and ReImport
+
+   Revision 1.12  1995/12/13  17:20:59  borchert
+   - optional register interface procedure added
+   - message handler (of interface) is now optional
+
+   Revision 1.11  1995/12/11  16:07:32  borchert
+   - RemoteObjects is now a service and exported objects
+     are now extensions of Services.Object (they needn't to be
+     persistent)
+   - ExportMode added (was useful for RemoteIterators)
+   - we have now just one object on the importing side:
+     the proxy object of RemoteObjects and the proxy object of RemoteXXX
+     have been joined
+   - improved error messages
+   - if proxy objects are the only objects which reference an exported
+     object then it will terminate on termination of all proxy objects
+   - terminating task added
+
+   Revision 1.10  1994/10/28  09:06:32  borchert
+   bug fix: some raise conditions during startup of port listeners eliminated
+
+   Revision 1.9  1994/10/28  08:57:00  borchert
+   - RemoteObjects supports now Resources:
+        Resources.unreferenced causes proxy objects to be dropped;
+        for this reason we no longer need a explicit  & exported Drop operation;
+        Resources.terminated causes exported objects to be withdrawn;
+        proxy objects which are no longer valid (either implicitly dropped
+        or withdrawn by the partner side) are marked as Resources.terminated
+   - channels are now closed automatically if *both* parties don't have
+     active proxy objects which need this channel
+   - dead proxy objects remember now the reason for their death
+   - RemoteObjects tries to reopen channels if they are broken
+   - RemoteObjects allows now NIL to be exported & imported
+
+   Revision 1.8  1994/09/14  11:28:15  borchert
+   bug fix: Read/WriteAdress: the port list may be NIL
+
+   Revision 1.7  1994/09/12  16:04:25  borchert
+   old Export & Import which based on RemoteObjects.Address removed
+   ExportAndWrite & ReadAndImport renamed to Export & Import
+
+   Revision 1.6  1994/09/08  11:53:01  borchert
+   Drop parameter type changed to PersistentDisciplines.Object
+
+   Revision 1.5  1994/09/08  10:33:07  borchert
+   major revision which guarantees now channel and proxy object identity:
+   - channel identity means that there is maximal one channel between
+     each pair of processes
+   - proxy object identity means that re-imports of the same object
+     return the same proxy object
+   - to avoid Import-operations during message reading which would
+     violate channel identity ExportAndWrite & ReadAndImport have been added;
+   the message handler for proxy objects is now able to reopen a channel
+   better cleanup and termination of channels and associated tasks
+
+   Revision 1.4  1994/08/29  11:41:23  borchert
+   bug fix: Withdraw crashed for objects with parallel access mode
+
+   Revision 1.3  1994/08/29  09:47:21  borchert
+   parallel access mode added
+
+   Revision 1.2  1994/07/05  12:59:56  borchert
+   minor changes due to new out-parameter of Schedulers.AddTask and
+   renamed procedure of networks
+
+   Revision 1.1  1994/02/23  08:04:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 2/94
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteObjects;
+
+   (* interface to remote objects *)
+
+   IMPORT ASCII, BlockingEvents, Conditions, Disciplines, Errors,
+      EventConditions, Events, IndirectDisciplines, Jobs,
+      LinearizedStructures, LocalSemaphores, Messages, NetIO, Networks,
+      Objects, PersistentDisciplines, PersistentObjects, Priorities, Process,
+      Random := RandomGenerators, RelatedEvents, Resources, Semaphores,
+      Services, StreamConditions, StreamDisciplines, Streams, Strings,
+      SYS := SYSTEM, Tasks;
+
+   CONST
+      typeNameLen = 256; (* supported type name length for type of Services *)
+   TYPE
+      TypeName = ARRAY typeNameLen OF CHAR;
+
+   CONST
+      serial = 0; parallel = 1;
+	 (* exported objects may be either exported for serial or
+	    parallel accesses
+	 *)
+      standalone = 0; linked = 1;
+	 (* this mode is returned by the getparams if procedure, if present,
+	    and defaults to linked:
+
+	    standalone:		just some informations (i.e. params) are
+				carried to the other side; no active
+				connection is maintained; this is only
+				useful in some marginal cases; note
+				that this mode does not preserve
+				object identity in case of multiple imports
+	    linked:		the standard case where the proxy object
+				remains linked to the original object
+	 *)
+   TYPE
+      AccessMode = SHORTINT; (* serial or parallel *)
+      ExportMode = SHORTINT; (* standalone or linked *)
+
+   CONST
+      serviceName = "RemoteObjects";
+   TYPE
+      GetParamsProc = PROCEDURE (object: Services.Object;
+				 VAR params: PersistentObjects.Object;
+				 VAR mode: ExportMode);
+	 (* called for original object; may return NIL;
+	    returned params are later passed to createProxy;
+	    this if procedure is called only once even in case
+	    of multiple exports
+	 *)
+      CreateProxyProc = PROCEDURE (VAR object: Services.Object;
+				   params: PersistentObjects.Object);
+	 (* create proxy object which converts operations into messages;
+	    params may be NIL
+	 *)
+      InitProxyProc = PROCEDURE (object: Services.Object;
+                                 params: PersistentObjects.Object);
+	 (* like CreateProxy but for an existing object *)
+      RegisterProc = PROCEDURE (object: Services.Object);
+	 (* is called shortly after CreateProxy (if provided)
+	    and may invoke some operations on that operation
+	    (this must not be done by CreateProxy)
+	 *)
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    getParams: GetParamsProc; (* may be NIL *)
+	    createProxy: CreateProxyProc;
+	    initProxy: InitProxyProc; (* may be NIL *)
+	    register: RegisterProc; (* may be NIL *)
+	    msgHandler: Messages.Handler;
+	       (* converts messages into operations; may be NIL *)
+	 END;
+      TypeDiscipline = POINTER TO TypeDisciplineRec;
+      TypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    if: Interface;
+	    access: AccessMode;
+	    up: TypeDiscipline; (* discipline of base type if any *)
+	    register: BOOLEAN; (* if.register or up... is non-NIL *)
+	 END;
+   VAR
+      service: Services.Service;
+      typeDiscID: Disciplines.Identifier;
+
+   TYPE
+      ObjectID = LONGINT;
+	 (* object ids addresses objects of an address space;
+	    i.e. global object addresses may be given by
+	    a network address and an object id;
+	    RemoteObjects assigns object ids when they get exported
+	 *)
+   CONST
+      internal = 0;
+	 (* this object id is used for internal communication and
+	    doesn't get assigned to exported objects
+	 *)
+
+   TYPE
+      Address = POINTER TO AddressRec;
+	 (* this address type allows to addresses remote objects;
+	    remote object addresses are a tupel (network address, object id)
+	 *)
+      RequestID = LONGINT;
+	 (* RemoteObjects tries to reduce the number of communication
+	    channels for the exchange of message records;
+	    e.g. if process A exports objects x and y
+	    then a process B which sends messages to x and y needs
+	    only one channel from B to A;
+	    multiplexing is done on base of request ids:
+	    say, B sends a message to x (request id 1),
+	    followed by a message to y (request id 2) and
+	    waits for responses. If y answers faster than x, B
+	    gets the reply with id 2 before id 1.
+	 *)
+      Channel = POINTER TO ChannelRec;
+	 (* channels are shared network connections between two
+	    address spaces
+	 *)
+      ForeignPortList = POINTER TO ForeignPortListRec;
+	 (* the caller passes a list of its own port to the callee
+	    during at the beginning to allow later backcalls
+	 *)
+      PortList = POINTER TO PortListRec;
+      ErrorCode = SHORTINT;
+
+   (* slot management:
+      these slots are used to verify the identity of two channel partners
+      by OpenChanel
+   *)
+   TYPE
+      SlotIndex = INTEGER;
+      SlotVal = LONGINT;
+      Slot = POINTER TO SlotRec;
+      SlotRec =
+	 RECORD
+	    index: SlotIndex;
+	    val: SlotVal;
+	    next: Slot;
+	 END;
+   VAR
+      slots, freeSlots: Slot; (* slots in use, and free slots *)
+      nextSlotID: SlotIndex; (* we need unique slot ids *)
+      slotSema: Semaphores.Semaphore; (* serializes accesses *)
+
+   (* partner ids -- are not guaranteed to be unique *)
+   TYPE
+      PartnerID = LONGINT; (* the same type as SlotVal *)
+   CONST
+      invalidPartnerID = MIN(PartnerID);
+   VAR
+      myID: PartnerID; (* random value *)
+
+   (* registration of channels by partner ids *)
+   CONST
+      chtabsize = 64;
+   TYPE
+      ChannelBucketTable = ARRAY chtabsize OF Channel;
+   VAR
+      chbucket: ChannelBucketTable;
+      chregtabSema: Semaphores.Semaphore;
+
+   (* all messages to and from remote objects get packaged by
+      messages of RemoteObjects;
+      each request is expected to be followed by a reply:
+
+			RemoteObjects.Message
+			   /             \
+		       Request          Reply
+
+      internal messages are addressed to object id 0
+   *)
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    requestID: RequestID;
+	    message: Messages.Message;
+	 END;
+      Request = POINTER TO RequestRec;
+      RequestRec =
+	 RECORD
+	    (MessageRec)
+	    objectID: ObjectID;
+	 END;
+      Reply = POINTER TO ReplyRec;
+      ReplyRec = RECORD (MessageRec) END;
+   CONST
+      ping = 0; known = 1; close = 2; withdraw = 3; detach = 4;
+      discAdd = 5; discRemove = 6; discSeek = 7; discID = 8;
+      discOps = {discAdd..discID};
+      createSlot = 9; checkSlot = 10; freeSlot = 11;
+      slotOps = {createSlot..freeSlot};
+      exchangePorts = 12;
+      portOps = {close, exchangePorts};
+      exchangeRefCnts = 13;
+      refcntOps = {exchangeRefCnts};
+   TYPE
+      InternalMessage = POINTER TO InternalMessageRec;
+      InternalMessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    cmd: SHORTINT; (* ping | known | close | ... *)
+	    senderID: PartnerID; (* id of sending partner *)
+	    objectID: ObjectID; (* parameter of known & withdraw *)
+	    (* discipline operations only *)
+	    discipline: PersistentDisciplines.Discipline;
+	    id: PersistentDisciplines.Identifier;
+	    (* slot operations only *)
+	    slot: SlotIndex; slotval: SlotVal;
+	    (* port operations only *)
+	    ports: ForeignPortList;
+	    (* refcnt operations only *)
+	    refcnt: LONGINT;
+	 END;
+   VAR
+      messageType, requestType, replyType,
+      internalMsgType: Services.Type;
+
+   (* if we have sent a request, we would like to wait for a response *)
+   TYPE
+      ResponseCondition = POINTER TO ResponseConditionRec;
+	 (* this is a private condition which isn't visible from outside *)
+      ResponseConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    requestID: RequestID;      (* id of our request we've sent *)
+	    channel: Channel;
+	       (* the response will come this way along *)
+	    reply: Messages.Message;
+	       (* if the condition evaluates to TRUE we'll find here
+		  the response we have waited for
+	       *)
+	    s: Streams.Stream;
+	       (* we have sent our message to this stream *)
+	 END;
+   (* if we have an exported object which prefers serialized accesses,
+      we would like to wait for incoming requests
+   *)
+   TYPE
+      RequestCondition = POINTER TO RequestConditionRec;
+      RequestList = POINTER TO RequestListRec;
+      RequestListRec =
+	 RECORD
+	    channel: Channel; (* we received the request from this channel *)
+	    requestID: RequestID; (* with this request id *)
+	    message: Messages.Message;
+	    next: RequestList;
+	 END;
+      RequestConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    objectID: ObjectID;
+	    withdrawn: BOOLEAN;
+	    sema: Semaphores.Semaphore;
+	       (* modifications of the message queue must be
+		  enclosed by P and V of this semaphore
+	       *)
+	    requests, tail: RequestList; (* FIFO queue *)
+	 END;
+   VAR
+      responseDomain, requestDomain: Conditions.Domain;
+
+   (* for exported objects which prefer parallelized accesses,
+      we maintain a list of tasks which is awaiting requests
+   *)
+   CONST
+      continue = 0; terminate = 1; terminated = 2;
+   TYPE
+      TaskMode = SHORTINT; (* continue..terminated *)
+      TaskList = POINTER TO TaskListRec;
+      TaskListRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    mode: TaskMode;
+	    channel: Channel; (* we received the request from here *)
+	    requestID: RequestID; (* with this request id *)
+	    object: Messages.Object; (* for this object *)
+	    message: Messages.Message;
+	    next: TaskList;
+	 END;
+      ActivationCondition = TaskList;
+   VAR
+      tasks: TaskList; (* list of idle tasks *)
+      activationDomain: Conditions.Domain;
+      terminateImmediately: BOOLEAN;
+
+   (* if we get a response we want to find the associated condition;
+      we have a condition in this table for each awaited reply;
+      a small hash table is used:
+	 requestID MOD tabsize serves as hash value
+   *)
+   TYPE
+      ResponseConditionList = POINTER TO ResponseConditionListRec;
+      ResponseConditionListRec =
+	 RECORD
+	    requestID: RequestID; (* a copy of condition.requestID *)
+	    condition: ResponseCondition;
+	    next: ResponseConditionList;  (* next with same hash value *)
+	 END;
+   CONST
+      respcondhashtabsize = 16;
+	 (* should be sufficient even for busy channels *)
+   TYPE
+      ResponseCondBucketTable =
+	 ARRAY respcondhashtabsize OF ResponseConditionList;
+
+   (* the remote address of an object *)
+   TYPE
+      AddressRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    (* private components *)
+	    ports: ForeignPortList;
+	    partnerID: PartnerID;
+	    objectID: ObjectID;
+	    typeName: TypeName;
+	       (* this is the name of the type for which the ``RemoteObjects''
+		  service has been defined -- this is usually the
+		  name of an abstraction module and not the name of
+		  one of its implementations
+	       *)
+	 END;
+   VAR
+      addressType: Services.Type;
+
+   TYPE
+      RecoverProc = PROCEDURE (object: Services.Object; errorCode: ErrorCode);
+
+   TYPE
+      ProxyDiscipline = POINTER TO ProxyDisciplineRec;
+	 (* proxy objects are created by the service provider
+	    (interface procedure import); we attach this
+	    discipline to these proxy objects for our bookkeeping
+	 *)
+      ProxyDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    object: Services.Object; (* the proxy object *)
+	    registrationJob: Jobs.Job; (* may be NIL *)
+	    recover: RecoverProc; (* may be NIL; allows reimports *)
+	    recovererActive: BOOLEAN;
+	       (* no more than one recovery task should be active *)
+	    newProxy: Services.Object;
+	       (* in case of re-imports it may happen that we
+		  have to forward all messages to another proxy object
+		  (or even to the original object which is now owned by us)
+	       *)
+	    dependants: ProxyDiscipline;
+	    params: PersistentObjects.Object; (* may be NIL *)
+	    address: Address;
+	    channel: Channel;
+	       (* communication channel to remote object -- may be NIL *)
+	    errorCode: ErrorCode;
+	       (* raise this error if channel = NIL and
+		  MessageHandler gets called
+	       *)
+	    hnext, hprev: ProxyDiscipline;
+	       (* per channel hash table of proxy disciplines *)
+	    dnext: ProxyDiscipline;
+	       (* list of dependants *)
+	 END;
+   VAR
+      proxyDiscID: Disciplines.Identifier;
+
+   TYPE
+      DiscMap = POINTER TO DiscMapRec;
+	 (* if we are propagating Seek and Remove operations of
+	    PersistentDisciplines, we are in the necessity of
+	    translating the local identifier to the remote one;
+	    mappings can be explicitely asked for on the other
+	    side by making use of the samples provided by
+	    PersistentDisciplines.GetSample;
+	    the following data structure caches all known
+	    mappings for a particular connection
+	 *)
+      DiscMapRec =
+	 RECORD
+	    local, remote: PersistentDisciplines.Identifier;
+	    next: DiscMap;
+	 END;
+   VAR
+      persDiscIF: PersistentDisciplines.Interface;
+
+   CONST
+      remoteobjhashtabsize = 32;
+      maxretries = 3;
+	 (* maximal number of retries to reopen a broken channel
+	    without any intermediate success
+	 *)
+   TYPE
+      ObjectTable = ARRAY remoteobjhashtabsize OF ProxyDiscipline;
+      ExportDiscipline = POINTER TO ExportDisciplineRec;
+      ListOfExportedObjects = POINTER TO ListOfExportedObjectsRec;
+      ListOfExportedObjectsRec =
+	 RECORD
+	    object: ExportDiscipline;
+	    next: ListOfExportedObjects;
+	 END;
+      ChannelRec =
+	 RECORD
+	    listenerIsRunning: BOOLEAN; (* don't start a 2nd listener... *)
+	    suppressNotification: BOOLEAN; (* don't call NotifyProxyObjects *)
+	    dontReopen: BOOLEAN; (* don't try to reopen the connection *)
+	    retries: INTEGER; (* count # of retries; reset on success *)
+	    refcnt: LONGINT; (* # of objects which use this channel *)
+	    partnerRefCnt: LONGINT; (* # of objects of partner *)
+	    (* port & ports allow to reopen broken connections *)
+	    port: Networks.Address; (* address in use, if any *)
+	    ports: ForeignPortList;
+	       (* the list of ports we got from the other side *)
+	    sentports: PortList; (* the list of ports we've sent earlier *)
+	    closedByPartner: BOOLEAN; (* never reopen this channel if TRUE *)
+	    shutdown: BlockingEvents.EventType;
+	    reopen: BlockingEvents.EventType;
+	    s: Streams.Stream; (* may be NIL *)
+	    sema: Semaphores.Semaphore; (* serializes accesses to s *)
+	    partnerID: PartnerID;
+	    readyForReading: Conditions.Condition;
+	    readyForWriting: Conditions.Condition;
+	    nextRequestID: RequestID; (* to generate unique ids *)
+	    conditions: ResponseCondBucketTable;
+	       (* the set of awaited responses *)
+	    discmap: DiscMap; (* mapping list for discipline identifiers *)
+	    errors: RelatedEvents.Object;
+	       (* collect all trouble here if not requested otherwise *)
+	    objects: ObjectTable; (* all imported objects of this channel *)
+	    objectsMutex: Semaphores.Semaphore; (* mutex for objects & refcnt *)
+	    exportedObjects: ListOfExportedObjects;
+	       (* we maintain a list of objects which are accessed by
+		  this channel from the remote side to ease the
+		  removal of this channel from all channel lists
+		  of exported objects during channel shutdown
+	       *)
+	    exportedObjectsMutex: Semaphores.Semaphore;
+	    prev, next: Channel; (* list of channels *)
+	    hprev, hnext: Channel; (* next channel with same hash value *)
+	 END;
+   VAR
+      channels: Channel;
+      channelsSema: Semaphores.Semaphore;
+
+   (* we want to have only one channel between each pair of partners --
+      to assure this we have to avoid that two OpenChannels for
+      the same partner are running at the same time;
+      one semaphore would be sufficient while the best solution would be
+      one semaphore per PartnerID in use;
+      we take here a simple approach which takes the
+      PartnerID MOD nofopensemas as index into an array of semaphores
+   *)
+   CONST
+      nofopensemas = 16; (* should be power of 2, may be even 1 *)
+   VAR
+      opensema: ARRAY nofopensemas OF Semaphores.Semaphore;
+
+   (* all exported objects must be addressable by their object id --
+      for this reason we need a global object table;
+      a hash table is taken here --
+	 the object id MOD tabsize serves as hash value
+   *)
+   CONST
+      hashtabsize = 512;
+   TYPE
+      ChannelList = POINTER TO ChannelListRec;
+      ChannelListRec =
+	 RECORD
+	    channel: Channel;
+	    next: ChannelList;
+	 END;
+      ExportDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    object: Services.Object;
+	    params: PersistentObjects.Object; (* may be NIL *)
+	    mode: ExportMode; (* linked or standalone *)
+	    dependants: ProxyDiscipline;
+	    (* ===   mode = linked   ======================================= *)
+	    objectID: ObjectID;
+	    access: AccessMode; (* serial or parallel *)
+	    condition: RequestCondition; (* only # NIL if access = serial *)
+	    next: ExportDiscipline; (* next with same hash value *)
+	    channels: ChannelList; (* list of registered channels *)
+	    channelsMutex: Semaphores.Semaphore; (* access of channels *)
+	    key: Resources.Key; (* for Resource.Attach/Detach *)
+	    address: Address;
+	    (* ===  mode = standalone   ==================================== *)
+	    typeName: TypeName;
+	 END;
+      BucketTable = ARRAY hashtabsize OF ExportDiscipline;
+   VAR
+      exportDiscID: Disciplines.Identifier;
+      exports: BucketTable;
+      exportsMutex: Semaphores.Semaphore; (* serialize accesses of exports *)
+      nextObjectID: ObjectID; (* to generate unique object ids *)
+
+   CONST
+      (* used by Export & Import *)
+      nilSY = "N"; (* NIL *)
+      shortAddressSY = "S"; (* object ID only *)
+      longAddressSY = "L"; (* object ID & list of ports *)
+      yourObjectSY = "Y"; (* object ID only *)
+      standaloneSY = "A"; (* typeName & params *)
+      portSY = "P"; endSY = "E"; (* list of ports *)
+
+   TYPE
+      ListOfProxyParameters = POINTER TO ListOfProxyParametersRec;
+      ListOfProxyParametersRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    params: PersistentObjects.Object;
+	    next: ListOfProxyParameters;
+	 END;
+   VAR
+      proxyListType: Services.Type;
+
+   (* to retrieve channels by streams we need a discipline which is
+      attached to all channel streams
+   *)
+   TYPE
+      ChannelStreamDiscipline = POINTER TO ChannelStreamDisciplineRec;
+      ChannelStreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    channel: Channel;
+	 END;
+   VAR
+      csDiscID: Disciplines.Identifier;
+
+   TYPE
+      ForeignPortListRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    port: Networks.Address;
+	    next: ForeignPortList;
+	 END;
+   VAR
+      foreignPortListType: Services.Type;
+
+   TYPE
+      PortListRec =
+	 RECORD
+	    (ForeignPortListRec)
+	    socket: Networks.Socket;
+	 END;
+   VAR
+      ports: PortList;
+      portsSema: Semaphores.Semaphore;
+	 (* serializes modifications of the list of ports *)
+
+   TYPE
+      RegistrationJob = POINTER TO RegistrationJobRec;
+      RegistrationJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    object: Services.Object;
+	       (* proxy object which is to be registered *)
+	    typeDisc: TypeDiscipline;
+	 END;
+
+   TYPE
+      ResourceNotificationJob = POINTER TO ResourceNotificationJobRec;
+      ResourceNotificationJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    object: Resources.Resource;
+	    change: Resources.StateChange;
+	 END;
+      
+      ObjectListenerJob = POINTER TO ObjectListenerRec;
+      ObjectListenerRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    export: ExportDiscipline;
+	 END;
+
+      ResponseListenerJob = POINTER TO ResponseListenerJobRec; 
+      ResponseListenerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    condition: ActivationCondition;
+	 END;
+
+      ChannelListenerJob = POINTER TO ChannelListenerJobRec;
+      ChannelListenerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    channel: Channel;
+	    shutdownCond, termCond, reopenCond: Conditions.Condition;
+	 END;
+
+      PortListenerJob = POINTER TO PortListenerJobRec;
+      PortListenerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    socket: Networks.Socket;
+	    errors: RelatedEvents.Object;
+	    newerrors: RelatedEvents.Object;
+	    acceptCond, termCond, removeportsCond: Conditions.Condition;
+	    conditions: Conditions.ConditionSet;
+	 END;
+
+      RecovererJob = POINTER TO RecovererJobRec;
+      RecovererJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    proxyDisc: ProxyDiscipline;
+	    errorCode: ErrorCode; (* original error code *)
+	 END;
+
+   TYPE
+      Notification = POINTER TO NotificationRec;
+      NotificationRec =
+	 RECORD
+	    (Events.EventRec)
+	 END;
+   VAR
+      termination: BlockingEvents.EventType;
+      removeports: BlockingEvents.EventType;
+      terminateObjectListeners: BlockingEvents.EventType;
+
+      closeType, removeType: Events.EventType;
+      termJobIsRunning: BOOLEAN;
+
+   CONST
+      accessFailed = 0; (* access to remote object failed *)
+      invalidMessage = 1; (* invalid message received from partner *)
+      sendFailed = 2; (* cannot send message to remote object *)
+      receiveFailed = 3; (* cannot receive message from remote object *)
+      connectionBroken = 4; (* channel was alive and is now broken *)
+      invalidPartner = 5; (* partner doesn't follow RemoteObjects protocol *)
+      unknownObject = 6; (* object not known on the other side *)
+      droppedObject = 7; (* connection to remote object is closed *)
+      closedConnection = 8; (* connection has been closed by partner *)
+      objectWithdrawn = 9; (* remote object has been withdrawn *)
+      listenerKilled = 10; (* channel listener has been shut down *)
+      unexportableObject = 11; (* given object cannot be exported *)
+      unknownType = 12; (* imported object is of unknown type *)
+      unsupportedType = 13; (* ``RemoteObjects'' service not supported *)
+      typeGuardFailure = 14; (* guard of GuardedRead failed *)
+      suspendedObject = 15; (* object is currently suspended *)
+      privateObject = 16; (* object has no public ports *)
+      errors = 17;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    address: Address;
+	 END;
+      UnknownTypeEvent = POINTER TO UnknownTypeEventRec;
+      UnknownTypeEventRec =
+	 RECORD
+	    (ErrorEventRec)
+	    typeName: ARRAY 80 OF CHAR;
+	 END;
+      UnexpectedTypeEvent = POINTER TO UnexpectedTypeEventRec;
+      UnexpectedTypeEventRec =
+	 RECORD
+	    (ErrorEventRec)
+	    found, expected: Services.Type;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =============================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+		   errorcode: ErrorCode;
+		   address: Address);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.address := address;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE UnknownType(stream: Streams.Stream;
+			 code: ErrorCode; typeName: ARRAY OF CHAR);
+      VAR
+	 event: UnknownTypeEvent;
+   BEGIN
+      stream.count := 0;
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      event.address := NIL;
+      COPY(typeName, event.typeName);
+      RelatedEvents.Raise(stream, event);
+   END UnknownType;
+
+   PROCEDURE UnexpectedType(stream: Streams.Stream;
+			    found, expected: Services.Type);
+      VAR
+	 event: UnexpectedTypeEvent;
+   BEGIN
+      stream.count := 0;
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[typeGuardFailure];
+      event.errorcode := typeGuardFailure;
+      event.address := NIL;
+      event.found := found;
+      event.expected := expected;
+      RelatedEvents.Raise(stream, event);
+   END UnexpectedType;
+
+   PROCEDURE WriteEvent(s: Streams.Stream; event: Events.Event);
+
+      PROCEDURE WriteString(s: Streams.Stream;
+			    string: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string))
+      END WriteString;
+
+      PROCEDURE WriteLn(s: Streams.Stream) : BOOLEAN;
+	 VAR
+	    lineterm: StreamDisciplines.LineTerminator;
+	    width: INTEGER;
+      BEGIN
+	 StreamDisciplines.GetLineTerm(s, lineterm);
+	 IF ~WriteString(s, lineterm) THEN RETURN FALSE END;
+	 StreamDisciplines.GetIndentationWidth(s, width);
+	 WHILE width > 0 DO
+	    IF ~Streams.WriteByte(s, " ") THEN RETURN FALSE END;
+	    DEC(width);
+	 END;
+	 RETURN TRUE
+      END WriteLn;
+
+      PROCEDURE WriteType(s: Streams.Stream;
+			  type: Services.Type) : BOOLEAN;
+	 VAR
+	    name: TypeName;
+      BEGIN
+	 Services.GetTypeName(type, name);
+	 RETURN Streams.WriteByte(s, ASCII.quote) &
+	        WriteString(s, name) &
+		Streams.WriteByte(s, ASCII.quote)
+      END WriteType;
+
+   BEGIN
+      IF event IS UnknownTypeEvent THEN
+	 WITH event: UnknownTypeEvent DO
+	    IF WriteString(s, event.message) &
+		  WriteString(s, ": ") &
+		  Streams.WriteByte(s, ASCII.quote) &
+		  WriteString(s, event.typeName) &
+		  Streams.WriteByte(s, ASCII.quote) THEN
+	    END;
+	 END;
+      ELSIF event IS UnexpectedTypeEvent THEN
+	 WITH event: UnexpectedTypeEvent DO
+	    IF WriteString(s, event.message) &
+		  WriteString(s, ":") &
+		  WriteLn(s) &
+		  WriteString(s, "expected ") &
+		  WriteString(s, "extension of ") &
+		  WriteType(s, event.expected) &
+		  WriteString(s, " but got ") &
+		  WriteType(s, event.found) THEN
+	    END;
+	 END;
+      ELSE
+	 IF WriteString(s, event.message) THEN END;
+      END;
+   END WriteEvent;
+
+   PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(from, queue);
+      RelatedEvents.AppendQueue(to, queue);
+   END ForwardErrors;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[accessFailed] := "access to remote object failed";
+      errormsg[invalidMessage] := "invalid message received from partner";
+      errormsg[sendFailed] := "cannot send message to remote object";
+      errormsg[receiveFailed] := "cannot receive message from remote object";
+      errormsg[connectionBroken] :=
+	 "communication channel to remote object is broken";
+      errormsg[invalidPartner] :=
+	 "partner doesn't follow RemoteObjects protocol";
+      errormsg[unknownObject] := "object not known on other side";
+      errormsg[droppedObject] := "connection to remote object is closed";
+      errormsg[closedConnection] := "connection has been closed by partner";
+      errormsg[objectWithdrawn] := "remote object has been withdrawn";
+      errormsg[listenerKilled] := "channel listener has been shut down";
+      errormsg[unexportableObject] := "given object cannot be exported";
+      errormsg[unknownType] := "imported object is of unknown type";
+      errormsg[unsupportedType] := "imported object is of unsupported type";
+      errormsg[typeGuardFailure] :=
+	 "imported object is not of the expected type";
+      errormsg[suspendedObject] := "object is currently suspended";
+      errormsg[privateObject] := "object has no public ports";
+      Errors.AssignWriteProcedure(error, WriteEvent);
+   END InitErrorHandling;
+
+   (* === Resource handler ============================================= *)
+
+   PROCEDURE ^ RemoveObject(proxyDisc: ProxyDiscipline);
+   PROCEDURE ^ Withdraw(object: Services.Object);
+   PROCEDURE ^ Detach(channel: Channel; objectID: ObjectID);
+
+   PROCEDURE ProxyObjectHandler(event: Events.Event);
+      (* note that we not only support Attach/Detach but
+	 also external terminations which are usually
+	 generated by the module which has created the proxy object
+      *)
+      VAR
+	 object: Services.Object;
+	 proxyDisc: ProxyDiscipline;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF ((event.change = Resources.unreferenced) OR
+	     (event.change = Resources.terminated)) &
+	       Disciplines.Seek(event.resource, proxyDiscID, proxyDisc) &
+	       (proxyDisc.channel # NIL) THEN
+	    proxyDisc.errorCode := droppedObject;
+	    Detach(proxyDisc.channel, proxyDisc.address.objectID);
+	    RemoveObject(proxyDisc);
+	 END;
+      END;
+   END ProxyObjectHandler;
+
+   PROCEDURE ExportedObjectHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    Withdraw(event.resource(Services.Object));
+	 END;
+      END;
+   END ExportedObjectHandler;
+
+   (* === Services interface =========================================== *)
+
+   PROCEDURE InstallService(object: Services.Object;
+			    service: Services.Service);
+      VAR
+	 type: Services.Type;
+	 disc: TypeDiscipline;
+   BEGIN
+      Services.GetSupportedBaseType(object, service, type);
+      IF (type # NIL) & Disciplines.Seek(type, typeDiscID, disc) THEN
+	 WHILE disc # NIL DO
+	    IF disc.if.msgHandler # NIL THEN
+	       Messages.InstallHandler(object, disc.if.msgHandler);
+	    END;
+	    disc := disc.up;
+	 END;
+      END;
+   END InstallService;
+
+   (* === interface procedures ========================================= *)
+
+   PROCEDURE CreateMessage(VAR object: PersistentObjects.Object);
+      VAR
+	 message: Message;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, messageType);
+      object := message;
+   END CreateMessage;
+
+   PROCEDURE WriteMessage(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 RETURN NetIO.WriteLongInt(s, object.requestID) &
+		PersistentObjects.Write(s, object.message)
+      END;
+   END WriteMessage;
+
+   PROCEDURE ReadMessage(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 RETURN NetIO.ReadLongInt(s, object.requestID) &
+		PersistentObjects.Read(s, object.message)
+      END;
+   END ReadMessage;
+
+   PROCEDURE CreateRequest(VAR object: PersistentObjects.Object);
+      VAR
+	 request: Request;
+   BEGIN
+      NEW(request); Messages.Init(request);
+      PersistentObjects.Init(request, requestType);
+      object := request;
+   END CreateRequest;
+
+   PROCEDURE WriteRequest(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Request DO
+	 RETURN NetIO.WriteLongInt(s, object.objectID)
+      END;
+   END WriteRequest;
+
+   PROCEDURE ReadRequest(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Request DO
+	 RETURN NetIO.ReadLongInt(s, object.objectID)
+      END;
+   END ReadRequest;
+
+   PROCEDURE CreateReply(VAR object: PersistentObjects.Object);
+      VAR
+	 reply: Reply;
+   BEGIN
+      NEW(reply); Messages.Init(reply);
+      PersistentObjects.Init(reply, replyType);
+      object := reply;
+   END CreateReply;
+
+   PROCEDURE WriteReply(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Reply DO
+	 RETURN TRUE
+      END;
+   END WriteReply;
+
+   PROCEDURE ReadReply(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Reply DO
+	 RETURN TRUE
+      END;
+   END ReadReply;
+
+   PROCEDURE CreateInternalMessage(VAR object: PersistentObjects.Object);
+      VAR
+	 message: InternalMessage;
+   BEGIN
+      NEW(message); Messages.Init(message);
+      PersistentObjects.Init(message, internalMsgType);
+      message.senderID := myID;
+      object := message;
+   END CreateInternalMessage;
+
+   PROCEDURE WriteInternalMessage(s: Streams.Stream;
+			          object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: InternalMessage DO
+	 RETURN NetIO.WriteShortInt(s, object.cmd) &
+		NetIO.WriteLongInt(s, object.senderID) &
+		NetIO.WriteLongInt(s, object.objectID) &
+		(~(object.cmd IN discOps) OR
+		 NetIO.WriteLongInt(s, object.id) &
+		 PersistentObjects.WriteObjectOrNIL(s, object.discipline)) &
+		(~(object.cmd IN slotOps) OR
+		 NetIO.WriteInteger(s, object.slot) &
+		 NetIO.WriteLongInt(s, object.slotval)) &
+		(~(object.cmd IN portOps) OR
+		 PersistentObjects.WriteObjectOrNIL(s, object.ports)) &
+		(~(object.cmd IN refcntOps) OR
+		 NetIO.WriteLongInt(s, object.refcnt))
+      END;
+   END WriteInternalMessage;
+
+   PROCEDURE ReadInternalMessage(s: Streams.Stream;
+			         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: InternalMessage DO
+	 RETURN NetIO.ReadShortInt(s, object.cmd) &
+		NetIO.ReadLongInt(s, object.senderID) &
+		NetIO.ReadLongInt(s, object.objectID) &
+		(~(object.cmd IN discOps) OR
+		 NetIO.ReadLongInt(s, object.id) &
+		 PersistentObjects.ReadObjectOrNIL(s, object.discipline)) &
+		(~(object.cmd IN slotOps) OR
+		 NetIO.ReadInteger(s, object.slot) &
+		 NetIO.ReadLongInt(s, object.slotval)) &
+		(~(object.cmd IN portOps) OR
+		 PersistentObjects.ReadObjectOrNIL(s, object.ports)) &
+		(~(object.cmd IN refcntOps) OR
+		 NetIO.ReadLongInt(s, object.refcnt))
+      END;
+   END ReadInternalMessage;
+
+   PROCEDURE CreateAddress(VAR object: PersistentObjects.Object);
+      VAR
+	 address: Address;
+   BEGIN
+      NEW(address);
+      PersistentObjects.Init(address, addressType);
+      address.partnerID := myID;
+      object := address;
+   END CreateAddress;
+
+   PROCEDURE WriteAddress(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Address DO
+	 RETURN PersistentObjects.WriteObjectOrNIL(s, object.ports) &
+		NetIO.WriteLongInt(s, object.partnerID) &
+		NetIO.WriteLongInt(s, object.objectID) &
+		NetIO.WriteString(s, object.typeName)
+      END;
+   END WriteAddress;
+
+   PROCEDURE ReadAddress(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Address DO
+	 RETURN PersistentObjects.ReadObjectOrNIL(s, object.ports) &
+		NetIO.ReadLongInt(s, object.partnerID) &
+		NetIO.ReadLongInt(s, object.objectID) &
+		NetIO.ReadString(s, object.typeName)
+      END;
+   END ReadAddress;
+
+   PROCEDURE CreateForeignPortList(VAR object: PersistentObjects.Object);
+      VAR
+	 list: ForeignPortList;
+   BEGIN
+      NEW(list); PersistentObjects.Init(list, foreignPortListType);
+      list.port := NIL; list.next := NIL;
+      object := list;
+   END CreateForeignPortList;
+
+   PROCEDURE WriteForeignPortList(s: Streams.Stream;
+				  object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 port: ForeignPortList;
+   BEGIN
+      port := object(ForeignPortList);
+      WHILE port # NIL DO
+	 IF ~NetIO.WriteChar(s, portSY) OR
+	       ~PersistentObjects.Write(s, port.port) THEN
+	    RETURN FALSE
+	 END;
+	 port := port.next;
+      END;
+      RETURN NetIO.WriteChar(s, endSY);
+   END WriteForeignPortList;
+
+   PROCEDURE ReadForeignPortList(s: Streams.Stream;
+				 object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 head, tail, port: ForeignPortList;
+	 sy: CHAR;
+	 address: Networks.Address;
+   BEGIN
+      head := NIL; tail := NIL;
+      LOOP
+	 IF ~NetIO.ReadChar(s, sy) THEN RETURN FALSE END;
+	 IF sy = endSY THEN EXIT END;
+	 IF sy # portSY THEN RETURN FALSE END;
+	 IF ~PersistentObjects.Read(s, address) THEN RETURN FALSE END;
+	 NEW(port); PersistentObjects.Init(port, foreignPortListType);
+	 port.port := address; port.next := NIL;
+	 IF head = NIL THEN
+	    head := port;
+	 ELSE
+	    tail.next := port;
+	 END;
+	 tail := port;
+      END;
+      WITH object: ForeignPortList DO
+	 IF head # NIL THEN
+	    object.port := head.port;
+	    object.next := head.next;
+	 END;
+      END;
+      RETURN TRUE
+   END ReadForeignPortList;
+
+   PROCEDURE CreateListOfProxyParameters(VAR object: PersistentObjects.Object);
+      VAR
+	 list: ListOfProxyParameters;
+   BEGIN
+      NEW(list); PersistentObjects.Init(list, proxyListType);
+      list.next := NIL; list.params := NIL;
+      object := list;
+   END CreateListOfProxyParameters;
+
+   PROCEDURE ReadListOfProxyParameters(s: Streams.Stream;
+				 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ListOfProxyParameters DO
+	 RETURN PersistentObjects.ReadObjectOrNIL(s, object.params) &
+	        PersistentObjects.GuardedReadObjectOrNIL(s, proxyListType,
+		                                         object.next)
+      END;
+   END ReadListOfProxyParameters;
+
+   PROCEDURE WriteListOfProxyParameters(s: Streams.Stream;
+				 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ListOfProxyParameters DO
+	 RETURN PersistentObjects.WriteObjectOrNIL(s, object.params) &
+	        PersistentObjects.WriteObjectOrNIL(s, object.next)
+      END;
+   END WriteListOfProxyParameters;
+
+   PROCEDURE TestResponseCondition(domain: Conditions.Domain;
+			           condition: Conditions.Condition;
+			           errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: ResponseCondition DO
+	 IF (condition.reply = NIL) &
+	       ((condition.channel.s = NIL) OR
+		condition.channel.closedByPartner OR
+		(condition.channel.s # condition.s) OR
+		condition.channel.s.eof OR condition.channel.s.error) THEN
+	    Error(errors, connectionBroken, NIL);
+	    Error(condition.channel.errors, connectionBroken, NIL);
+	    RETURN TRUE
+	 END;
+	 RETURN condition.reply # NIL
+      END;
+   END TestResponseCondition;
+
+   PROCEDURE TestRequestCondition(domain: Conditions.Domain;
+			          condition: Conditions.Condition;
+			          errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: RequestCondition DO
+	 RETURN condition.withdrawn OR (condition.requests # NIL)
+      END;
+   END TestRequestCondition;
+
+   PROCEDURE TestActivationCondition(domain: Conditions.Domain;
+			             condition: Conditions.Condition;
+			             errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: ActivationCondition DO
+	 RETURN terminateImmediately OR
+	        (condition.mode = terminate) OR (condition.message # NIL)
+      END;
+   END TestActivationCondition;
+
+   (* === blocking events ============================================== *)
+
+   PROCEDURE Notify(type: BlockingEvents.EventType);
+      VAR
+	 notification: Notification;
+   BEGIN
+      NEW(notification);
+      notification.type := type;
+      notification.message := "internal notification of RemoteObjects";
+      BlockingEvents.Raise(notification);
+   END Notify;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      terminateImmediately := TRUE;
+      Notify(termination);
+   END TerminationHandler;
+
+   PROCEDURE InitEventManagement;
+   BEGIN
+      BlockingEvents.Define(termination);
+      Events.Handler(Process.termination, TerminationHandler);
+      Events.Handler(Process.softTermination, TerminationHandler);
+      BlockingEvents.Define(removeports);
+      BlockingEvents.Define(terminateObjectListeners);
+      Events.Define(closeType);
+      Events.Handler(closeType, Events.NilHandler);
+      Events.Define(removeType);
+      Events.Handler(removeType, Events.NilHandler);
+   END InitEventManagement;
+
+   (* === pseudo random number generator =============================== *)
+
+   PROCEDURE GetRandomVal(min, max: LONGINT) : LONGINT;
+      VAR
+	 sequence: Random.Sequence;
+   BEGIN
+      IF Random.unpredictable # NIL THEN
+	 sequence := Random.unpredictable;
+      ELSE
+	 sequence := Random.std;
+      END;
+      RETURN Random.ValS(sequence, min, max)
+   END GetRandomVal;
+
+   (* === slot management ============================================== *)
+
+   (* slots are used to check whether two communication partners are
+      identical;
+      slots have an identifying number and contain an integer id
+   *)
+
+   PROCEDURE InitSlots;
+   BEGIN
+      slots := NIL; freeSlots := NIL; nextSlotID := 0;
+      LocalSemaphores.Create(slotSema);
+   END InitSlots;
+
+   PROCEDURE CreateSlot(VAR index: SlotIndex; val: SlotVal);
+      VAR
+	 slot: Slot;
+   BEGIN
+      Semaphores.P(slotSema);
+      IF freeSlots # NIL THEN
+	 slot := freeSlots; freeSlots := freeSlots.next;
+      ELSE
+	 NEW(slot); slot.index := nextSlotID; INC(nextSlotID);
+      END;
+      slot.next := slots; slots := slot;
+      slot.val := val;
+      index := slot.index;
+      Semaphores.V(slotSema);
+   END CreateSlot;
+
+   PROCEDURE CheckSlot(index: SlotIndex; val: SlotVal) : BOOLEAN;
+      (* return TRUE if the given slot exists and contains the
+	 given number
+      *)
+      VAR
+	 slot: Slot;
+   BEGIN
+      Semaphores.P(slotSema);
+      slot := slots;
+      WHILE (slot # NIL) & (slot.index # index) DO
+	 slot := slot.next;
+      END;
+      Semaphores.V(slotSema);
+      RETURN (slot # NIL) & (slot.val = val)
+   END CheckSlot;
+
+   PROCEDURE FreeSlot(index: SlotIndex);
+      VAR
+	 prev, slot: Slot;
+   BEGIN
+      Semaphores.P(slotSema);
+      slot := slots; prev := NIL;
+      WHILE (slot # NIL) & (slot.index # index) DO
+	 prev := slot; slot := slot.next;
+      END;
+      IF slot # NIL THEN
+	 IF prev = NIL THEN
+	    slots := slot.next;
+	 ELSE
+	    prev.next := slot.next;
+	 END;
+	 slot.next := freeSlots;
+	 freeSlots := slot;
+      END;
+      Semaphores.V(slotSema);
+   END FreeSlot;
+
+   (* === proxy object handling ========================================= *)
+
+   PROCEDURE ^ InitiateRecovery(proxyDisc: ProxyDiscipline);
+   PROCEDURE ^ UnlinkProxyDependants(VAR dependants: ProxyDiscipline;
+				     errorCode: ErrorCode);
+
+   PROCEDURE DoResourceNotification(job: Jobs.Job);
+   BEGIN
+      WITH job: ResourceNotificationJob DO
+	 Resources.Notify(job.object, job.change);
+      END;
+   END DoResourceNotification;
+
+   PROCEDURE InitiateResourceNotification(object: Resources.Resource;
+                                          change: Resources.StateChange);
+      VAR
+	 job: ResourceNotificationJob;
+   BEGIN
+      NEW(job); job.object := object; job.change := change;
+      Jobs.Submit(job, DoResourceNotification);
+   END InitiateResourceNotification;
+
+   PROCEDURE TerminateProxy(proxy: ProxyDiscipline);
+      (* final termination of a proxy object *)
+      VAR
+	 dependant, newProxy, prev: ProxyDiscipline;
+	 export: ExportDiscipline;
+
+      PROCEDURE RemoveLink(VAR anchor: ProxyDiscipline;
+			   proxy: ProxyDiscipline);
+	 VAR
+	    dependant, prev: ProxyDiscipline;
+      BEGIN
+	 dependant := anchor;
+	 prev := NIL;
+	 WHILE dependant # proxy DO
+	    prev := dependant; dependant := dependant.dnext;
+	 END;
+	 IF prev = NIL THEN
+	    anchor := dependant.dnext;
+	 ELSE
+	    prev.dnext := dependant.dnext;
+	 END;
+      END RemoveLink;
+
+   BEGIN (* TerminateProxy *)
+      ASSERT(proxy.channel = NIL);
+      UnlinkProxyDependants(proxy.dependants, proxy.errorCode);
+      IF proxy.newProxy # NIL THEN
+	 IF Disciplines.Seek(proxy.newProxy, proxyDiscID, newProxy) THEN
+	    RemoveLink(newProxy.dependants, proxy);
+	 ELSIF Disciplines.Seek(proxy.newProxy, exportDiscID, export) THEN
+	    RemoveLink(export.dependants, proxy);
+	 END;
+	 proxy.newProxy := NIL;
+      END;
+      Disciplines.Remove(proxy.object, proxyDiscID);
+      InitiateResourceNotification(proxy.object, Resources.terminated);
+   END TerminateProxy;
+
+   PROCEDURE LinkProxy(from, to: ProxyDiscipline);
+      (* link one proxy to another, i.e. forward all messages
+	 from `from' to `to'
+      *)
+   BEGIN
+      ASSERT((from.channel = NIL) & (from.newProxy = NIL));
+      from.dnext := to.dependants; to.dependants := from;
+      from.newProxy := to.object;
+   END LinkProxy;
+
+   PROCEDURE LinkProxyToOriginalObject(from: ProxyDiscipline;
+				       to: ExportDiscipline);
+      (* link proxy to the original object which now resides
+	 at our side
+      *)
+   BEGIN
+      ASSERT((from.channel = NIL) & (from.newProxy = NIL));
+      from.dnext := to.dependants; to.dependants := from;
+      from.newProxy := to.object;
+   END LinkProxyToOriginalObject;
+
+   PROCEDURE UnlinkProxyDependants(VAR dependants: ProxyDiscipline;
+				   errorCode: ErrorCode);
+      VAR
+	 dependant, next: ProxyDiscipline;
+   BEGIN
+      IF dependants # NIL THEN
+	 dependant := dependants; dependants := NIL;
+	 WHILE dependant # NIL DO
+	    ASSERT((dependant.newProxy # NIL) &
+		   (dependant.channel = NIL));
+	    dependant.errorCode := errorCode;
+	    dependant.newProxy := NIL;
+	    IF dependant.recover # NIL THEN
+	       InitiateRecovery(dependant);
+	    ELSE
+	       TerminateProxy(dependant);
+	    END;
+	    next := dependant.dnext; dependant.dnext := NIL;
+	    dependant := next;
+	 END;
+      END;
+   END UnlinkProxyDependants;
+
+   (* === registration of exported objects ============================== *)
+
+   (* these data structures & procedures allow to propagate Withdraw
+      as Resources.terminated notifications to all dependant proxy objects
+   *)
+
+   PROCEDURE RegisterExportedObject(channel: Channel; object: ExportDiscipline);
+      VAR
+	 member: ChannelList;
+	 objMember: ListOfExportedObjects;
+   BEGIN
+      Semaphores.P(channel.exportedObjectsMutex);
+      Semaphores.P(object.channelsMutex);
+      member := object.channels;
+      WHILE (member # NIL) & (member.channel # channel) DO
+	 member := member.next;
+      END;
+      IF member = NIL THEN
+	 IF object.channels = NIL THEN
+	    Resources.Attach(object.object, object.key);
+	 END;
+	 NEW(member); member.channel := channel;
+	 member.next := object.channels; object.channels := member;
+	 NEW(objMember); objMember.object := object;
+	 objMember.next := channel.exportedObjects;
+	 channel.exportedObjects := objMember;
+      END;
+      Semaphores.V(object.channelsMutex);
+      Semaphores.V(channel.exportedObjectsMutex);
+   END RegisterExportedObject;
+
+   PROCEDURE RemoveExportedObject(channel: Channel; export: ExportDiscipline);
+      (* remove `export' from the per-channel list of exported objects
+	 and remove `channel' from the channel list of `export'
+      *)
+      VAR
+	 ptr, prev: ListOfExportedObjects;
+	 channels, prevcl: ChannelList;
+	 detachObject: BOOLEAN;
+   BEGIN
+      detachObject := FALSE;
+      Semaphores.P(channel.exportedObjectsMutex);
+      Semaphores.P(export.channelsMutex);
+      ptr := channel.exportedObjects; prev := NIL;
+      WHILE (ptr # NIL) & (ptr.object # export) DO
+	 prev := ptr; ptr := ptr.next;
+      END;
+      IF ptr # NIL THEN (* ptr = NIL in case of protocol errors only *)
+	 IF prev = NIL THEN
+	    channel.exportedObjects := ptr.next;
+	 ELSE
+	    prev.next := ptr.next;
+	 END;
+	 channels := export.channels; prevcl := NIL;
+	 WHILE (channels # NIL) & (channels.channel # channel) DO
+	    prevcl := channels; channels := channels.next;
+	 END;
+	 ASSERT(channels # NIL); (* because ptr has been # NIL *)
+	 IF prevcl = NIL THEN
+	    export.channels := channels.next;
+	 ELSE
+	    prevcl.next := channels.next;
+	 END;
+	 IF export.channels = NIL THEN
+	    (* Resources.Detach causes ExportedObjectHandler
+	       to be called which calls Withdraw. Withdraw
+	       calls NotifyProxyObjectsOfWithdrawnObject which
+	       locks export.channelsMutex --
+	       a wonderful deadlock, isn't it?
+	       For this reason we note here that Resources.Detach
+	       is to be called later after releasing the semaphores
+	    *)
+	    detachObject := TRUE;
+	 END;
+      END;
+      Semaphores.V(export.channelsMutex);
+      Semaphores.V(channel.exportedObjectsMutex);
+      IF detachObject THEN
+	 Resources.Detach(export.object, export.key);
+      END;
+   END RemoveExportedObject;
+
+   PROCEDURE PurgeListOfExportedObjects(channel: Channel);
+      VAR
+	 prev, member: ChannelList;
+	 objMember: ListOfExportedObjects;
+	 object: ExportDiscipline;
+   BEGIN
+      Semaphores.P(channel.exportedObjectsMutex);
+      objMember := channel.exportedObjects;
+      channel.exportedObjects := NIL;
+      WHILE objMember # NIL DO
+	 object := objMember.object;
+	 Semaphores.P(object.channelsMutex);
+	 member := object.channels; prev := NIL;
+	 WHILE member.channel # channel DO
+	    prev := member; member := member.next;
+	 END;
+	 IF prev = NIL THEN
+	    object.channels := member.next;
+	 ELSE
+	    prev.next := member.next;
+	 END;
+	 IF object.channels = NIL THEN
+	    Resources.Detach(object.object, object.key);
+	 END;
+	 Semaphores.V(object.channelsMutex);
+	 objMember := objMember.next;
+      END;
+      Semaphores.V(channel.exportedObjectsMutex);
+   END PurgeListOfExportedObjects;
+
+   PROCEDURE CheckForWithdrawnObject(channel: Channel; objectID: ObjectID);
+      VAR
+	 proxy: ProxyDiscipline;
+	 index: LONGINT;
+   BEGIN
+      Semaphores.P(channel.objectsMutex);
+      index := objectID MOD remoteobjhashtabsize;
+      proxy := channel.objects[index];
+      WHILE (proxy # NIL) & (proxy.address.objectID # objectID) DO
+	 proxy := proxy.hnext;
+      END;
+      IF proxy # NIL THEN
+	 IF proxy.hprev = NIL THEN
+	    channel.objects[index] := proxy.hnext;
+	 ELSE
+	    proxy.hprev.hnext := proxy.hnext;
+	 END;
+	 IF proxy.hnext # NIL THEN
+	    proxy.hnext.hprev := proxy.hprev;
+	 END;
+	 proxy.hprev := NIL; proxy.hnext := NIL;
+	 proxy.errorCode := objectWithdrawn;
+	 proxy.channel := NIL;
+	 IF proxy.recover # NIL THEN
+	    InitiateRecovery(proxy);
+	 ELSE
+	    TerminateProxy(proxy);
+	 END;
+      END;
+      Semaphores.V(channel.objectsMutex);
+   END CheckForWithdrawnObject;
+
+   PROCEDURE ^ SendWithdrawMsg(channel: Channel; objectID: ObjectID);
+
+   PROCEDURE NotifyProxyObjectsOfWithdrawnObject(object: ExportDiscipline);
+      VAR
+	 member: ChannelList;
+   BEGIN
+      Semaphores.P(object.channelsMutex);
+      member := object.channels;
+      WHILE member # NIL DO
+	 SendWithdrawMsg(member.channel, object.objectID);
+	 member := member.next;
+      END;
+      UnlinkProxyDependants(object.dependants, objectWithdrawn);
+      Semaphores.V(object.channelsMutex);
+   END NotifyProxyObjectsOfWithdrawnObject;
+
+   (* === registration of channels ====================================== *)
+
+   PROCEDURE InitChannelRegister;
+   BEGIN
+      LocalSemaphores.Create(chregtabSema);
+   END InitChannelRegister;
+
+   PROCEDURE HashChannel(channel: Channel) : INTEGER;
+   BEGIN
+      RETURN SHORT(channel.partnerID MOD chtabsize)
+   END HashChannel;
+
+   PROCEDURE RegisterChannel(channel: Channel);
+      VAR
+	 p: Channel;
+	 hashval: INTEGER;
+   BEGIN
+      Semaphores.P(chregtabSema);
+      hashval := HashChannel(channel);
+      p := chbucket[hashval];
+      channel.hnext := p; channel.hprev := NIL;
+      IF p # NIL THEN
+	 p.hprev := channel;
+      END;
+      chbucket[hashval] := channel;
+      Semaphores.V(chregtabSema);
+   END RegisterChannel;
+
+   PROCEDURE UnregisterChannel(channel: Channel);
+      VAR
+	 p: Channel;
+	 hashval: INTEGER;
+   BEGIN
+      IF channel.partnerID # invalidPartnerID THEN
+	 Semaphores.P(chregtabSema);
+	 hashval := HashChannel(channel);
+	 IF channel.hprev = NIL THEN
+	    chbucket[hashval] := channel.hnext;
+	 ELSE
+	    channel.hprev.hnext := channel.hnext;
+	 END;
+	 IF channel.hnext # NIL THEN
+	    channel.hnext.hprev := channel.hprev;
+	 END;
+	 Semaphores.V(chregtabSema);
+      END;
+   END UnregisterChannel;
+
+   PROCEDURE SetChannelPartner(channel: Channel; id: PartnerID);
+   BEGIN
+      IF channel.partnerID = invalidPartnerID THEN
+	 channel.partnerID := id;
+	 RegisterChannel(channel);
+      END;
+   END SetChannelPartner;
+
+   (* === handling of channel stream discipline ======================== *)
+
+   PROCEDURE ConnectStream(s: Streams.Stream; channel: Channel);
+      VAR
+	 disc: ChannelStreamDiscipline;
+   BEGIN
+      NEW(disc); disc.id := csDiscID; disc.channel := channel;
+      Disciplines.Add(s, disc);
+   END ConnectStream;
+
+   PROCEDURE GetChannel(s: Streams.Stream; VAR channel: Channel) : BOOLEAN;
+      VAR
+	 disc: ChannelStreamDiscipline;
+   BEGIN
+      IF IndirectDisciplines.Seek(s, csDiscID, disc) THEN
+	 channel := disc.channel;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetChannel;
+
+   (* === exchange of messages ========================================= *)
+
+   PROCEDURE CreateResponseCondition(VAR condition: ResponseCondition;
+			             channel: Channel; requestID: RequestID;
+				     s: Streams.Stream);
+      (* create a condition which allows to wait for receipt of
+	 an response of the request with the given id
+      *)
+      VAR
+	 hashval: LONGINT;
+	 entry: ResponseConditionList;
+   BEGIN
+      NEW(condition);
+      Conditions.Init(condition, responseDomain);
+      condition.reply := NIL;
+      condition.channel := channel;
+      condition.requestID := requestID;
+      condition.s := s;
+
+      NEW(entry);
+      hashval := condition.requestID MOD respcondhashtabsize;
+      entry.requestID := condition.requestID;
+      entry.condition := condition;
+      entry.next := channel.conditions[hashval];
+      channel.conditions[hashval] := entry;
+   END CreateResponseCondition;
+
+   PROCEDURE SendRequest(channel: Channel;
+		         objectID: ObjectID; (* recipient *)
+		         VAR message: Messages.Message;
+		         address: Address; (* may be NIL -- for events only *)
+		         errors: RelatedEvents.Object) : BOOLEAN;
+      (* send this message along the given channel and wait for the reply;
+	 precondition: channel.s # NIL
+      *)
+      VAR
+	 msgSent: BOOLEAN;      (* request successfully sent? *)
+	 msgReceived: BOOLEAN;  (* reply received? *)
+	 condition: ResponseCondition;
+	    (* allows to wait for receipt of the reply *)
+	 request: Request;
+	 s: Streams.Stream;
+	 oldType, newType: Services.Type;
+	 msgErrors: RelatedEvents.Object;
+   BEGIN
+      IF channel.closedByPartner OR (channel.s = NIL) THEN
+	 Error(errors, closedConnection, address); RETURN FALSE
+      END;
+
+      (* package message into a request message *)
+      NEW(request); Messages.Init(request);
+      PersistentObjects.Init(request, requestType);
+      request.requestID := channel.nextRequestID;
+      INC(channel.nextRequestID);
+      request.message := message;
+      request.objectID := objectID;
+
+      (* send message *)
+      Tasks.WaitFor(channel.readyForWriting);
+      Semaphores.P(channel.sema);
+      IF channel.s # NIL THEN
+	 s := channel.s;
+	 RelatedEvents.Forward(s, errors);
+	 LinearizedStructures.Reset(s);
+	 msgSent := PersistentObjects.Write(s, request) &
+		    Streams.Flush(s);
+	 RelatedEvents.Forward(s, channel.errors);
+	 IF ~msgSent THEN
+	    ForwardErrors(channel.errors, errors);
+	 END;
+      ELSE
+	 msgSent := FALSE;
+      END;
+      Semaphores.V(channel.sema);
+
+      (* receive reply *)
+      IF msgSent THEN
+	 CreateResponseCondition(condition, channel, request.requestID, s);
+	 Tasks.WaitFor(condition);
+	 msgReceived := condition.reply # NIL;
+	 IF msgReceived THEN
+	    (* check for preserved type identity *)
+	    Services.GetType(message, oldType);
+	    Services.GetType(condition.reply, newType);
+	    IF oldType = newType THEN
+	       msgErrors := message.errors; (* preserve this reference *)
+	       message := condition.reply;
+	       ForwardErrors(message.errors, msgErrors);
+	       message.errors := msgErrors;
+	    ELSE
+	       Error(errors, invalidPartner, address);
+	       Error(message.errors, invalidPartner, address);
+	       message.processed := FALSE; message.done := FALSE;
+	       msgReceived := FALSE;
+	    END;
+	 ELSE
+	    ForwardErrors(channel.errors, errors);
+	    IF channel.closedByPartner THEN
+	       Error(errors, closedConnection, address);
+	    ELSE
+	       Error(errors, receiveFailed, address);
+	    END;
+	 END;
+      ELSE
+	 Error(errors, sendFailed, address);
+      END;
+      RETURN msgSent & msgReceived
+   END SendRequest;
+
+   PROCEDURE SendReply(channel: Channel;
+		       requestID: RequestID;
+		       message: Messages.Message);
+      VAR
+	 reply: Reply;
+	 msgSent: BOOLEAN;
+   BEGIN
+      IF (channel.s = NIL) OR channel.closedByPartner OR
+	    channel.s.eof OR channel.s.error THEN
+	 RETURN
+      END;
+
+      (* package message into a reply message *)
+      NEW(reply); Messages.Init(reply);
+      PersistentObjects.Init(reply, replyType);
+      reply.requestID := requestID;
+      reply.message := message;
+
+      (* send message *)
+      Tasks.WaitFor(channel.readyForWriting);
+      Semaphores.P(channel.sema);
+      IF (channel.s = NIL) OR channel.closedByPartner OR
+	    channel.s.eof OR channel.s.error THEN
+	 Semaphores.V(channel.sema); RETURN
+      END;
+      LinearizedStructures.Reset(channel.s);
+      msgSent := (channel.s # NIL) &
+		 PersistentObjects.Write(channel.s, reply) &
+		 Streams.Flush(channel.s);
+      Semaphores.V(channel.sema);
+   END SendReply;
+
+   PROCEDURE Ping(channel: Channel;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := ping; msg.objectID := 0;
+      IF ~SendRequest(channel, internal, msg, NIL, errors) THEN
+	 Error(errors, invalidPartner, NIL); RETURN FALSE
+      END;
+      SetChannelPartner(channel, msg.senderID);
+      RETURN TRUE
+   END Ping;
+
+   PROCEDURE ExchangeListOfPorts(channel: Channel;
+			         errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      channel.sentports := ports;
+      CreateInternalMessage(msg);
+      msg.cmd := exchangePorts; msg.objectID := 0; msg.ports := ports;
+      IF ~SendRequest(channel, internal, msg, NIL, errors) THEN
+	 Error(errors, invalidPartner, NIL); RETURN FALSE
+      END;
+      IF msg.done THEN
+	 channel.ports := msg.ports;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ExchangeListOfPorts;
+
+   PROCEDURE ExchangeRefCnts(channel: Channel;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := exchangeRefCnts; msg.objectID := 0;
+      msg.refcnt := channel.refcnt;
+      IF ~SendRequest(channel, internal, msg, NIL, errors) THEN
+	 Error(errors, invalidPartner, NIL); RETURN FALSE
+      END;
+      IF msg.done THEN
+	 channel.partnerRefCnt := msg.refcnt;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ExchangeRefCnts;
+
+   PROCEDURE Known(channel: Channel;
+		   objectID: ObjectID;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := known; msg.objectID := objectID;
+      IF ~SendRequest(channel, internal, msg, NIL, errors) THEN
+	 Error(errors, invalidPartner, NIL); RETURN FALSE
+      END;
+      IF ~msg.done THEN
+	 Error(errors, unknownObject, NIL);
+      END;
+      RETURN msg.done
+   END Known;
+
+   PROCEDURE Detach(channel: Channel; objectID: ObjectID);
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := detach; msg.objectID := objectID;
+      IF ~SendRequest(channel, internal, msg, NIL, channel.errors) THEN END;
+   END Detach;
+
+   PROCEDURE SendWithdrawMsg(channel: Channel; objectID: ObjectID);
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := withdraw; msg.objectID := objectID;
+      IF SendRequest(channel, internal, msg, NIL, channel.errors) THEN END;
+   END SendWithdrawMsg;
+
+   PROCEDURE MapIdentifier(channel: Channel;
+			   local: PersistentDisciplines.Identifier;
+			   VAR remote: PersistentDisciplines.Identifier;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ptr: DiscMap;
+	 sample: PersistentDisciplines.Discipline;
+	 msg: InternalMessage;
+	 entry: DiscMap;
+   BEGIN
+      (* try to find requested entry in local cache *)
+      ptr := channel.discmap;
+      WHILE (ptr # NIL) & (ptr.local # local) DO
+	 ptr := ptr.next;
+      END;
+      IF ptr # NIL THEN
+	 remote := ptr.remote; RETURN TRUE
+      END;
+      sample := PersistentDisciplines.GetSample(local);
+      IF sample = NIL THEN RETURN FALSE END;
+
+      (* ask other side for correct identifier *)
+      CreateInternalMessage(msg);
+      msg.cmd := discID; msg.objectID := 0;
+      msg.discipline := sample; msg.id := 0;
+      IF ~SendRequest(channel, internal, msg, NIL, errors) THEN
+	 Error(errors, invalidPartner, NIL); RETURN FALSE
+      END;
+      IF ~msg.done THEN
+	 RETURN FALSE
+      END;
+      remote := msg.id;
+
+      (* put response in our cache *)
+      NEW(entry);
+      entry.local := local; entry.remote := remote;
+      entry.next := channel.discmap; channel.discmap := entry;
+      RETURN TRUE
+   END MapIdentifier;
+
+   PROCEDURE AddDiscipline(object: Disciplines.Object;
+			   discipline: PersistentDisciplines.Discipline);
+      VAR
+	 msg: InternalMessage;
+	 channel: Channel;
+	 proxyDisc: ProxyDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(object, proxyDiscID, proxyDisc); ASSERT(ok);
+      channel := proxyDisc.channel;
+      IF channel = NIL THEN
+	 Error(object, proxyDisc.errorCode, NIL);
+      END;
+      CreateInternalMessage(msg);
+      msg.cmd := discAdd; msg.objectID := proxyDisc.address.objectID;
+      msg.discipline := discipline; msg.id := 0;
+      IF SendRequest(channel, internal, msg, NIL, object) THEN END;
+   END AddDiscipline;
+
+   PROCEDURE RemoveDiscipline(object: Disciplines.Object;
+			      id: PersistentDisciplines.Identifier);
+      VAR
+	 msg: InternalMessage;
+	 channel: Channel;
+	 remoteID: PersistentDisciplines.Identifier;
+	 proxyDisc: ProxyDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(object, proxyDiscID, proxyDisc); ASSERT(ok);
+      channel := proxyDisc.channel;
+      IF channel = NIL THEN
+	 Error(object, proxyDisc.errorCode, NIL);
+      END;
+      IF ~MapIdentifier(channel, id, remoteID, object) THEN
+	 RETURN
+      END;
+      CreateInternalMessage(msg);
+      msg.cmd := discRemove; msg.objectID := proxyDisc.address.objectID;
+      msg.discipline := NIL; msg.id := remoteID;
+      IF SendRequest(channel, internal, msg, NIL, object) THEN END;
+   END RemoveDiscipline;
+
+   PROCEDURE SeekDiscipline(object: Disciplines.Object;
+			    id: PersistentDisciplines.Identifier;
+			    VAR discipline: PersistentDisciplines.Discipline)
+			    : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+	 channel: Channel;
+	 remoteID: PersistentDisciplines.Identifier;
+	 proxyDisc: ProxyDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(object, proxyDiscID, proxyDisc); ASSERT(ok);
+      channel := proxyDisc.channel;
+      IF channel = NIL THEN
+	 Error(object, proxyDisc.errorCode, NIL); RETURN FALSE
+      END;
+      IF ~MapIdentifier(channel, id, remoteID, object) THEN
+	 RETURN FALSE
+      END;
+      CreateInternalMessage(msg);
+      msg.cmd := discSeek; msg.objectID := proxyDisc.address.objectID;
+      msg.discipline := NIL; msg.id := remoteID;
+      IF ~SendRequest(channel, internal, msg, NIL, object) THEN
+	 RETURN FALSE
+      END;
+      discipline := msg.discipline;
+      RETURN msg.done
+   END SeekDiscipline;
+
+   PROCEDURE CreateRemoteSlot(channel: Channel;
+			      VAR slot: SlotIndex; val: SlotVal) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := createSlot;
+      msg.slotval := val;
+      IF ~SendRequest(channel, internal, msg, NIL, channel.errors) THEN
+	 RETURN FALSE
+      END;
+      IF ~msg.done THEN RETURN FALSE END;
+      slot := msg.slot;
+      RETURN TRUE
+   END CreateRemoteSlot;
+
+   PROCEDURE CheckRemoteSlot(channel: Channel;
+			     slot: SlotIndex; val: SlotVal) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := checkSlot;
+      msg.slot := slot; msg.slotval := val;
+      RETURN SendRequest(channel, internal, msg, NIL, channel.errors) &
+	     msg.done
+   END CheckRemoteSlot;
+
+   PROCEDURE FreeRemoteSlot(channel: Channel; slot: SlotIndex) : BOOLEAN;
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := freeSlot;
+      msg.slot := slot;
+      RETURN SendRequest(channel, internal, msg, NIL, channel.errors) &
+	     msg.done
+   END FreeRemoteSlot;
+
+   PROCEDURE SendCloseMsg(channel: Channel);
+      VAR
+	 msg: InternalMessage;
+   BEGIN
+      CreateInternalMessage(msg);
+      msg.cmd := close; msg.ports := ports;
+      IF ~SendRequest(channel, internal, msg, NIL, channel.errors) THEN END;
+   END SendCloseMsg;
+
+   PROCEDURE ShutOrReleaseChannel(channel: Channel; locked, shutdown: BOOLEAN);
+      VAR
+	 refcnt: LONGINT;
+	 index: LONGINT;
+   BEGIN
+      IF ~locked THEN
+	 (* avoid concurrent openings for this partner *)
+	 index := channel.partnerID MOD nofopensemas;
+	 Semaphores.P(opensema[index]);
+      END;
+
+      Semaphores.P(channel.objectsMutex);
+      IF shutdown THEN
+	 channel.refcnt := 0;
+      ELSE
+	 DEC(channel.refcnt); refcnt := channel.refcnt;
+      END;
+      Semaphores.V(channel.objectsMutex);
+
+      IF shutdown OR (refcnt <= 0) &
+	    ExchangeRefCnts(channel, channel.errors) &
+	    (channel.partnerRefCnt <= 0) THEN
+	 channel.dontReopen := TRUE;
+	 SendCloseMsg(channel);
+	 Notify(channel.shutdown);
+      END;
+
+      IF ~locked THEN
+	 Semaphores.V(opensema[index]);
+      END;
+   END ShutOrReleaseChannel;
+
+   PROCEDURE ReleaseChannel(channel: Channel);
+   BEGIN
+      ShutOrReleaseChannel(channel, FALSE, FALSE);
+   END ReleaseChannel;
+
+   PROCEDURE ShutdownChannel(channel: Channel);
+   BEGIN
+      ShutOrReleaseChannel(channel, FALSE, TRUE);
+   END ShutdownChannel;
+
+   PROCEDURE CloseChannel(channel: Channel);
+   BEGIN
+      ShutOrReleaseChannel(channel, TRUE, TRUE);
+   END CloseChannel;
+
+   (* === shutdown, termination ========================================= *)
+
+   PROCEDURE TerminateIdleTasks;
+      VAR
+	 task: TaskList;
+   BEGIN
+      task := tasks; tasks := NIL;
+      WHILE task # NIL DO
+	 task.mode := terminate; task := task.next;
+      END;
+   END TerminateIdleTasks;
+
+   PROCEDURE InternalCloseAllConnections;
+      VAR
+	 channel, next: Channel;
+
+      PROCEDURE Lock(lock: BOOLEAN);
+	 VAR
+	    index: INTEGER;
+      BEGIN
+	 index := 0;
+	 WHILE index < nofopensemas DO
+	    IF lock THEN
+	       Semaphores.P(opensema[index]);
+	    ELSE
+	       Semaphores.V(opensema[index]);
+	    END;
+	    INC(index);
+	 END;
+      END Lock;
+
+   BEGIN (* InternalCloseAllConnections *)
+      Lock(TRUE); (* avoid all concurrent openings *)
+      channel := channels;
+      WHILE channel # NIL DO
+	 CloseChannel(channel);
+	 channel := channel.next;
+      END;
+      Lock(FALSE);
+      terminateImmediately := TRUE;
+      TerminateIdleTasks;
+   END InternalCloseAllConnections;
+
+   PROCEDURE Signal(eventType: Events.EventType);
+      VAR
+	 event: Events.Event;
+   BEGIN
+      NEW(event);
+      event.type := eventType;
+      event.message := "internal signal of RemoteObjects";
+      Events.Raise(event);
+   END Signal;
+
+   PROCEDURE Terminator(job: Jobs.Job);
+      VAR
+	 closeCond, removeCond, termCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 event: Events.Event;
+   BEGIN
+      BlockingEvents.Register(termination, termCond);
+      EventConditions.Create(closeCond, closeType);
+      EventConditions.Create(removeCond, removeType);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, termCond);
+      Conditions.Incl(conditions, closeCond);
+      Conditions.Incl(conditions, removeCond);
+
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 IF BlockingEvents.TestAndGet(termCond, event) THEN
+	    IF ports # NIL THEN
+	       Notify(removeports);
+	    END;
+	    IF channels # NIL THEN
+	       InternalCloseAllConnections;
+	       Notify(terminateObjectListeners);
+	    END;
+	    EXIT
+	 END;
+	 IF EventConditions.TestAndGet(removeCond, event) THEN
+	    Notify(removeports);
+	    IF channels = NIL THEN EXIT END;
+	 END;
+	 IF EventConditions.TestAndGet(closeCond, event) THEN
+	    InternalCloseAllConnections;
+	    Notify(terminateObjectListeners);
+	    IF ports = NIL THEN EXIT END;
+	 END;
+      END;
+      termJobIsRunning := FALSE;
+
+      BlockingEvents.Unregister(termCond);
+      EventConditions.Drop(closeCond);
+      EventConditions.Drop(removeCond);
+   END Terminator;
+
+   PROCEDURE CheckForTerminator;
+      VAR
+	 job: Jobs.Job;
+   BEGIN
+      IF ~SYS.TAS(termJobIsRunning) THEN
+	 NEW(job); Jobs.Submit(job, Terminator);
+      END;
+   END CheckForTerminator;
+
+   (* === lots of tasks... ================================================ *)
+
+   PROCEDURE ObjectListener(job: Jobs.Job);
+      (* this listener is used for objects which prefer serialized accesses *)
+      VAR
+	 request: RequestList;
+	 requestCond: RequestCondition;
+	 terminationCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 notification: Notification;
+   BEGIN
+      WITH job: ObjectListenerJob DO
+	 requestCond := job.export.condition;
+	 BlockingEvents.Register(terminateObjectListeners, terminationCond);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, requestCond);
+	 Conditions.Incl(conditions, terminationCond);
+	 LOOP (* until the object gets withdrawn *)
+	    Tasks.WaitForOneOf(conditions);
+	    IF BlockingEvents.TestAndGet(terminationCond, notification) OR
+		  requestCond.withdrawn THEN
+	       EXIT
+	    END;
+
+	    (* remove message queue from condition *)
+	    Semaphores.P(requestCond.sema);
+	    request := requestCond.requests;
+	    requestCond.requests := NIL; requestCond.tail := NIL;
+	    Semaphores.V(requestCond.sema);
+
+	    (* workup message queue *)
+	    WHILE request # NIL DO
+	       Messages.Send(job.export.object, request.message);
+	       SendReply(request.channel, request.requestID, request.message);
+	       request := request.next;
+	    END;
+	 END;
+	 BlockingEvents.Unregister(terminationCond);
+      END;
+   END ObjectListener;
+
+   PROCEDURE ResponseListener(job: Jobs.Job);
+      (* this listener is used for parallelized accesses *)
+   BEGIN
+      WITH job: ResponseListenerJob DO
+	 LOOP (* until we are requested to terminate *)
+	    Tasks.WaitFor(job.condition);
+	    IF terminateImmediately THEN EXIT END;
+	    IF job.condition.mode = terminate THEN EXIT END;
+	    Messages.Send(job.condition.object, job.condition.message);
+	    SendReply(job.condition.channel,
+	       job.condition.requestID, job.condition.message);
+	    IF terminateImmediately THEN EXIT END;
+
+	    (* put condition into the list of free tasks *)
+	    job.condition.message := NIL;
+	    job.condition.next := tasks; tasks := job.condition;
+	 END;
+	 job.condition.mode := terminated;
+      END;
+   END ResponseListener;
+
+   PROCEDURE DispatchRequest(export: ExportDiscipline;
+			     channel: Channel;
+			     requestID: RequestID;
+			     message: Messages.Message);
+      (* dispatch request to an idle task *)
+      VAR
+	 task: TaskList;
+	 rljob: ResponseListenerJob;
+   BEGIN
+      (* look for an idle task *)
+      IF tasks = NIL THEN
+	 NEW(task); Conditions.Init(task, activationDomain);
+	 NEW(rljob); rljob.condition := task;
+	 Jobs.Submit(rljob, ResponseListener);
+	 CheckForTerminator;
+	 terminateImmediately := FALSE;
+      ELSE
+	 task := tasks; tasks := tasks.next;
+      END;
+
+      (* now fill the parameters in *)
+      task.object := export.object;
+      task.channel := channel;
+      task.requestID := requestID;
+      task.message := message;
+   END DispatchRequest;
+
+   PROCEDURE NotifyProxyObjects(channel: Channel; errorCode: ErrorCode);
+      (* notify all proxy objects which are tied to this channel
+	 about the broken/closed channel;
+	 additionally, we clean up the table of proxy objects
+      *)
+      VAR
+	 proxy: ProxyDiscipline;
+	 index: INTEGER;
+	 count: INTEGER;
+   BEGIN
+      Semaphores.P(channel.objectsMutex);
+      count := 0; index := 0;
+      WHILE index < remoteobjhashtabsize DO
+	 proxy := channel.objects[index];
+	 WHILE proxy # NIL DO
+	    proxy.errorCode := errorCode;
+	    proxy.channel := NIL;
+	    IF proxy.recover # NIL THEN
+	       InitiateRecovery(proxy);
+	    ELSE
+	       TerminateProxy(proxy);
+	       (* avoid floods of new tasks *)
+	       INC(count);
+	       IF count MOD 16 = 0 THEN
+		  Tasks.Suspend;
+	       END;
+	    END;
+	    proxy := proxy.hnext;
+	 END;
+	 channel.objects[index] := NIL;
+	 INC(index);
+      END;
+      Semaphores.V(channel.objectsMutex);
+   END NotifyProxyObjects;
+
+   PROCEDURE ^ OpenChannel(VAR channel: Channel;
+			   ports: ForeignPortList;
+			   partnerID: PartnerID;
+			   exclude: Channel;
+			   VAR thatsme: BOOLEAN;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ChannelListener(job: Jobs.Job);
+      (* scan thru all available stuff in the input queue of the
+	 given channel; i.e.
+	 (1) attach replies to their conditions and remove these conditions
+	     from the hash table
+	 (2) process incoming requests
+      *)
+      VAR
+	 message: PersistentObjects.Object;
+	 msgRead: BOOLEAN;
+	 conditions: Conditions.ConditionSet;
+	 notification: Notification;
+	 event: Events.Event;
+	 thatsme, reopen, retry, killed: BOOLEAN;
+	 errorCode: ErrorCode;
+	 channel: Channel;
+
+      PROCEDURE ProcessReply(message: Reply);
+	 VAR
+	    hashval: LONGINT;
+	    ptr, prev: ResponseConditionList;
+      BEGIN
+	 (* locate the associated condition in the hash table *)
+	 hashval := message.requestID MOD respcondhashtabsize;
+	 ptr := channel.conditions[hashval]; prev := NIL;
+	 WHILE (ptr # NIL) & (ptr.requestID # message.requestID) DO
+	    prev := ptr; ptr := ptr.next;
+	 END;
+
+	 IF ptr # NIL THEN
+	    (* fine -- we awaited this response *)
+	    ptr.condition.reply := message.message;
+	    (* remove the condition of the hash table *)
+	    IF prev = NIL THEN
+	       channel.conditions[hashval] := ptr.next;
+	    ELSE
+	       prev.next := ptr.next;
+	    END;
+	 ELSE
+	    IF message.requestID >= channel.nextRequestID THEN
+	       (* looks strange -- we got an reply of one of our
+		  requests in the future
+	       *)
+	       Error(channel.errors, invalidMessage, NIL);
+	    END;
+	 (* ELSE ignore message -- perhabs a duplicated message *)
+	 END;
+      END ProcessReply;
+
+      PROCEDURE ProcessRequest(message: Request);
+	 VAR
+	    export: ExportDiscipline;
+	    condition: RequestCondition;
+	    request: RequestList;
+	    internalMsg: InternalMessage;
+
+	 PROCEDURE Find(objectID: ObjectID;
+			VAR export: ExportDiscipline) : BOOLEAN;
+	    VAR
+	       ptr: ExportDiscipline;
+	       hashval: LONGINT;
+	 BEGIN
+	    Semaphores.P(exportsMutex);
+	    hashval := objectID MOD hashtabsize;
+	    ptr := exports[hashval];
+	    WHILE (ptr # NIL) & (ptr.objectID # objectID) DO
+	       ptr := ptr.next;
+	    END;
+	    export := ptr;
+	    Semaphores.V(exportsMutex);
+	    RETURN ptr # NIL
+	 END Find;
+
+      BEGIN (* ProcessRequest *)
+	 (* locate the associated object in the table of
+	    exported objects
+	 *)
+	 IF message.objectID = internal THEN (* it's an internal message *)
+	    IF message.message IS InternalMessage THEN
+	       internalMsg := message.message(InternalMessage);
+	       SetChannelPartner(channel, internalMsg.senderID);
+	       internalMsg.senderID := myID;
+	       internalMsg.processed := TRUE;
+	       CASE internalMsg.cmd OF
+	       | ping:        internalMsg.done := TRUE;
+	       | known:       IF Find(internalMsg.objectID, export) THEN
+				 internalMsg.done := TRUE;
+				 RegisterExportedObject(channel, export);
+			      END;
+	       | close:       internalMsg.done := TRUE;
+			      channel.closedByPartner := TRUE;
+			      channel.ports := internalMsg.ports;
+			      internalMsg.ports := ports;
+	       | withdraw:    internalMsg.done := TRUE;
+			      CheckForWithdrawnObject(channel,
+						      internalMsg.objectID);
+	       | detach:      IF Find(internalMsg.objectID, export) THEN
+				 internalMsg.done := TRUE;
+				 RemoveExportedObject(channel, export);
+			      END;
+	       | discID:      internalMsg.done := TRUE;
+			      internalMsg.id := internalMsg.discipline.id;
+			      internalMsg.discipline := NIL;
+	       | discAdd:     IF Find(internalMsg.objectID, export) THEN
+				 PersistentDisciplines.Add(export.object,
+				    internalMsg.discipline);
+				 internalMsg.done := TRUE;
+			      END;
+	       | discRemove:  IF Find(internalMsg.objectID, export) THEN
+				 PersistentDisciplines.Remove(export.object,
+				    internalMsg.id);
+				 internalMsg.done := TRUE;
+			      END;
+	       | discSeek:    IF Find(internalMsg.objectID, export) THEN
+				 internalMsg.done :=
+				    PersistentDisciplines.Seek(export.object,
+				       internalMsg.id, internalMsg.discipline);
+			      END;
+	       | createSlot:  CreateSlot(internalMsg.slot, internalMsg.slotval);
+			      internalMsg.done := TRUE;
+	       | checkSlot:   internalMsg.done :=
+				 CheckSlot(internalMsg.slot,
+				           internalMsg.slotval);
+	       | freeSlot:    FreeSlot(internalMsg.slot);
+			      internalMsg.done := TRUE;
+	       | exchangePorts:
+			      channel.ports := internalMsg.ports;
+			      internalMsg.ports := ports;
+			      internalMsg.done := TRUE;
+	       | exchangeRefCnts:
+			      channel.partnerRefCnt := internalMsg.refcnt;
+			      internalMsg.refcnt := channel.refcnt;
+			      internalMsg.done := TRUE;
+	       ELSE
+		  internalMsg.processed := FALSE;
+	       END;
+	       SendReply(channel, message.requestID, internalMsg);
+	    END;
+	 ELSE
+	    (* regular message to one of our exported objects *)
+	    IF Find(message.objectID, export) THEN
+	       IF export.access = serial THEN
+		  (* add request to the message queue *)
+		  NEW(request);
+		  request.channel := channel;
+		  request.requestID := message.requestID;
+		  request.message := message.message;
+		  request.next := NIL;
+		  condition := export.condition;
+		  Semaphores.P(condition.sema);
+		  IF condition.requests = NIL THEN
+		     condition.requests := request;
+		  ELSE
+		     condition.tail.next := request;
+		  END;
+		  condition.tail := request;
+		  Semaphores.V(condition.sema);
+	       ELSE (* access = parallel *)
+		  DispatchRequest(export, channel,
+				  message.requestID, message.message);
+	       END;
+	    ELSE
+	       IF message.objectID >= nextObjectID THEN
+		  Error(message.message.errors, unknownObject, NIL);
+	       ELSE
+		  Error(message.message.errors, objectWithdrawn, NIL);
+	       END;
+	       SendReply(channel, message.requestID, message.message);
+	    END;
+	 END;
+      END ProcessRequest;
+
+   BEGIN (* ChannelListener *)
+      WITH job: ChannelListenerJob DO
+         channel := job.channel; (* for the local procedures *)
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, job.termCond);
+	 Conditions.Incl(conditions, job.shutdownCond);
+	 Conditions.Incl(conditions, job.reopenCond);
+	 Conditions.Incl(conditions, job.channel.readyForReading);
+
+	 killed := FALSE; reopen := FALSE;
+	 LOOP
+	    IF channel.closedByPartner OR channel.s.eof OR channel.s.error THEN
+	       EXIT
+	    END;
+	    Tasks.WaitForOneOf(conditions);
+
+	    IF BlockingEvents.TestAndGet(job.termCond, notification) OR
+		  BlockingEvents.TestAndGet(job.shutdownCond, notification) THEN
+	       killed := TRUE;
+	       EXIT
+	    END;
+	    IF BlockingEvents.TestAndGet(job.reopenCond, notification) THEN
+	       reopen := TRUE;
+	       EXIT
+	    END;
+
+	    Semaphores.P(channel.sema);
+	    LinearizedStructures.Reset(channel.s);
+	    msgRead := (channel.s # NIL) & ~channel.s.eof & ~channel.s.error &
+		       PersistentObjects.Read(channel.s, message);
+	    Semaphores.V(channel.sema);
+	    IF ~msgRead THEN
+	       EXIT
+	    END;
+	    IF message IS Reply THEN
+	       channel.retries := 0;
+	       ProcessReply(message(Reply));
+	    ELSIF message IS Request THEN
+	       channel.retries := 0;
+	       ProcessRequest(message(Request));
+	    ELSE
+	       Error(channel.errors, invalidMessage, NIL);
+	    END;
+	 END;
+
+	 IF reopen & channel.dontReopen THEN
+	    reopen := FALSE;
+	 END;
+	 retry := reopen OR ~channel.dontReopen & ~killed &
+		  ~channel.closedByPartner & (channel.retries < maxretries) &
+		  (channel.ports # NIL) & (channel.partnerID # invalidPartner);
+
+	 (* close channel *)
+	 Streams.Release(channel.s);
+	 channel.readyForReading := NIL;
+	 channel.readyForWriting := NIL;
+	 channel.s := NIL; (* TestResponseCondition needs this *)
+
+	 (* remove channel from list of active channels *)
+	 Semaphores.P(channelsSema);
+	 IF channel.prev # NIL THEN
+	    channel.prev.next := channel.next;
+	 ELSE
+	    channels := channel.next;
+	 END;
+	 IF channel.next # NIL THEN
+	    channel.next.prev := channel.prev;
+	 END;
+	 Semaphores.V(channelsSema);
+	 UnregisterChannel(channel);
+	 BlockingEvents.Unregister(job.shutdownCond);
+	 BlockingEvents.Unregister(job.termCond);
+	 IF ~reopen THEN
+	    BlockingEvents.Unregister(job.reopenCond);
+	 END;
+
+	 IF channel.suppressNotification OR retry THEN
+	    channel.suppressNotification := FALSE;
+	 ELSE
+	    (* determine error code for our proxy objects *)
+	    IF channel.closedByPartner THEN
+	       errorCode := closedConnection;
+	    ELSIF killed THEN
+	       errorCode := listenerKilled;
+	    ELSE
+	       errorCode := connectionBroken;
+	    END;
+	    (* notify all proxy objects that the connection is lost *)
+	    NotifyProxyObjects(channel, errorCode);
+	 END;
+
+	 channel.listenerIsRunning := FALSE;
+
+	 IF retry THEN
+	    INC(channel.retries);
+	    IF ~OpenChannel(channel, channel.ports, channel.partnerID, NIL,
+			    thatsme, channel.errors) THEN
+	       (* NotifyProxyObjects has already been called by OpenChannel *)
+	    END;
+	    ASSERT(~thatsme);
+	    IF reopen THEN
+	       BlockingEvents.Unregister(job.reopenCond);
+	    END;
+	 ELSE
+	    PurgeListOfExportedObjects(channel);
+	 END;
+      END;
+   END ChannelListener;
+
+   PROCEDURE StartChannelListener(channel: Channel);
+      VAR
+         cljob: ChannelListenerJob;
+   BEGIN
+      NEW(cljob);
+      channel.listenerIsRunning := TRUE;
+      BlockingEvents.Register(termination, cljob.termCond);
+      BlockingEvents.Register(channel.shutdown, cljob.shutdownCond);
+      BlockingEvents.Register(channel.reopen, cljob.reopenCond);
+      cljob.channel := channel;
+      Jobs.Submit(cljob, ChannelListener);
+      CheckForTerminator;
+      terminateImmediately := FALSE;
+   END StartChannelListener;
+
+   PROCEDURE CreateChannel(VAR channel: Channel;
+			   ports: ForeignPortList;
+			   s: Streams.Stream);
+   BEGIN
+      NEW(channel);
+      channel.listenerIsRunning := FALSE;
+      channel.suppressNotification := FALSE;
+      channel.dontReopen := FALSE;
+      channel.retries := 0;
+      channel.refcnt := 0;
+      channel.partnerRefCnt := 0;
+      channel.ports := ports;
+      channel.sentports := NIL;
+      channel.closedByPartner := FALSE;
+      BlockingEvents.Define(channel.shutdown);
+      BlockingEvents.Define(channel.reopen);
+      channel.s := s;
+      LocalSemaphores.Create(channel.sema);
+      LocalSemaphores.Create(channel.objectsMutex);
+      LocalSemaphores.Create(channel.exportedObjectsMutex);
+      StreamConditions.Create(channel.readyForReading, s,
+			      StreamConditions.read);
+      StreamConditions.Create(channel.readyForWriting, s,
+			      StreamConditions.write);
+      channel.nextRequestID := 0;
+      channel.discmap := NIL;
+      channel.partnerID := invalidPartnerID;
+      NEW(channel.errors);
+      RelatedEvents.QueueEvents(channel.errors);
+      RelatedEvents.Forward(channel.s, channel.errors);
+      ConnectStream(s, channel);
+
+      Semaphores.P(channelsSema);
+      channel.next := channels; channel.prev := NIL;
+      IF channels # NIL THEN
+	 channels.prev := channel;
+      END;
+      channels := channel;
+      Semaphores.V(channelsSema);
+
+      StartChannelListener(channel);
+   END CreateChannel;
+
+   PROCEDURE ^ PortListener(job: Jobs.Job);
+   
+   PROCEDURE StartPortListener(socket: Networks.Socket;
+                               errors: RelatedEvents.Object);
+      VAR
+         pljob: PortListenerJob;
+   BEGIN
+      NEW(pljob);
+      pljob.socket := socket;
+      pljob.errors := errors;
+      NEW(pljob.newerrors); RelatedEvents.QueueEvents(pljob.newerrors);
+      Networks.CreateAcceptCondition(pljob.acceptCond, socket);
+      BlockingEvents.Register(termination, pljob.termCond);
+      BlockingEvents.Register(removeports, pljob.removeportsCond);
+      Conditions.CreateSet(pljob.conditions);
+      Conditions.Incl(pljob.conditions, pljob.acceptCond);
+      Conditions.Incl(pljob.conditions, pljob.termCond);
+      Conditions.Incl(pljob.conditions, pljob.removeportsCond);
+
+      Jobs.Submit(pljob, PortListener);
+   END StartPortListener;
+
+   PROCEDURE PortListener(job: Jobs.Job);
+      VAR
+	 s: Streams.Stream;
+	 channel: Channel;
+	 prev, port: PortList;
+	 queue: RelatedEvents.Queue;
+	 notification: Notification;
+   BEGIN
+      WITH job: PortListenerJob DO
+	 LOOP (* while the socket remains valid *)
+	    Tasks.WaitForOneOf(job.conditions);
+
+	    IF BlockingEvents.TestAndGet(job.termCond, notification) OR
+		  BlockingEvents.TestAndGet(job.removeportsCond,
+		     notification) THEN
+	       EXIT
+	    END;
+
+	    IF Conditions.Test(job.acceptCond, job.newerrors) &
+		  RelatedEvents.EventsPending(job.newerrors) THEN
+	       RelatedEvents.GetQueue(job.newerrors, queue);
+	       RelatedEvents.AppendQueue(job.errors, queue);
+	       EXIT
+	    END;
+	    IF Networks.Accept(job.socket, s, Streams.onebuf) THEN
+	       PersistentObjects.SetMode(s, PersistentObjects.incrTypeCode);
+	       CreateChannel(channel, NIL, s);
+	    END;
+	 END;
+
+	 (* remove port from list of ports *)
+	 Semaphores.P(portsSema);
+	 prev := NIL; port := ports;
+	 WHILE (port # NIL) & (port.socket # job.socket) DO
+	    prev := port;
+	    IF port.next # NIL THEN
+	       port := port.next(PortList);
+	    ELSE
+	       port := NIL;
+	    END;
+	 END;
+	 IF port # NIL THEN
+	    IF prev = NIL THEN
+	       IF port.next # NIL THEN
+		  ports := port.next(PortList);
+	       ELSE
+		  ports := NIL;
+	       END;
+	    ELSE
+	       prev.next := port.next;
+	    END;
+	    Networks.Release(port.socket);
+	 END;
+	 Semaphores.V(portsSema);
+
+	 BlockingEvents.Unregister(job.termCond);
+	 BlockingEvents.Unregister(job.removeportsCond);
+      END;
+   END PortListener;
+
+   PROCEDURE Recoverer(job: Jobs.Job);
+      (* this task is to be started in case of proxy objects
+	 which have lost the connection to their original object
+	 but which have a recovery method;
+	 preconditions:
+	 - the proxy object must not have been dropped locally
+	 - a recovery method must be defined
+	 - a semaphore must have been set up
+	 - the proxy object must be outside of the per-channel
+	   data structures (i.e. channel = NIL)
+	 - the proxy object must not be targeted to another proxy
+	   (newProxy component)
+      *)
+      CONST
+	 maxtries = 5;
+      VAR
+	 tries: INTEGER;
+	 proxyDisc: ProxyDiscipline;
+	 errorCode: ErrorCode; (* original error code *)
+   BEGIN
+      WITH job: RecovererJob DO
+	 proxyDisc := job.proxyDisc;
+	 errorCode := job.errorCode;
+      END;
+      Resources.Notify(proxyDisc.object, Resources.communicationStopped);
+      IF ~Resources.Stopped(proxyDisc.object) THEN
+	 (* somebody else has changed the status of this object; so give up *)
+	 proxyDisc.errorCode := errorCode;
+	 proxyDisc.recovererActive := FALSE;
+	 RETURN
+      END;
+      tries := 0;
+      LOOP
+	 INC(tries);
+	 proxyDisc.recover(proxyDisc.object, proxyDisc.errorCode);
+	 (* the recover procedure should leave its object in
+	    either a terminated state or as a re-connected proxy
+	    but there may be raise conditions (i.e. it is possible
+	    that shortly thereafter the new connection breaks again)
+	 *)
+	 IF proxyDisc.channel # NIL THEN
+	    InitiateResourceNotification(proxyDisc.object,
+					 Resources.communicationResumed);
+	    EXIT
+	 END;
+	 IF Resources.Terminated(proxyDisc.object) THEN
+	    proxyDisc.errorCode := errorCode;
+	    TerminateProxy(proxyDisc);
+	    EXIT
+	 END;
+	 IF tries >= maxtries THEN
+	    (* the interface procedure either does not follow its
+	       specification or the new connections prove to
+	       be instable over and over again;
+	       so let's terminate this proxy object here to
+	       avoid an endless loop
+	    *)
+	    TerminateProxy(proxyDisc);
+	    EXIT
+	 END;
+	 errorCode := proxyDisc.errorCode; (* take new error code *)
+	 ASSERT(errorCode # droppedObject); (* else it must be terminated *)
+      END;
+
+      proxyDisc.recovererActive := FALSE;
+   END Recoverer;
+
+   PROCEDURE InitiateRecovery(proxyDisc: ProxyDiscipline);
+      VAR
+	 errorCode: ErrorCode;
+	 job: RecovererJob;
+   BEGIN
+      IF SYS.TAS(proxyDisc.recovererActive) THEN
+	 RETURN
+      END;
+      UnlinkProxyDependants(proxyDisc.dependants, proxyDisc.errorCode);
+      errorCode := proxyDisc.errorCode;
+      ASSERT((errorCode # droppedObject) &
+	     (proxyDisc.recover # NIL) &
+	     (proxyDisc.channel = NIL) &
+	     (proxyDisc.newProxy = NIL));
+      proxyDisc.errorCode := suspendedObject;
+      NEW(job); job.proxyDisc := proxyDisc; job.errorCode := errorCode;
+      Jobs.Submit(job, Recoverer);
+   END InitiateRecovery;
+
+   (* === management of per channel object lists ======================= *)
+
+   PROCEDURE AddObject(object: ProxyDiscipline);
+      VAR
+	 channel: Channel;
+	 index: LONGINT;
+   BEGIN
+      channel := object.channel;
+      Semaphores.P(channel.objectsMutex);
+      index := object.address.objectID MOD remoteobjhashtabsize;
+      object.hnext := channel.objects[index]; object.hprev := NIL;
+      IF channel.objects[index] # NIL THEN
+	 channel.objects[index].hprev := object;
+      END;
+      channel.objects[index] := object;
+      INC(channel.refcnt);
+      Semaphores.V(channel.objectsMutex);
+   END AddObject;
+
+   PROCEDURE RemoveObject(proxyDisc: ProxyDiscipline);
+      VAR
+	 channel: Channel;
+	 index: LONGINT;
+   BEGIN
+      channel := proxyDisc.channel;
+      IF channel # NIL THEN
+	 Semaphores.P(channel.objectsMutex);
+	 index := proxyDisc.address.objectID MOD remoteobjhashtabsize;
+	 IF proxyDisc.hprev = NIL THEN
+	    channel.objects[index] := proxyDisc.hnext;
+	 ELSE
+	    proxyDisc.hprev.hnext := proxyDisc.hnext;
+	 END;
+	 IF proxyDisc.hnext # NIL THEN
+	    proxyDisc.hnext.hprev := proxyDisc.hprev;
+	 END;
+	 proxyDisc.hprev := NIL; proxyDisc.hnext := NIL;
+	 Semaphores.V(channel.objectsMutex);
+	 ReleaseChannel(channel);
+	 proxyDisc.channel := NIL;
+      END;
+      IF (proxyDisc.recover # NIL) & (proxyDisc.errorCode # droppedObject) THEN
+	 InitiateRecovery(proxyDisc);
+      ELSE
+	 TerminateProxy(proxyDisc);
+      END;
+   END RemoveObject;
+
+   PROCEDURE FindObject(channel: Channel; objectID: ObjectID;
+			VAR object: Services.Object) : BOOLEAN;
+      VAR
+	 p: ProxyDiscipline;
+	 index: LONGINT;
+   BEGIN
+      Semaphores.P(channel.objectsMutex);
+      index := objectID MOD remoteobjhashtabsize;
+      p := channel.objects[index];
+      WHILE (p # NIL) & (p.address.objectID # objectID) DO
+	 p := p.hnext;
+      END;
+      Semaphores.V(channel.objectsMutex);
+      IF p = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 object := p.object;
+	 RETURN TRUE
+      END;
+   END FindObject;
+
+   (* ===================================================================== *)
+
+   PROCEDURE OpenChannel(VAR channel: Channel;
+			 ports: ForeignPortList;
+			 partnerID: PartnerID;
+			 exclude: Channel;
+			 VAR thatsme: BOOLEAN;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      (* may be either called initially (with channel = NIL)
+	 or later to open or reopen a channel
+	 --
+	 exclude is a channel which must not be returned or
+	 considered as an already opened channel to the requested partner
+      *)
+      VAR
+	 s: Streams.Stream;
+	 newchannel: BOOLEAN;
+	 oldchannel: Channel;
+	 slotval: SlotVal;
+	 slot: SlotIndex;
+	 samepartner: BOOLEAN;
+	 port: ForeignPortList;
+	 newerrors: RelatedEvents.Object;
+	 queue: RelatedEvents.Queue;
+	 index: LONGINT;
+
+      (* FindChannels & NextChannel *)
+      VAR
+	 next: ChannelList;
+
+      PROCEDURE GiveUp;
+      BEGIN
+	 RelatedEvents.GetQueue(newerrors, queue);
+	 RelatedEvents.AppendQueue(errors, queue);
+	 IF ports = NIL THEN
+	    Error(errors, privateObject, NIL);
+	 ELSE
+	    Error(errors, accessFailed, NIL);
+	 END;
+	 Semaphores.V(opensema[index]);
+	 IF ~newchannel THEN
+	    NotifyProxyObjects(channel, connectionBroken);
+	    PurgeListOfExportedObjects(channel);
+	    channel.s := NIL; (* TestResponseCondition needs this *)
+	 END;
+      END GiveUp;
+
+      PROCEDURE FindChannels(like: Channel);
+	 VAR
+	    hashval: INTEGER;
+	    list, member: ChannelList;
+	    p: Channel;
+      BEGIN
+	 Semaphores.P(chregtabSema);
+	 hashval := HashChannel(like);
+	 p := chbucket[hashval];
+	 list := NIL;
+	 WHILE p # NIL DO
+	    IF (p # like) & (p # exclude) & (p.partnerID = like.partnerID) THEN
+	       NEW(member); member.channel := p;
+	       member.next := list; list := member;
+	    END;
+	    p := p.hnext;
+	 END;
+	 Semaphores.V(chregtabSema);
+	 next := list;
+      END FindChannels;
+
+      PROCEDURE NextChannel(VAR channel: Channel) : BOOLEAN;
+      BEGIN
+	 IF next = NIL THEN
+	    RETURN FALSE
+	 END;
+	 channel := next.channel;
+	 next := next.next;
+	 RETURN TRUE
+      END NextChannel;
+
+   BEGIN (* OpenChannel *)
+      thatsme := FALSE;
+      newchannel := channel = NIL;
+      IF ~newchannel THEN
+	 Semaphores.P(channel.sema);
+      END;
+
+      (* avoid concurrent openings for the same partner *)
+      index := partnerID MOD nofopensemas;
+      Semaphores.P(opensema[index]);
+
+      (* be sure that no listener is running for this channel *)
+      IF ~newchannel & channel.listenerIsRunning THEN
+	 channel.suppressNotification := TRUE;
+	 CloseChannel(channel);
+      END;
+
+      (* go thru list of ports until we have the partner we are looking for *)
+      NEW(newerrors); RelatedEvents.QueueEvents(newerrors);
+      port := ports;
+      LOOP
+	 (* try the next ports until we are able to open one *)
+	 LOOP
+	    IF port = NIL THEN
+	       IF channel # NIL THEN
+		  Semaphores.V(channel.sema);
+	       END;
+	       GiveUp;
+	       RETURN FALSE
+	    END;
+	    IF Networks.Open(s, port.port, Streams.onebuf, newerrors) THEN
+	       EXIT
+	    END;
+	    port := port.next;
+	 END;
+
+	 PersistentObjects.SetMode(s, PersistentObjects.incrTypeCode);
+	 IF newchannel THEN
+	    CreateChannel(channel, ports, s);
+	    Semaphores.P(channel.sema);
+	 ELSE
+	    channel.s := s;
+	    StreamConditions.Create(channel.readyForReading, s,
+				    StreamConditions.read);
+	    StreamConditions.Create(channel.readyForWriting, s,
+				    StreamConditions.write);
+	    StartChannelListener(channel);
+	 END;
+
+	 (* avoid concurrent reopenings if something fails *)
+	 channel.dontReopen := TRUE;
+	 channel.suppressNotification := TRUE;
+
+	 ConnectStream(s, channel);
+	 RelatedEvents.Forward(s, newerrors);
+	 Semaphores.V(channel.sema);
+
+	 IF Ping(channel, newerrors) & (channel.partnerID = partnerID) THEN
+	    EXIT
+	 END;
+	 CloseChannel(channel);
+	 port := port.next;
+      END;
+
+      IF ~ExchangeListOfPorts(channel, errors) THEN
+	 CloseChannel(channel); GiveUp; RETURN FALSE
+      END;
+
+      (* now, reopens of the channel are no longer in conflict with
+	 our activities
+      *)
+      channel.dontReopen := FALSE;
+      channel.suppressNotification := FALSE;
+
+      RelatedEvents.Forward(s, channel.errors);
+      IF newchannel THEN
+	 (* check whether we are talking with ourselves *)
+	 IF partnerID = myID THEN
+	    slotval := GetRandomVal(MIN(SlotVal), MAX(SlotVal));
+	    IF CreateRemoteSlot(channel, slot, slotval) &
+		  CheckSlot(slot, slotval) THEN
+	       thatsme := TRUE;
+	       CloseChannel(channel);
+	       channel := NIL;
+	    END;
+	 END;
+	 IF ~thatsme THEN
+	    (* check whether we have already an open channel to this partner *)
+	    FindChannels(channel); samepartner := FALSE;
+	    WHILE NextChannel(oldchannel) & ~samepartner DO
+	       slotval := GetRandomVal(MIN(SlotVal), MAX(SlotVal));
+	       IF CreateRemoteSlot(channel, slot, slotval) THEN
+		  samepartner := CheckRemoteSlot(oldchannel, slot, slotval);
+		  IF ~FreeRemoteSlot(channel, slot) THEN END;
+		  IF samepartner THEN
+		     CloseChannel(channel);
+		     channel := oldchannel;
+		  END;
+	       END;
+	    END;
+	 END;
+      END;
+
+      Semaphores.V(opensema[index]);
+
+      RETURN TRUE
+   END OpenChannel;
+
+   PROCEDURE CheckChannel(channel: Channel) : BOOLEAN;
+      (* check the channel for being alive and try,
+	 return TRUE if the channel can be used to exchange messages
+      *)
+   BEGIN
+      RETURN (channel.s # NIL) & ~channel.closedByPartner &
+	     ~channel.s.error & ~channel.s.eof
+   END CheckChannel;
+
+   PROCEDURE MessageHandler(object: Messages.Object;
+			    VAR message: Messages.Message);
+      (* called by Messages for all messages which are sent
+	 to our proxy objects
+      *)
+      CONST
+	 maxretries = 5;
+      VAR
+	 retries: INTEGER;
+	 channel: Channel;
+	 proxyDisc: ProxyDiscipline;
+	 ok: BOOLEAN;
+
+      PROCEDURE GiveUp(releaseChannel: BOOLEAN);
+	 VAR
+	    queue: RelatedEvents.Queue;
+      BEGIN
+	 IF channel # NIL THEN
+	    RelatedEvents.GetQueue(channel.errors, queue);
+	    RelatedEvents.AppendQueue(message.errors, queue);
+	 END;
+	 Error(message.errors, proxyDisc.errorCode, proxyDisc.address);
+
+	 IF releaseChannel THEN
+	    IF proxyDisc.channel # NIL THEN
+	       RemoveObject(proxyDisc);
+	    END;
+	 END;
+	 message.done := FALSE;
+      END GiveUp;
+
+      PROCEDURE OK() : BOOLEAN;
+      BEGIN
+	 IF CheckChannel(channel) THEN
+	    RETURN TRUE
+	 ELSE
+	    IF proxyDisc.channel = NIL THEN
+	       (* channel has already been set to NIL by ChannelListener *)
+	       RETURN FALSE
+	    END;
+	    IF channel.closedByPartner THEN
+	       (* if the partner has actively said good bye to us
+		  we will not bother him again
+	       *)
+	       proxyDisc.errorCode := closedConnection;
+	       RETURN FALSE
+	    END;
+	    (* try to reopen the connection --
+	       this is a good idea in case of temporary failures
+	    *)
+	    WHILE retries < maxretries DO
+	       Notify(channel.reopen);
+	       IF CheckChannel(channel) THEN
+		  IF ~Known(channel,
+			    proxyDisc.address.objectID, message.errors) THEN
+		     proxyDisc.errorCode := objectWithdrawn;
+		     GiveUp(TRUE); RETURN FALSE
+		  END;
+		  RETURN TRUE
+	       END;
+	       INC(retries);
+	    END;
+	    proxyDisc.errorCode := connectionBroken;
+	    GiveUp(TRUE); RETURN FALSE
+	 END;
+      END OK;
+
+   BEGIN (* MessageHandler *)
+      ok := Disciplines.Seek(object, proxyDiscID, proxyDisc);
+      IF ~ok THEN
+	 (* message sent to dying or already terminated proxy object *)
+	 Error(message.errors, connectionBroken, NIL);
+	 message.done := FALSE;
+	 RETURN
+      END;
+      ASSERT(ok);
+      channel := proxyDisc.channel;
+      IF proxyDisc.newProxy # NIL THEN
+	 RelatedEvents.Save(proxyDisc.newProxy);
+	 RelatedEvents.Forward(proxyDisc.newProxy, object);
+	 Messages.Send(proxyDisc.newProxy, message);
+	 RelatedEvents.Restore(proxyDisc.newProxy);
+      ELSIF channel = NIL THEN
+	 (* we have already given up this object --
+	    so repeat the final error message
+	 *)
+	 GiveUp(FALSE);
+      ELSE
+	 retries := 0;
+	 IF ~OK() THEN RETURN END;
+	 IF ports # channel.sentports THEN
+	    LOOP
+	       IF ExchangeListOfPorts(channel, message.errors) THEN
+		  EXIT
+	       END;
+	       INC(retries);
+	       IF ~OK() THEN RETURN END;
+	    END;
+	 END;
+	 LOOP
+	    IF SendRequest(channel, proxyDisc.address.objectID, message,
+			   proxyDisc.address, message.errors) THEN
+	       EXIT
+	    END;
+	    INC(retries);
+	    IF ~OK() THEN RETURN END;
+	 END;
+      END;
+   END MessageHandler;
+
+   PROCEDURE DoRegistration(job: Jobs.Job);
+      (* see comments in FindOrCreateProxyObject *)
+      VAR
+	 proxyDisc: ProxyDiscipline;
+	 typeDisc: TypeDiscipline;
+	 object: Services.Object;
+
+      PROCEDURE Register(typeDisc: TypeDiscipline);
+      BEGIN
+	 IF typeDisc.register THEN
+	    IF typeDisc.up # NIL THEN
+	       Register(typeDisc.up);
+	    END;
+	    IF typeDisc.if.register # NIL THEN
+	       typeDisc.if.register(object);
+	    END;
+	 END;
+      END Register;
+
+   BEGIN
+      WITH job: RegistrationJob DO
+	 object := job.object;
+	 Register(job.typeDisc);
+	 IF Disciplines.Seek(job.object, proxyDiscID, proxyDisc) THEN
+	    proxyDisc.registrationJob := NIL;
+	 END;
+      END;
+   END DoRegistration;
+
+   PROCEDURE FindOrCreateProxyObject(VAR object: Services.Object;
+				     proxy: Services.Object;
+				     params: PersistentObjects.Object;
+				     address: Address;
+				     channel: Channel;
+				     typeDisc: TypeDiscipline);
+      (* is only used for objects which has been exported with mode = linked *)
+      VAR
+	 newobject: Services.Object;
+	 proxyDisc: ProxyDiscipline;
+	 eventType: Events.EventType;
+	 job: RegistrationJob;
+	 ok: BOOLEAN;
+	 btDisc: TypeDiscipline;
+	 list: ListOfProxyParameters;
+   BEGIN
+      IF ~FindObject(channel, address.objectID, newobject) THEN
+	 IF proxy # NIL THEN
+	    ok := Disciplines.Seek(proxy, proxyDiscID, proxyDisc);
+	    ASSERT(ok);
+	 ELSE
+	    IF (params # NIL) & (params IS ListOfProxyParameters) THEN
+	       list := params(ListOfProxyParameters);
+	       typeDisc.if.createProxy(newobject, list.params);
+	       list := list.next; btDisc := typeDisc.up;
+	       WHILE (list # NIL) & (btDisc # NIL) DO
+		  btDisc.if.initProxy(newobject, list.params);
+		  list := list.next;
+		  btDisc := btDisc.up;
+	       END;
+	    ELSE
+	       typeDisc.if.createProxy(newobject, params);
+	    END;
+	    ASSERT(newobject # NIL);
+	    NEW(proxyDisc);
+	    proxyDisc.id := proxyDiscID;
+	    proxyDisc.object := newobject;
+	    proxyDisc.recover := NIL;
+	    proxyDisc.recovererActive := FALSE;
+	    proxyDisc.params := params;
+	    proxyDisc.newProxy := NIL;
+	    proxyDisc.dnext := NIL;
+	    proxyDisc.dependants := NIL;
+	 END;
+	 proxyDisc.address := address;
+	 proxyDisc.channel := channel;
+	 IF proxy = NIL THEN
+	    Disciplines.Add(newobject, proxyDisc);
+	    Messages.InstallHandler(newobject, MessageHandler);
+	    IF newobject IS PersistentDisciplines.Object THEN
+	       WITH newobject: PersistentDisciplines.Object DO
+		  PersistentDisciplines.AttachInterface(newobject, persDiscIF);
+	       END;
+	    END;
+	    Resources.TakeInterest(newobject, eventType);
+	    Events.Handler(eventType, ProxyObjectHandler);
+	 ELSE
+	    newobject := proxy;
+	 END;
+	 AddObject(proxyDisc);
+	 IF typeDisc.register THEN
+	    (* registrations must be parallelized to avoid
+	       deadlocks; remember that we may be invoked
+	       indirectly by the ChannelListener and therefore
+	       must not send operations over the wire while
+	       reading messages -> 2x P(channel.sema)
+	    *)
+	    NEW(job); job.typeDisc := typeDisc; job.object := newobject;
+	    Jobs.Submit(job, DoRegistration);
+	    proxyDisc.registrationJob := job;
+	 ELSE
+	    proxyDisc.registrationJob := NIL;
+	 END;
+      END;
+      object := newobject;
+   END FindOrCreateProxyObject;
+
+   PROCEDURE ImportOrReImport(s: Streams.Stream;
+			      proxy: Services.Object;
+		              VAR object: Services.Object) : BOOLEAN;
+      TYPE
+	 PortList = POINTER TO PortListRec;
+	 PortListRec =
+	    RECORD
+	       port: Networks.Address;
+	       next: PortList;
+	    END;
+      VAR
+	 channel: Channel;
+	 sy: CHAR;
+	 objectID: ObjectID;
+	 address: Address;
+	 params: PersistentObjects.Object;
+	 exclude: Channel;
+	 typeName: TypeName;
+	 typeDisc: TypeDiscipline;
+
+      PROCEDURE Find(objectID: ObjectID;
+		     VAR object: Services.Object) : BOOLEAN;
+	 VAR
+	    ptr: ExportDiscipline;
+	    hashval: LONGINT;
+      BEGIN
+	 Semaphores.P(exportsMutex);
+	 hashval := objectID MOD hashtabsize;
+	 ptr := exports[hashval];
+	 WHILE (ptr # NIL) & (ptr.objectID # objectID) DO
+	    ptr := ptr.next;
+	 END;
+	 Semaphores.V(exportsMutex);
+	 IF ptr = NIL THEN
+	    RETURN FALSE
+	 ELSE
+	    object := ptr.object;
+	    RETURN TRUE
+	 END;
+      END Find;
+
+      PROCEDURE GetTypeDisc(typeName: ARRAY OF CHAR;
+			    VAR typeDisc: TypeDiscipline) : BOOLEAN;
+	 VAR
+	    type: Services.Type;
+      BEGIN
+	 Services.SeekType(typeName, type);
+	 IF type = NIL THEN
+	    UnknownType(s, unknownType, typeName); RETURN FALSE
+	 END;
+	 IF ~Disciplines.Seek(type, typeDiscID, typeDisc) THEN
+	    UnknownType(s, unsupportedType, typeName); RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END GetTypeDisc;
+
+      PROCEDURE ImportObject(VAR object: Services.Object;
+			     params: PersistentObjects.Object;
+			     address: Address;
+			     exclude: Channel;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+	 (* linked objects only *)
+	 VAR
+	    s: Streams.Stream;
+	    channel: Channel;
+	    typeDisc: TypeDiscipline;
+	    thatsme: BOOLEAN;
+      BEGIN
+	 IF ~GetTypeDisc(address.typeName, typeDisc) THEN
+	    RETURN FALSE
+	 END;
+	 channel := NIL;
+	 IF ~OpenChannel(channel, address.ports, address.partnerID,
+			 exclude, thatsme, errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF thatsme THEN
+	    IF Find(address.objectID, object) THEN RETURN TRUE END;
+	    IF address.objectID >= nextObjectID THEN
+	       Error(s, invalidPartner, NIL);
+	    ELSE
+	       Error(s, objectWithdrawn, NIL);
+	    END;
+	    RETURN FALSE
+	 ELSE
+	    IF ~Known(channel, address.objectID, errors) THEN
+	       RETURN FALSE
+	    END;
+	    FindOrCreateProxyObject(object, proxy,
+				    params, address, channel, typeDisc);
+	    RETURN TRUE
+	 END;
+      END ImportObject;
+
+      PROCEDURE CreateStandalone(VAR object: Services.Object;
+				 typeName: TypeName;
+				 params: PersistentObjects.Object) : BOOLEAN;
+	 VAR
+	    btDisc, typeDisc: TypeDiscipline;
+	    list: ListOfProxyParameters;
+
+	 PROCEDURE Register(typeDisc: TypeDiscipline);
+	 BEGIN
+	    IF typeDisc.register THEN
+	       IF typeDisc.up # NIL THEN
+		  Register(typeDisc.up);
+	       END;
+	       IF typeDisc.if.register # NIL THEN
+		  typeDisc.if.register(object);
+	       END;
+	    END;
+	 END Register;
+
+      BEGIN (* CreateStandalone *)
+	 IF ~GetTypeDisc(typeName, typeDisc) THEN RETURN FALSE END;
+	 IF (params # NIL) & (params IS ListOfProxyParameters) THEN
+	    list := params(ListOfProxyParameters);
+	    typeDisc.if.createProxy(object, list.params);
+	    btDisc := typeDisc.up; list := list.next;
+	    WHILE (list # NIL) & (btDisc # NIL) DO
+	       btDisc.if.initProxy(object, list.params);
+	       btDisc := btDisc.up; list := list.next;
+	    END;
+	 ELSE
+	    typeDisc.if.createProxy(object, params);
+	 END;
+	 Register(typeDisc);
+	 RETURN TRUE
+      END CreateStandalone;
+
+   BEGIN (* ImportOrReImport *)
+      IF ~NetIO.ReadChar(s, sy) THEN
+	 RETURN FALSE
+      END;
+      CASE sy OF
+      | nilSY:
+	 object := NIL;
+	 RETURN TRUE
+      | shortAddressSY:
+	 IF ~NetIO.ReadLongInt(s, objectID) OR
+	       ~NetIO.ReadString(s, typeName) OR
+	       ~PersistentObjects.ReadObjectOrNIL(s, params) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~GetTypeDisc(typeName, typeDisc) THEN
+	    RETURN FALSE
+	 END;
+	 IF GetChannel(s, channel) THEN
+	    CreateAddress(address);
+	    address.objectID := objectID; address.ports := channel.ports;
+	    address.partnerID := channel.partnerID;
+	    COPY(typeName, address.typeName);
+	    FindOrCreateProxyObject(object, proxy,
+				    params, address, channel, typeDisc);
+	    RETURN TRUE
+	 ELSE
+	    Error(s, invalidPartner, NIL); RETURN FALSE
+	 END;
+      | yourObjectSY: (* now, of course, MY object *)
+	 IF ~NetIO.ReadLongInt(s, objectID) THEN
+	    RETURN FALSE
+	 END;
+	 IF Find(objectID, object) THEN RETURN TRUE END;
+	 IF objectID >= nextObjectID THEN
+	    Error(s, invalidPartner, NIL);
+	 ELSE
+	    Error(s, objectWithdrawn, NIL);
+	 END;
+	 RETURN FALSE
+      | longAddressSY:
+	 IF ~GetChannel(s, exclude) THEN
+	    exclude := NIL;
+	 END;
+	 RETURN PersistentObjects.Read(s, address) &
+		PersistentObjects.ReadObjectOrNIL(s, params) &
+		ImportObject(object, params, address, exclude, s)
+      | standaloneSY:
+	 RETURN NetIO.ReadString(s, typeName) &
+		PersistentObjects.ReadObjectOrNIL(s, params) &
+		CreateStandalone(object, typeName, params)
+      ELSE
+	 Error(s, invalidPartner, NIL); RETURN FALSE
+      END;
+   END ImportOrReImport;
+
+   PROCEDURE FreeHandler(event: Events.Event);
+      (* set all free lists to NIL to return the associated storage
+	 to the garbage collector
+      *)
+   BEGIN
+      TerminateIdleTasks;
+   END FreeHandler;
+
+   PROCEDURE Init;
+      VAR
+	 index: INTEGER;
+
+      PROCEDURE InitPT(VAR type: Services.Type;
+		       name, basename: ARRAY OF CHAR;
+		       create: PersistentObjects.CreateProc;
+		       read: PersistentObjects.ReadProc;
+		       write: PersistentObjects.WriteProc);
+	 VAR
+	    if: PersistentObjects.Interface;
+      BEGIN
+	 NEW(if); if.read := read; if.write := write;
+	 if.create := create; if.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, basename, if);
+      END InitPT;
+
+      PROCEDURE InitCD(VAR domain: Conditions.Domain;
+		       test: Conditions.TestProc);
+	 VAR
+	    if: Conditions.Interface;
+	    desc: Conditions.Description;
+      BEGIN
+	 NEW(if); if.test := test;
+	 NEW(desc); desc.internal := TRUE; desc.caps := {};
+	 NEW(domain);
+	 Conditions.InitDomain(domain, if, desc);
+      END InitCD;
+
+   BEGIN (* Init *)
+      csDiscID := Disciplines.Unique();
+      exportDiscID := Disciplines.Unique();
+      proxyDiscID := Disciplines.Unique();
+      typeDiscID := Disciplines.Unique();
+      nextObjectID := internal + 1;
+      ports := NIL;
+      channels := NIL;
+      tasks := NIL; terminateImmediately := FALSE;
+
+      Services.Create(service, serviceName);
+
+      InitPT(messageType, "RemoteObjects.Message", "Messages.Message",
+	     CreateMessage, ReadMessage, WriteMessage);
+      InitPT(requestType, "RemoteObjects.Request", "RemoteObjects.Message",
+	     CreateRequest, ReadRequest, WriteRequest);
+      InitPT(replyType,   "RemoteObjects.Reply",   "RemoteObjects.Message",
+	     CreateReply, ReadReply, WriteReply);
+      InitPT(internalMsgType, "RemoteObjects.InternalMessage",
+	     "Messages.Message",
+	     CreateInternalMessage, ReadInternalMessage, WriteInternalMessage);
+      InitPT(addressType, "RemoteObjects.Address",
+	     "PersistentDisciplines.Object",
+	     CreateAddress, ReadAddress, WriteAddress);
+      InitPT(foreignPortListType, "RemoteObjects.ForeignPortList", "",
+	     CreateForeignPortList, ReadForeignPortList, WriteForeignPortList);
+      InitPT(proxyListType, "RemoteObjects.ListOfProxyParameters", "",
+             CreateListOfProxyParameters, ReadListOfProxyParameters,
+	     WriteListOfProxyParameters);
+
+      InitCD(requestDomain, TestRequestCondition);
+      InitCD(responseDomain, TestResponseCondition);
+      InitCD(activationDomain, TestActivationCondition);
+
+      LocalSemaphores.Create(portsSema);
+      LocalSemaphores.Create(channelsSema);
+      index := 0;
+      WHILE index < nofopensemas DO
+	 LocalSemaphores.Create(opensema[index]);
+	 INC(index);
+      END;
+      LocalSemaphores.Create(exportsMutex);
+
+      NEW(persDiscIF);
+      persDiscIF.add := AddDiscipline;
+      persDiscIF.remove := RemoveDiscipline;
+      persDiscIF.seek := SeekDiscipline;
+
+      Events.Handler(Process.startOfGarbageCollection, FreeHandler);
+
+      myID := GetRandomVal(invalidPartnerID + 1, MAX(LONGINT));
+
+      termJobIsRunning := FALSE;
+   END Init;
+
+   (* === exported procedures ========================================== *)
+
+   PROCEDURE Register(type: Services.Type; if: Interface; access: AccessMode);
+      (* install ``RemoteObjects'' service for the given type *)
+      VAR
+	 baseDisc, disc: TypeDiscipline;
+	 current, base: Services.Type;
+   BEGIN
+      ASSERT((if # NIL) & (if.createProxy # NIL));
+      NEW(disc); disc.id := typeDiscID; disc.if := if; disc.access := access;
+      disc.up := NIL; (* default *)
+      disc.register := if.register # NIL; (* initial *)
+      (* check for a supported base type *)
+      current := type;
+      LOOP
+	 Services.GetBaseType(current, base);
+	 IF base = NIL THEN EXIT END; (* not found *)
+	 IF Disciplines.Seek(base, typeDiscID, baseDisc) THEN
+	    IF baseDisc.if.initProxy # NIL THEN
+	       disc.up := baseDisc;
+	       disc.register := disc.register OR baseDisc.register;
+	    END;
+	    EXIT (* found *)
+	 END;
+	 current := base;
+      END;
+      Disciplines.Add(type, disc);
+      Services.Define(type, service, InstallService);
+   END Register;
+
+   PROCEDURE Exportable(object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN Services.Supported(object, service)
+   END Exportable;
+
+   PROCEDURE Export(s: Streams.Stream; object: Services.Object) : BOOLEAN;
+      VAR
+	 channel: Channel;
+	 export: ExportDiscipline;
+	 proxyDisc: ProxyDiscipline;
+
+      PROCEDURE ExportObject(object: Services.Object;
+			     VAR export: ExportDiscipline);
+	 VAR
+	    address: Address;
+	    hashval: LONGINT;
+	    condition: RequestCondition;
+	    eventType: Events.EventType;
+	    type: Services.Type;
+	    btDisc, typeDisc: TypeDiscipline;
+	    btmode, mode: ExportMode;
+	    params: PersistentObjects.Object;
+	    entry, head, tail: ListOfProxyParameters;
+	    typeName: TypeName;
+	    ok: BOOLEAN;
+	    oljob: ObjectListenerJob;
+      BEGIN
+	 IF Disciplines.Seek(object, exportDiscID, export) THEN
+	    (* already exported *)
+	    IF export.mode = linked THEN
+	       export.address.ports := ports;
+	    END;
+	    RETURN
+	 END;
+
+	 (* determine type, export mode & params *)
+	 Services.GetSupportedBaseType(object, service, type);
+	 Services.GetTypeName(type, typeName);
+	 ok := Services.Install(object, service); ASSERT(ok);
+	 ok := Disciplines.Seek(type, typeDiscID, typeDisc); ASSERT(ok);
+	 mode := linked; (* default value; may be overridden by getParams *)
+	 IF typeDisc.if.getParams = NIL THEN
+	    params := NIL;
+	 ELSE
+	    typeDisc.if.getParams(object, params, mode);
+	 END;
+	 IF typeDisc.up # NIL THEN
+	    CreateListOfProxyParameters(entry);
+	    entry.params := params; entry.next := NIL;
+	    head := entry; tail := entry;
+	    btDisc := typeDisc.up;
+	    WHILE btDisc # NIL DO
+	       IF btDisc.if.getParams = NIL THEN
+		  params := NIL;
+	       ELSE
+		  btDisc.if.getParams(object, params, btmode);
+	       END;
+	       CreateListOfProxyParameters(entry);
+	       entry.params := params;
+	       entry.next := NIL; tail.next := entry; tail := entry;
+	       btDisc := btDisc.up;
+	    END;
+	    params := head;
+	 END;
+
+	 IF mode = linked THEN
+	    CreateAddress(address);
+	    address.ports := ports;
+	    address.objectID := nextObjectID; INC(nextObjectID);
+	    address.typeName := typeName;
+
+	    IF typeDisc.access = serial THEN
+	       NEW(condition);
+	       Conditions.Init(condition, requestDomain);
+	       condition.objectID := address.objectID;
+	       condition.requests := NIL; condition.tail := NIL;
+	       condition.withdrawn := FALSE;
+	       LocalSemaphores.Create(condition.sema);
+	    ELSE
+	       condition := NIL;
+	    END;
+
+	    hashval := address.objectID MOD hashtabsize;
+	 END;
+
+	 NEW(export);
+	 export.id := exportDiscID;
+	 export.object := object;
+	 export.mode := mode;
+	 export.params := params;
+
+	 IF mode = standalone THEN
+	    export.typeName := typeName;
+	 ELSE
+	    export.objectID := address.objectID;
+	    export.access := typeDisc.access;
+	    export.condition := condition;
+	    export.channels := NIL;
+	    export.address := address;
+
+	    LocalSemaphores.Create(export.channelsMutex);
+	    Semaphores.P(exportsMutex);
+	    export.next := exports[hashval];
+	    exports[hashval] := export;
+	    Semaphores.V(exportsMutex);
+	    Disciplines.Add(object, export);
+
+	    IF typeDisc.access = serial THEN
+	       NEW(oljob); oljob.export := export;
+	       Jobs.Submit(oljob, ObjectListener);
+	       CheckForTerminator;
+	       terminateImmediately := FALSE;
+	    END;
+
+	    Resources.TakeInterest(object, eventType);
+	    Events.Handler(eventType, ExportedObjectHandler);
+	 END;
+      END ExportObject;
+
+   BEGIN (* Export *)
+      IF (object = NIL) OR Resources.Terminated(object) THEN
+	 RETURN NetIO.WriteChar(s, nilSY)
+      END;
+      IF Disciplines.Seek(object, proxyDiscID, proxyDisc) THEN
+	 IF GetChannel(s, channel) & (channel = proxyDisc.channel) THEN
+	    RETURN NetIO.WriteChar(s, yourObjectSY) &
+		   NetIO.WriteLongInt(s, proxyDisc.address.objectID)
+	 ELSE
+	    RETURN NetIO.WriteChar(s, longAddressSY) &
+		   PersistentObjects.Write(s, proxyDisc.address) &
+		   PersistentObjects.WriteObjectOrNIL(s, proxyDisc.params)
+	 END;
+      ELSIF Services.Supported(object, service) THEN
+	 ExportObject(object, export);
+	 IF export.mode = standalone THEN
+	    RETURN NetIO.WriteChar(s, standaloneSY) &
+		   NetIO.WriteString(s, export.typeName) &
+		   PersistentObjects.WriteObjectOrNIL(s, export.params)
+	 END;
+	 IF GetChannel(s, channel) THEN
+	    RegisterExportedObject(channel, export);
+	    RETURN NetIO.WriteChar(s, shortAddressSY) &
+		   NetIO.WriteLongInt(s, export.address.objectID) &
+		   NetIO.WriteString(s, export.address.typeName) &
+		   PersistentObjects.WriteObjectOrNIL(s, export.params)
+	 END;
+	 RETURN NetIO.WriteChar(s, longAddressSY) &
+		PersistentObjects.Write(s, export.address) &
+		PersistentObjects.WriteObjectOrNIL(s, export.params)
+      ELSE
+	 Error(s, unexportableObject, NIL); RETURN FALSE
+      END;
+   END Export;
+
+   PROCEDURE Import(s: Streams.Stream;
+		    VAR object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN ImportOrReImport(s, NIL, object)
+   END Import;
+
+   PROCEDURE InstallRecoverHandler(object: Services.Object;
+				   recover: RecoverProc);
+      (* installation of a recovery procedure on the client side
+	 which gets called in case of broken connections;
+	 multiple or invalid calls are silently ignored
+      *)
+      VAR
+	 proxyDisc: ProxyDiscipline;
+   BEGIN
+      IF Disciplines.Seek(object, proxyDiscID, proxyDisc) &
+	    (proxyDisc.recover = NIL) THEN
+	 proxyDisc.recover := recover;
+      END;
+   END InstallRecoverHandler;
+
+   PROCEDURE ReImport(s: Streams.Stream; proxy: Services.Object) : BOOLEAN;
+      VAR
+	 proxyDisc: ProxyDiscipline;
+	 ok: BOOLEAN;
+	 newProxy: Services.Object;
+	 otherProxyDisc: ProxyDiscipline;
+	 exportDisc: ExportDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(proxy, proxyDiscID, proxyDisc);
+      ASSERT(ok & proxyDisc.recovererActive);
+      IF ~ImportOrReImport(s, proxy, newProxy) THEN
+	 RETURN FALSE
+      END;
+      IF newProxy # proxy THEN
+	 IF Disciplines.Seek(newProxy, proxyDiscID, otherProxyDisc) THEN
+	    LinkProxy(proxyDisc, otherProxyDisc);
+	 ELSIF Disciplines.Seek(newProxy, exportDiscID, exportDisc) THEN
+	    LinkProxyToOriginalObject(proxyDisc, exportDisc);
+	 ELSE
+	    (* it's standalone -- this is neither useful nor supported *)
+	    RETURN FALSE
+	 END;
+      END;
+      RETURN TRUE
+   END ReImport;
+
+   PROCEDURE CreateRegistrationCondition(VAR condition: Conditions.Condition;
+				         proxy: Services.Object);
+      (* returns NIL if the object does not need to be registered,
+	 if registration is already finished, or if proxy
+	 is not a proxy object
+      *)
+      VAR
+	 proxyDisc: ProxyDiscipline;
+   BEGIN
+      IF Disciplines.Seek(proxy, proxyDiscID, proxyDisc) &
+	    (proxyDisc.registrationJob # NIL) THEN
+	 Jobs.CreateCondition(condition, proxyDisc.registrationJob);
+      ELSE
+	 condition := NIL;
+      END;
+   END CreateRegistrationCondition;
+
+   PROCEDURE GuardedImport(s: Streams.Stream; guard: Services.Type;
+			   VAR object: Services.Object) : BOOLEAN;
+      (* import an object from `s' and return it, provided
+	 the type of the imported object is an extension of `guard'
+      *)
+      VAR
+	 testObject: Services.Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~Import(s, testObject) THEN RETURN FALSE END;
+      IF testObject = NIL THEN
+	 object := NIL; RETURN TRUE
+      END;
+      Services.GetType(testObject, type);
+      IF Services.IsExtensionOf(type, guard) THEN
+	 object := testObject; RETURN TRUE
+      ELSE
+	 UnexpectedType(s, type, guard);
+	 RETURN FALSE
+      END;
+   END GuardedImport;
+
+   PROCEDURE Withdraw(object: Services.Object);
+      VAR
+	 export: ExportDiscipline;
+	 ptr, prev: ExportDiscipline;
+	 hashval: LONGINT;
+	 channels: ChannelList;
+	 channel: Channel;
+   BEGIN
+      IF ~Disciplines.Seek(object, exportDiscID, export) THEN
+	 (* object isn't exported *)
+	 RETURN
+      END;
+      IF export.condition # NIL THEN
+	 export.condition.withdrawn := TRUE;
+      END;
+      Disciplines.Remove(object, exportDiscID);
+
+      (* remove object from table of exported objects *)
+      Semaphores.P(exportsMutex);
+      hashval := export.objectID MOD hashtabsize;
+      ptr := exports[hashval]; prev := NIL;
+      WHILE (ptr # NIL) & (ptr # export) DO
+	 prev := ptr; ptr := ptr.next;
+      END;
+      IF prev = NIL THEN
+	 exports[hashval] := export.next;
+      ELSE
+	 prev.next := export.next;
+      END;
+      Semaphores.V(exportsMutex);
+
+      NotifyProxyObjectsOfWithdrawnObject(export);
+
+      (* remove object from per-channel export tables;
+	 export.channelsMutex must not be locked here because
+	 this will be done by RemoveExportedObject;
+	 that's safe because bogus channel references will be survived
+      *)
+      channels := export.channels;
+      WHILE channels # NIL DO
+	 channel := channels.channel; channels := channels.next;
+	 RemoveExportedObject(channel, export);
+      END;
+   END Withdraw;
+
+   PROCEDURE AddPort(port: Networks.Socket;
+		     address: Networks.Address;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 newport: PortList;
+   BEGIN
+      StartPortListener(port, errors);
+      NEW(newport); PersistentObjects.Init(newport, foreignPortListType);
+      newport.port := address; newport.socket := port;
+      Semaphores.P(portsSema);
+      newport.next := ports; ports := newport;
+      Semaphores.V(portsSema);
+
+      CheckForTerminator;
+      terminateImmediately := FALSE;
+
+      RETURN TRUE
+   END AddPort;
+
+   PROCEDURE RemoveAllPorts;
+   BEGIN
+      IF termJobIsRunning THEN
+	 Signal(removeType);
+      END;
+   END RemoveAllPorts;
+
+   PROCEDURE CloseAllConnections;
+   BEGIN
+      IF termJobIsRunning THEN
+	 Signal(closeType);
+      END;
+   END CloseAllConnections;
+
+BEGIN
+   InitErrorHandling;
+   InitEventManagement;
+   InitSlots;
+   InitChannelRegister;
+   Init;
+END RemoteObjects.

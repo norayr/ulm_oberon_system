@@ -1,0 +1,230 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixCommand.om,v 1.4 2001/04/30 14:53:19 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixCommand.om,v $
+   Revision 1.4  2001/04/30 14:53:19  borchert
+   bug fix in PrintError (arg.type was printed instead of arg.type.name)
+
+   Revision 1.3  1998/03/24 23:20:23  borchert
+   bug fix: first non-flag was consumed and not added to args
+   some improvements in the help code
+
+   Revision 1.2  1995/04/13  16:20:24  borchert
+   code cleanup
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixCommandLine;
+
+   IMPORT Args, ASCII, BoolArgs, Errors, Events, Iterators,
+      LocalSemaphores, Print, Priorities, RelatedEvents, Semaphores, Streams,
+      Strings, StrListArgs, UnixArguments, Write;
+
+   CONST
+      missingValue = 0;    (* an option was given without associated value *)
+      invalidValue = 1;    (* an invalid value was given *)
+      unknownOption = 2;   (* unknown flag or option name *)
+      unexpectedArgs = 3;  (* no further arguments expected *)
+      helpRequested = 4;   (* explicit request of help information *)
+      errors = 5;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    args: Args.Arguments;
+	    code: SHORTINT; (* missingValue..unexpectedArgs *)
+	    name: ARRAY 80 OF CHAR;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   VAR
+      mutex: Semaphores.Semaphore; (* only one Scan may be running *)
+
+   PROCEDURE Error(args: Args.Arguments;
+		   name: ARRAY OF CHAR; code: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.args := args;
+      event.type := error;
+      event.message := errormsg[code];
+      event.code := code;
+      COPY(name, event.name);
+      RelatedEvents.Raise(args, event);
+   END Error;
+
+   PROCEDURE PrintError(s: Streams.Stream; event: Events.Event);
+      VAR
+	 arg: Args.Argument;
+	 it: Iterators.Iterator;
+	 short: CHAR;
+   BEGIN
+      Write.StringS(s, event.message);
+      IF event IS ErrorEvent THEN
+	 WITH event: ErrorEvent DO
+	    IF event.code # helpRequested THEN
+	       Write.StringS(s, ": ");
+	       Write.CharS(s, ASCII.quote);
+	       Write.StringS(s, event.name);
+	       Write.CharS(s, ASCII.quote);
+	    END;
+	    Args.IterateArgs(event.args, it);
+	    WHILE Iterators.Get(it, arg) DO
+	       IF arg.name # "args" THEN
+		  Write.LnS(s); Write.IndentS(s);
+		  IF arg.type = BoolArgs.type THEN
+		     IF arg.short # 0X THEN
+			Print.S1(s, "(+|-)%c\n", arg.short); Write.IndentS(s);
+		     END;
+		     Print.S3(s, "(+|-)%-20s %-12s %s",
+			arg.name, "", arg.description);
+		  ELSE
+		     IF arg.short # 0X THEN
+			Print.S1(s, "-%c\n", arg.short); Write.IndentS(s);
+		     END;
+		     Print.S3(s, "-%-24s %-12s %s",
+			arg.name, arg.type.name, arg.description);
+		  END;
+	       END;
+	    END;
+	 END;
+      END;
+   END PrintError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[missingValue] := "value of given option is missing";
+      errormsg[invalidValue] := "invalid value given";
+      errormsg[unknownOption] := "unknown option name";
+      errormsg[unexpectedArgs] := "no further arguments expected";
+      errormsg[helpRequested] := "list of available options";
+
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+
+      Errors.AssignWriteProcedure(error, PrintError);
+   END InitErrorHandling;
+
+   PROCEDURE Scan(args: Args.Arguments);
+      VAR
+	 plus: BOOLEAN;
+	 argbuf, stringbuf, name: ARRAY 512 OF CHAR;
+	 short: ARRAY 2 OF CHAR;
+	 index: INTEGER;
+	 arg: Args.Argument;
+	 value: Args.Value;
+	 s: Streams.Stream;
+   BEGIN
+      Semaphores.P(mutex);
+      UnixArguments.Init("");
+      LOOP
+	 IF ~UnixArguments.GetArg(argbuf) THEN EXIT END;
+	 IF argbuf = "--" THEN EXIT END;
+	 IF (argbuf[0] # "-") & (argbuf[0] # "+") THEN
+	    UnixArguments.UngetArg; EXIT
+	 END;
+
+	 plus := argbuf[0] = "+";
+	 IF argbuf[0] = argbuf[1] THEN
+	    index := 2;
+	 ELSE
+	    index := 1;
+	 END;
+	 Strings.PartCopy(name, 0, argbuf, index);
+	 Args.Seek(args, name, arg);
+	 IF arg # NIL THEN
+	    IF arg.type = BoolArgs.type THEN
+	       BoolArgs.Create(value, plus);
+	       Args.SetValue(args, name, value);
+	    ELSIF UnixArguments.OpenArg(s) THEN
+	       IF ~Args.ScanValue(args, name, s) THEN
+		  Error(args, name, invalidValue); EXIT
+	       END;
+	    ELSE
+	       Error(args, name, missingValue); EXIT
+	    END;
+	 ELSE
+	    WHILE (index + 1 < LEN(argbuf)) & (argbuf[index] # 0X) DO
+	       short[0] := argbuf[index]; short[1] := 0X;
+	       Args.Seek(args, short, arg);
+	       IF arg # NIL THEN
+		  IF arg.type = BoolArgs.type THEN
+		     BoolArgs.Create(value, plus);
+		     Args.SetValue(args, short, value);
+		  ELSIF argbuf[index + 1] # 0X THEN
+		     Strings.PartCopy(stringbuf, 0, argbuf, index);
+		     Strings.Open(s, stringbuf);
+		     IF ~Args.ScanValue(args, short, s) THEN
+			Error(args, short, invalidValue); EXIT
+		     END;
+		     Streams.Release(s);
+		  ELSIF UnixArguments.OpenArg(s) THEN
+		     IF ~Args.ScanValue(args, short, s) THEN
+			Error(args, short, invalidValue); EXIT
+		     END;
+		  ELSE
+		     Error(args, short, missingValue); EXIT
+		  END;
+	       ELSE
+		  IF (argbuf = "-?") OR (argbuf = "-help") THEN
+		     Error(args, argbuf, helpRequested); EXIT
+		  END;
+		  IF index <= 2 THEN
+		     Error(args, name, unknownOption);
+		  ELSE
+		     Error(args, short, unknownOption);
+		  END;
+		  EXIT
+	       END;
+	       INC(index);
+	    END;
+	 END;
+      END;
+      IF Args.Exists(args, "args") THEN
+	 Args.Seek(args, "args", arg);
+	 LOOP
+	    IF ~UnixArguments.OpenArg(s) THEN EXIT END;
+	    IF ~Args.ScanValue(args, "args", s) THEN
+	       Error(args, "args", invalidValue); EXIT
+	    END;
+	 END;
+      ELSIF UnixArguments.GetArg(argbuf) THEN
+	 Error(args, argbuf, unexpectedArgs);
+      END;
+      Semaphores.V(mutex);
+   END Scan;
+
+   PROCEDURE Include(scanners: Args.ScannerList; priority: Args.Priority);
+   BEGIN
+      Args.RegisterScanner(scanners, Scan, priority);
+   END Include;
+
+BEGIN
+   InitErrorHandling;
+   LocalSemaphores.Create(mutex);
+   Include(Args.systemScanners, Args.highPriority);
+END UnixCommandLine.

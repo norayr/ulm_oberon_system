@@ -1,0 +1,590 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Args 3 "Last change: 2 June 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Args \- general abstraction for arguments
+.SH SYNOPSIS
+.Pg
+CONST nameLen = 256;
+TYPE Name = ARRAY nameLen OF CHAR; (* the name of an argument *)
+.sp 0.3
+TYPE Value = POINTER TO ValueRec; (* the value of an argument *)
+TYPE ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+.sp 0.3
+TYPE Arguments = POINTER TO ArgumentsRec; (* collection of arguments *)
+TYPE ArgumentsRec = RECORD (PersistentDisciplines.ObjectRec) END;
+.sp 0.7
+TYPE ReadProc = PROCEDURE (s: Streams.Stream; VAR value: Value) : BOOLEAN;
+TYPE PrintProc = PROCEDURE (s: Streams.Stream; value: Value);
+TYPE HelpProc = PROCEDURE (s: Streams.Stream);
+.sp 0.3
+TYPE TypeInterface = POINTER TO TypeInterfaceRec;
+TYPE TypeInterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      read: ReadProc;
+      print: PrintProc;
+      help: HelpProc; (* may be NIL *)
+   END;
+.sp 0.3
+TYPE Type = POINTER TO TypeRec; 
+TYPE TypeRec =
+   RECORD 
+      (Disciplines.ObjectRec)
+      name: Name;
+      moduleName: Name;
+   END;
+.sp 0.7
+TYPE ScanProc = PROCEDURE (args: Arguments);
+TYPE ScannerList = POINTER TO ScannerListRec;
+TYPE ScannerListRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+TYPE Argument = POINTER TO ArgumentRec;
+TYPE ArgumentRec =
+   RECORD
+      (Disciplines.ObjectRec)
+      name: Name;
+      short: CHAR;
+      type: Type;
+      description: Name;
+   END;
+.sp 0.7
+TYPE ChangeNotification = POINTER TO ChangeNotificationRec;
+TYPE ChangeNotificationRec =
+   RECORD
+      (Events.EventRec)
+      args: Arguments;
+      arg: Argument;
+   END;
+.sp 0.7
+CONST lowPriority    = 0;
+CONST middlePriority = 1;
+CONST highPriority   = 2;
+TYPE Priority = INTEGER;
+.sp 0.7
+VAR systemScanners: ScannerList; (* predefined scanners *)
+.sp 0.7
+CONST cannotReadArgs     = 0;    (* failed to read list of arguments *)
+CONST unknownTypeName    = 1;    (* unknown type name encountered *)
+CONST twiceDefined       = 2;    (* an argument name has been defined twice *)
+CONST cannotWriteArgs    = 3;    (* failed to write list of arguments *)
+CONST unknownArgName     = 4;    (* an unknown argument name was given *)
+CONST namedErrors = {unknownTypeName, twiceDefined, unknownArgName};
+CONST errorcodes         = 5;    (* number of error codes *)
+.sp 0.3
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: SHORTINT;
+      name: Name; (* defined if errorcode IN namedErrors *)
+   END;
+.sp 0.3
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType; 
+.sp 0.7
+(* client side *)
+PROCEDURE Create(VAR args: Arguments);
+PROCEDURE CreateCopyOf(VAR args: Arguments; orig: Arguments);
+PROCEDURE Define(args: Arguments; name: ARRAY OF CHAR;
+                 short: CHAR; type: Type; description: ARRAY OF CHAR);
+PROCEDURE Exists(args: Arguments; name: ARRAY OF CHAR) : BOOLEAN;
+PROCEDURE Scan(args: Arguments; scanners: ScannerList);
+.sp 0.3
+PROCEDURE GetValue(args: Arguments; name: ARRAY OF CHAR; VAR value: Value);
+PROCEDURE SetValue(args: Arguments; name: ARRAY OF CHAR; value: Value);
+PROCEDURE GetNotification(args: Arguments; name: ARRAY OF CHAR;
+                          VAR eventType: Events.EventType);
+PROCEDURE Print(args: Arguments; name: ARRAY OF CHAR; s: Streams.Stream);
+PROCEDURE PrintValue(s: Streams.Stream; value: Value);
+PROCEDURE ReadValue(s: Streams.Stream; type: Type; VAR value: Value) : BOOLEAN;
+PROCEDURE IterateArgs(args: Arguments; VAR it: Iterators.Iterator);
+PROCEDURE Seek(args: Arguments; name: ARRAY OF CHAR; VAR arg: Argument);
+.sp 0.3
+PROCEDURE String2Type(string: ARRAY OF CHAR) : Type;
+PROCEDURE TypeHelp(args: Arguments; type: Type; s: Streams.Stream);
+PROCEDURE IterateTypes(VAR it: Iterators.Iterator);
+PROCEDURE AssignPrintProc(s: Streams.Stream; type: Type; print: PrintProc);
+.sp 0.7
+(* scanner providers *)
+PROCEDURE CreateScannerList(VAR list: ScannerList);
+PROCEDURE RegisterScanner(scanners: ScannerList; scan: ScanProc;
+                           priority: Priority);
+PROCEDURE ScanValue(args: Arguments; name: ARRAY OF CHAR;
+                    stream: Streams.Stream) : BOOLEAN;
+.sp 0.7
+(* type providers *)
+PROCEDURE DefineType(type: Type; if: TypeInterface; valtype: Services.Type);
+.Pe
+.SH DESCRIPTION
+.I Args
+offers a general abstraction of arguments which come from
+the environment or the user interface.
+Examples are the traditional UNIX command line
+(see \fIUnixCommandLine(3)\fP), environment variables of the
+shell which are passed through \fIexec(2)\fP,
+configuration files (so called \fIrc\fP files),
+X resources, or the text after the selected command
+in the Z\*urich Oberon System.
+.PP
+Arguments are name/value pairs with some additional components
+which are organized in argument collections.
+Argument values are typed and the types are associated with
+a set of interface procedures which allow to read and print them.
+A scanner knows how to retrieve arguments from a specific
+area (e.g. from the command line).
+\fIScan\fP allows to fire a set of scanners for a given
+argument collection.
+.SS "Defining a Set of Arguments"
+Each module which is interested in retrieving arguments
+from the environment should create a list of arguments
+(or get one from a calling module).
+\fICreate\fP creates an empty argument list which
+may be filled with \fIDefine\fP.
+Note that all newly added arguments have initially an undefined value.
+Each argument has a type which determines how the value
+is represented, how it may be read in, and how it may be printed.
+Some basic types are offered by \fIBoolArgs(3)\fP,
+\fIIntArgs(3)\fP, \fIStringArgs(3)\fP, and \fIStrListArgs(3)\fP.
+.PP
+The following example shows the creation of an argument list
+with three arguments:
+.Pg
+VAR args: Args.Arguments; (* argument list *)
+.sp 0.7
+(* ... *)
+.sp 0.7
+Args.Create(args);
+Args.Define(args, "copies",  "#", IntArgs.type,    "number of copies");
+Args.Define(args, "file",    "f", StringArgs.type, "file to be printed");
+Args.Define(args, "printer", "p", StringArgs.type, "name of the printer");
+.Pe
+The \fIname\fP of an argument must be unique for the given argument list.
+Optionally, a \fIshort\fP name may be given (one character long).
+The last parameter is a short help text which may be later
+retrieved by \fIIterateArgs\fP.
+.PP
+It is possible to give argument default values,
+or to modify them at a later time by \fISetValue\fP.
+In the example above, the number of copies should probably default to 1:
+.Pg
+VAR value: Args.Value;
+.sp 0.7
+(* ... *)
+IntArgs.Create(value, 1); Args.SetValue(args, "copies", value);
+.Pe
+.PP
+.I CreateCopyOf
+allows to create a new argument list as clone of
+the already existing list \fIorig\fP.
+.PP
+\fIScan\fP allows to call all scanners of a scanner list
+for a given argument list.
+All indirectly invoked scanners try to locate settings
+for the arguments in their area and to assign them.
+Usually, \fIsystemScanners\fP should be given as \fIscanners\fP
+to \fIScan\fP.
+\fIUnixCommandLine(3)\fP, for example,
+(which is member of \fIsystemScanners\fP) would
+assign \fIletter\fP to \fIfile\fP and \fIhp\fP to \fIprinter\fP
+for following command line:
+.Pg
+\fIcmdname\fP -p hp -file letter
+.Pe
+.PP
+After calling \fIScan\fP, it is useful to retrieve values by \fIGetValue\fP.
+Note that \fIGetValue\fP returns \fBNIL\fP for undefined values.
+In the example above, the file which is to be printed may be
+retrieved by:
+.Pg
+VAR file: StringArgs.Value; filename: ARRAY 80 OF CHAR;
+.sp 0.7
+(* ... *)
+.sp 0.7
+Args.GetValue(args, "file", file);
+IF file = NIL THEN
+   (* a file name was not given anywhere *)
+ELSE
+   COPY(file.string, filename);
+END;
+.Pe
+.SS "Offering help"
+.I Args
+supports the generation of help texts.
+Usually, help texts are printed either on request
+(by a special help option) or in case of errors
+(see diagnostics section below).
+Given a set of arguments, a comprehensive help text for them
+may be generated by iterating through them:
+.Pg
+PROCEDURE PrintHelpText(s: Streams.Stream; args: Args.Arguments);
+   VAR it: Iterators.Iterator; arg: Args.Argument;
+BEGIN
+   Args.IterateArgs(args, it);
+   WHILE Iterators.Yield(it, arg) DO
+      Print.S4(s, "%1s %-20s %-8s  %s\n",
+         arg.short, arg.name, arg.type.name, arg.description);
+   END;
+END PrintHelpText;
+.Pe
+.PP
+\fIPrint\fP and
+\fIPrintValue\fP allow to print arbitrary values to the given stream.
+Following example shows how the values of all defined arguments
+may be printed:
+.Pg
+PROCEDURE PrintValues(s: Streams.Stream; args: Args.Arguments);
+   VAR it: Iterators.Iterator; arg: Args.Argument;
+BEGIN
+   Args.IterateArgs(args, it);
+   WHILE Iterators.Yield(it, arg) DO
+      Print.S2(s, "%-20s: %-8s = ", arg.name, arg.type.name);
+      Args.Print(args, arg.name, s);
+      Print.S(s, "\en");
+   END;
+END PrintValues;
+.Pe
+Note that it is possible to override for a given stream
+the original type-specific printing procedure for a specific type by
+\fIAssignPrintProc\fP.
+.PP
+Informations about the supported argument types may be
+retrieved by \fITypeHelp\fP,
+and \fIIterateTypes\fP allows to iterate through all supported types.
+\fIString2Type\fP allows to convert a (probably user-supplied)
+type name into a type.
+\fBNIL\fP is returned if the type name is not known.
+.SS "Creating a Scanner"
+Specific scanners scan through their area and look for
+possible argument names (either the long or short form).
+They have only to provide one interface procedure to
+\fIRegisterScanner\fP.
+The priority determines the calling order of scanners of
+a scanner list.
+Scanners with high priority are called last,
+that means that they are able to override value settings of
+scanners with lower priority.
+.PP
+Scanners may check the existence of argument names by \fIExist\fP.
+It depends usually on the scanner whether missing argument
+names are considered as an error (of the invoker / user) or not.
+\fIUnixCommandLine(3)\fP, for example, generates error events
+for each option named on the command line which is not part
+of the argument list.
+Other scanners, however, are less restrictive.
+.PP
+If an argument has been found, it may be read in by
+\fIScanValue\fP which, in turn, calls the type-specific read
+procedure of the argument.
+Note that these read procedures are expected to interpret
+field separators and line terminators (see \fIStreamDisciplines(3)\fP)
+as delimiters.
+Alternatively, \fISeek\fP may be called to access the argument directly.
+.PP
+Following example shows a simple implementation of a scanner
+which takes arguments out of a \fIrc\fP file whose lines
+have two fields which are separated by a colon.
+The first field is the name of the parameter and the second the
+associated value:
+.Pg
+PROCEDURE ScanFile(args: Args.Arguments);
+   VAR
+      s: Streams.Stream;
+      fieldseps: Sets.CharSet;
+      name: Args.Name;
+BEGIN
+   (* open the rc file and let s point to it *)
+   RelatedEvents.Forward(s, args);
+   Sets.InitSet(fieldseps); Sets.InclChar(fieldseps, ":");
+   StreamDisciplines.SetFieldSepSet(s, fieldseps);
+   WHILE Read.FieldS(s, name) DO
+      IF ~Args.Exists(args, name) OR ~Args.ScanValue(args, name, s) THEN
+         (* raise an appropriate error event and relate it to args *)
+      END;
+      Read.LnS(s);
+   END;
+   Streams.Release(s);
+END ScanFile;
+.Pe
+.SS "Offering an Argument Type"
+Argument types are to be created and initialized
+(components \fIname\fP and \fImoduleName\fP)
+by the type provider and then passed to \fIDefineType\fP.
+The parameter \fIvaltype\fP is the type of \fIServices.Type\fP
+for the associated extension of \fIArgs.Value\fP which has
+been returned by \fIPersistentObjects.RegisterType\fP.
+This type is used as guard to assure that values which are
+declared to be of type \fItype\fP by \fIDefine\fP are extensions
+of \fIvaltype\fP.
+The interface is expected to meet following specification:
+.Is
+.If read "\fIs\fP: \fIStreams.Stream\fP; \fBVAR\fP \fIvalue\fP: \fIValue\fP" "\fBBOOLEAN\fP"
+read a value from the given stream.
+Exactly one input field in the sense of \fIStreamDisciplines(3)\fP
+and \fIRead.FieldS\fP is to be consumed from \fIs\fP.
+That means that line terminators may not be skipped over
+and field separators work as delimiters but are to be consumed.
+This field must be read in completely even if
+the input does not syntactically conform to the type.
+But \fIread\fP has to terminate immediately on
+end of file or in case of errors returned from \fIStreams(3)\fP.
+\fBTRUE\fP is to be returned if a value has been read successfully.
+.br
+Note that \fIread\fP is free to update \fIvalue\fP instead
+of creating it if \fIvalue\fP is non-\fBNIL\fP.
+This could be of interest if \fIvalue\fP represents a list or set
+where subsequent \fIread\fP operations add new elements.
+.If print "\fIs\fP: \fIStreams.Stream\fP; \fIvalue\fP: \fIValue\fP"
+print the given value
+(which is guaranteed to be non-\fBNIL\fP and
+an extension of \fIvaltype\fP)
+in ``readable'' form on the given stream.
+If multiple lines are needed, \fIWrite.IndentS\fP is to be called
+on the beginning of each new line.
+Note that the last line must not be terminated.
+.If help "\fIs\fP: \fIStreams.Stream\fP"
+print some useful help information about the type to \fIs\fP.
+Note that multiple lines should be avoided here.
+If they are nevertheless necessary, the conventions of \fIprint\fP
+should be used.
+This interface procedure is optional and may be set to \fBNIL\fP.
+.Ef
+.PP
+Additionally, type providers should export a simple constructor
+to allow default values to be set.
+.PP
+\fIReadValue\fP allows to create a value of the given type
+and to scan it from \fIs\fP.
+This may be useful for type constructors whose \fIread\fP
+interface procedures want to read values of their subtypes.
+.SS "Internal Links on base of \fIIndirectDisciplines(3)\fP"
+.I Args
+sets up links of \fIIndirectDisciplines(3)\fP from each
+argument to its argument list, and from each stream which is
+passed to the interface procedures \fIread\fP and \fIprint\fP
+to the argument which is to be read or printed.
+Thus, stream disciplines (see \fIStreamDisciplines(3)\fP)
+or other disciplines (see, for example, \fIBoolDisciplines(3)\fP
+and \fIBoolArgs(3)\fP) may be given for a specific argument or
+for an argument list.
+The links from streams to individual arguments are removed
+when the associated operation finishes.
+.SH DIAGNOSTICS
+Some errors result in events which are related to the \fIargs\fP parameter.
+Following error codes are implemented:
+.Tb unknownTypeName
+.Tp unknownArgName
+An unknown argument name was given to \fIScanValue\fP,
+\fIGetValue\fP, \fISetValue\fP, \fIGetNotification\fP, or
+\fIPrintValue\fP.
+.Tp twiceDefined
+An argument name was given to \fIDefine\fP which has been already
+given earlier for the same argument list.
+.Tp cannotReadArgs
+\fIArgs\fP was not able to read an argument list
+(via \fIPersistentObjects.Read\fP).
+.Tp cannotWriteArgs
+Is returned on write failures during \fIPersistentObjects.Write\fP
+for argument lists.
+.Tp unknownTypeName
+An unknown argument value type name was encountered during
+\fIPersistentObjects.Read\fP for an argument list.
+.Te
+.PP
+Some errors are caught by assertions:
+.IP \(bu
+\fIDefine\fP checks the validity of its parameters:
+\fIname\fP must be non-empty,
+\fItype\fP must be non-\fBNIL\fP and initialized (by the providing
+module).
+.IP \(bu
+\fIScan\fP and \fIScanValue\fP expect \fIargs\fP to be non-\fBNIL\fP.
+.IP \(bu
+\fIDefineType\fP requires that
+that \fIname\fP is unique and that
+\fIif\fP, \fIif.read\fP and \fIif.print\fP are non-\fBNIL\fP.
+Additionally, \fIvaltype\fP is checked to be an extension of
+\fIArgs.Value\fP.
+.IP \(bu
+\fIPrintValue\fP requires the value parameter to be an extension
+of a type which has been given to \fIDefineType\fP.
+.IP \(bu
+A non-\fBNIL\fP \fIscan\fP interface procedure must be given
+to \fIRegisterScanner\fP.
+.IP \(bu
+\fISetValue\fP checks that the given value is either \fBNIL\fP
+or an extension of the type-specific extension of \fIArgs.Value\fP.
+.IP \(bu
+A similar test is performed for the values returned by
+the \fIread\fP interface procedures.
+.SH "SEE ALSO"
+.Tb PersistentObjects(3)
+.Tp BoolArgs(3)
+arguments of type \fBBOOLEAN\fP
+.Tp IntArgs(3)
+arguments of type \fBINTEGER\fP
+.Tp PersistentObjects(3)
+input and output of persistent objects
+.Tp StreamDisciplines(3)
+parameterized definition of an input field
+.Tp StringArgs(3)
+arguments of type \fBARRAY OF CHAR\fP
+.Tp StrListArgs(3)
+arguments of type \fBARRAY OF ARRAY OF CHAR\fP
+.Tp UnixCommandLine(3)
+scanner for the UNIX command line
+.Te
+.SH AUTHORS
+The original version of this module was written by Jan Oliver Stibane,
+all revisions and this manual page are due to Andreas Franz Borchert.
+.\" ---------------------------------------------------------------------------
+.\" $Id: Args.3,v 1.3 2004/06/02 15:49:32 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Args.3,v $
+.\" Revision 1.3  2004/06/02 15:49:32  borchert
+.\" CreateCopyOf added
+.\"
+.\" Revision 1.2  1996/09/16 16:16:14  borchert
+.\" - Seek added
+.\" - note added for if procedure read
+.\"
+.\" Revision 1.1  1995/04/13  08:39:25  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

@@ -1,0 +1,186 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XObjects.om,v 1.1 2005/03/21 14:49:04 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XObjects.om,v $
+   Revision 1.1  2005/03/21 14:49:04  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XObjects;
+
+   (* common base type for windows, pixmaps, color maps etc that
+      have a 32-bit ID
+   *)
+
+   IMPORT Disciplines, Events, Resources, Types, XDisplays;
+
+   TYPE
+      ResourceID = XDisplays.ResourceID;
+      Object = POINTER TO ObjectRec;
+      Array = POINTER TO ArrayRec;
+      ObjectRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    id: ResourceID;
+	    next: Object; (* link to next object in array *)
+	    array: Array;
+	 END;
+
+   CONST
+      hashtablen = 512;
+   TYPE
+      FreeID = POINTER TO FreeIDRec;
+      FreeIDRec =
+	 RECORD
+	    id: ResourceID;
+	    next: FreeID;
+	 END;
+      ArrayRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    resourceIDbase: ResourceID;
+	    resourceIDmask: ResourceID;
+	    nextID: ResourceID;
+	    freeIDs: FreeID;
+	    bucket: ARRAY hashtablen OF Object;
+	 END;
+
+   PROCEDURE ^Dispose(object: Object);
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    Dispose(event.resource(Object));
+	 END;
+      END;
+   END TerminationHandler;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Init(object: Object; id: Types.Int32);
+   BEGIN
+      ASSERT(id > 0);
+      object.id := id;
+      object.next := NIL;
+      object.array := NIL;
+   END Init;
+
+   PROCEDURE GetID(object: Object) : Types.Int32;
+   BEGIN
+      ASSERT(object.id # 0);
+      RETURN object.id
+   END GetID;
+
+   PROCEDURE CreateArray(VAR array: Array;
+                         resourceIDbase: ResourceID;
+			 resourceIDmask: ResourceID);
+      VAR
+	 index: INTEGER;
+	 a: Array;
+   BEGIN
+      NEW(a);
+      index := 0;
+      WHILE index < hashtablen DO
+	 a.bucket[index] := NIL;
+	 INC(index);
+      END;
+      a.resourceIDbase := resourceIDbase;
+      a.resourceIDmask := resourceIDmask;
+      a.nextID := 0;
+      a.freeIDs := NIL;
+      array := a;
+   END CreateArray;
+
+   PROCEDURE AllocID(array: Array; VAR resourceID: ResourceID) : BOOLEAN;
+   BEGIN
+      IF array.freeIDs # NIL THEN
+	 resourceID := array.freeIDs.id;
+	 array.freeIDs := array.freeIDs.next;
+	 RETURN TRUE
+      END;
+      IF array.nextID >= array.resourceIDmask THEN
+	 RETURN FALSE
+      END;
+      resourceID := array.resourceIDbase + array.nextID;
+      INC(array.nextID);
+      RETURN TRUE
+   END AllocID;
+
+   PROCEDURE Add(array: Array; object: Object);
+      VAR
+	 index: LONGINT;
+	 eventType: Events.EventType;
+   BEGIN
+      ASSERT((object.array = NIL) & (object.id # 0));
+      index := object.id MOD hashtablen;
+      object.array := array;
+      object.next := array.bucket[index];
+      array.bucket[index] := object;
+      Resources.TakeInterest(object, eventType);
+      Events.Handler(eventType, TerminationHandler);
+   END Add;
+
+   PROCEDURE Dispose(object: Object);
+      VAR
+	 prev, entry: Object;
+	 index: LONGINT;
+	 freeID: FreeID;
+   BEGIN
+      IF object.array # NIL THEN
+	 index := object.id MOD hashtablen;
+	 prev := NIL; entry := object.array.bucket[index];
+	 WHILE entry # object DO
+	    prev := entry; entry := entry.next;
+	 END;
+	 IF prev = NIL THEN
+	    object.array.bucket[index] := object.next;
+	 ELSE
+	    prev.next := object.next;
+	 END;
+	 NEW(freeID); freeID.id := object.id;
+	 freeID.next := object.array.freeIDs;
+	 object.array.freeIDs := freeID;
+	 object.array := NIL;
+	 Resources.Notify(object, Resources.terminated);
+      END;
+   END Dispose;
+
+   PROCEDURE Lookup(array: Array; id: Types.Int32;
+                    VAR object: Object) : BOOLEAN;
+      VAR
+	 index: LONGINT;
+	 entry: Object;
+   BEGIN
+      index := id MOD hashtablen;
+      entry := array.bucket[index];
+      WHILE entry # NIL DO
+	 IF entry.id = id THEN
+	    object := entry; RETURN TRUE
+	 END;
+	 entry := entry.next;
+      END;
+      RETURN FALSE
+   END Lookup;
+
+END XObjects.

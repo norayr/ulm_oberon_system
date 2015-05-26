@@ -1,0 +1,238 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv4Address.om,v 1.4 2006/08/11 15:06:48 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv4Address.om,v $
+   Revision 1.4  2006/08/11 15:06:48  borchert
+   port conversion fixed for port values >= 8000H
+
+   Revision 1.3  2005/04/28 08:42:25  borchert
+   accept ``0'' as representation of INADDR_ANY
+
+   Revision 1.2  2004/03/10 06:46:34  borchert
+   bug fix: variable was left uninitialized in ReadText
+
+   Revision 1.1  2004/03/05 18:43:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IPv4Addresses;
+
+   IMPORT Objects, Sets, StreamDisciplines, Streams, Strings,
+      SysConversions, SysSockets, Types, Write;
+
+   TYPE
+      PortNumber = Types.Int16;    (* 2-byte-integer *)
+      Address = Types.Int32;       (* 4-byte-integer *)
+      SocketAddress =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* in network order *)
+	    host: Address;
+	    portnum: PortNumber;
+	 END;
+
+   CONST
+      addrlen = 16; (* size of struct sockaddr in <sys/socket.h> *)
+   TYPE
+      SysAddress = ARRAY addrlen OF BYTE;
+   CONST
+      addressFmt = "iS/iS/ii/2*ii";
+   TYPE
+      FullAddress =
+	 RECORD
+	    family: INTEGER;
+	    port: INTEGER;
+	    addr: LONGINT;
+	    zero: ARRAY 2 OF INTEGER;
+	 END;
+   VAR
+      compiledAddressFmt: SysConversions.Format;
+
+   PROCEDURE GetPort(address: SocketAddress) : INTEGER;
+      VAR
+	 val: INTEGER;
+   BEGIN
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    val := address.portnum MOD 10000H
+      | Types.littleEndian:
+	    val := address.portnum DIV 256 MOD 256 +
+		   address.portnum MOD 256 * 256;
+      END;
+      (* val is to be considered unsigned *)
+      IF val < 0 THEN
+	 val := 10000H + val;
+	 ASSERT(val > 0);
+      END;
+      RETURN val
+   END GetPort;
+
+   PROCEDURE SetPort(VAR address: SocketAddress; portnum: INTEGER);
+   BEGIN
+      (* convert a 16 bit unsigned value into a 16 bit signed value *)
+      ASSERT((portnum >= 0) & (portnum < 10000H));
+      IF portnum >= 8000H THEN
+	 portnum := portnum - 10000H;
+      END;
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    address.portnum := Types.ToInt16(portnum);
+      | Types.littleEndian:
+	    address.portnum :=
+	       Types.ToInt16(portnum DIV 256 MOD 256 + portnum MOD 256 * 256);
+      END;
+   END SetPort;
+
+   PROCEDURE ConvertToSys(address: SocketAddress; VAR sysaddr: SysAddress);
+      VAR
+	 fulladdress: FullAddress;
+   BEGIN
+      fulladdress.family := SysSockets.afINET;
+      fulladdress.port := address.portnum;
+      fulladdress.addr := address.host;
+      fulladdress.zero[0] := 0; fulladdress.zero[1] := 0;
+      SysConversions.ByFmtToC(fulladdress, sysaddr, compiledAddressFmt);
+   END ConvertToSys;
+
+   PROCEDURE ConvertFromSys(sysaddr: SysAddress; VAR address: SocketAddress);
+      VAR
+	 fulladdress: FullAddress;
+   BEGIN
+      SysConversions.ByFmtFromC(sysaddr, fulladdress, compiledAddressFmt);
+      address.portnum := Types.ToInt16(fulladdress.port);
+      address.host := fulladdress.addr;
+   END ConvertFromSys;
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR ipaddr: Address) : BOOLEAN;
+      VAR
+	 ipaddrValue: INTEGER;
+	 whitespace: Sets.CharSet;
+	 ch: CHAR;
+	 pos: Streams.Count;
+	 posKnown: BOOLEAN;
+	 charsRead: INTEGER;
+	 ok: BOOLEAN;
+	 dots: INTEGER;
+	 intval: INTEGER;
+	 digits: INTEGER;
+	 eof: BOOLEAN;
+
+      PROCEDURE AddByteToIPAddr;
+      BEGIN
+	 CASE Types.byteorder OF
+	 | Types.bigEndian:
+	       INC(ipaddrValue, ASH(intval, 8 * (3 - dots)));
+	 | Types.littleEndian:
+	       INC(ipaddrValue, ASH(intval, 8 * dots));
+	 END;
+      END AddByteToIPAddr;
+
+      PROCEDURE RestorePos;
+      BEGIN
+	 IF posKnown THEN
+	    Streams.SetPos(s, pos);
+	 ELSE
+	    WHILE (charsRead > 0) & Streams.Back(s) DO
+	    END;
+	 END;
+      END RestorePos;
+
+   BEGIN (* ReadText *)
+      ipaddrValue := 0;
+      StreamDisciplines.GetWhiteSpace(s, whitespace);
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	 IF ~Sets.CharIn(whitespace, ch) THEN EXIT END;
+      END;
+      IF (ch < "0") OR (ch > "9") THEN
+	 ok := Streams.Back(s); RETURN FALSE
+      END;
+      charsRead := 1; eof := FALSE;
+      posKnown := (Streams.seek IN Streams.Capabilities(s)) &
+                  Streams.Tell(s, pos);
+      intval := 0; dots := 0; digits := 0;
+      LOOP
+	 IF (ch = ".") & (dots < 3) & (digits > 0) THEN
+	    AddByteToIPAddr;
+	    INC(dots); digits := 0; intval := 0;
+	 ELSIF (ch >= "0") & (ch <= "9") THEN
+	    INC(digits);
+	    intval := intval * 10 + ORD(ch) - ORD("0");
+	    IF intval > 255 THEN RestorePos; RETURN FALSE END;
+	 ELSE
+	    EXIT
+	 END;
+	 IF ~Streams.ReadByte(s, ch) THEN eof := TRUE; EXIT END;
+	 INC(charsRead);
+      END;
+      IF (dots = 3) & (digits > 0) THEN
+	 AddByteToIPAddr;
+	 IF ~eof THEN ok := Streams.Back(s) END;
+	 ipaddr := ipaddrValue;
+	 RETURN TRUE
+      ELSIF (dots = 0) & (digits > 0) & (intval = 0) THEN
+	 (* accept ``0'' as representation of INADDR_ANY *)
+	 ipaddr := 0;
+	 RETURN TRUE
+      ELSE
+	 RestorePos;
+	 RETURN FALSE
+      END;
+   END ReadText;
+
+   PROCEDURE WriteText(s: Streams.Stream; ipaddr: Address);
+   BEGIN
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    Write.IntS(s, ipaddr DIV ASH(1, 24) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr DIV ASH(1, 16) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr DIV ASH(1, 8) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr MOD 256, 1);
+      | Types.littleEndian:
+	    Write.IntS(s, ipaddr MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr DIV ASH(1, 8) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr DIV ASH(1, 16) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, ipaddr DIV ASH(1, 24) MOD 256, 1);
+      END;
+   END WriteText;
+
+   PROCEDURE CreateAddress(VAR ipaddr: Address; dotteddec: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      Strings.Open(s, dotteddec);
+      ok := ReadText(s, ipaddr);
+      Streams.Release(s);
+      ASSERT(ok);
+   END CreateAddress;
+
+BEGIN
+   SysConversions.Compile(compiledAddressFmt, addressFmt);
+END IPv4Addresses.

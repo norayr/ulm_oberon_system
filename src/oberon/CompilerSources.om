@@ -1,0 +1,251 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerSou.om,v 1.1 1998/03/18 10:17:08 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerSou.om,v $
+   Revision 1.1  1998/03/18 10:17:08  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerSources;
+
+   IMPORT Args, ConstStrings, NetIO, Objects, PersistentDisciplines,
+      PersistentObjects, RemoteObjects, Services, Streams, Times;
+
+   CONST
+      definition = 0;  (* if definition only *)
+      module = 1;      (* implementation only, may update if definition *)
+      defmod = 2;      (* module that generates both, if and code *)
+   TYPE
+      SourceKind = SHORTINT; (* definition .. defmod *)
+
+   TYPE
+      Header = POINTER TO HeaderRec;
+      HeaderRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    modname: ConstStrings.String;
+	    kind: SourceKind;
+	    date: Times.Time; (* date of last modification *)
+	    srcid: ConstStrings.String; (* sth unique *)
+	    args: Args.Arguments; (* for compilation *)
+	 END;
+   VAR
+      headerType: Services.Type;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      Source = POINTER TO SourceRec;
+      SourceRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    header: Header;
+	    (* private components *)
+	    if: Interface;
+	 END;
+   VAR
+      sourceType: Services.Type;
+
+   TYPE
+      OpenProc = PROCEDURE (source: Source; VAR s: Streams.Stream) : BOOLEAN;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    open: OpenProc;
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (PersistentDisciplines.DisciplineRec)
+	    src: Source;
+	 END;
+   VAR
+      sdID: PersistentDisciplines.Identifier;
+      sdtype: Services.Type;
+      timeType: Services.Type; (* that of Times.Time *)
+      argsType: Services.Type; (* that of Args.Arguments *)
+
+   (* === PersistentObject if procedures for Header ======================== *)
+
+   PROCEDURE InternalCreateHeader(VAR object: PersistentObjects.Object);
+      VAR
+	 header: Header;
+   BEGIN
+      NEW(header); PersistentObjects.Init(header, headerType);
+      object := header;
+   END InternalCreateHeader;
+
+   PROCEDURE ReadHeader(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Header DO
+	 RETURN NetIO.ReadConstString(s, object.modname) &
+	        NetIO.ReadShortInt(s, object.kind) &
+		PersistentObjects.GuardedRead(s, timeType, object.date) &
+		NetIO.ReadConstString(s, object.srcid) &
+		PersistentObjects.GuardedRead(s, argsType, object.args)
+      END;
+   END ReadHeader;
+
+   PROCEDURE WriteHeader(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Header DO
+	 RETURN NetIO.WriteConstString(s, object.modname) &
+	        NetIO.WriteShortInt(s, object.kind) &
+		PersistentObjects.Write(s, object.date) &
+		NetIO.WriteConstString(s, object.srcid) &
+		PersistentObjects.Write(s, object.args)
+      END;
+   END WriteHeader;
+
+   (* === PersistentObject if procedures for Source ======================== *)
+
+   PROCEDURE ReadSource(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Source DO
+	 RETURN PersistentObjects.GuardedRead(s, headerType, object.header)
+      END;
+   END ReadSource;
+
+   PROCEDURE WriteSource(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Source DO
+	 RETURN PersistentObjects.Write(s, object.header)
+      END;
+   END WriteSource;
+
+   (* === PersistentObject if procedures for StreamDiscipline ============== *)
+
+   PROCEDURE CreateStreamDiscipline(VAR object: PersistentObjects.Object);
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      NEW(sd); PersistentObjects.Init(sd, sdtype); sd.id := sdID;
+      object := sd;
+   END CreateStreamDiscipline;
+
+   PROCEDURE ReadStreamDiscipline(s: Streams.Stream;
+                                  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: StreamDiscipline DO
+	 RETURN RemoteObjects.Import(s, object.src)
+      END;
+   END ReadStreamDiscipline;
+
+   PROCEDURE WriteStreamDiscipline(s: Streams.Stream;
+                                   object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: StreamDiscipline DO
+	 RETURN RemoteObjects.Export(s, object.src)
+      END;
+   END WriteStreamDiscipline;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 persif: PersistentObjects.Interface;
+	 sample: StreamDiscipline;
+   BEGIN
+      NEW(persif);
+      persif.create := CreateStreamDiscipline;
+      persif.read := ReadStreamDiscipline;
+      persif.write := WriteStreamDiscipline;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(sdtype,
+	 "CompilerSources.StreamDiscipline", "PersistentDisciplines.Discipline",
+	 persif);
+      CreateStreamDiscipline(sample);
+      sdID := PersistentDisciplines.Unique(sample);
+
+      NEW(persif);
+      persif.create := InternalCreateHeader; persif.createAndRead := NIL;
+      persif.read := ReadHeader; persif.write := WriteHeader;
+      PersistentObjects.RegisterType(headerType,
+         "CompilerSources.Header", "PersistentDisciplines.Object", persif);
+
+      NEW(persif);
+      persif.read := ReadSource; persif.write := WriteSource;
+      persif.create := NIL; persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(sourceType,
+	 "CompilerSources.Source", "PersistentDisciplines.Object", persif);
+
+      Services.SeekType("Times.Time", timeType); ASSERT(timeType # NIL);
+      Services.SeekType("Args.Arguments", argsType); ASSERT(argsType # NIL);
+   END InitModule;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Init(source: Source; if: Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.open # NIL));
+      source.if := if;
+   END Init;
+
+   PROCEDURE CreateHeader(VAR header: Header;
+                          modname: ConstStrings.String;
+			  kind: SourceKind;
+			  date: Times.Time;
+			  srcid: ConstStrings.String;
+			  args: Args.Arguments);
+   BEGIN
+      InternalCreateHeader(header);
+      header.modname := modname;
+      header.kind := kind;
+      header.date := date;
+      header.srcid := srcid;
+      header.args := args;
+   END CreateHeader;
+
+   PROCEDURE Open(source: Source; VAR s: Streams.Stream) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF source.if.open(source, s) THEN
+	 CreateStreamDiscipline(sd); sd.src := source;
+	 PersistentDisciplines.Add(s, sd);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Open;
+
+   PROCEDURE GetSource(s: Streams.Stream; VAR source: Source);
+      VAR
+	 sd: PersistentDisciplines.Discipline;
+   BEGIN
+      IF PersistentDisciplines.Seek(s, sdID, sd) &
+	    (sd IS StreamDiscipline) THEN
+	 source := sd(StreamDiscipline).src;
+      ELSE
+	 source := NIL;
+      END;
+   END GetSource;
+
+BEGIN
+   InitModule;
+END CompilerSources.

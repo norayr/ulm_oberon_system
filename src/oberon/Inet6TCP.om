@@ -1,0 +1,245 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Inet6TCP.om,v 1.1 2006/08/09 15:51:57 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Inet6TCP.om,v $
+   Revision 1.1  2006/08/09 15:51:57  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Inet6TCP;
+
+   IMPORT Conditions, IPv6Addresses, IPv6TCPSockets, NetIO, Networks,
+      PersistentObjects, RelatedEvents, Services, Streams, SysConversions,
+      SysSockets, UnixHost, UnixSockets;
+
+   TYPE
+      Socket = UnixSockets.Socket;
+      Address = IPv6TCPSockets.SocketAddress;
+
+   TYPE
+      NetworkAddress = POINTER TO NetworkAddressRec;
+      NetworkAddressRec =
+	 RECORD
+	    (Networks.AddressRec)
+	    ipaddr: Address;
+	 END;
+   VAR
+      ipv6tcp: Networks.Network;
+      addressType: Services.Type;
+      ourHost: IPv6TCPSockets.Address;
+
+   PROCEDURE CreateAddress(VAR address: Networks.Address; ipaddr: Address);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := ipv6tcp;
+      addr.ipaddr := ipaddr;
+      PersistentObjects.Init(addr, addressType);
+      address := addr;
+   END CreateAddress;
+
+   PROCEDURE ConvertAddress(address: Networks.Address; VAR ipaddr: Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 ipaddr := address.ipaddr;
+      END;
+   END ConvertAddress;
+
+   PROCEDURE SetAddress(address: Networks.Address; ipaddr: Address);
+   BEGIN
+      address(NetworkAddress).ipaddr := ipaddr;
+   END SetAddress;
+
+   (* ==== interface to Networks ====================================== *)
+
+   PROCEDURE NetOpen(VAR s: Streams.Stream; address: Networks.Address;
+		     bufmode: Streams.BufMode;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 RETURN IPv6TCPSockets.Open(s, address.ipaddr, bufmode, errors)
+      END;
+   END NetOpen;
+
+   PROCEDURE NetCreateOpenCondition(VAR condition: Conditions.Condition;
+				    address: Networks.Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 IPv6TCPSockets.CreateOpenCondition(condition, address.ipaddr);
+      END;
+   END NetCreateOpenCondition;
+
+   PROCEDURE NetTestAndOpen(VAR s: Streams.Stream;
+			    condition: Conditions.Condition;
+			    bufmode: Streams.BufMode;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN IPv6TCPSockets.TestAndOpen(s, condition, bufmode, errors)
+   END NetTestAndOpen;
+
+   PROCEDURE NetCreateSomeSocket(VAR socket: Networks.Socket;
+				 VAR address: Networks.Address;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ipsocket: Socket;
+	 ipaddr: Address;
+   BEGIN
+      IF IPv6TCPSockets.CreateSomeSocket(ipsocket, ipaddr, errors) THEN
+	 socket := ipsocket;
+	 ipaddr.host := ourHost;
+	 CreateAddress(address, ipaddr);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END NetCreateSomeSocket;
+
+   PROCEDURE NetListen(VAR socket: Networks.Socket;
+		       address: Networks.Address;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ipsocket: Socket;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 IF IPv6TCPSockets.ListenOn(ipsocket, address.ipaddr, errors) THEN
+	    socket := ipsocket;
+	    RETURN TRUE
+	 ELSE
+	    socket := NIL;
+	    RETURN FALSE
+	 END;
+      END;
+   END NetListen;
+
+   PROCEDURE NetRelease(socket: Networks.Socket);
+   BEGIN
+      IPv6TCPSockets.Release(socket(Socket));
+   END NetRelease;
+
+   PROCEDURE NetAccept(socket: Networks.Socket; VAR s: Streams.Stream;
+		       bufmode: Streams.BufMode) : BOOLEAN;
+      VAR
+	 peer: Address;
+   BEGIN
+      WITH socket: Socket DO
+	 RETURN IPv6TCPSockets.Accept(socket, s, bufmode, peer)
+      END;
+   END NetAccept;
+
+   PROCEDURE NetCreateAcceptCondition(VAR condition: Conditions.Condition;
+				socket: Networks.Socket);
+   BEGIN
+      WITH socket: Socket DO
+	 IPv6TCPSockets.CreateAcceptCondition(condition, socket);
+      END;
+   END NetCreateAcceptCondition;
+
+   PROCEDURE CreateNetAddress(VAR object: PersistentObjects.Object);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := ipv6tcp;
+      PersistentObjects.Init(addr, addressType);
+      object := addr;
+   END CreateNetAddress;
+
+   PROCEDURE WriteNetAddress(s: Streams.Stream;
+			     object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 portnum: INTEGER;
+	 host: IPv6Addresses.Address;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 portnum := IPv6Addresses.GetPort(object.ipaddr);
+	 (* do not write a 0-valued IPv6 address into a persistent
+	    stream as this would be perfectly useless for other hosts
+	 *)
+	 host := object.ipaddr.host;
+	 IF IPv6Addresses.IsAnyAddr(host) THEN
+	    host := ourHost;
+	 END;
+	 (* do not pass the IPv6 address through NetIO
+	    as its representation is already architecture-independent
+	 *)
+	 RETURN Streams.Write(s, host) & NetIO.WriteInteger(s, portnum)
+      END;
+   END WriteNetAddress;
+
+   PROCEDURE ReadNetAddress(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 portnum: INTEGER;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 (* do not read the IPv6 address through NetIO
+	    as its representation is already architecture-independent
+	 *)
+	 IF Streams.Read(s, object.ipaddr.host) &
+	       NetIO.ReadInteger(s, portnum) &
+	       (portnum >= 0) & (portnum < 10000H) THEN
+	    IPv6Addresses.SetPort(object.ipaddr, portnum);
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END ReadNetAddress;
+
+   PROCEDURE Init;
+      VAR
+	 netif: Networks.Interface;
+	 if: PersistentObjects.Interface;
+	 address: IPv6Addresses.Address;
+   BEGIN
+      NEW(netif);
+      netif.open := NetOpen;
+      netif.createOpenCondition := NetCreateOpenCondition;
+      netif.testAndOpen := NetTestAndOpen;
+      netif.createSomeSocket := NetCreateSomeSocket;
+      netif.listen := NetListen;
+      netif.release := NetRelease;
+      netif.accept := NetAccept;
+      netif.acceptCondition := NetCreateAcceptCondition;
+      Networks.Register(ipv6tcp, "Inet6TCP", netif);
+
+      NEW(if);
+      if.read := ReadNetAddress;
+      if.write := WriteNetAddress;
+      if.create := CreateNetAddress;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(addressType,
+			"Inet6TCP.NetworkAddress", "Networks.Address", if);
+
+      (* retrieve our own IPv6 address *)
+      IF UnixHost.GetLocalIPv6Address(address) THEN
+	 ourHost := address;
+      ELSE
+	 IPv6Addresses.SetAnyAddr(ourHost);
+      END;
+   END Init;
+
+BEGIN
+   Init;
+END Inet6TCP.

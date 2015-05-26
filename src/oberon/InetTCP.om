@@ -1,0 +1,278 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: InetTCP.om,v 1.9 2005/04/20 21:03:34 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: InetTCP.om,v $
+   Revision 1.9  2005/04/20 21:03:34  borchert
+   InetTCP attempts to avoid to write an 0-valued IPv4 address
+   into a persistent stream; instead the local IP address returned
+   by UnixHost.GetLocalIPv4Address is taken, if available.
+
+   Revision 1.8  2005/04/16 05:27:23  borchert
+   IPv4TCPSockets.Listen replaced by IPv4TCPSockets.ListenOn
+
+   Revision 1.7  2004/05/22 06:11:54  borchert
+   bug fix: IPv4 addresses are not to be read or written through NetIO
+            as their representation is already architecture-independent
+            (problem found by Christian Ehrhardt)
+
+   Revision 1.6  2004/04/02 18:46:59  borchert
+   - Internet renamed to IPv4TCPSockets
+   - address type is now imported from IPv4Addresses
+
+   Revision 1.5  1995/01/16 21:47:03  borchert
+   - renamed from Internet to InetTCP
+   - direct socket accessing routines moved to (newly created) Internet
+
+   Revision 1.4  1994/09/13  07:26:07  borchert
+   we take now care of the semantic difference of EAGAIN and EINPROGRESS
+
+   Revision 1.3  1994/07/05  13:04:41  borchert
+   one ``AcceptCondition'' survived...
+
+   Revision 1.2  1994/07/04  08:23:48  borchert
+   GetName added
+   AcceptCondition renamed to CreateAcceptCondition
+
+   Revision 1.1  1994/02/23  07:25:17  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE InetTCP;
+
+   IMPORT Conditions, IPv4Addresses, IPv4TCPSockets, NetIO, Networks,
+      PersistentObjects, RelatedEvents, Services, Streams, SysConversions,
+      SysSockets, UnixHost, UnixSockets;
+
+   TYPE
+      Socket = UnixSockets.Socket;
+      Address = IPv4TCPSockets.SocketAddress;
+
+   TYPE
+      NetworkAddress = POINTER TO NetworkAddressRec;
+      NetworkAddressRec =
+	 RECORD
+	    (Networks.AddressRec)
+	    ipaddr: Address;
+	 END;
+   VAR
+      ipv4tcp: Networks.Network;
+      addressType: Services.Type;
+      ourHost: IPv4TCPSockets.Address;
+
+   PROCEDURE CreateAddress(VAR address: Networks.Address; ipaddr: Address);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := ipv4tcp;
+      addr.ipaddr := ipaddr;
+      PersistentObjects.Init(addr, addressType);
+      address := addr;
+   END CreateAddress;
+
+   PROCEDURE ConvertAddress(address: Networks.Address; VAR ipaddr: Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 ipaddr := address.ipaddr;
+      END;
+   END ConvertAddress;
+
+   PROCEDURE SetAddress(address: Networks.Address; ipaddr: Address);
+   BEGIN
+      address(NetworkAddress).ipaddr := ipaddr;
+   END SetAddress;
+
+   (* ==== interface to Networks ====================================== *)
+
+   PROCEDURE NetOpen(VAR s: Streams.Stream; address: Networks.Address;
+		     bufmode: Streams.BufMode;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 RETURN IPv4TCPSockets.Open(s, address.ipaddr, bufmode, errors)
+      END;
+   END NetOpen;
+
+   PROCEDURE NetCreateOpenCondition(VAR condition: Conditions.Condition;
+				    address: Networks.Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 IPv4TCPSockets.CreateOpenCondition(condition, address.ipaddr);
+      END;
+   END NetCreateOpenCondition;
+
+   PROCEDURE NetTestAndOpen(VAR s: Streams.Stream;
+			    condition: Conditions.Condition;
+			    bufmode: Streams.BufMode;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN IPv4TCPSockets.TestAndOpen(s, condition, bufmode, errors)
+   END NetTestAndOpen;
+
+   PROCEDURE NetCreateSomeSocket(VAR socket: Networks.Socket;
+				 VAR address: Networks.Address;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ipsocket: Socket;
+	 ipaddr: Address;
+   BEGIN
+      IF IPv4TCPSockets.CreateSomeSocket(ipsocket, ipaddr, errors) THEN
+	 socket := ipsocket;
+	 ipaddr.host := ourHost;
+	 CreateAddress(address, ipaddr);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END NetCreateSomeSocket;
+
+   PROCEDURE NetListen(VAR socket: Networks.Socket;
+		       address: Networks.Address;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ipsocket: Socket;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 IF IPv4TCPSockets.ListenOn(ipsocket, address.ipaddr, errors) THEN
+	    socket := ipsocket;
+	    RETURN TRUE
+	 ELSE
+	    socket := NIL;
+	    RETURN FALSE
+	 END;
+      END;
+   END NetListen;
+
+   PROCEDURE NetRelease(socket: Networks.Socket);
+   BEGIN
+      IPv4TCPSockets.Release(socket(Socket));
+   END NetRelease;
+
+   PROCEDURE NetAccept(socket: Networks.Socket; VAR s: Streams.Stream;
+		       bufmode: Streams.BufMode) : BOOLEAN;
+      VAR
+	 peer: Address;
+   BEGIN
+      WITH socket: Socket DO
+	 RETURN IPv4TCPSockets.Accept(socket, s, bufmode, peer)
+      END;
+   END NetAccept;
+
+   PROCEDURE NetCreateAcceptCondition(VAR condition: Conditions.Condition;
+				socket: Networks.Socket);
+   BEGIN
+      WITH socket: Socket DO
+	 IPv4TCPSockets.CreateAcceptCondition(condition, socket);
+      END;
+   END NetCreateAcceptCondition;
+
+   PROCEDURE CreateNetAddress(VAR object: PersistentObjects.Object);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := ipv4tcp;
+      PersistentObjects.Init(addr, addressType);
+      object := addr;
+   END CreateNetAddress;
+
+   PROCEDURE WriteNetAddress(s: Streams.Stream;
+			     object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 portnum: INTEGER;
+	 host: IPv4Addresses.Address;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 portnum := IPv4Addresses.GetPort(object.ipaddr);
+	 (* do not write a 0-valued IPv4 address into a persistent
+	    stream as this would be perfectly useless for other hosts
+	 *)
+	 host := object.ipaddr.host;
+	 IF host = 0 THEN
+	    host := ourHost;
+	 END;
+	 (* do not pass the IPv4 address through NetIO
+	    as its representation is already architecture-independent
+	 *)
+	 RETURN Streams.Write(s, host) & NetIO.WriteInteger(s, portnum)
+      END;
+   END WriteNetAddress;
+
+   PROCEDURE ReadNetAddress(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 portnum: INTEGER;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 (* do not read the IPv4 address through NetIO
+	    as its representation is already architecture-independent
+	 *)
+	 IF Streams.Read(s, object.ipaddr.host) &
+	       NetIO.ReadInteger(s, portnum) &
+	       (portnum >= 0) & (portnum < 10000H) THEN
+	    IPv4Addresses.SetPort(object.ipaddr, portnum);
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END ReadNetAddress;
+
+   PROCEDURE Init;
+      VAR
+	 netif: Networks.Interface;
+	 if: PersistentObjects.Interface;
+	 address: IPv4Addresses.Address;
+   BEGIN
+      NEW(netif);
+      netif.open := NetOpen;
+      netif.createOpenCondition := NetCreateOpenCondition;
+      netif.testAndOpen := NetTestAndOpen;
+      netif.createSomeSocket := NetCreateSomeSocket;
+      netif.listen := NetListen;
+      netif.release := NetRelease;
+      netif.accept := NetAccept;
+      netif.acceptCondition := NetCreateAcceptCondition;
+      Networks.Register(ipv4tcp, "InetTCP", netif);
+
+      NEW(if);
+      if.read := ReadNetAddress;
+      if.write := WriteNetAddress;
+      if.create := CreateNetAddress;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(addressType,
+			"InetTCP.NetworkAddress", "Networks.Address", if);
+
+      (* retrieve our own IPv4 address *)
+      IF UnixHost.GetLocalIPv4Address(address) THEN
+	 ourHost := address;
+      ELSE
+	 ourHost := 0;
+      END;
+   END Init;
+
+BEGIN
+   Init;
+END InetTCP.

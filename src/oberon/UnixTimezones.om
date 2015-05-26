@@ -1,0 +1,643 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixTimezon.om,v 1.1 1999/05/30 13:50:04 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: UnixTimezon.om,v $
+   Revision 1.1  1999/05/30 13:50:04  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixTimezones;
+
+   IMPORT Clocks, NetIO, Op := Operations, PersistentObjects, Read,
+      RelatedEvents, Services, Streams, Strings, SysConversions, Texts,
+      Times, Timezones, UnixEnvironment, UnixFiles;
+
+   CONST
+      zoneinfodirDefault = "/usr/share/lib/zoneinfo";
+      defaultZoneFile = "/etc/localtime"; (* Linux *)
+      localeSettings = "/etc/default/init"; (* Solaris *)
+   VAR
+      zoneinfodir: ARRAY 512 OF CHAR;
+
+   TYPE
+      Glimpse = POINTER TO GlimpseRec;
+      GlimpseRec =
+	 RECORD
+	    (Timezones.GlimpseRec)
+	    next: Glimpse;
+	    standard: BOOLEAN; (* ``standard'' or ``wall clock'' time *)
+	    type: SHORTINT;
+	 END;
+
+   TYPE
+      Timezone = POINTER TO TimezoneRec;
+      TimezoneRec =
+	 RECORD
+	    (Timezones.TimezoneRec)
+	    steady: BOOLEAN;
+	    list: Glimpse;
+	    offset: Timezones.Offset;
+	    if: Timezones.Interface; (* to support DelayInit *)
+	 END;
+   VAR
+      tztype: Services.Type;
+      tzif: Timezones.Interface;
+
+   TYPE
+      Header =
+	 (* see /usr/include/tzfile.h *)
+	 RECORD
+	    ttisgmtcnt: INTEGER;
+	    ttisstdcnt: INTEGER;
+	    leapcnt: INTEGER;
+	    timecnt: INTEGER;
+	    typecnt: INTEGER;
+	    charcnt: INTEGER;
+	 END;
+   CONST
+      headerconv = "20:-c/6*ii";
+      headerlen = 20 + 6 * 4;
+   VAR
+      headerfmt: SysConversions.Format;
+
+   CONST
+      typeconv = "ii/BC/sC";
+      typelen = 6;
+   VAR
+      typefmt: SysConversions.Format;
+
+   VAR
+      timeType: Services.Type;
+
+   PROCEDURE ReadHeader(s: Streams.Stream; VAR header: Header) : BOOLEAN;
+      VAR
+	 buf: ARRAY headerlen OF BYTE;
+   BEGIN
+      IF ~Streams.Read(s, buf) THEN RETURN FALSE END;
+      SysConversions.ByFmtFromC(buf, header, headerfmt);
+      RETURN TRUE
+   END ReadHeader;
+
+   PROCEDURE ReadTimezoneFile(s: Streams.Stream; VAR list: Glimpse) : BOOLEAN;
+      TYPE
+	 Type = POINTER TO TypeRec;
+	 TypeRec =
+	    RECORD
+	       offset: Timezones.Offset;
+	       isDst: BOOLEAN;
+	       nameOffset: SHORTINT;
+	       name: Timezones.Name;
+	       standard: BOOLEAN; (* ``standard'' or ``wall clock'' time *)
+	       next: Type;
+	    END;
+      VAR
+	 header: Header;
+	 types: Type;
+	 zoneabbreviations: Streams.Stream;
+
+      PROCEDURE ReadTransitionTimes(VAR list: Glimpse) : BOOLEAN;
+	 (* read head.timecnt 4-byte records specifying the
+	    transition times, and create a linear list of timezone
+	    glimpses for it with glimpse.lastChange and
+	    glimpse.nextChange initialized (leaving the other components
+	    uninitialized)
+	 *)
+	 VAR
+	    head, tail, glimpse: Glimpse;
+	    cnt: INTEGER;
+	    timeval: LONGINT;
+      BEGIN
+	 head := NIL; tail := NIL;
+	 cnt := header.timecnt;
+	 WHILE (cnt > 0) & Streams.Read(s, timeval) DO
+	    NEW(glimpse);
+	    Times.CreateAndSet(glimpse.lastChange, Times.absolute,
+	       0, timeval, 0);
+	    glimpse.nextChange := NIL;
+	    IF tail # NIL THEN
+	       tail.nextChange := glimpse.lastChange;
+	    END;
+	    glimpse.next := NIL;
+	    IF head = NIL THEN
+	       head := glimpse;
+	    ELSE
+	       tail.next := glimpse;
+	    END;
+	    tail := glimpse;
+	    DEC(cnt);
+	 END;
+	 list := head;
+	 RETURN cnt = 0
+      END ReadTransitionTimes;
+
+      PROCEDURE ReadTransitionTypes(list: Glimpse) : BOOLEAN;
+      BEGIN
+	 WHILE (list # NIL) & Streams.ReadByte(s, list.type) DO
+	    list := list.next;
+	 END;
+	 RETURN list = NIL
+      END ReadTransitionTypes;
+
+      PROCEDURE ReadTypes(VAR list: Type) : BOOLEAN;
+	 VAR
+	    cnt: INTEGER;
+	    head, tail, type: Type;
+	    buf: ARRAY typelen OF BYTE;
+      BEGIN
+	 head := NIL; tail := NIL;
+	 cnt := header.typecnt;
+	 WHILE (cnt > 0) & Streams.Read(s, buf) DO
+	    NEW(type);
+	    SysConversions.ByFmtFromC(buf, type^, typefmt);
+	    type.next := NIL;
+	    IF head = NIL THEN
+	       head := type;
+	    ELSE
+	       tail.next := type;
+	    END;
+	    tail := type;
+	    DEC(cnt);
+	 END;
+	 list := head;
+	 RETURN cnt = 0
+      END ReadTypes;
+
+      PROCEDURE ReadZoneAbbreviations(VAR text: Streams.Stream) : BOOLEAN;
+      BEGIN
+	 Texts.Open(text);
+	 RETURN Streams.Copy(s, text, header.charcnt)
+      END ReadZoneAbbreviations;
+
+      PROCEDURE ReadLeapSeconds() : BOOLEAN;
+	 (* not yet supported *)
+	 VAR
+	    cnt: INTEGER;
+      BEGIN
+	 cnt := header.leapcnt;
+	 IF cnt > 0 THEN
+	    RETURN Streams.Seek(s, cnt * 8, Streams.fromPos)
+	 ELSE
+	    RETURN TRUE
+	 END;
+      END ReadLeapSeconds;
+
+      PROCEDURE ReadStdTimeFlags(types: Type) : BOOLEAN;
+	 VAR
+	    cnt: INTEGER;
+	    ch: CHAR;
+      BEGIN
+	 cnt := header.ttisstdcnt;
+	 IF (cnt < 0) OR (cnt > header.typecnt) THEN RETURN FALSE END;
+	 IF cnt = 0 THEN
+	    WHILE types # NIL DO
+	       types.standard := FALSE;
+	       types := types.next;
+	    END;
+	 ELSE
+	    WHILE cnt > 0 DO
+	       IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	       types.standard := (ch # 0X);
+	       DEC(cnt);
+	    END;
+	 END;
+	 RETURN TRUE
+      END ReadStdTimeFlags;
+
+      PROCEDURE FixTypes(types: Type; text: Streams.Stream) : BOOLEAN;
+
+	 PROCEDURE ReadString(s: Streams.Stream;
+	                      VAR string: ARRAY OF CHAR) : BOOLEAN;
+	    VAR
+	       index: INTEGER;
+	       ch: CHAR;
+	 BEGIN
+	    index := 0;
+	    WHILE (index + 1 < LEN(string)) &
+		  Streams.ReadByte(s, ch) & (ch # 0X) DO
+	       string[index] := ch; INC(index);
+	    END;
+	    string[index] := 0X;
+	    RETURN index > 0
+	 END ReadString;
+
+      BEGIN (* FixTypes *)
+	 WHILE (types # NIL) &
+	       Streams.Seek(text, types.nameOffset, Streams.fromStart) &
+	       ReadString(text, types.name) DO
+	    types := types.next;
+	 END;
+	 RETURN types = NIL
+      END FixTypes;
+
+      PROCEDURE FindType(index: INTEGER) : Type;
+	 VAR
+	    type: Type;
+      BEGIN
+	 type := types;
+	 WHILE index > 0 DO
+	    type := type.next; DEC(index);
+	 END;
+	 RETURN type
+      END FindType;
+
+      PROCEDURE FixTransitionTimes(list: Glimpse; types: Type);
+	 (* initialize all components of all members of list
+	    that were left undefined by ReadTransitionTimes
+	 *)
+	 
+	 VAR
+	    type: Type;
+
+      BEGIN (* FixTransitionTimes *)
+	 WHILE list # NIL DO
+	    type := FindType(list.type);
+	    list.name := type.name;
+	    list.offset := type.offset;
+	    list.isDst := type.isDst;
+	    list.standard := type.standard;
+	    list := list.next;
+	 END;
+      END FixTransitionTimes;
+
+      PROCEDURE CreateGlimpse(VAR list: Glimpse; type: Type);
+      BEGIN
+	 NEW(list);
+	 list.next := NIL;
+	 list.standard := type.standard;
+	 list.name := type.name;
+	 list.offset := type.offset;
+	 list.isDst := FALSE;
+	 list.lastChange := NIL;
+	 list.nextChange := NIL;
+      END CreateGlimpse;
+
+      PROCEDURE ExtendList(VAR list: Glimpse);
+	 VAR
+	    head: Glimpse;
+	    std, gl: Glimpse;
+      BEGIN
+	 (* look for an entry that looks like a reasonable default
+	    (regrettably tzfile(5) does not support defaults);
+	 *)
+	 std := NIL;
+	 gl := list;
+	 WHILE gl # NIL DO
+	    IF (std = NIL) OR
+		  (std.isDst OR gl.standard) & ~gl.isDst THEN
+	       std := gl;
+	    END;
+	    gl := gl.next;
+	 END;
+
+	 (* extend list by an extra head *)
+	 CreateGlimpse(head, FindType(std.type));
+	 head.nextChange := list.lastChange; head.next := list;
+	 list := head;
+      END ExtendList;
+
+   BEGIN (* ReadTimezoneFile *)
+      IF ReadHeader(s, header) &
+	    ReadTransitionTimes(list) &
+	    ReadTransitionTypes(list) &
+	    ReadTypes(types) &
+	    ReadZoneAbbreviations(zoneabbreviations) &
+	    FixTypes(types, zoneabbreviations) &
+	    ReadLeapSeconds() &
+	    ReadStdTimeFlags(types) THEN
+	 IF list # NIL THEN
+	    FixTransitionTimes(list, types);
+	    ExtendList(list);
+	 ELSE
+	    IF types # NIL THEN
+	       CreateGlimpse(list, types);
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 END;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END ReadTimezoneFile;
+
+   PROCEDURE InitUnsteadyTimezone(tz: Timezone);
+   BEGIN
+      tz.steady := FALSE; tz.if := tzif;
+      Timezones.Init(tz, tzif);
+   END InitUnsteadyTimezone;
+
+   PROCEDURE InitSteadyTimezone(tz: Timezone; glimpse: Glimpse);
+      VAR
+	 tzif: Timezones.Interface;
+   BEGIN
+      tz.steady := TRUE;
+      NEW(tzif); tzif.unsteady := FALSE;
+      tzif.lookup := NIL; tzif.stdGlimpse := glimpse;
+      tz.if := tzif;
+      Timezones.Init(tz, tzif);
+   END InitSteadyTimezone;
+
+   (* === interface to PersistentObjects ================================== *)
+
+   PROCEDURE CreateTimezone(VAR object: PersistentObjects.Object);
+      VAR
+	 tz: Timezone;
+   BEGIN
+      NEW(tz); PersistentObjects.Init(tz, tztype); tz.list := NIL;
+      object := tz;
+   END CreateTimezone;
+
+   PROCEDURE ReadGlimpse(s: Streams.Stream; VAR glimpse: Glimpse) : BOOLEAN;
+   BEGIN
+      NEW(glimpse); glimpse.next := NIL;
+      RETURN NetIO.ReadString(s, glimpse.name) &
+             NetIO.ReadLongInt(s, glimpse.offset) &
+	     NetIO.ReadBoolean(s, glimpse.isDst) &
+	     NetIO.ReadBoolean(s, glimpse.standard) &
+	     PersistentObjects.GuardedReadObjectOrNIL(s,
+		timeType, glimpse.lastChange) &
+	     PersistentObjects.GuardedReadObjectOrNIL(s,
+		timeType, glimpse.nextChange)
+   END ReadGlimpse;
+
+   PROCEDURE WriteGlimpse(s: Streams.Stream; glimpse: Glimpse) : BOOLEAN;
+   BEGIN
+      RETURN NetIO.WriteString(s, glimpse.name) &
+             NetIO.WriteLongInt(s, glimpse.offset) &
+	     NetIO.WriteBoolean(s, glimpse.isDst) &
+	     NetIO.WriteBoolean(s, glimpse.standard) &
+	     PersistentObjects.WriteObjectOrNIL(s, glimpse.lastChange) &
+	     PersistentObjects.WriteObjectOrNIL(s, glimpse.nextChange)
+   END WriteGlimpse;
+
+   PROCEDURE ReadTimezone(s: Streams.Stream;
+                          object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 head, tail, glimpse: Glimpse;
+	 sy: CHAR;
+   BEGIN
+      WITH object: Timezone DO
+	 IF ~NetIO.ReadBoolean(s, object.steady) THEN RETURN FALSE END;
+	 IF object.steady THEN
+	    IF ~ReadGlimpse(s, glimpse) THEN RETURN FALSE END;
+	    InitSteadyTimezone(object, glimpse);
+	    object.list := glimpse;
+	 ELSE
+	    InitUnsteadyTimezone(object);
+	    head := NIL; tail := NIL;
+	    WHILE NetIO.ReadChar(s, sy) & (sy = "G") DO
+	       IF ~ReadGlimpse(s, glimpse) THEN RETURN FALSE END;
+	       glimpse.next := NIL;
+	       IF head = NIL THEN
+		  head := glimpse;
+	       ELSE
+		  tail.next := glimpse;
+	       END;
+	       tail := glimpse;
+	    END;
+	    object.list := head;
+	 END;
+      END;
+      RETURN TRUE
+   END ReadTimezone;
+
+   PROCEDURE WriteTimezone(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 glimpse: Glimpse;
+   BEGIN
+      WITH object: Timezone DO
+	 IF ~NetIO.WriteBoolean(s, object.steady) THEN RETURN FALSE END;
+	 IF object.steady THEN
+	    RETURN WriteGlimpse(s, object.list)
+	 END;
+	 glimpse := object.list;
+	 WHILE (glimpse # NIL) &
+	       NetIO.WriteChar(s, "G") & WriteGlimpse(s, glimpse) DO
+	    glimpse := glimpse.next;
+	 END;
+	 RETURN NetIO.WriteChar(s, 0X)
+      END;
+      RETURN TRUE
+   END WriteTimezone;
+
+   (* === interface to Timezones ========================================== *)
+
+   PROCEDURE Lookup(tz: Timezones.Timezone; at: Times.Time;
+                    VAR glimpse: Timezones.GlimpseRec);
+      VAR
+	 gl: Glimpse;
+   BEGIN
+      WITH tz: Timezone DO
+	 gl := tz.list;
+	 IF at = NIL THEN
+	    gl := tz.list; (* first element serves as default *)
+	 ELSE
+	    WHILE (gl.nextChange # NIL) &
+		  (Op.Compare(at, gl.nextChange) >= 0) DO
+	       gl := gl.next;
+	    END;
+	 END;
+	 glimpse := gl^;
+      END;
+   END Lookup;
+
+   PROCEDURE ^ Create(VAR tz: Timezones.Timezone;
+		      s: Streams.Stream;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Find(name: ARRAY OF CHAR; VAR tz: Timezones.Timezone;
+                  VAR glimpse: Timezones.GlimpseRec) : BOOLEAN;
+      VAR
+	 path: ARRAY 512 OF CHAR;
+	 s: Streams.Stream;
+   BEGIN
+      IF name[0] # "/" THEN
+	 COPY(zoneinfodir, path);
+	 Strings.Concatenate(path, "/");
+	 Strings.Concatenate(path, name);
+      ELSE
+	 COPY(name, path);
+      END;
+      IF ~UnixFiles.Open(s, path, UnixFiles.read, Streams.onebuf, NIL) THEN
+	 RETURN FALSE
+      END;
+      IF ~Create(tz, s, NIL) THEN
+	 Streams.Release(s); RETURN FALSE
+      END;
+      Streams.Release(s);
+      Lookup(tz, NIL, glimpse);
+      RETURN TRUE
+   END Find;
+
+   PROCEDURE LoadTimezoneFile(path: ARRAY OF CHAR;
+			      VAR tz: Timezone;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~UnixFiles.Open(s, path, UnixFiles.read, Streams.onebuf, errors) THEN
+	 RETURN FALSE
+      END;
+      ok := Create(tz, s, errors);
+      Streams.Release(s);
+      RETURN ok
+   END LoadTimezoneFile;
+
+   PROCEDURE LookupNameOfTimezone(path: ARRAY OF CHAR;
+                                  VAR tzname: ARRAY OF CHAR;
+				  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 linebuf: ARRAY 64 OF CHAR;
+   BEGIN
+      IF ~UnixFiles.Open(s, path, UnixFiles.read, Streams.onebuf, errors) THEN
+	 RETURN FALSE
+      END;
+      LOOP
+	 Read.LineS(s, linebuf);
+	 IF s.eof OR s.error THEN EXIT END;
+	 IF (linebuf[0] = "T") & (linebuf[1] = "Z") & (linebuf[2] = "=") THEN
+	    Strings.PartCopy(tzname, 0, linebuf, 3);
+	    Streams.Release(s);
+	    RETURN TRUE
+	 END;
+      END;
+      Streams.Release(s);
+      RETURN FALSE
+   END LookupNameOfTimezone;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE InitLocalTimezone(tz: Timezones.Timezone) : Timezones.Interface;
+      VAR
+	 local: Timezone;
+	 tzname: ARRAY 12 OF CHAR;
+	 glimpse: Glimpse;
+	 glimpserec: GlimpseRec;
+   BEGIN
+      IF ~(UnixEnvironment.String("TZ", tzname) &
+	       Find(tzname, local, glimpserec) OR
+	    LoadTimezoneFile(defaultZoneFile, local, RelatedEvents.null) OR
+	    LookupNameOfTimezone(localeSettings, tzname, RelatedEvents.null) &
+	       Find(tzname, local, glimpserec) OR
+	    Find("GMT", local, glimpserec) OR
+	    Find("UTC", local, glimpserec)) THEN
+	 (* fall back to Timezones.utc *)
+	 NEW(glimpse);
+	 glimpse.name := "UTC";
+	 glimpse.offset := 0;
+	 glimpse.isDst := FALSE;
+	 glimpse.lastChange := NIL;
+	 glimpse.nextChange := NIL;
+	 glimpse.standard := TRUE;
+	 glimpse.next := NIL;
+	 CreateTimezone(local); InitSteadyTimezone(local, glimpse);
+      END;
+      (* copy components *)
+      WITH tz: Timezone DO
+	 tz.steady := local.steady;
+	 tz.list := local.list;
+	 tz.offset := local.offset;
+	 tz.if := local.if;
+	 RETURN tz.if
+      END;
+   END InitLocalTimezone;
+
+   PROCEDURE SetLocalTimezone;
+      (* sets Timezones.local *)
+      VAR
+	 tz: Timezone;
+   BEGIN
+      CreateTimezone(tz);
+      Timezones.DelayInit(tz, InitLocalTimezone);
+      Timezones.local := tz;
+   END SetLocalTimezone;
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      zoneinfodir := zoneinfodirDefault;
+
+      Services.SeekType("Times.Time", timeType);
+
+      SysConversions.Compile(headerfmt, headerconv);
+      ASSERT(headerlen = SysConversions.CSize(headerconv));
+      SysConversions.Compile(typefmt, typeconv);
+      ASSERT(typelen = SysConversions.CSize(typeconv));
+
+      NEW(persif);
+      persif.create := CreateTimezone;
+      persif.read := ReadTimezone;
+      persif.write := WriteTimezone;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(tztype,
+	 "UnixTimezones.Timezone", "Timezones.Timezone", persif);
+
+      NEW(tzif);
+      tzif.unsteady := TRUE;
+      tzif.lookup := Lookup;
+      tzif.stdGlimpse := NIL;
+
+      Timezones.Declare(Find);
+
+      SetLocalTimezone;
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Create(VAR tz: Timezones.Timezone;
+		    s: Streams.Stream;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* expects the given stream to conform to tzfile(5) and returns
+	 a time zone object in case of success for it
+      *)
+      VAR
+	 list: Glimpse;
+	 timezone: Timezone;
+	 tzif: Timezones.Interface;
+   BEGIN
+      IF ~ReadTimezoneFile(s, list) THEN RETURN FALSE END;
+      ASSERT(list # NIL);
+      CreateTimezone(timezone); timezone.list := list;
+      IF list.next = NIL THEN
+	 (* steady timezone *)
+	 timezone.offset := list.offset;
+	 InitSteadyTimezone(timezone, list);
+      ELSE
+	 (* unsteady timezone *)
+	 InitUnsteadyTimezone(timezone);
+      END;
+      tz := timezone;
+      RETURN TRUE
+   END Create;
+
+   PROCEDURE SetZoneinfoDir(dirname: ARRAY OF CHAR);
+   BEGIN
+      COPY(dirname, zoneinfodir);
+   END SetZoneinfoDir;
+
+BEGIN
+   Init;
+END UnixTimezones.

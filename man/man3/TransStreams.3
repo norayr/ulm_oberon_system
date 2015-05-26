@@ -1,0 +1,717 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH TransStreams 3 "Last change: 28 November 1996" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+TransStreams \- transactions on streams
+.SH SYNOPSIS
+.Pg
+CONST last = 0; prior = 1; current = 2;
+TYPE State = SHORTINT; (* last..current *)
+.sp 0.3
+CONST standard = 0; auto = 4; read = 8;
+TYPE Mode = SHORTINT;
+   (* additive combination of standard, auto, read, last and prior *)
+.sp 0.7
+TYPE Stream = POINTER TO StreamRec;
+TYPE StreamRec = RECORD (Streams.StreamRec); END;
+.sp 0.7
+(* errors at opening time *)
+CONST illegalParam = 0;
+CONST bufferedStream = 1;
+CONST badMagic = 2;
+CONST noLegalState = 3;
+CONST corruptedFile = 4;
+CONST cannotAccessFile = 5;
+.sp 0.3
+(* invalid usage *)
+CONST illegalPos = 6;
+CONST nestedCall = 7;
+CONST noPriorState = 8;
+CONST noTransactionRunning = 9;
+CONST readOnly = 10;
+CONST transactionInProgress = 11;
+CONST alreadyClosed = 12;
+.sp 0.3
+(* troubles with the underlying stream *)
+CONST cannotAccessSysPages = 13;
+CONST cannotUpdateSysPages = 14;
+CONST cannotAccessContents = 15;
+CONST cannotUpdateContents = 16;
+CONST recoveringDueToFailure = 17;
+CONST closeFailed = 18;
+CONST errorcodes = 19;
+.sp 0.3
+TYPE ErrorCode = SHORTINT;
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec);
+      errcode: ErrorCode;
+   END;
+.sp 0.3
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+.sp 0.7
+PROCEDURE Open(VAR s: Streams.Stream; base: Streams.Stream; 
+               mode: Mode; errors: RelatedEvents.Object) : BOOLEAN; 
+.sp 0.7
+(* transaction primitives *)
+PROCEDURE Begin(s: Streams.Stream) : BOOLEAN;
+PROCEDURE Abort(s: Streams.Stream) : BOOLEAN;
+PROCEDURE Commit(s: Streams.Stream) : BOOLEAN;
+.sp 0.3
+(* transaction shorthands *)
+PROCEDURE Touch(s: Streams.Stream) : BOOLEAN; (* Commit & Begin *)
+PROCEDURE Forget(s: Streams.Stream) : BOOLEAN; (* Abort & Begin *)
+.sp 0.7
+PROCEDURE Switch(s: Streams.Stream) : BOOLEAN;
+PROCEDURE Toggle(s: Streams.Stream) : BOOLEAN;
+PROCEDURE Available(s: Streams.Stream; state: State) : BOOLEAN;
+.sp 0.7
+PROCEDURE GetInfo(s: Streams.Stream; state: State; 
+                  VAR info: ARRAY OF BYTE) : BOOLEAN;
+PROCEDURE SetInfo(s: Streams.Stream; info: ARRAY OF BYTE) : BOOLEAN;
+.sp 0.7
+PROCEDURE SetPoolSize(s: Streams.Stream; no: INTEGER) : BOOLEAN;
+PROCEDURE GetPoolSize(s: Streams.Stream; VAR no: INTEGER) : BOOLEAN;
+PROCEDURE GetEffPoolSize(s: Streams.Stream; VAR no: INTEGER) : BOOLEAN;
+PROCEDURE SetNoBufs(no: INTEGER) : BOOLEAN;
+PROCEDURE GetNoBufs(VAR no: INTEGER) : BOOLEAN;
+PROCEDURE GetEffNoBufs(VAR no: INTEGER) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I TransStreams
+(transaction streams)
+offers a local transaction concept (see \fIObjectTransactions(3)\fP)
+on stream level.
+Objects of type
+.I Stream
+are extensions of
+.I Streams.Stream
+with
+.IR read ,
+.IR write ,
+.IR seek ,
+.I tell
+and
+.I trunc
+capabilities but support transactions as well.
+A transaction in the sense of this module
+represents a frame for an arbitrary number
+of write operation executed on the stream.
+These operations do not alter the stream contents until
+the transaction is successfully committed.
+In any other cases, namely if the transaction is explicitely aborted or
+if the program terminates before a transaction was
+committed, the contents of a transaction stream remains unaffected.
+This holds true even if a program terminates for any reason
+while a commit operation itself is in progress.
+Since either all or none of the contents changes applied
+to the stream during a transaction become valid,
+committing a transaction can be seen as
+an atomar operation which transfers the stream from one consistent state
+into another.
+.LP
+A transaction stream can hold up to three states:
+.Tb current
+.Tp current
+refers to the transaction currently in progress and is not available
+if no transaction is active.
+.Tp last
+reflects the contents of the stream at the time of the
+last successful commit. This state is always available.
+.Tp prior
+stores the last but one successfully committed transaction.
+Only available if no error occured during
+the last two commit operations.
+.Te
+.LP
+A transaction stream behaves like any other regular stream
+except that write operations must be executed within
+the scope of a transaction.
+After a transaction is aborted or when the stream is reopened,
+a consistent state is restored
+from the contents of the stream
+.I base
+given as an argument to
+.IR Open .
+Base streams
+must be unbuffered and support
+read, write, seek and tell operations, and holes.
+They are used by
+.I TransStreams
+to store data permanently and will therefore typically be
+of type
+.IR UnixFiles.File .
+Note that the termination of the base stream is propagated
+to the transaction stream (see \fIResources(3)\fP).
+.LP
+The parameter
+.I mode
+provided to
+.I Open
+is a combination (sum) of a state and an operation mode.
+Any senseful sum of the following constants may be used:
+.Tb standard
+.Tp standard
+open a stream with standard capabilities, i.e. the application
+is responsible for beginning any transaction.
+.Tp read
+open a transaction stream for read only access.
+Any attempt to begin a transaction will be rejected.
+No write operation at all will be performed on
+.IR base .
+.Tp auto
+implicitely starts a transaction during the opening process.
+The transaction will be committed automatically when
+.I Streams.Close
+is called.
+.Tp last
+The next transaction will start from the
+state associated with the last successful transaction.
+This is the default behaviour.
+.Tp prior
+If available,
+the last and the prior state are toggled (see below).
+The next transaction will start from the
+state associated with last but one successful transaction.
+If used in combination with
+.I standard
+or
+.I auto
+this switch becomes permanent, even if no transaction is executed
+later on.
+Combined with
+.I read
+any read operation will return data from the prior rather than the
+last state, but this effect is temporary.
+.Te
+.LP
+On a read-only stream, read, tell or seek operations are
+always possible. In any other case
+.I any
+attempt to operate on a stream with no transaction in progress will
+fail. Thus,
+if not opened in auto mode, a transaction has to be started explicitly
+before the stream is accessible through the interface of
+.IR Streams .
+Transactions may be controlled by \fITransactions(3)\fP
+on base of \fIObjectTransactions(3)\fP, or
+by means of the following procedures,
+which are available for all streams regardless of whether they
+have been opened in auto mode or not.
+.Tb Commit
+.Tp Begin
+Start a transaction on stream
+.I s
+using the contents associated
+with the state
+.I last
+as origin.
+.Tp Com\%mit
+Com\%mit a previously started transaction and store any contents changes
+permanently in the underlaying base stream of
+.I s
+and associate it with the state
+.IR last .
+The former
+.I last
+state
+will become
+the new
+.I prior
+one,
+while the former
+.I prior
+state
+is discarded.
+.Tp Abort
+Abort the current transaction and reset
+.I s
+to the state valid
+before the transaction was begun, i.e. to the
+.I last
+consistent state.
+.Tp Toggle
+Toggle the states
+.I last
+and
+.I prior
+permanently.
+This operation is implicitely executed when the stream is opened
+with
+.I mode
+set accordingly.
+The procedure will fail, if a transaction is in progress,
+a stream is opened readonly or no
+.I prior
+state is available.
+.Tp Switch
+Temporarily switch
+the states
+.I last
+and
+.IR prior .
+The next transaction will
+use the contents of the last but one successfully committed transaction
+as its starting point.
+The procedure will fail, if a transaction is in progress or
+a
+.I prior
+state is not available.
+For streams opened with
+.I mode
+=
+.I read
++
+.I prior
+this operation is performed
+implicitely during the opening process.
+It will fail, if no
+.I prior
+state
+exists.
+.Tp Touch
+is equivalent to
+.I Com\%mit
++
+.IR Begin .
+.Tp Forget
+is equivalent to
+.I Abort
++
+.IR Begin .
+.Te
+.LP
+.I Toggle
+and
+.I Switch
+can be utilized
+to implement an
+.I undo
+command for transaction streams (see section examples),
+which discards the effect of the last
+successful transaction.
+.LP
+Since
+.I TransStreams
+can guarantee only the existence of one consistent state,
+.I Available
+should be used to check
+if a certain state exists.
+.LP
+Other than an internal enumeration
+.I TransStreams
+does not store any information about transactions.
+Instead, it offers a
+.I SetInfo
+procedure which associates an array of bytes
+with the current transaction. While
+.I SetInfo
+requires a transaction to be in progress,
+previously stored information can be obtained by
+.I GetInfo
+even if no transaction is running.
+According to
+.IR state ,
+.I GetInfo
+returns the information associated with the
+.I current
+transaction
+(if in progress), the
+.I last
+successfully commited transaction (which
+is always available) or a
+.I prior
+transaction (presumed the corresponding state is still accessible).
+.LP
+The size of
+.I info
+is restricted to an implementation-dependent value (about 8K in the
+current version).
+.LP
+Read and write operation on a transaction stream are buffered.
+To prevent programs from consuming to much memory and to reduce
+swapping or/and paging activity of the associated processes
+applications might want to control the size of the
+internal buffer pools. For this reason, the following procedures
+are provided:
+.Tb SetPoolSize
+.Tp SetPoolSize
+Make
+.I no
+the maximum number of internal buffers to be used by
+.IR s .
+.Tp SetNoBufs
+Limit the total number of internal buffers used by all transaction streams to
+.IR no .
+.Te
+.LP
+However,
+.I TransStreams
+will ignore the limits if more space is required to buffer write operations.
+In these cases, reduction of the internal pool size is delayed until
+the next commit or abort operation takes place.
+.I GetEffPoolSize
+and
+.I GetEffNoBufs
+return the effective number of buffers currently in use, while
+.I GetPoolSize
+and
+.I GetNoBufs
+return the default settings as defined by means of
+.I SetPoolSize
+or
+.IR SetNoBufs .
+.SH DIAGNOSTICS
+All procedures return
+.B FALSE
+in case of an error and
+will raise an event of the type
+.I error
+to the affected stream.
+During the opening process error events are related to
+the parameter
+.IR errors .
+Note that the error events of the underlying stream are
+forwarded to the associated transaction stream.
+Following error codes may be returned by \fITransStreams\fP:
+.Tb transactionInProgress
+.Tp illegalParam
+An invalid \fImode\fP was given to \fIOpen\fP.
+.Tp bufferedStream
+The base stream passed to \fIOpen\fP must not be buffered.
+.Tp badMagic
+\fITransStreams\fP did not find its magic number at the
+beginning of the underlying stream.
+Probably, it is not a file which has been created earlier by
+(this version of) \fITransStreams\fP.
+.Tp noLegalState
+Neither of the two possible states in the underlying stream
+was found to be consistent. Probably, the file has been
+corrupted by external sources.
+.Tp corruptedFile
+The system pages were not available at opening time.
+.Tp cannotAccessFile
+This error code is returned by \fIOpen\fP if some
+basic stream operations on the underlying stream fail.
+.Tp illegalPos
+An invalid position was given to a seek or trunc operation
+of \fIStreams(3)\fP.
+.Tp nestedCall
+There may be only one operation running on
+a transaction stream concurrently.
+.Tp noPriorState
+This error code may be returned by \fIToggle\fP or \fISwitch\fP
+when there is no other consistent state available.
+.Tp noTransactionRunning
+Stream operations (read, write, seek, tell and trunc) are
+valid only during a transaction (the only exception are
+read-only opened transaction streams).
+Further,
+\fIAbort\fP, \fICommit\fP, \fIForget\fP, \fISetInfo\fP, and \fITouch\fP
+may be called only while a transaction is in progress.
+.Tp readOnly
+This error code is returned by all updating operations
+if the stream has been opened in read-only mode.
+.Tp transactionInProgress
+\fIBegin\fP, \fISwitch\fP, and \fIToggle\fP
+return this error code if there is an already running transaction.
+.Tp alreadyClosed
+An operation was tried on an already closed transaction stream.
+.Tp cannotAccessSysPages
+Accesses to the system pages on the underlying stream failed.
+.Tp cannotUpdateSysPages
+Updates of the system pages on the underlying stream failed.
+.Tp cannotAccessContents
+Accesses to the visible pages on the underlying stream failed.
+.Tp cannotUpdateContents
+Updates of the visible pages on the underlying stream failed.
+.Tp recoveringDueToFailure
+A commit operation failed due to some reason (see
+additional error events) which caused the current transaction
+to be aborted.
+.Tp closeFailed
+The final close operation failed.
+This shouldn't be a fatal error, however, since the underlying
+stream is unbuffered, i.e. all changes are already done.
+.Te
+.PP
+.I TransStreams
+has several assertions, some of them may fail in case of
+invalid usage:
+.IP \(bu
+\fISetPoolSize\fP expects \fIno\fP to be non-negative.
+.IP \(bu
+\fISetNoBufs\fP asserts that \fIno\fP is positive.
+.SH EXAMPLES
+Open a transaction stream
+.I stream
+in auto mode and store the data
+in file
+.IR name :
+.IP \(bu
+.Pg
+IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr, 
+                  Streams.nobuf, err) &
+      TransStreams.Open(stream, file, TransStreams.auto, err) THEN
+    Streams.\fIProcedure\fP(stream, .....);
+    IF ~Streams.Close(stream) THEN
+        (* error handling *)
+    END;
+END;
+.Pe
+.IP \(bu
+After the opening sequence
+.I stream
+can be used like any other stream.
+.IP \(bu
+The contents of
+.I name
+will be changed permanently if and only if
+.I Streams.Close
+is reached and executed successfully.
+.LP
+Open a transaction stream in non-auto mode and execute
+two transactions on it:
+.IP \(bu
+.Pg
+IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr,
+                  Streams.nobuf, err) &
+      TransStreams.Open(stream, file, TransStreams.standard, err) &
+      ObjectTransactions.Create(trans, stream, NIL, err) THEN
+   IF ~Transactions.Begin(trans, NIL) THEN      (* T1 *)
+      (* error handling *)
+   END;
+   Streams.\fIProcedure\fP(trans, .....);  (* apply to 1st trans. *)
+   IF ~Transactions.Commit(trans, NIL) THEN     (* T1 *)
+      (* error handling *)
+   END;
+   IF ~Transactions.Begin(trans, NIL) THEN      (* T2 *)
+      (* error handling *)
+   END;
+   Streams.\fIProcedure\fP(stream,.....);   (* apply to 2nd trans. *)
+   IF ~Transactions.Commit(trans, NIL) THEN     (* T2 *)
+      (* error handling *)
+   END;
+   IF ~Transactions.Release(stream, NIL) THEN
+      (* error handling *)
+   END;
+END;
+.Pe
+.IP \(bu
+The stream now stores two states. The last one, which discribes its contents
+after the second transaction (T2) was committed,
+and a prior one, which holds
+the data stored during the first transaction (T1).
+.IP \(bu
+Applying
+.I Toggle
+to the stream will toggle the states,
+i.e. the last one becomes the prior
+one and vice versa.
+.LP
+Implement an undo command, which resets the stream to a consistent state
+prior to the last successful transaction:
+.IP \(bu
+.Pg
+IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr, 
+                  Streams.nobuf, err) &
+      TransStreams.Open(stream, file, TransStrems.standard, err) &
+      TransStreams.Available(stream, TransStreams.prior) &
+      TransStreams.Toggle(stream) & TransStreams.Close(stream) THEN
+   (* .... *)
+ELSE
+   (* error *)
+END;
+.Pe
+.IP \(bu
+If a prior state is available, the effects of the last transaction are discarded.
+.IP \(bu
+If there is no prior state, one of the last two must have failed
+due to program termination. In this case there is no use to undo
+the last successful transaction, since it is the only one we have.
+.IP \(bu
+Operations during the next transaction will now apply to the last but one
+consistent state (T1 in the above example).
+.SH "SEE ALSO"
+.Tb ObjectTransactions(3)
+.Tp ObjectTransactions(3)
+transactions which involve one object only
+.Tp RelatedEvents(3)
+error handling
+.Tp Streams(3)
+stream operations
+.Tp Transactions(3)
+general abstraction for transactions
+.Tp UnixFiles(3)
+stream implementation of UNIX files
+.Te
+.SH AUTHOR
+Werner Stanglow (stanglow@mathematik.uni-ulm.de),
+.br
+minor revisions due to Andreas Borchert
+.\" ---------------------------------------------------------------------------
+.\" $Id: TransStreams.3,v 1.6 1996/11/28 10:51:40 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: TransStreams.3,v $
+.\" Revision 1.6  1996/11/28  10:51:40  borchert
+.\" - alreadyClosed error code added
+.\" - note added that holes must be supported by the underlying stream
+.\" - reference to Resources(3) added
+.\" - because TransStreams supports ObjectTransactions now,
+.\"   the example has been updated and references to
+.\"   ObjectTransactions(3) and Transactions(3) have been added
+.\"
+.\" Revision 1.5  1996/11/18  15:01:30  borchert
+.\" diagnostics section extended with description of all possible
+.\" error events and assertions
+.\"
+.\" Revision 1.4  1996/11/15  20:04:52  borchert
+.\" new manual page taken from thesis of Werner Stanglow with
+.\" many corrections and reformattings, e.g.
+.\" - the example using Dump has been removed because Dump
+.\"   is (no longer?) exported or implemented
+.\" - formatting style now in conformance to the rest of the library
+.\" - order of declarations changed
+.\"
+.\" Revision 1.3  1996/09/17  08:27:54  borchert
+.\" minor layout fixes
+.\"
+.\" ---------------------------------------------------------------------------

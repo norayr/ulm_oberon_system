@@ -1,0 +1,121 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: MakeDirecto.om,v 1.1 2005/02/16 13:59:37 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: MakeDirecto.om,v $
+   Revision 1.1  2005/02/16 13:59:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE MakeDirectory;
+
+   IMPORT Args := UnixArguments, Conclusions, Errors, LoaderErrors, Names,
+      Paths, PersistentObjects, PrivateShards, Process, RelatedEvents,
+      Services, Shards, Streams, UnixFiles, UnixNames;
+
+   VAR
+      lidType: Services.Type;
+      errors: RelatedEvents.Object;
+      parents: BOOLEAN; (* make entire path as -p for mkdir(1) *)
+      auth: Shards.Lid;
+      path: ARRAY 512 OF CHAR;
+      error: Errors.Kind;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArgs;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+   BEGIN
+      parents := FALSE; auth := NIL;
+      error := Errors.fatal;
+      Args.Init("[-a auth] [-c] [-p] {directory}");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a":
+	    Args.FetchString(filename);
+	    CreateLid(auth, filename);
+	 | "c":
+	    (* survive errors and continue *)
+	    error := Errors.error;
+	 | "p":
+	    parents := TRUE;
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+   END ProcessArgs;
+
+   PROCEDURE MkDir(path: ARRAY OF CHAR);
+      VAR
+	 pathlist, p: Paths.Path;
+	 node, subnode: Names.Node;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      pathlist := Paths.Convert(path);
+      node := Names.root; p := pathlist;
+      WHILE p # NIL DO
+	 IF ~parents & (p.next = NIL) THEN
+	    IF ~Names.MakeSubnode(node, p.component, NIL,
+		  Names.allCaps, auth, subnode) THEN
+	       Conclusions.Conclude(node, error, path); RETURN
+	    END;
+	 ELSIF ~Names.GetNode(node, p.component, auth, subnode) THEN
+	    IF ~parents THEN
+	       Conclusions.Conclude(node, error, path); RETURN
+	    END;
+	    (* remove error events of failed Names.GetNode *)
+	    RelatedEvents.GetQueue(node, queue);
+	    IF ~Names.MakeSubnode(node, p.component, NIL,
+		  Names.allCaps, auth, subnode) THEN
+	       Conclusions.Conclude(node, error, path); RETURN
+	    END;
+	 END;
+	 p := p.next; node := subnode;
+      END;
+   END MkDir;
+
+BEGIN
+   Services.SeekType("Shards.Lid", lidType);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   ProcessArgs;
+   WHILE Args.GetArg(path) DO
+      MkDir(path);
+   END;
+   IF Conclusions.errors > 0 THEN
+      Process.Exit(Process.indicateFailure);
+   END;
+   Process.TerminateSoftly;
+END MakeDirectory.

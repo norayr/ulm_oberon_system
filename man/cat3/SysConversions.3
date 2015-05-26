@@ -1,0 +1,191 @@
+SysConversions(3)             Ulm's Oberon System            SysConversions(3)
+
+
+
+[1mNAME[0m
+       SysConversions - convert Oberon records to/from C structures
+
+[1mSYNOPSIS[0m
+       TYPE Address = SysTypes.Address;
+       TYPE Size = Address;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             format: Events.Message;
+          END;
+       TYPE Format = POINTER TO FormatRec;
+       TYPE FormatRec =
+          RECORD
+             (Objects.ObjectRec)
+          END;
+       VAR badformat: Events.EventType;
+
+       PROCEDURE ByAddrToC(from, to: Address; format: ARRAY OF CHAR);
+       PROCEDURE ByAddrFromC(from, to: Address; format: ARRAY OF CHAR);
+       PROCEDURE ToC(VAR from, to: ARRAY OF BYTE; format: ARRAY OF CHAR);
+       PROCEDURE FromC(VAR from, to: ARRAY OF BYTE; format: ARRAY OF CHAR);
+       PROCEDURE CSize(format: ARRAY OF CHAR) : Size;
+       PROCEDURE OberonSize(format: ARRAY OF CHAR) : Size;
+       PROCEDURE Compile(VAR fmt: Format; format: ARRAY OF CHAR);
+       PROCEDURE ByFmtAndAddrToC(from, to: Address; format: Format);
+       PROCEDURE ByFmtAndAddrFromC(from, to: Address; format: Format);
+       PROCEDURE ByFmtToC(VAR from, to: ARRAY OF BYTE; format: Format);
+       PROCEDURE ByFmtFromC(VAR from, to: ARRAY OF BYTE; format: Format);
+
+
+[1mDESCRIPTION[0m
+       [4mSysConversions[24m  supports type conversions of Oberon records to and from
+       C structures.  Conversions are necessary for some  system  calls  (e.g.
+       [4mioctl(2)[24m and [4mstat(2)[24m) and file formats (e.g. [4ma.out(5)[24m).
+
+       The  relation  of  an  Oberon record to a C structure is described by a
+       format string.  It is important to note that the same format string  is
+       used  for conversions in both directions (i.e. from and to the C struc-
+       ture).
+
+       Format strings consists of a slash-separated list of  component  pairs.
+       Each  component  pair describes a conversion of a Oberon component type
+       from and to a C member type.  Component types are  given  by  a  single
+       letter,  e.g.  "is"  converts an Oberon [1mINTEGER [22mcomponent to/from [1mshort[0m
+       [1mint[22m.  Arrays are specified by a length and a colon preceding the compo-
+       nent  types,  e.g. "2:is" for [1mARRAY 2 OF INTEGER [22mto/from [1mshort int [2][22m.
+       Factors allow shorter format strings,  e.g.  "3*is"  is  equivalent  to
+       "is/is/is".   Note  that  "2:is" is not equivalent to "2*is" because of
+       different alignment and padding for arrays.  Factors and arrays may  be
+       combined,  e.g.  "2:2*is"  converts [1mARRAY 2 OF RECORD a, b: INTEGER END[0m
+       to/from [1mstruct { int a, b; } [2][22m.  The factor takes precedence over the
+       array specification, thus "2:2*is" is equivalent to "2*2:is".
+
+       Both  data types may be of different size.  Conversions to smaller data
+       types cause the higher significant bits to be cut off.  Conversions  to
+       larger  data types depend on the data types involved: signed data types
+       are converted with sign extension, unsigned data types  (this  includes
+       addresses  and sets) are filled up with zeroes.  Conversions to [1mBOOLEAN[0m
+       are treated special: any nonzero bit pattern is converted to [1mTRUE[22m, zero
+       is converted to [1mFALSE[22m.
+
+       Skip  specifications  allow  to  suppress  conversions and assignments.
+       E.g. "i-" suppresses the Oberon to C conversion  because  there  is  no
+       corresponding  member  of the C structure and causes the integer compo-
+       nent to remain unchanged in case of  C  to  Oberon  conversions.   This
+       allows multiple conversions into one record.
+
+       Conversions may be followed by comments with leading "=".  Comments are
+       intended to document the member names of the C structure.
+
+       Format strings must conform to the syntax following:
+
+       Format = Conversion { "/" Conversion } .
+       Conversion = [ Factors ] ConvChars [ Comment ] .
+       Factors = Array | Factor | Array Factor | Factor Array .
+       Array = Integer ":" .
+       Factor = Integer "*" .
+       ConvChars = OberonType CType | Skip CType | OberonType Skip .
+       OberonType = "a" | "b" | "c" | "h" | "s" | "i" | "l" | "S" .
+       CType = "a" | "c" | "C" | "s" | "S" | "i" | "I" | "u" | "l" | "L" .
+       Integer = Digit { Digit } .
+       Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" .
+       Skip = "-" .
+       Comment = "=" { AnyChar } .
+       AnyChar = (* all characters except "/" *) .
+
+       Following data types are supported:
+
+       +-----------------+------------------------+
+       |   [4mOberonType[24m    |         [4mCType[24m          |
+       +-----------------+------------------------+
+       |[1ma   [4m[22mAddress[24m      | [1ma   char *             [22m|
+       |[1mb   BYTE         [22m| [1mc   /* signed */ char  [22m|
+       |[1mB   BOOLEAN      [22m| [1mC   unsigned char      [22m|
+       |[1mc   CHAR         [22m| [1ms   short int          [22m|
+       |[1mh   SYSTEM.INT16 [22m| [1mS   unsigned short int [22m|
+       |[1ms   SHORTINT     [22m| [1mi   int                [22m|
+       |[1mi   INTEGER      [22m| [1mI   unsigned int       [22m|
+       |[1ml   LONGINT      [22m| [1mu   unsigned int       [22m|
+       |[1mS   SET          [22m| [1ml   long int           [22m|
+       |                 | [1mL   unsigned long int  [22m|
+       +-----------------+------------------------+
+       Formats may be given as string or as reference to an internal represen-
+       tation.  The internal representation is much faster in case of multiple
+       conversions.  [4mCompile[24m converts [4mformat[24m into [4mfmt[24m which may  be  given  to
+       the [4mByFmt[24m procedures as reference to the internal representation.
+
+       Oberon  records and C structures may be given either by address ([4mByAddr[0m
+       procedures) or by an array of [1mBYTE[22m.
+
+       [4mOberonSize[24m and [4mCSize[24m return the size in bytes of the corresponding data
+       types  as  defined by [4mformat[24m.  The result of [4mOberonSize[24m should be equal
+       to the size of the corresponding Oberon record and the size of the byte
+       array  containing  the  C  structure should be at least as large as the
+       result of [4mCSize[24m.  [4mToC[24m and [4mFromC[24m compare the length of the  byte  arrays
+       against [4mOberonSize[24m and [4mCSize[24m of the given format and raise [4mbadformat[24m in
+       case of insufficient space.  For the other conversion procedures it  is
+       in  the responsibility of the caller to assert that both parameters are
+       at least as large as described by the format.
+
+[1mEXAMPLE[0m
+       Conversion from
+
+       Rec =
+          RECORD
+             a, b: INTEGER;
+             c: CHAR;
+             s: SET;
+             f: ARRAY 3 OF INTEGER;
+          END;
+
+       to
+
+       struct rec {
+          short a, b;
+          char c;
+          int xx;      /* to be skipped on conversion */
+          int s;
+          int f[3];
+       };
+
+       and vice versa works as follows:
+
+       CONST
+          format = "2*is=a,b/cc=c/-i=xx/Si=s/3:ii=f";
+          structlen = 26; (* system dependent *)
+
+       TYPE
+          StructRec = ARRAY structlen OF CHAR;
+
+       VAR
+          fmt: SysConversions.Format;
+
+       PROCEDURE ConvertToC(from: Rec; VAR to: StructRec);
+       BEGIN
+          SysConversions.ByFmtToC(from, to, fmt);
+       END ConvertToC;
+
+       PROCEDURE ConvertToOberon(from: StructRec; VAR to: Rec);
+       BEGIN
+          SysConversions.ByFmtFromC(from, to, fmt);
+       END ConvertToOberon;
+
+       PROCEDURE Init;
+       BEGIN
+          ASSERT(structlen >= SysConversions.CSize(format));
+          ASSERT(SYSTEM.SIZE(Rec) = SysConversions.OberonSize(format));
+          SysConversions.Compile(fmt, format);
+       END Init;
+
+
+[1mDIAGNOSTICS[0m
+       [4mbadformat[24m is raised in case of syntax errors in formats.
+
+[1mSEE ALSO[0m
+       [4mEvents(3)[24m       event handling
+
+[1mBUGS[0m
+       Multidimensional arrays are not implemented.
+
+       Character arrays with different lengths are not supported.
+
+
+
+Release 0.5                Last change: 2 April 2004         SysConversions(3)

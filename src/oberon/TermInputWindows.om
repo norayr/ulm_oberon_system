@@ -1,0 +1,167 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermInputWindows;
+
+   IMPORT Disciplines, Events, Jobs, Resources, Streams, TermKeys,
+      TermWindows;
+
+   TYPE
+      WindowDiscipline = POINTER TO WindowDisciplineRec;
+      DeviceDiscipline = POINTER TO DeviceDisciplineRec;
+      DeviceDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    in: Streams.Stream;
+	    focus: WindowDiscipline; (* pointer into ring *)
+	    switchChar: CHAR;
+	    switchKeyCode: INTEGER;
+	 END;
+   VAR
+      ddid: Disciplines.Identifier;
+
+   TYPE
+      WindowDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    device: DeviceDiscipline;
+	    win: TermWindows.Window;
+	    eventType: Events.EventType;
+	    prev, next: WindowDiscipline; (* ring *)
+	 END;
+   VAR
+      wdid: Disciplines.Identifier;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    device: DeviceDiscipline;
+	 END;
+
+   PROCEDURE AddWindow(device: DeviceDiscipline; win: WindowDiscipline);
+   BEGIN
+      win.device := device;
+      IF device.focus = NIL THEN
+	 win.next := win; win.prev := win; device.focus := win;
+      ELSE
+	 win.next := device.focus; win.prev := device.focus.prev;
+	 win.next.prev := win; win.prev.next := win;
+      END;
+   END AddWindow;
+
+   PROCEDURE RemoveWindow(win: WindowDiscipline);
+   BEGIN
+      IF win.next = win THEN
+	 win.device.focus := NIL;
+      ELSE
+	 win.prev.next := win.next;
+	 win.next.prev := win.prev;
+      END;
+   END RemoveWindow;
+
+   PROCEDURE DeviceReader(job: Jobs.Job);
+      VAR
+	 key: TermKeys.Key;
+	 in: Streams.Stream;
+	 focusEvent: TermWindows.FocusEvent;
+	 keyEvent: TermWindows.KeyEvent;
+	 inputEvent: TermWindows.InputEvent;
+	 dev: DeviceDiscipline;
+   BEGIN
+      WITH job: Job DO
+	 dev := job.device; in := dev.in;
+	 WHILE TermKeys.Read(in, key) DO
+	    IF (key IS TermKeys.FunctionKey) &
+		  (key(TermKeys.FunctionKey).code = dev.switchKeyCode) OR
+	       (key IS TermKeys.SimpleKey) &
+		  (key(TermKeys.SimpleKey).char = dev.switchChar) THEN
+	       LOOP
+		  IF dev.focus = NIL THEN EXIT END;
+		  dev.focus := dev.focus.next;
+		  IF Resources.Terminated(dev.focus.win) THEN
+		     RemoveWindow(dev.focus);
+		  ELSE
+		     EXIT
+		  END;
+	       END;
+	       IF dev.focus # NIL THEN
+		  NEW(focusEvent); focusEvent.type := dev.focus.eventType;
+		  focusEvent.message := "get focus";
+		  Events.Raise(focusEvent);
+	       END;
+	    ELSE
+	       IF dev.focus # NIL THEN
+		  NEW(keyEvent); keyEvent.type := dev.focus.eventType;
+		  keyEvent.message := "get key";
+		  keyEvent.key := key;
+		  Events.Raise(keyEvent);
+	       END;
+	    END;
+	 END;
+      END;
+   END DeviceReader;
+
+   PROCEDURE GetInputEventType(dev: TermWindows.Device;
+                               win: TermWindows.Window;
+			       VAR eventType: Events.EventType);
+      VAR
+	 dd: DeviceDiscipline;
+	 wd: WindowDiscipline;
+   BEGIN
+      IF Disciplines.Seek(win, wdid, wd) THEN
+	 eventType := wd.eventType;
+      ELSIF Disciplines.Seek(dev, ddid, dd) THEN
+	 NEW(wd); wd.id := wdid;
+	 wd.device := dd; wd.win := win;
+	 Events.Define(wd.eventType);
+	 Disciplines.Add(win, wd);
+	 AddWindow(dd, wd);
+	 eventType := wd.eventType;
+      ELSE
+	 eventType := NIL;
+      END;
+   END GetInputEventType;
+
+   PROCEDURE Install(dev: TermWindows.Device;
+                     switchChar: CHAR;
+		     switchKeyCode: INTEGER);
+      VAR
+	 dd: DeviceDiscipline;
+	 job: Job;
+   BEGIN
+      NEW(dd); dd.id := ddid; dd.focus := NIL;
+      dd.switchChar := switchChar; dd.switchKeyCode := switchKeyCode;
+      TermWindows.EnableEventHandling(dev, GetInputEventType, dd.in);
+      Disciplines.Add(dev, dd);
+      NEW(job); job.device := dd;
+      Jobs.Submit(job, DeviceReader);
+   END Install;
+
+BEGIN
+   ddid := Disciplines.Unique();
+   wdid := Disciplines.Unique();
+END TermInputWindows.

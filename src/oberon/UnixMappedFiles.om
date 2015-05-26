@@ -1,0 +1,343 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixMappedF.om,v 1.3 2010/06/24 13:14:34 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixMappedF.om,v $
+   Revision 1.3  2010/06/24 13:14:34  borchert
+   bug fix: a RETURN FALSE was missing in OpenFd
+
+   Revision 1.2  2001/02/06 08:53:50  borchert
+   fd is now closed during the open process immediately after mapping it
+
+   Revision 1.1  1998/02/22  10:28:18  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixMappedFiles;
+
+   (* mapping of files into virtual memory;
+      note that neither Open nor OpenFd are able to extend the
+      file -- use UnixFiles for this
+   *)
+
+   IMPORT Events, MemOps, Memory, MemStreams, Priorities, RelatedEvents,
+      Services, Streams, SubStreams, SYS := SYSTEM, SysIO, SysMemory,
+      SysTypes, Types, UnixFiles;
+
+   CONST
+      read = UnixFiles.read;
+      write = UnixFiles.write;
+      rdwr = UnixFiles.rdwr;
+   TYPE
+      Mode = SHORTINT;
+
+   CONST
+      corecaps = {Streams.addrio, Streams.seek, Streams.tell, Streams.close};
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    addr: Memory.Address;
+	    region: Memory.Region;
+	    length: Streams.Count; (* length in use; not aligned *)
+	    pos: Streams.Count;    (* current position *)
+	    (* parameters for SysMemory *)
+	    memaddr: SysTypes.UntracedAddress;
+	    memlen: SysTypes.Size;
+	 END;
+   VAR
+      type: Services.Type; (* type of UnixMappedFiles.Stream *)
+      if: Streams.Interface;
+
+   VAR
+      pageSize: Memory.Size;
+
+   CONST
+      illegalMode = 0; (* invalid mode given to Open or OpenFd *)
+      posOutOfRange = 1; (* invalid parameters given to Seek *)
+      beyondEndOfStream = 2; (* write operation beyond given length *)
+      invalidRange = 3; (* invalid range given to SubStreams.Open *)
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* illegalMode..beyondEndOfStream *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === interface to Streams ============================================ *)
+
+   PROCEDURE AddrRead(s: Streams.Stream; ptr: Streams.Address;
+                      cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       cnt := s.length - s.pos;
+	    END;
+	    MemOps.CopyU(s.addr + s.pos, ptr, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrRead;
+
+   PROCEDURE AddrWrite(s: Streams.Stream; ptr: Streams.Address;
+                       cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       Error(s, beyondEndOfStream);
+	    END;
+	    MemOps.CopyU(ptr, s.addr + s.pos, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrWrite;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrRead(s, SYS.ADR(byte), 1) = 1
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrWrite(s, SYS.ADR(byte), 1) = 1
+   END Write;
+
+   PROCEDURE Seek(s: Streams.Stream; cnt: Streams.Count;
+                  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: newpos := cnt;
+	 | Streams.fromPos:   newpos := s.pos + cnt;
+	 | Streams.fromEnd:   newpos := s.length - cnt;
+	 END;
+	 IF (newpos < 0) OR (newpos > s.length) THEN
+	    Error(s, posOutOfRange); RETURN FALSE
+	 END;
+	 s.pos := newpos;
+	 RETURN TRUE
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 cnt := s.pos;
+	 RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok, interrupted: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 IF s.length > 0 THEN
+	    ok := SysMemory.Unmap(s.memaddr, s.memlen, s);
+	    IF ok THEN
+	       Memory.ReleaseRegion(s.region);
+	    END;
+	 ELSE
+	    ok := TRUE;
+	 END;
+	 RETURN ok
+      END;
+   END Close;
+
+   (* === SubStreams interface ============================================ *)
+
+   PROCEDURE OpenSubStream(VAR s: Streams.Stream;
+                           base: Streams.Stream;
+			   from, length: Streams.Count;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH base: Stream DO
+	 IF (from < 0) OR (from + length > base.length) THEN
+	    Error(errors, invalidRange); RETURN FALSE
+	 END;
+	 MemStreams.OpenU(s, base.addr + from, length, MemStreams.read);
+	 RETURN TRUE
+      END;
+   END OpenSubStream;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(type, "UnixMappedFiles.Stream", "Streams.Stream");
+      SubStreams.Register(type, OpenSubStream);
+      NEW(if);
+      if.addrread := AddrRead; if.addrwrite := AddrWrite;
+      if.read := Read; if.write := Write;
+      if.seek := Seek; if.tell := Tell;
+      if.close := Close;
+      pageSize := Memory.GetPageSize();
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[illegalMode] := "invalid opening mode";
+      errormsg[posOutOfRange] := "position out of valid range";
+      errormsg[beyondEndOfStream] := "write attempted beyond end of stream";
+      errormsg[invalidRange] := "range exceeds that of base stream";
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE OpenFd(VAR s: Streams.Stream; fd: SysTypes.File;
+                    mode: Mode; offset, length: Streams.Count;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* note that fd must be something which is supported by mmap(2) *)
+      VAR
+	 alignedSize: Memory.Size;
+	 addr: Memory.Address; region: Memory.Region;
+	 prot: SET;
+	 mapaddress: SysTypes.UntracedAddress;
+	 newstream: Stream;
+	 caps: Streams.CapabilitySet;
+	 currpos: SysIO.Count;
+	 misalignment: Memory.Size;
+   BEGIN
+      caps := corecaps;
+      ASSERT(length >= 0);
+      CASE mode OF
+      | read:  prot := SysMemory.read; INCL(caps, Streams.read);
+      | write: prot := SysMemory.write; INCL(caps, Streams.write);
+      | rdwr:  prot := SysMemory.read + SysMemory.write;
+	       INCL(caps, Streams.read); INCL(caps, Streams.write);
+      ELSE
+	 Error(errors, illegalMode); RETURN FALSE
+      END;
+      IF length > 0 THEN
+	 IF ~SysIO.Tell(fd, currpos, errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF (currpos >= offset) & (currpos <= offset + length) THEN
+	    DEC(currpos, offset);
+	 ELSE
+	    currpos := 0;
+	 END;
+	 misalignment := offset MOD pageSize;
+	 IF misalignment # 0 THEN
+	    DEC(offset, misalignment);
+	 END;
+	 alignedSize := length + misalignment; Memory.AlignSize(alignedSize);
+	 IF ~Memory.AllocateRegion(alignedSize,
+	       Memory.fixed + Memory.redzoneProtected,
+	       addr, region, errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~SysMemory.Map(addr, alignedSize, prot,
+	       SysMemory.shared + SysMemory.fixed,
+	       fd, offset - misalignment,
+	       mapaddress, errors) THEN
+	    Memory.ReleaseRegion(region);
+	    RETURN FALSE
+	 END;
+	 ASSERT(mapaddress = addr);
+      ELSE
+	 addr := SYS.VAL(Memory.Address, NIL);
+	 region := NIL;
+	 currpos := 0;
+	 misalignment := 0;
+	 offset := 0;
+      END;
+
+      NEW(newstream);
+      newstream.addr := addr + misalignment;
+      newstream.region := region;
+      newstream.length := length;
+      newstream.pos := currpos;
+      newstream.memaddr := addr;
+      newstream.memlen := alignedSize;
+      Services.Init(newstream, type);
+      Streams.Init(newstream, if, caps, Streams.nobuf);
+      s := newstream;
+      RETURN TRUE
+   END OpenFd;
+
+   PROCEDURE Open(VAR s: Streams.Stream; filename: ARRAY OF CHAR;
+                  mode: Mode; errors: RelatedEvents.Object) : BOOLEAN;
+      (* open the given file and map it into memory and return
+         a stream for it
+      *)
+      VAR
+	 options: SET;
+	 fd: SysIO.File;
+	 interrupted: BOOLEAN;
+	 length: SysIO.Count;
+	 currpos: SysIO.Count;
+	 ok: BOOLEAN;
+   BEGIN
+      CASE mode OF
+      | write: options := SysIO.wronly;
+      | read:  options := SysIO.rdonly;
+      | rdwr:  options := SysIO.rdwr;
+      ELSE
+	 Error(errors, illegalMode); RETURN FALSE
+      END;
+      IF ~SysIO.Open(fd, filename, options, errors,
+                     (* retry = *) TRUE, interrupted) OR
+	    ~SysIO.Tell(fd, currpos, errors) OR
+	    ~SysIO.Seek(fd, 0, SysIO.fromEnd, errors) OR
+	    ~SysIO.Tell(fd, length, errors) OR
+	    ~SysIO.Seek(fd, currpos, SysIO.fromStart, errors) THEN
+	 RETURN FALSE
+      END;
+      ok := OpenFd(s, fd, mode, 0, length, errors);
+      IF ~SysIO.Close(fd, errors, (* retry = *) TRUE, interrupted) THEN
+	 (* ignore it *)
+      END;
+      RETURN ok
+   END Open;
+
+BEGIN
+   Init;
+END UnixMappedFiles.

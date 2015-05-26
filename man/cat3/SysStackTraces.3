@@ -1,0 +1,72 @@
+SysStackTraces(3)             Ulm's Oberon System            SysStackTraces(3)
+
+
+
+[1mNAME[0m
+       SysStackTraces - print stack traces
+
+[1mSYNOPSIS[0m
+       PROCEDURE PrintBackTrace(s: Streams.Stream; cr: Coroutines.Coroutine);
+       PROCEDURE PrintAllBackTraces(s: Streams.Stream);
+
+
+[1mDESCRIPTION[0m
+       [4mSysStackTraces[24m  allows  to  print  out  simple backtraces of invocation
+       chains of coroutines.  This is mainly  useful  on  platforms  where  no
+       helpful debugger is available.
+
+       Each  line in a backtrace specifies the contents of two major registers
+       (frame pointer and program counter) in hex and the  qualified  name  of
+       the procedure.
+
+       [4mPrintBackTrace[24m  prints  the  backtrace  for [4mcr[24m onto [4ms[24m.  The results are
+       undefined if [4mcr[24m is the current coroutine.
+
+       [4mPrintAllBackTraces[24m prints the backtraces of all coroutines onto [4ms[24m. Mul-
+       tiple back traces are separated by empty lines.
+
+[1mEXAMPLE[0m
+       Following  module,  if  imported, provides a backtrace of the offending
+       coroutine in case of a runtime error or similar event that caused  [4mPro-[0m
+       [4mcess.Abort[24m to be called:
+
+       MODULE CrashHandler;
+
+          IMPORT Coroutines, Errors, Events, Process, Streams, SysStackTraces,
+             SYSTEM, Write;
+
+          PROCEDURE PrintBackTrace(VAR cr: Coroutines.Coroutine);
+          BEGIN
+             SYSTEM.CRSPAWN(cr);
+             SysStackTraces.PrintBackTrace(Streams.stderr, Coroutines.source);
+             SYSTEM.CRSWITCH(Coroutines.source);
+          END PrintBackTrace;
+
+          PROCEDURE AbortHandler(event: Events.Event);
+             VAR
+                cr: Coroutines.Coroutine;
+          BEGIN
+             Write.StringS(Streams.stderr, Process.name);
+             Write.StringS(Streams.stderr, ": ");
+             Errors.Write(Streams.stderr, event);
+             Write.LnS(Streams.stderr);
+             Write.LineS(Streams.stderr, "backtrace of current coroutine:");
+             PrintBackTrace(cr); SYSTEM.CRSWITCH(cr);
+          END AbortHandler;
+
+       BEGIN
+          Events.Handler(Process.abort, AbortHandler);
+       END CrashHandler.
+
+       Please  note that [4mSysStackTraces.PrintBackTrace[24m creates a new coroutine
+       for printing the backtrace as a coroutine shall not print its own back-
+       trace.
+
+[1mSEE ALSO[0m
+       [4mSysModules(3)[24m   is used to map program counters into module / procedure
+                       combinations
+       [4mSysStacks(3)[24m    allows the examination of coroutine stacks
+
+
+
+Release 0.5               Last change: 25 August 2005        SysStackTraces(3)

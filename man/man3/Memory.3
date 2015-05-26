@@ -1,0 +1,380 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Memory 3 "Last change: 6 December 1996" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Memory \- address space management
+.SH SYNOPSIS
+.Pg
+TYPE Address = Types.UntracedAddress;
+TYPE Size = Types.Size;
+.sp 0.3
+(* allocation mode *)
+CONST fixed = { 0 };
+CONST growingForward = { 1 };
+CONST growingBackward = { 0, 1 };
+CONST redzoneProtected = { 2 };
+TYPE AllocationMode = SET;
+.sp 0.3
+(* status returns for memory locations *)
+CONST stAllocated = 1;
+CONST stRedzone = 2;
+CONST stReserved = 3;
+CONST stThreatened = 4;
+CONST stInternalFrag = 5;
+CONST stFree = 6;
+TYPE Status = SHORTINT; (* stAllocated..stFree *)
+.sp 0.3
+TYPE Region = POINTER TO RegionRec;
+TYPE RegionRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.3
+(* assertions *)
+VAR overlappingRegions: Events.EventType;
+VAR addrNotOnPageBoundary: Events.EventType;
+VAR pagesizeSetTwice: Events.EventType;
+VAR undefinedPageSize: Events.EventType;
+.sp 0.3
+CONST cannotAllocRegion = 0;
+CONST cannotExtendRegion = 1;
+CONST fixedRegion = 2;
+CONST reservedRegionsAreNotProtected = 3;
+CONST badParamsOfReservedRegion = 4;
+CONST errorcodes = 5;
+.sp 0.3
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: SHORTINT;
+   END;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE ReserveRegion(addr: Address; len: Size;
+                        mode: AllocationMode;
+                        VAR region: Region);
+.sp 0.2
+PROCEDURE AllocateRegion(len: Size; mode: AllocationMode;
+                         VAR addr: Address; VAR region: Region;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE ExtendRegion(region: Region; newlen: Size;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.2
+PROCEDURE ReleaseRegion(region: Region);
+.sp 0.2
+PROCEDURE GetStatus(addr: Address; VAR status: Status; VAR region: Region);
+.sp 0.2
+PROCEDURE SetPageSize(pagesize: Size);
+.sp 0.2
+PROCEDURE GetPageSize() : Size;
+.sp 0.2
+PROCEDURE AlignSize(VAR size: Size);
+.Pe
+.SH DESCRIPTION
+.I Memory
+provides a general and machine-independent allocation of
+memory regions.
+The only dependency of the implementation is
+the type \fISysTypes.Address\fP and its representation.
+.PP
+Usually there are many modules which accesses the address
+space: the compiler dependent procedures which are called
+by \fBNEW\fP and on creation of coroutines, system dependent
+modules which need space for shared memory or mapped files.
+.I Memory
+is to be used by all these procedures and modules to assure
+that no part of the address space is accidently used twice
+and for achieving more fairness for growing memory regions
+(e.g. for stacks of coroutines).
+.PP
+Following allocation modes are supported:
+.Tb redzoneProtected
+.Tp fixed
+The size of the region is fixed and doesn't grow.
+.Tp growingForward
+The memory region may grow forward, i.e. from lower
+to higher addresses.
+.Tp growingBackward
+The memory region may grow backward, i.e. from higher
+to lower addresses.
+.Tp redzoneProtected
+At least one memory page before and after the region
+is to be reserved in addition to the returned region.
+.Te
+Exactly one of the modes \fIfixed\fP, \fIgrowingForward\fP
+and \fIgrowingBackward\fP is to be given.
+\fIredzoneProtected\fP may be added optionally.
+.PP
+Addresses and lengths must be multiplies of the system dependent
+page size.
+A length of 0 designates the entire address space.
+.PP
+Initially,
+.I Memory
+isn't aware of preallocated memory regions,
+e.g. for program text and the stack of the main coroutine.
+These preallocated memory regions are to be declared by use of
+\fIReserveRegion\fP in the early stage of the startup phase by some
+system dependent modules.
+The memory region is specified by
+\fB[\fP\fIaddr\fP, \fIaddr\fP\fB+\fP\fIlen\fP\fB)\fP
+for fixed or forward growing regions and by
+\fB[\fP\fIaddr\fP\fB-\fP\fIlen\fP, \fIaddr\fP\fB)\fP
+for backward growing regions.
+An \fIaddr\fP value of \fB0\fP represents the end of
+the address space in case of backward growing regions.
+.PP
+.I AllocateRegion
+tries to allocate a memory region of the given length and
+the given allocation mode.
+If successful, \fIAllocateRegion\fP returns a reference to
+the region in \fIregion\fP.
+Further \fIaddr\fP is returned which designates the
+beginning of the region (\fIfixed\fP and \fIgrowingForward\fP)
+or the end of the region (\fIgrowingBackward\fP).
+.PP
+.I ExtendRegion
+allows to extend growing regions by specifying a new
+length which must not be smaller than the previous length.
+The length of the memory region remains unchanged in case
+of failures.
+.PP
+.I ReleaseRegion
+allows to release a given region.
+.PP
+.I GetStatus
+returns the allocation status and, if possible, the associated
+region of the page which is designated by \fIaddr\fP.
+\fIMemory\fP classifies pages according to following characteristics:
+.Tb stInternalFrag
+.Tp stAllocated
+The memory page belongs to the returned region.
+.Tp stRedzone
+The memory page belongs to the redzone of the returned region.
+.Tp stReserved
+The area is reserved for a growing region and cannot be
+allocated to other regions.
+.Tp stThreatened
+This area is threatened by the returned growing region but
+not yet reserved or allocated.
+.Tp stInternalFrag
+The memory page cannot be allocated due to internal fragmentation
+caused by the returned fixed region.
+.Tp stFree
+The memory page is free.
+.Te
+.PP
+.I SetPageSize
+must be called during the startup before any of the
+other procedures gets called.
+.PP
+.I GetPageSize
+returns the pagesize set previously and
+.I AlignSize
+aligns the given size to the next page boundary.
+.SH DIAGNOSTICS
+Errors lead to events or assertions which are passed
+to \fIRelatedEvents\fP or \fIAssertions\fP.
+Following assertions and error codes are implemented:
+.Tb reservedRegionsAreNotProtected
+.Tp overlappingRegions
+A memory region has been given to \fIReserveRegion\fP which
+overlaps existing regions.
+.Tp addrNotOnPageBoundary
+An address or length has been given which is not a multiply
+of the page size.
+.Tp pagesizeSetTwice
+\fISetPageSize\fP was called twice.
+.Tp undefinedPageSize
+One of the procedures was called without a prior call of
+\fISetPageSize\fP.
+.Tp cannotAllocRegion
+A memory region of the given length cannot be allocated.
+.Tp cannotExtendRegion
+The given memory region cannot be extended to the given length.
+.Tp fixedRegion
+\fIExtendRegion\fP cannot extend fixed regions.
+.Tp reservedRegionsAreNotProtected
+Reserved regions cannot be redzone protected.
+.Tp badParamsOfReservedRegion
+The parameters \fIaddr\fP and \fIlen\fP specify a
+memory region which does not fit into the address space.
+.Te
+.SH "SEE ALSO"
+.Tb SysTypes(3)
+.Tp Assertions(3)
+handling of assertions
+.Tp RelatedEvents(3)
+error handling
+.Tp SysTypes(3)
+system dependent types
+.Te
+.SH BUGS
+The current implementation needs dynamic memory for its
+data structure and is free to call \fBNEW\fP during
+any of its operations and its initialization.
+.PP
+The implementation uses a modified buddy system allocator.
+This results in internal fragmentation for lengths
+which are not a power of 2.
+Only \fIReserveRegion\fP is able to allocate the given length
+without internal fragmentation.
+.\" ---------------------------------------------------------------------------
+.\" $Id: Memory.3,v 1.6 1996/12/06 18:10:08 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Memory.3,v $
+.\" Revision 1.6  1996/12/06  18:10:08  borchert
+.\" Region is an extension of Disciplines.Object
+.\"
+.\" Revision 1.5  1994/07/01  09:17:49  borchert
+.\" Types is now used instead of SysTypes
+.\"
+.\" Revision 1.4  1994/02/23  10:42:37  borchert
+.\" Address is now SysTypes.UntracedAddress
+.\"
+.\" Revision 1.3  1993/06/10  11:10:45  borchert
+.\" GetStatus, GetPageSize and AlignSize added
+.\"
+.\" Revision 1.2  1993/02/01  13:03:28  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.1  1993/01/29  11:23:39  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

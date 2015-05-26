@@ -1,0 +1,1389 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonSymbo.om,v 1.1 2001/02/19 13:47:17 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonSymbo.om,v $
+   Revision 1.1  2001/02/19 13:47:17  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonSymbols;
+
+   IMPORT CompilerKeys, CompilerObjects, CompilerPragmas, ConstStrings,
+      IdentKeys, Keys, Lex := OberonLex, NetIO, OberonPragmas,
+      PersistentObjects, Scopes, Services, Sources := CompilerSources,
+      Streams, Texts;
+
+   TYPE
+      Ident = POINTER TO IdentRec;
+      Type = POINTER TO TypeRec;
+      Attribute = POINTER TO AttributeRec;
+      BuiltInProcedure = POINTER TO BuiltInProcedureRec;
+      Identifier = ConstStrings.String;
+
+   TYPE
+      NamedObject = POINTER TO NamedObjectRec;
+	 (* serves as base type and is never instantiated *)
+      NamedObjectRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    name: Identifier;
+	 END;
+
+   CONST
+      (* base types *)
+      integer = 0;
+      cardinal = 1;
+      address = 2;
+      real = 3;
+      boolean = 4;
+      char = 5;
+      set = 6;
+      byte = 7;
+      coroutine = 8;
+      (* structured types *)
+      array = 9;
+      record = 10;
+      pointer = 11;
+      proceduretype = 12;
+      forms = 13;
+   TYPE
+      Form = SHORTINT; (* integer .. proceduretype *)
+      FormSet = SET; (* OF Form *)
+   CONST
+      numeric = {integer, cardinal, address, real};
+      basic = numeric + {boolean, char, set, byte, coroutine};
+      structured = {array, record, pointer, proceduretype};
+
+   CONST
+      (* if we are processing a source in the first pass,
+	 we are open regarding the hardware architecture;
+	 therefore all numerical types (integers and reals)
+	 come in three variants:
+
+	 (1) generic, i.e. just integer or real without any
+	     idea whether its long or short or how many bytes
+	     are occupied
+	 (2) standard, i.e. INTEGER or LONGREAL where we
+	     do not know the size yet (well, SHORTINT could
+	     be hardly something different from signed 8 bits)
+	 (3) explicit, i.e. SYSTEM.INT16 where we know
+	     the size but not its relation to the standard types;
+	     note that not all explicit types may be supported
+	     on all hardware platforms
+      *)
+      generic = 0;
+      standard = 1;
+      explicit = 2;
+   TYPE
+      Spec = SHORTINT; (* generic .. explicit *)
+   CONST
+      specforms = {integer, cardinal, real};
+	 (* set of types that possibly support these variants *)
+   
+   CONST
+      (* standard lengths, e.g. SHORTINT, INTEGER and LONGINT *)
+      short = 0;
+      medium = 1;
+      long = 2;
+   TYPE
+      StdLength = SHORTINT; (* short .. long *)
+
+   TYPE
+      FieldList = POINTER TO FieldListRec;
+      FieldListRec =
+	 RECORD
+	    (NamedObjectRec)
+	    private: BOOLEAN;
+	    type: Type; (* may be NIL in case of errors *)
+	    next: FieldList;
+	 END;
+   VAR
+      fieldListType: Services.Type;
+
+   CONST
+      callByValue = 0;
+      callByReference = 1;
+   TYPE
+      ParamKind = SHORTINT; (* callByValue .. callByReference *)
+      ParamList = POINTER TO ParamListRec;
+      ParamListRec =
+	 RECORD
+	    (NamedObjectRec)
+	    paramkind: ParamKind;
+	    type: Type; (* may be NIL in case of errors *)
+	    next: ParamList;
+	 END;
+   VAR
+      paramListType: Services.Type;
+
+   TYPE
+      TypeRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    ident: Ident; (* defining ident; may be NIL *)
+	    form: Form;
+	    hastracedptrs: BOOLEAN;
+	    (* form IN specforms *)
+	    spec: Spec;
+	    bits: INTEGER; (* number of bits if spec = explicit *)
+	    stdlength: StdLength; (* if spec = standard *)
+	    (* addresses *)
+	    traced: BOOLEAN;
+	    (* arrays *)
+	    dyn: BOOLEAN; (* dynamic array *)
+	    length: Attribute; (* only set if dyn = FALSE *)
+	    element: Type; (* element type; may be NIL in case of errors *)
+	    (* records *)
+	    basetype: Type; (* may be NIL *)
+	    fields: FieldList;
+	    publicfieldscope: Scopes.Scope;
+	    privatefieldscope: Scopes.Scope;
+	    owner: Ident; (* module that owns the private field scope *)
+	    (* pointers *)
+	    reftype: Type;
+	    taggedptr: BOOLEAN; (* IS and WITH legal? *)
+	    (* procedure types *)
+	    function: BOOLEAN;
+	    builtin: BOOLEAN; (* built-in procedure or function? *)
+	    builtinproc: BuiltInProcedure; (* if builtin = TRUE *)
+	    paramlist: ParamList; (* if builtin = FALSE *)
+	    paramscope: Scopes.Scope;
+	    restype: Type; (* if builtin = FALSE and function = TRUE *)
+	 END;
+   VAR
+      typeType: Services.Type;
+
+   TYPE
+      CheckArgsProc = PROCEDURE (builtinproc: BuiltInProcedure;
+                                 args: Attribute;
+				 VAR restype: Type);
+	 (* restype is to be set only in case of standard functions
+	    and may be NIL in error cases;
+	    note that this procedure must not be called if
+	    the number of arguments is outside of [minargs .. maxargs]
+	 *)
+      BuiltInProcedureRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	       (* note that builtin procedures do not have a location;
+		  i.e. the loc component is NIL
+	       *)
+	    minargs, maxargs: INTEGER;
+	       (* minimal and maximal number of args; maxargs may
+	          be set to -1, indicating an unlimited number of
+		  arguments
+	       *)
+	    type: Type;
+	       (* associated type; type.builtinproc should point back *)
+	    (* private stuff *)
+	    checkArgs: CheckArgsProc;
+	 END;
+   VAR
+      builtInProcedureType: Services.Type;
+
+   CONST
+      moduleC = 0; constC = 1; typeC = 2; varC = 3; procedureC = 4;
+      classes = 5;
+   TYPE
+      Class = SHORTINT; (* moduleC .. procedureC *)
+
+   CONST
+      valueParam = callByValue;
+      refParam = callByReference;
+      noParam = 2;
+   TYPE
+      VarKind = SHORTINT; (* valueParam .. noParam *)
+
+   TYPE
+      IdentRec =
+	 RECORD
+	    (NamedObjectRec)
+	    module: Ident;
+	    class: Class;
+	    type: Type; (* is NIL for modules and in case of errors *)
+	    (* modules and procedures *)
+	    scope: Scopes.Scope;
+	    body: Attribute; (* statement sequence, chained *)
+	    (* modules *)
+	    kind: Sources.SourceKind;
+	    export: Scopes.Scope;
+	    origname: Identifier; (* original name if aliased *)
+	    key: CompilerKeys.Key;
+	    dependencies: CompilerKeys.Set;
+	    pcontext: CompilerPragmas.PragmaContext;
+	    (* constants *)
+	    constexpr: Attribute;
+	    (* variables and procedures *)
+	    plevel: INTEGER; (* procedure nest level; 0 if global *)
+	    (* variables *)
+	    varkind: VarKind;
+	 END;
+   VAR
+      identType: Services.Type;
+
+   CONST
+      emptySetConst = 0;
+      trueConst = 1;
+      falseConst = 2;
+      tokenConst = 3;
+   TYPE
+      ConstantKind = SHORTINT; (* emptySetConst .. tokenConst *)
+      ConstantValue = POINTER TO ConstantValueRec;
+      ConstantValueRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    kind: ConstantKind;
+	    token: Lex.Token; (* defined if kind = tokenConst *)
+	 END;
+   VAR
+      constvalType: Services.Type;
+
+   CONST
+      moduleAt = 0;
+      constAt = 1;
+      typeAt = 2;
+      varAt = 3;
+      procAt = 4;
+      callAt = 5;
+      refAt = 6;
+      selectAt = 7;
+      indexAt = 8;
+      guardAt = 9;
+      unaryAt = 10;
+      binaryAt = 11;
+      constvalAt = 12;
+      ifAt = 13;
+      caseAt = 14;
+      singleCaseAt = 15;
+      whileAt = 16;
+      repeatAt = 17;
+      loopAt = 18;
+      exitAt = 19;
+      returnAt = 20;
+      withAt = 21;
+      identModes = {moduleAt .. procAt}; (* with ident field *)
+      designatorModes = {varAt, refAt..guardAt};
+      constModes = {constAt, constvalAt};
+      opModes = designatorModes +
+                {constAt, procAt, callAt, unaryAt, binaryAt, constvalAt};
+      stmtModes = {ifAt .. withAt, callAt, binaryAt (* assignment *)};
+   TYPE
+      AtMode = SHORTINT;
+      AttributeRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    next: Attribute;
+	       (* next expression in case of parameter lists,
+		  next statement for statement sequences,
+		  next ELSIF element, or
+		  next case of a case statement
+	       *)
+	    type: Type;
+	       (* may be NIL in case of errors or
+		  is always NIL for statements (exception: withAt)
+	       *)
+	    mode: AtMode;
+	    (* mode IN identModes *)
+	    ident: Ident;
+	    (* mode = constvalAt *)
+	    constval: ConstantValue;
+	    (* mode = callAt *)
+	    firstparam: Attribute; (* linear list via next component *)
+	    paramcnt: INTEGER; (* number of parameters *)
+	    proc: Attribute;
+	    (* mode IN refAt .. guardAt *)
+	    designator: Attribute;
+	    (* mode = indexAt *)
+	    index: Attribute;
+	    (* mode = selectAt *)
+	    field: FieldList;
+	    (* mode = guardAt *)
+	    guard: Attribute;
+	    (* mode = unaryAt or binaryAt *)
+	    opsy: Lex.Symbol;
+	    rightop: Attribute;
+	    (* mode = binaryAt *)
+	    leftop: Attribute;
+	    (* mode = ifAt, caseAt, whileAt, repeatAt, returnAt *)
+	    expression: Attribute;
+	    (* mode = ifAt, caseAt *)
+	    else: Attribute; (* statement sequence, chained *)
+	    (* mode = ifAt *)
+	    then: Attribute; (* statement sequence, chained *)
+	    elsifs: Attribute; (* mode = ifAt, chained by `next' field *)
+	    (* mode = caseAt *)
+	    cases: Attribute; (* mode = singleCaseAt, chained *)
+	    haselse: BOOLEAN; (* has possible empty ELSE-branch *)
+	    (* mode = singleCaseAt *)
+	    labels: Attribute;
+	    (* mode = whileAt, repeatAt, loopAt, singleCaseAt, withAt *)
+	    body: Attribute; (* statement sequence, chained *)
+	    (* mode = exitAt *)
+	    loop: Attribute; (* pointer back to loop stmt *)
+	    (* mode = withAt *)
+	    variable: Ident;
+	 END;
+   VAR
+      attributeType: Services.Type;
+
+   VAR
+      scopeType: Services.Type; (* that of Scopes.Scope *)
+      keyType: Services.Type; (* that of CompilerKeys.Key *)
+      setType: Services.Type; (* that of CompilerKeys.Set *)
+      pcontextType: Services.Type; (* that of CompilerPragmas.PragmaContext *)
+
+   PROCEDURE ReadConstString(s: Streams.Stream;
+			     VAR string: ConstStrings.String) : BOOLEAN;
+      VAR
+	 isNIL: BOOLEAN;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, isNIL) THEN RETURN FALSE END;
+      IF isNIL THEN
+	 string := NIL; RETURN TRUE
+      ELSE
+	 RETURN NetIO.ReadConstString(s, string)
+      END;
+   END ReadConstString;
+
+   PROCEDURE WriteConstString(s: Streams.Stream;
+			      VAR string: ConstStrings.String) : BOOLEAN;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, string = NIL) THEN RETURN FALSE END;
+      IF string = NIL THEN
+	 RETURN TRUE
+      ELSE
+	 RETURN NetIO.WriteConstString(s, string)
+      END;
+   END WriteConstString;
+
+   (* === PersistentObject if procedures for NamedObjects ================== *)
+
+   PROCEDURE ReadNamedObject(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NamedObject DO
+	 RETURN ReadConstString(s, object.name)
+      END;
+   END ReadNamedObject;
+
+   PROCEDURE WriteNamedObject(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NamedObject DO
+	 RETURN WriteConstString(s, object.name)
+      END;
+   END WriteNamedObject;
+
+   (* === PersistentObject if procedures for FieldList ===================== *)
+
+   PROCEDURE CreateFieldList(VAR object: PersistentObjects.Object);
+      VAR
+	 fieldlist: FieldList;
+   BEGIN
+      NEW(fieldlist);
+      fieldlist.type := NIL; fieldlist.next := NIL;
+      PersistentObjects.Init(fieldlist, fieldListType);
+      object := fieldlist;
+   END CreateFieldList;
+
+   PROCEDURE ReadFieldList(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: FieldList DO
+	 RETURN NetIO.ReadBoolean(s, object.private) &
+	        CompilerObjects.GuardedRead(s, typeType, object.type) &
+	        CompilerObjects.GuardedRead(s, fieldListType, object.next)
+      END;
+   END ReadFieldList;
+
+   PROCEDURE WriteFieldList(s: Streams.Stream;
+                            object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: FieldList DO
+	 RETURN NetIO.WriteBoolean(s, object.private) &
+	        CompilerObjects.Write(s, object.type) &
+	        CompilerObjects.Write(s, object.next)
+      END;
+   END WriteFieldList;
+
+   (* === PersistentObject if procedures for ParamList ===================== *)
+
+   PROCEDURE CreateParamList(VAR object: PersistentObjects.Object);
+      VAR
+	 paramlist: ParamList;
+   BEGIN
+      NEW(paramlist);
+      paramlist.paramkind := callByValue;
+      paramlist.type := NIL; paramlist.next := NIL;
+      PersistentObjects.Init(paramlist, paramListType);
+      object := paramlist;
+   END CreateParamList;
+
+   PROCEDURE ReadParamList(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ParamList DO
+	 RETURN NetIO.ReadShortInt(s, object.paramkind) &
+	        CompilerObjects.GuardedRead(s, typeType, object.type) &
+	        CompilerObjects.GuardedRead(s, paramListType, object.next)
+      END;
+   END ReadParamList;
+
+   PROCEDURE WriteParamList(s: Streams.Stream;
+                            object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ParamList DO
+	 RETURN NetIO.WriteShortInt(s, object.paramkind) &
+	        CompilerObjects.Write(s, object.type) &
+	        CompilerObjects.Write(s, object.next)
+      END;
+   END WriteParamList;
+
+   (* === PersistentObject if procedures for Type ========================== *)
+
+   PROCEDURE CreateType(VAR object: PersistentObjects.Object);
+      VAR
+	 type: Type;
+   BEGIN
+      NEW(type); type.ident := NIL;
+      PersistentObjects.Init(type, typeType);
+      object := type;
+   END CreateType;
+
+   PROCEDURE ReadType(s: Streams.Stream;
+                      object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Type DO
+	 RETURN CompilerObjects.GuardedRead(s, identType, object.ident) &
+	        NetIO.ReadShortInt(s, object.form) &
+	        NetIO.ReadBoolean(s, object.hastracedptrs) &
+		(~(object.form IN specforms) OR
+		   NetIO.ReadShortInt(s, object.spec) &
+		   ((object.spec # explicit) OR
+		      NetIO.ReadInteger(s, object.bits)) &
+		   ((object.spec # standard) OR
+		      NetIO.ReadShortInt(s, object.stdlength))) &
+		((object.form # address) OR
+		   NetIO.ReadBoolean(s, object.traced)) &
+	        ((object.form # array) OR
+		   NetIO.ReadBoolean(s, object.dyn) &
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.length) &
+		   CompilerObjects.GuardedRead(s, typeType,
+		                                    object.element)) &
+	        ((object.form # record) OR
+		   CompilerObjects.GuardedRead(s, typeType,
+		                                    object.basetype) &
+		   CompilerObjects.GuardedRead(s, fieldListType,
+		                                    object.fields) &
+		   CompilerObjects.GuardedRead(s, scopeType,
+						    object.publicfieldscope) &
+		   CompilerObjects.GuardedRead(s, scopeType,
+						    object.privatefieldscope) &
+		   CompilerObjects.GuardedRead(s, identType,
+						    object.owner)) &
+	        ((object.form # pointer) OR
+		   CompilerObjects.GuardedRead(s, typeType, object.reftype) &
+		   NetIO.ReadBoolean(s, object.taggedptr)) &
+	        ((object.form # proceduretype) OR
+		   NetIO.ReadBoolean(s, object.function) &
+		   NetIO.ReadBoolean(s, object.builtin) &
+		   CompilerObjects.GuardedRead(s, builtInProcedureType,
+		                                    object.builtinproc) &
+		   CompilerObjects.GuardedRead(s, paramListType,
+		                                    object.paramlist) &
+		   CompilerObjects.GuardedRead(s, scopeType,
+						    object.paramscope) &
+		   CompilerObjects.GuardedRead(s, typeType,
+		                                    object.restype))
+      END;
+   END ReadType;
+
+   PROCEDURE WriteType(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Type DO
+	 RETURN CompilerObjects.Write(s, object.ident) &
+	        NetIO.WriteShortInt(s, object.form) &
+	        NetIO.WriteBoolean(s, object.hastracedptrs) &
+		(~(object.form IN specforms) OR
+		   NetIO.WriteShortInt(s, object.spec) &
+		   ((object.spec # explicit) OR
+		      NetIO.WriteInteger(s, object.bits)) &
+		   ((object.spec # standard) OR
+		      NetIO.WriteShortInt(s, object.stdlength))) &
+		((object.form # address) OR
+		   NetIO.WriteBoolean(s, object.traced)) &
+	        ((object.form # array) OR
+		   NetIO.WriteBoolean(s, object.dyn) &
+		   CompilerObjects.Write(s, object.length) &
+		   CompilerObjects.Write(s, object.element)) &
+	        ((object.form # record) OR
+		   CompilerObjects.Write(s, object.basetype) &
+		   CompilerObjects.Write(s, object.fields) &
+		   CompilerObjects.Write(s, object.publicfieldscope) &
+		   CompilerObjects.Write(s, object.privatefieldscope) &
+		   CompilerObjects.Write(s, object.owner)) &
+	        ((object.form # pointer) OR
+		   CompilerObjects.Write(s, object.reftype) &
+		   NetIO.WriteBoolean(s, object.taggedptr)) &
+	        ((object.form # proceduretype) OR
+		   NetIO.WriteBoolean(s, object.function) &
+		   NetIO.WriteBoolean(s, object.builtin) &
+		   CompilerObjects.Write(s, object.builtinproc) &
+		   CompilerObjects.Write(s, object.paramlist) &
+		   CompilerObjects.Write(s, object.paramscope) &
+		   CompilerObjects.Write(s, object.restype))
+      END;
+   END WriteType;
+
+   (* === PersistentObject if procedures for BuiltInProcedure ============== *)
+
+   PROCEDURE ReadBuiltInProcedure(s: Streams.Stream;
+                                  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: BuiltInProcedure DO
+	 RETURN NetIO.ReadInteger(s, object.minargs) &
+	        NetIO.ReadInteger(s, object.maxargs) &
+		CompilerObjects.GuardedRead(s, typeType, object.type)
+      END;
+   END ReadBuiltInProcedure;
+
+   PROCEDURE WriteBuiltInProcedure(s: Streams.Stream;
+                                   object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: BuiltInProcedure DO
+	 RETURN NetIO.WriteInteger(s, object.minargs) &
+	        NetIO.WriteInteger(s, object.maxargs) &
+		CompilerObjects.Write(s, object.type)
+      END;
+   END WriteBuiltInProcedure;
+
+   (* === PersistentObject if procedures for Ident ========================= *)
+
+   PROCEDURE CreateIdent(VAR object: PersistentObjects.Object);
+      VAR
+	 ident: Ident;
+   BEGIN
+      NEW(ident); ident.module := NIL; ident.type := NIL;
+      PersistentObjects.Init(ident, identType);
+      object := ident;
+   END CreateIdent;
+
+   PROCEDURE ReadIdent(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Ident DO
+	 RETURN CompilerObjects.GuardedRead(s, identType, object.module) &
+	        NetIO.ReadShortInt(s, object.class) &
+		CompilerObjects.GuardedRead(s, typeType, object.type) &
+		((object.class # moduleC) & (object.class # procedureC) OR
+		   CompilerObjects.GuardedRead(s, scopeType, object.scope) &
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                               object.body)) &
+		((object.class # moduleC) OR
+		   NetIO.ReadShortInt(s, object.kind) &
+		   CompilerObjects.GuardedRead(s, scopeType, object.export) &
+		   ReadConstString(s, object.origname) &
+		   PersistentObjects.GuardedReadObjectOrNIL(s, keyType,
+		                                            object.key) &
+		   PersistentObjects.GuardedRead(s, setType,
+		                                 object.dependencies) &
+		   PersistentObjects.GuardedReadObjectOrNIL(s, pcontextType,
+						 object.pcontext)) &
+	        ((object.class # constC) OR
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.constexpr)) &
+	        ((object.class # varC) & (object.class # procedureC) OR
+		   NetIO.ReadInteger(s, object.plevel) &
+		   ((object.class # varC) OR
+		      NetIO.ReadShortInt(s, object.varkind)))
+      END;
+   END ReadIdent;
+
+   PROCEDURE WriteIdent(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Ident DO
+	 RETURN CompilerObjects.Write(s, object.module) &
+	        NetIO.WriteShortInt(s, object.class) &
+		CompilerObjects.Write(s, object.type) &
+		((object.class # moduleC) & (object.class # procedureC) OR
+		   CompilerObjects.Write(s, object.scope) &
+		   CompilerObjects.Write(s, object.body)) &
+		((object.class # moduleC) OR
+		   NetIO.WriteShortInt(s, object.kind) &
+		   CompilerObjects.Write(s, object.export) &
+		   WriteConstString(s, object.origname) &
+		   PersistentObjects.WriteObjectOrNIL(s, object.key) &
+		   PersistentObjects.Write(s, object.dependencies) &
+		   PersistentObjects.WriteObjectOrNIL(s, object.pcontext)) &
+	        ((object.class # constC) OR
+		   CompilerObjects.Write(s, object.constexpr)) &
+	        ((object.class # varC) & (object.class # procedureC) OR
+		   NetIO.WriteInteger(s, object.plevel) &
+		   ((object.class # varC) OR
+		      NetIO.WriteShortInt(s, object.varkind)))
+      END;
+   END WriteIdent;
+
+   (* === PersistentObject if procedures for ConstantValue ================= *)
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR text: Streams.Stream) : BOOLEAN;
+      VAR
+	 defined: BOOLEAN;
+	 length: Streams.Count;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, defined) THEN RETURN FALSE END;
+      IF ~defined THEN text := NIL; RETURN TRUE END;
+      IF ~NetIO.ReadLongInt(s, length) THEN RETURN FALSE END;
+      Texts.Open(text);
+      RETURN Streams.Copy(s, text, length) &
+             Streams.Seek(text, 0, Streams.fromStart)
+   END ReadText;
+
+   PROCEDURE WriteText(s: Streams.Stream; text: Streams.Stream) : BOOLEAN;
+      VAR
+	 length: Streams.Count;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, text # NIL) THEN RETURN FALSE END;
+      IF text = NIL THEN RETURN TRUE END;
+      RETURN Streams.Seek(text, 0, Streams.fromEnd) &
+             Streams.Tell(text, length) &
+	     Streams.Seek(text, 0, Streams.fromStart) &
+	     NetIO.WriteLongInt(s, length) &
+	     Streams.Copy(text, s, length) &
+	     Streams.Seek(text, 0, Streams.fromStart)
+   END WriteText;
+
+   PROCEDURE ReadToken(s: Streams.Stream; VAR token: Lex.Token) : BOOLEAN;
+   BEGIN
+      token.ident := NIL; token.text := NIL;
+      RETURN NetIO.ReadLongInt(s, token.begin) &
+             NetIO.ReadLongInt(s, token.end) &
+	     NetIO.ReadShortInt(s, token.sy) &
+	     ((token.sy # Lex.ident) OR
+	        ReadConstString(s, token.ident)) &
+	     ReadText(s, token.text)
+   END ReadToken;
+
+   PROCEDURE WriteToken(s: Streams.Stream; VAR token: Lex.Token) : BOOLEAN;
+   BEGIN
+      RETURN NetIO.WriteLongInt(s, token.begin) &
+             NetIO.WriteLongInt(s, token.end) &
+	     NetIO.WriteShortInt(s, token.sy) &
+	     ((token.sy # Lex.ident) OR
+	        WriteConstString(s, token.ident)) &
+	     WriteText(s, token.text)
+   END WriteToken;
+
+   PROCEDURE CreateConstantValue(VAR object: PersistentObjects.Object);
+      VAR
+	 constval: ConstantValue;
+   BEGIN
+      NEW(constval); constval.loc := NIL; constval.kind := emptySetConst;
+      PersistentObjects.Init(constval, constvalType);
+      object := constval;
+   END CreateConstantValue;
+
+   PROCEDURE ReadConstantValue(s: Streams.Stream;
+                               object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ConstantValue DO
+	 RETURN NetIO.ReadShortInt(s, object.kind) &
+	        ((object.kind # tokenConst) OR
+		   ReadToken(s, object.token))
+      END;
+   END ReadConstantValue;
+
+   PROCEDURE WriteConstantValue(s: Streams.Stream;
+                                object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ConstantValue DO
+	 RETURN NetIO.WriteShortInt(s, object.kind) &
+	        ((object.kind # tokenConst) OR
+		   WriteToken(s, object.token))
+      END;
+   END WriteConstantValue;
+
+   (* === PersistentObject if procedures for Attribute ===================== *)
+
+   PROCEDURE CreateAttribute(VAR object: PersistentObjects.Object);
+      VAR
+	 at: Attribute;
+   BEGIN
+      NEW(at); at.next := NIL; at.type := NIL; at.ident := NIL;
+      PersistentObjects.Init(at, attributeType);
+      object := at;
+   END CreateAttribute;
+
+   PROCEDURE ReadAttribute(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Attribute DO
+	 RETURN CompilerObjects.GuardedRead(s, attributeType,
+	                                         object.next) &
+	        CompilerObjects.GuardedRead(s, typeType, object.type) &
+		NetIO.ReadShortInt(s, object.mode) &
+		(~(object.mode IN identModes) OR
+		   CompilerObjects.GuardedRead(s, identType, object.ident)) &
+	        ((object.mode # constvalAt) OR
+		   CompilerObjects.GuardedRead(s, constvalType,
+		                                    object.constval)) &
+	        ((object.mode # callAt) OR
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.firstparam) &
+		   NetIO.ReadInteger(s, object.paramcnt) &
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.proc)) &
+	        (~(object.mode IN {refAt..guardAt}) OR
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.designator) &
+		   ((object.mode # selectAt) OR
+		      CompilerObjects.GuardedRead(s, fieldListType,
+		                                       object.field)) &
+		   ((object.mode # indexAt) OR
+		      CompilerObjects.GuardedRead(s, attributeType,
+		                                       object.index))) &
+	        (~(object.mode IN {unaryAt, binaryAt}) OR
+		   NetIO.ReadShortInt(s, object.opsy) &
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                                    object.rightop) &
+		   ((object.mode # binaryAt) OR
+		      CompilerObjects.GuardedRead(s, attributeType,
+		                                       object.leftop))) &
+	        (~(object.mode IN {ifAt, caseAt, whileAt,
+		                   repeatAt, returnAt}) OR
+	           CompilerObjects.GuardedRead(s, attributeType,
+		                               object.expression)) &
+	        (~(object.mode IN {ifAt, caseAt}) OR
+		   CompilerObjects.GuardedRead(s, attributeType, object.else)) &
+	        ((object.mode # ifAt) OR
+		   CompilerObjects.GuardedRead(s, attributeType, object.then) &
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                               object.elsifs)) &
+	        ((object.mode # caseAt) OR
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                               object.cases) &
+		   NetIO.ReadBoolean(s, object.haselse)) &
+	        ((object.mode # singleCaseAt) OR
+		   CompilerObjects.GuardedRead(s, attributeType,
+		                               object.labels)) &
+	        (~(object.mode IN {whileAt, repeatAt, loopAt,
+		                   singleCaseAt, withAt}) OR
+		   CompilerObjects.GuardedRead(s, attributeType, object.body)) &
+	        ((object.mode # exitAt) OR
+		   CompilerObjects.GuardedRead(s, attributeType, object.loop)) &
+	        ((object.mode # withAt) OR
+		   CompilerObjects.GuardedRead(s, identType, object.variable))
+      END;
+   END ReadAttribute;
+
+   PROCEDURE WriteAttribute(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Attribute DO
+	 RETURN CompilerObjects.Write(s, object.next) &
+	        CompilerObjects.Write(s, object.type) &
+		NetIO.WriteShortInt(s, object.mode) &
+		(~(object.mode IN identModes) OR
+		   CompilerObjects.Write(s, object.ident)) &
+	        ((object.mode # constvalAt) OR
+		   CompilerObjects.Write(s, object.constval)) &
+	        ((object.mode # callAt) OR
+		   CompilerObjects.Write(s, object.firstparam) &
+		   NetIO.WriteInteger(s, object.paramcnt) &
+		   CompilerObjects.Write(s, object.proc)) &
+	        (~(object.mode IN {refAt..guardAt}) OR
+		   CompilerObjects.Write(s, object.designator) &
+		   ((object.mode # selectAt) OR
+		      CompilerObjects.Write(s, object.field)) &
+		   ((object.mode # indexAt) OR
+		      CompilerObjects.Write(s, object.index))) &
+	        (~(object.mode IN {unaryAt, binaryAt}) OR
+		   NetIO.WriteShortInt(s, object.opsy) &
+		   CompilerObjects.Write(s, object.rightop) &
+		   ((object.mode # binaryAt) OR
+		      CompilerObjects.Write(s, object.leftop))) &
+	        (~(object.mode IN {ifAt, caseAt, whileAt,
+		                   repeatAt, returnAt}) OR
+	           CompilerObjects.Write(s, object.expression)) &
+	        (~(object.mode IN {ifAt, caseAt}) OR
+		   CompilerObjects.Write(s, object.else)) &
+	        ((object.mode # ifAt) OR
+		   CompilerObjects.Write(s, object.then) &
+		   CompilerObjects.Write(s, object.elsifs)) &
+	        ((object.mode # caseAt) OR
+		   CompilerObjects.Write(s, object.cases) &
+		   NetIO.WriteBoolean(s, object.haselse)) &
+	        ((object.mode # singleCaseAt) OR
+		   CompilerObjects.Write(s, object.labels)) &
+	        (~(object.mode IN {whileAt, repeatAt, loopAt,
+		                   singleCaseAt, withAt}) OR
+		   CompilerObjects.Write(s, object.body)) &
+	        ((object.mode # exitAt) OR
+		   CompilerObjects.Write(s, object.loop)) &
+	        ((object.mode # withAt) OR
+		   CompilerObjects.Write(s, object.variable))
+      END;
+   END WriteAttribute;
+
+   (* === support of IdentKeys for NamedObjects ============================ *)
+
+   PROCEDURE ExtractIdentKey(object: Services.Object; key: Keys.Key;
+		             VAR keyval: Keys.Value);
+      VAR
+	 value: IdentKeys.Value;
+   BEGIN
+      WITH object: NamedObject DO
+	 IdentKeys.CreateValue(value);
+	 value.ident := object.name;
+	 keyval := value;
+      END;
+   END ExtractIdentKey;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+      
+      VAR
+	 namedObjectType: Services.Type;
+	 service: Services.Service;
+
+      PROCEDURE Register(VAR type: Services.Type;
+                         name, basename: ARRAY OF CHAR;
+			 create: PersistentObjects.CreateProc;
+			 read: PersistentObjects.ReadProc;
+			 write: PersistentObjects.WriteProc);
+	 VAR
+	    persif: PersistentObjects.Interface;
+      BEGIN
+	 NEW(persif);
+	 persif.create := create; persif.read := read; persif.write := write;
+	 persif.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, basename, persif);
+      END Register;
+
+   BEGIN
+      Register(namedObjectType, "OberonSymbols.NamedObject",
+	 "CompilerObjects.Object", NIL, ReadNamedObject, WriteNamedObject);
+      Register(fieldListType, "OberonSymbols.FieldList",
+	 "OberonSymbols.NamedObject", CreateFieldList,
+	 ReadFieldList, WriteFieldList);
+      Register(paramListType, "OberonSymbols.ParamList",
+	 "OberonSymbols.NamedObject", CreateParamList,
+	 ReadParamList, WriteParamList);
+      Register(typeType, "OberonSymbols.Type",
+	 "CompilerObjects.Object", CreateType, ReadType, WriteType);
+      Register(identType, "OberonSymbols.Ident",
+	 "OberonSymbols.NamedObject", CreateIdent, ReadIdent, WriteIdent);
+      Register(attributeType, "OberonSymbols.Attribute",
+         "CompilerObjects.Object", CreateAttribute,
+	 ReadAttribute, WriteAttribute);
+      Register(builtInProcedureType, "OberonSymbols.BuiltInProcedure",
+	 "CompilerObjects.Object", NIL,
+	 ReadBuiltInProcedure, WriteBuiltInProcedure);
+      Register(constvalType, "OberonSymbols.ConstantValue",
+         "CompilerObjects.Object", CreateConstantValue,
+	 ReadConstantValue, WriteConstantValue);
+
+      Services.Seek("IdentKeys", service); ASSERT(service # NIL);
+      Services.SeekType("Scopes.Scope", scopeType); ASSERT(scopeType # NIL);
+      Services.SeekType("CompilerKeys.Key", keyType); ASSERT(keyType # NIL);
+      Services.SeekType("CompilerKeys.Set", setType); ASSERT(setType # NIL);
+      Services.SeekType("CompilerPragmas.PragmaContext", pcontextType);
+      ASSERT(pcontextType # NIL);
+      Keys.Support(service, namedObjectType, ExtractIdentKey);
+   END Init;
+
+   (* === exported constructors ============================================ *)
+
+   (* the locations given should always point to the token of the
+      identifier in the source
+   *)
+
+   PROCEDURE CreateModuleIdent(VAR ident: Ident;
+                               name, origname: Identifier;
+			       kind: Sources.SourceKind;
+			       pcontext: CompilerPragmas.PragmaContext;
+			       loc: CompilerObjects.Location);
+   BEGIN
+      CreateIdent(ident); ident.name := name; ident.loc := loc;
+      ident.class := moduleC; ident.kind := kind;
+      ident.origname := origname; ident.export := NIL; ident.scope := NIL;
+      CompilerKeys.CreateSet(ident.dependencies);
+      ident.key := NIL;
+      ident.body := NIL;
+      ident.pcontext := pcontext;
+      CompilerObjects.Init(ident);
+   END CreateModuleIdent;
+
+   PROCEDURE CreateConstIdent(VAR ident: Ident;
+                              name: Identifier;
+			      constexpr: Attribute;
+			      loc: CompilerObjects.Location);
+   BEGIN
+      CreateIdent(ident); ident.name := name; ident.loc := loc;
+      ident.class := constC; ident.constexpr := constexpr;
+      IF constexpr # NIL THEN
+	 ident.type := constexpr.type;
+      ELSE
+	 ident.type := NIL;
+      END;
+      CompilerObjects.Init(ident);
+   END CreateConstIdent;
+
+   PROCEDURE CreateTypeIdent(VAR ident: Ident;
+                             name: Identifier; type: Type;
+			     loc: CompilerObjects.Location);
+   BEGIN
+      CreateIdent(ident); ident.name := name; ident.loc := loc;
+      ident.class := typeC; ident.type := type;
+      CompilerObjects.Init(ident);
+   END CreateTypeIdent;
+
+   PROCEDURE CreateVarIdent(VAR ident: Ident;
+                            name: Identifier; type: Type;
+			    plevel: INTEGER; varkind: VarKind;
+			    loc: CompilerObjects.Location);
+   BEGIN
+      CreateIdent(ident); ident.name := name; ident.loc := loc;
+      ident.class := varC; ident.type := type; ident.plevel := plevel;
+      ident.varkind := varkind;
+      CompilerObjects.Init(ident);
+   END CreateVarIdent;
+
+   PROCEDURE CreateProcedureIdent(VAR ident: Ident;
+                                  name: Identifier; type: Type;
+				  plevel: INTEGER;
+				  loc: CompilerObjects.Location);
+   BEGIN
+      CreateIdent(ident); ident.name := name; ident.loc := loc;
+      ident.class := procedureC; ident.type := type; ident.plevel := plevel;
+      ident.scope := NIL;
+      ident.body := NIL;
+      CompilerObjects.Init(ident);
+   END CreateProcedureIdent;
+
+   PROCEDURE CreateParameter(VAR param: ParamList;
+			     name: Identifier;
+			     paramkind: ParamKind;
+			     type: Type;
+			     loc: CompilerObjects.Location);
+   BEGIN
+      CreateParamList(param); param.name := name; param.loc := loc;
+      param.paramkind := paramkind; param.type := type;
+      CompilerObjects.Init(param);
+   END CreateParameter;
+
+   (* type constructors;
+      the location should always cover the full type specification
+   *)
+
+   PROCEDURE CreateBaseType(VAR type: Type; form: Form);
+   BEGIN
+      ASSERT(form IN basic);
+      CreateType(type); type.form := form; type.loc := NIL;
+      type.hastracedptrs := FALSE;
+      IF form IN specforms THEN
+	 type.spec := generic;
+      END;
+      IF form = address THEN
+	 type.traced := TRUE; type.hastracedptrs := TRUE;
+      END;
+      CompilerObjects.Init(type);
+   END CreateBaseType;
+
+   PROCEDURE CreateArrayOf(VAR type: Type;
+                           length: Attribute; elemType: Type;
+		           loc: CompilerObjects.Location);
+   BEGIN
+      CreateType(type); type.form := array; type.loc := loc;
+      type.hastracedptrs := (elemType # NIL) & elemType.hastracedptrs;
+      type.dyn := FALSE; type.length := length; type.element := elemType;
+      CompilerObjects.Init(type);
+   END CreateArrayOf;
+
+   PROCEDURE CreateDynArrayOf(VAR type: Type;
+                              elemType: Type;
+			      loc: CompilerObjects.Location);
+   BEGIN
+      CreateType(type); type.form := array; type.loc := loc;
+      type.hastracedptrs := (elemType # NIL) & elemType.hastracedptrs;
+      type.dyn := TRUE; type.length := NIL; type.element := elemType;
+      CompilerObjects.Init(type);
+   END CreateDynArrayOf;
+
+   PROCEDURE CreatePointerTo(VAR type: Type;
+                             refType: Type; tagged: BOOLEAN;
+		             loc: CompilerObjects.Location);
+   BEGIN
+      CreateType(type); type.loc := loc;
+      type.form := pointer; type.reftype := refType;
+      type.hastracedptrs := TRUE;
+      type.taggedptr := tagged;
+      CompilerObjects.Init(type);
+   END CreatePointerTo;
+
+   PROCEDURE CreateRecord(VAR type: Type;
+                          basetype: Type; fields: FieldList;
+			  fieldscope: Scopes.Scope;
+		          loc: CompilerObjects.Location);
+      VAR
+	 fl: FieldList;
+   BEGIN
+      CreateType(type); type.form := record; type.loc := loc;
+      type.basetype := basetype; type.fields := fields;
+      type.publicfieldscope := fieldscope;
+      type.privatefieldscope := NIL; type.owner := NIL;
+      type.hastracedptrs := FALSE;
+      fl := fields;
+      WHILE (fl # NIL) & ~type.hastracedptrs DO
+	 IF fl.type.hastracedptrs THEN
+	    type.hastracedptrs := TRUE;
+	 END;
+	 fl := fl.next;
+      END;
+      CompilerObjects.Init(type);
+   END CreateRecord;
+
+   PROCEDURE CreateField(VAR field: FieldList;
+                         name: Identifier; type: Type;
+			 loc: CompilerObjects.Location);
+   BEGIN
+      CreateFieldList(field); field.name := name; field.type := type;
+      field.private := FALSE; field.loc := loc;
+      CompilerObjects.Init(field);
+   END CreateField;
+
+   PROCEDURE CreateProcedureType(VAR type: Type;
+		                 paramlist: ParamList;
+				 paramscope: Scopes.Scope;
+			         loc: CompilerObjects.Location);
+   BEGIN
+      CreateType(type); type.form := proceduretype; type.loc := loc;
+      type.hastracedptrs := FALSE;
+      type.function := FALSE; type.builtin := FALSE; type.builtinproc := NIL;
+      type.paramlist := paramlist; type.paramscope := paramscope;
+      CompilerObjects.Init(type);
+   END CreateProcedureType;
+
+   (* constructors for built-in procedures and functions *)
+
+   PROCEDURE InitBuiltInProcedure(builtin: BuiltInProcedure;
+				  minargs, maxargs: INTEGER;
+                                  checkArgs: CheckArgsProc);
+   BEGIN
+      ASSERT(checkArgs # NIL);
+      ASSERT((minargs >= 0) & ((minargs <= maxargs) OR (maxargs = -1)));
+      builtin.loc := NIL;
+      builtin.minargs := minargs; builtin.maxargs := maxargs;
+      builtin.checkArgs := checkArgs;
+      CompilerObjects.InitBuiltInObject(builtin);
+   END InitBuiltInProcedure;
+
+   PROCEDURE CreateBuiltInProcedure(VAR ident: Ident;
+                                    name: Identifier;
+				    builtin: BuiltInProcedure);
+      VAR
+	 type: Type;
+   BEGIN
+      CreateProcedureType(type, NIL, NIL, NIL);
+      type.builtin := TRUE; type.builtinproc := builtin;
+      builtin.type := type;
+      CompilerObjects.InitBuiltInObject(type);
+      CreateProcedureIdent(ident, name, type, 0, NIL);
+      CompilerObjects.InitBuiltInObject(ident);
+   END CreateBuiltInProcedure;
+
+   PROCEDURE CreateBuiltInFunction(VAR ident: Ident;
+                                   name: Identifier;
+				   builtin: BuiltInProcedure);
+   BEGIN
+      CreateBuiltInProcedure(ident, name, builtin);
+      ident.type.function := TRUE;
+   END CreateBuiltInFunction;
+
+   (* constructor for constant values *)
+
+   PROCEDURE CreateConstval(VAR constval: ConstantValue;
+                            kind: ConstantKind);
+   BEGIN
+      CreateConstantValue(constval); constval.kind := kind;
+      CompilerObjects.Init(constval);
+   END CreateConstval;
+
+   (* constructors for attributes *)
+
+   PROCEDURE CreateIdentAt(VAR at: Attribute; ident: Ident;
+                           loc: CompilerObjects.Location);
+   BEGIN
+      IF ident = NIL THEN
+	 at := NIL;
+      ELSE
+	 CreateAttribute(at); at.loc := loc;
+	 at.type := ident.type; at.ident := ident;
+	 CASE ident.class OF
+	 | moduleC:     at.mode := moduleAt;
+	 | constC:      at.mode := constAt;
+	 | typeC:       at.mode := typeAt;
+	 | varC:        at.mode := varAt;
+	 | procedureC:  at.mode := procAt;
+	 END;
+	 CompilerObjects.Init(at);
+      END;
+   END CreateIdentAt;
+
+   PROCEDURE CreateConstvalAt(VAR at: Attribute;
+                              constval: ConstantValue;
+                              loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := constvalAt; at.constval := constval;
+      CompilerObjects.Init(at);
+   END CreateConstvalAt;
+
+   PROCEDURE CreateIndexAt(VAR at: Attribute;
+                           designator, index: Attribute;
+			   loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := indexAt; at.designator := designator; at.index := index;
+      CompilerObjects.Init(at);
+   END CreateIndexAt;
+
+   PROCEDURE CreateSelectionAt(VAR at: Attribute;
+                               designator: Attribute;
+			       field: FieldList;
+			       loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := selectAt; at.designator := designator; at.field := field;
+      CompilerObjects.Init(at);
+   END CreateSelectionAt;
+   
+   PROCEDURE CreateDerefAt(VAR at: Attribute;
+                           designator: Attribute;
+			   loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := refAt; at.designator := designator;
+      CompilerObjects.Init(at);
+   END CreateDerefAt;
+
+   PROCEDURE CreateTypeGuardAt(VAR at: Attribute;
+                               designator, guard: Attribute;
+			       loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := guardAt; at.designator := designator;
+      at.guard := guard;
+      CompilerObjects.Init(at);
+   END CreateTypeGuardAt;
+
+   PROCEDURE CreateCallAt(VAR at: Attribute;
+			  designator, params: Attribute;
+			  paramcnt: INTEGER;
+			  loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := callAt; 
+      at.firstparam := params; at.paramcnt := paramcnt;
+      at.proc := designator;
+      CompilerObjects.Init(at);
+   END CreateCallAt;
+
+   PROCEDURE CreateUnaryAt(VAR at: Attribute;
+                           opsy: Lex.Symbol;
+			   op: Attribute;
+			   loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := unaryAt; at.opsy := opsy; at.rightop := op;
+      CompilerObjects.Init(at);
+   END CreateUnaryAt;
+
+   PROCEDURE CreateBinaryAt(VAR at: Attribute;
+                            opsy: Lex.Symbol;
+			    leftop, rightop: Attribute;
+			    loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at);
+      IF (loc = NIL) & (leftop # NIL) & (rightop # NIL) &
+	    (leftop.loc # NIL) & (rightop.loc # NIL) &
+	    (leftop.loc.src = rightop.loc.src) &
+	    (leftop.loc.end <= rightop.loc.begin) THEN
+	 CompilerObjects.CreateLocation(loc, leftop.loc.src,
+	    leftop.loc.begin, rightop.loc.end);
+      END;
+      at.loc := loc;
+      at.mode := binaryAt; at.opsy := opsy; at.leftop := leftop;
+      at.rightop := rightop;
+      CompilerObjects.Init(at);
+   END CreateBinaryAt;
+
+   PROCEDURE CreateSetAt(VAR at: Attribute;
+                         expr: Attribute;
+			 loc: CompilerObjects.Location);
+   BEGIN
+      CreateBinaryAt(at, Lex.comma, NIL, expr, loc);
+   END CreateSetAt;
+
+   (* constructors for expressions *)
+
+   (* some constructions are done by constructors for expressions:
+      - CreateBinaryAt with opsy = Lex.becomes is to be used for assignments
+      - CreateCallAt is to be used for procedure calls as well
+   *)
+
+   PROCEDURE CreateIfAt(VAR at: Attribute;
+                        expression, then, elsifs, else: Attribute;
+			loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.type := NIL;
+      at.mode := ifAt;
+      at.expression := expression; at.then := then;
+      at.elsifs := elsifs; at.else := else;
+      CompilerObjects.Init(at);
+   END CreateIfAt;
+   
+   PROCEDURE CreateCaseAt(VAR at: Attribute;
+                          expression, cases, else: Attribute;
+			  haselse: BOOLEAN;
+			  loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.type := NIL;
+      at.mode := caseAt;
+      at.expression := expression; at.cases := cases;
+      at.else := else; at.haselse := haselse;
+      CompilerObjects.Init(at);
+   END CreateCaseAt;
+
+   PROCEDURE CreateSingleCaseAt(VAR at: Attribute;
+                                labels, body: Attribute;
+				loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.type := NIL;
+      at.mode := singleCaseAt;
+      at.labels := labels; at.body := body;
+      CompilerObjects.Init(at);
+   END CreateSingleCaseAt;
+
+   PROCEDURE CreateWhileAt(VAR at: Attribute;
+                           expression, body: Attribute;
+			   loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc; at.type := NIL;
+      at.mode := whileAt;
+      at.expression := expression; at.body := body;
+      CompilerObjects.Init(at);
+   END CreateWhileAt;
+
+   PROCEDURE CreateRepeatAt(VAR at: Attribute;
+                            expression, body: Attribute;
+			    loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc; at.type := NIL;
+      at.mode := repeatAt;
+      at.expression := expression; at.body := body;
+      CompilerObjects.Init(at);
+   END CreateRepeatAt;
+
+   PROCEDURE CreateLoopAt(VAR at: Attribute;
+                          body: Attribute; loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc; at.type := NIL;
+      at.mode := loopAt;
+      at.body := body;
+      CompilerObjects.Init(at);
+   END CreateLoopAt;
+
+   PROCEDURE CreateExitAt(VAR at: Attribute;
+                          loop: Attribute; loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc; at.type := NIL;
+      at.mode := exitAt;
+      at.loop := loop;
+      CompilerObjects.Init(at);
+   END CreateExitAt;
+
+   PROCEDURE CreateReturnAt(VAR at: Attribute;
+                            expression: Attribute;
+			    loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc; at.type := NIL;
+      at.mode := returnAt;
+      at.expression := expression;
+      CompilerObjects.Init(at);
+   END CreateReturnAt;
+
+   PROCEDURE CreateWithAt(VAR at: Attribute;
+                          variable: Ident; type: Type;
+			  body: Attribute;
+			  loc: CompilerObjects.Location);
+   BEGIN
+      CreateAttribute(at); at.loc := loc;
+      at.mode := withAt;
+      at.variable := variable; at.type := type;
+      at.body := body;
+      CompilerObjects.Init(at);
+   END CreateWithAt;
+
+   (* misc stuff *)
+
+   PROCEDURE GetFormString(form: Form; VAR string: ARRAY OF CHAR);
+   BEGIN
+      CASE form OF
+      | integer:        COPY("integer", string);
+      | cardinal:       COPY("cardinal", string);
+      | real:           COPY("real", string);
+      | boolean:        COPY("boolean", string);
+      | char:           COPY("char", string);
+      | set:            COPY("set", string);
+      | byte:           COPY("byte", string);
+      | address:        COPY("address", string);
+      | coroutine:      COPY("coroutine", string);
+      | array:          COPY("array", string);
+      | record:         COPY("record", string);
+      | pointer:        COPY("pointer", string);
+      | proceduretype:  COPY("procedure", string);
+      END;
+   END GetFormString;
+
+   PROCEDURE CheckArgs(builtinproc: BuiltInProcedure;
+		       args: Attribute; VAR restype: Type);
+      (* check args of builtinproc for validity and
+	 set the return type (in case of functions);
+	 note that this procedure must not be called if
+	 the number of arguments is outside of [minargs .. maxargs]
+      *)
+   BEGIN
+      builtinproc.checkArgs(builtinproc, args, restype);
+   END CheckArgs;
+
+BEGIN
+   Init;
+END OberonSymbols.

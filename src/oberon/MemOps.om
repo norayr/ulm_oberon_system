@@ -1,0 +1,165 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: MemOps.om,v 1.2 1997/04/02 07:35:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: MemOps.om,v $
+   Revision 1.2  1997/04/02  07:35:41  borchert
+   ClearU and Clear added
+
+   Revision 1.1  1996/11/15  14:29:30  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE MemOps; (* derived from preliminary code of Werner Stanglow *)
+
+   IMPORT SYS := SYSTEM, Types;
+
+   CONST
+      wordlen = SYS.SIZE(Types.IntAddress);
+
+   PROCEDURE CopyU(source, dest: Types.UntracedAddress; nbytes: Types.Count);
+      (* based on CopyNBytes by AFB 10/1993, revised *)
+      VAR
+	 byte: Types.Byte;
+	 srem, drem, nrem: Types.IntAddress; 
+   BEGIN
+      IF nbytes <= 0 THEN RETURN END;
+      srem := SYS.VAL(Types.IntAddress, source) MOD wordlen;
+      drem := SYS.VAL(Types.IntAddress, dest) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (drem = 0) & (srem = 0) & (nrem = 0) THEN
+         SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSE
+         IF (srem = drem) & (nbytes >= srem + wordlen) THEN
+            WHILE drem > 0 DO
+               SYS.GET(source, byte); INC(source);
+               SYS.PUT(dest, byte); INC(dest);
+               DEC(drem);
+            END;
+            DEC(nbytes,srem);
+            drem := nbytes DIV wordlen;
+            SYS.WMOVE(source, dest, drem);
+            srem := drem * wordlen;
+            INC(source,srem);
+            INC(dest,srem);
+            DEC(nbytes,srem);
+         END;
+         WHILE nbytes > 0 DO
+            SYS.GET(source, byte); INC(source);
+            SYS.PUT(dest, byte); INC(dest);
+            DEC(nbytes);
+         END;
+      END;
+   END CopyU;
+
+   PROCEDURE Copy(source, dest: Types.Address; nbytes: Types.Count);
+      (* based on CopyNBytes by AFB 10/1993, revised *)
+      VAR
+	 byte: Types.Byte;
+	 srem, drem, nrem: Types.IntAddress; 
+   BEGIN
+      IF nbytes <= 0 THEN RETURN END;
+      srem := SYS.VAL(Types.IntAddress, source) MOD wordlen;
+      drem := SYS.VAL(Types.IntAddress, dest) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (drem = 0) & (srem = 0) & (nrem = 0) THEN
+         SYS.WMOVE(source, dest, nbytes DIV wordlen);
+      ELSE
+         IF (srem = drem) & (nbytes >= srem + wordlen) THEN
+            WHILE drem > 0 DO
+               SYS.GET(source, byte); INC(source);
+               SYS.PUT(dest, byte); INC(dest);
+               DEC(drem);
+            END;
+            DEC(nbytes,srem);
+            drem := nbytes DIV wordlen;
+            SYS.WMOVE(source, dest, drem);
+            srem := drem * wordlen;
+            INC(source,srem);
+            INC(dest,srem);
+            DEC(nbytes,srem);
+         END;
+         WHILE nbytes > 0 DO
+            SYS.GET(source, byte); INC(source);
+            SYS.PUT(dest, byte); INC(dest);
+            DEC(nbytes);
+         END;
+      END;
+   END Copy;
+
+   PROCEDURE ClearU(addr: Types.UntracedAddress; nbytes: Types.Count);
+      VAR
+	 arem, nrem: Types.IntAddress;
+	 zero: Types.Byte;
+	 evenbytes: Types.IntAddress;
+   BEGIN
+      IF nbytes <= 0 THEN RETURN END;
+      arem := SYS.VAL(Types.IntAddress, addr) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (arem = 0) & (nrem = 0) THEN
+	 SYS.WCLEAR(addr, nbytes DIV wordlen);
+      ELSE
+	 zero := 0X;
+	 IF nbytes >= arem + wordlen THEN
+	    WHILE arem > 0 DO
+	       SYS.PUT(addr, zero); INC(addr); DEC(arem);
+	    END;
+	    DEC(nbytes, arem);
+	    SYS.WCLEAR(addr, nbytes DIV wordlen);
+	    INC(addr, nbytes DIV wordlen);
+	    nbytes := nbytes MOD wordlen;
+	 END;
+	 WHILE nbytes > 0 DO
+	    SYS.PUT(addr, zero); INC(addr); DEC(nbytes);
+	 END;
+      END;
+   END ClearU;
+
+   PROCEDURE Clear(addr: Types.Address; nbytes: Types.Count);
+      VAR
+	 arem, nrem: Types.IntAddress;
+	 zero: Types.Byte;
+	 evenbytes: Types.IntAddress;
+   BEGIN
+      IF nbytes <= 0 THEN RETURN END;
+      arem := SYS.VAL(Types.IntAddress, addr) MOD wordlen;
+      nrem := nbytes MOD wordlen;
+      IF (arem = 0) & (nrem = 0) THEN
+	 SYS.WCLEAR(addr, nbytes DIV wordlen);
+      ELSE
+	 zero := 0X;
+	 IF nbytes >= arem + wordlen THEN
+	    WHILE arem > 0 DO
+	       SYS.PUT(addr, zero); INC(addr); DEC(arem);
+	    END;
+	    DEC(nbytes, arem);
+	    SYS.WCLEAR(addr, nbytes DIV wordlen);
+	    INC(addr, nbytes DIV wordlen);
+	    nbytes := nbytes MOD wordlen;
+	 END;
+	 WHILE nbytes > 0 DO
+	    SYS.PUT(addr, zero); INC(addr); DEC(nbytes);
+	 END;
+      END;
+   END Clear;
+
+END MemOps.

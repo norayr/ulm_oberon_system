@@ -1,0 +1,297 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv6TCPSock.om,v 1.1 2006/08/09 15:47:00 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv6TCPSock.om,v $
+   Revision 1.1  2006/08/09 15:47:00  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IPv6TCPSockets;
+
+   IMPORT Conditions, Disciplines, EphemeralPortRange, Errors, Events,
+      IPv6Addresses, RelatedEvents, Streams, SysConversions, SysSockets,
+      UnixSockets, Write;
+
+   TYPE
+      Socket = UnixSockets.Socket;
+      Address = IPv6Addresses.Address;
+      SocketAddress = IPv6Addresses.SocketAddress;
+      SysAddress = IPv6Addresses.SysAddress;
+
+   TYPE
+      ConditionDiscipline = POINTER TO ConditionDisciplineRec;
+      ConditionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    address: SocketAddress; (* needed for error events only *)
+	 END;
+   VAR
+      cdid: Disciplines.Identifier;
+
+   CONST
+      openFailed = 0;
+      listenFailed = 1;
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT; (* openFailed .. *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    address: SocketAddress;
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ============================================= *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   address: SocketAddress);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.address := address;
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IPv6Addresses.WriteText(s, event.address.host);
+	 Write.CharS(s, ":");
+	 Write.IntS(s, IPv6Addresses.GetPort(event.address), 1);
+	 Write.StringS(s, ": ");
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[openFailed] := "IPv6 TCP socket could not be opened";
+      errormsg[listenFailed] := "cannot listen to this IPv6 address";
+      Events.Define(error);
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   (* === exported procedures ======================================== *)
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 address: SocketAddress);
+      VAR
+	 peerAddr: SysAddress;
+	 cd: ConditionDiscipline;
+   BEGIN
+      IPv6Addresses.ConvertToSys(address, peerAddr);
+      UnixSockets.CreateOpenCondition(condition, SysSockets.afINET6,
+	 SysSockets.stream, peerAddr, (* bind = *) FALSE, 0);
+      NEW(cd); cd.id := cdid; cd.address := address;
+      Disciplines.Add(condition, cd);
+   END CreateOpenCondition;
+
+   PROCEDURE CreateOpenConditionAs(VAR condition: Conditions.Condition;
+				   address, bindto: SocketAddress);
+      VAR
+	 peerAddr, myAddr: SysAddress;
+	 cd: ConditionDiscipline;
+   BEGIN
+      IPv6Addresses.ConvertToSys(address, peerAddr);
+      IPv6Addresses.ConvertToSys(bindto, myAddr);
+      UnixSockets.CreateOpenCondition(condition, SysSockets.afINET6,
+	 SysSockets.stream, peerAddr, (* bind = *) TRUE, myAddr);
+      NEW(cd); cd.id := cdid; cd.address := address;
+      Disciplines.Add(condition, cd);
+   END CreateOpenConditionAs;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 cd: ConditionDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      IF UnixSockets.TestAndOpen(s, condition, bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      IF ~Conditions.Test(condition, errors) THEN RETURN FALSE END;
+      ok := Disciplines.Seek(condition, cdid, cd); ASSERT(ok);
+      Error(errors, openFailed, cd.address);
+      RETURN FALSE
+   END TestAndOpen;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+   BEGIN
+      UnixSockets.Drop(condition);
+   END Drop;
+
+   PROCEDURE Open(VAR s: Streams.Stream; address: SocketAddress;
+		  bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 condition: Conditions.Condition;
+	 peerAddr: SysAddress;
+   BEGIN
+      IPv6Addresses.ConvertToSys(address, peerAddr);
+      IF UnixSockets.Open(s, SysSockets.afINET6, SysSockets.stream,
+	       peerAddr, (* bind = *) FALSE, 0,
+	       bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, openFailed, address);
+      RETURN FALSE
+   END Open;
+
+   PROCEDURE OpenAs(VAR s: Streams.Stream; address, bindto: SocketAddress;
+		    bufmode: Streams.BufMode;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 condition: Conditions.Condition;
+	 peerAddr, myAddr: SysAddress;
+   BEGIN
+      IPv6Addresses.ConvertToSys(address, peerAddr);
+      IPv6Addresses.ConvertToSys(bindto, myAddr);
+      IF UnixSockets.Open(s, SysSockets.afINET6, SysSockets.stream,
+	       peerAddr, (* bind = *) TRUE, myAddr,
+	       bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, openFailed, address);
+      RETURN FALSE
+   END OpenAs;
+
+   PROCEDURE Listen(VAR socket: Socket; portnum: INTEGER;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+	 fd: SysSockets.Socket;
+	 address: SocketAddress;
+	 interrupted: BOOLEAN;
+	 attempt: INTEGER;
+   BEGIN
+      IPv6Addresses.SetAnyAddr(address.host);
+      IF portnum = 0 THEN
+	 (* attempt to chose an unpredictable random port
+	    instead of defaulting to the quite predictable
+	    selection of the network stack
+	 *)
+	 attempt := 0;
+	 WHILE attempt < 10 DO
+	    IPv6Addresses.SetPort(address, EphemeralPortRange.GetRandomPort());
+	    IPv6Addresses.ConvertToSys(address, addr);
+	    IF UnixSockets.Listen(socket, SysSockets.afINET6,
+		  SysSockets.stream, addr, RelatedEvents.null) THEN
+	       RETURN TRUE
+	    END;
+	    INC(attempt);
+	 END;
+      END;
+      IPv6Addresses.SetPort(address, portnum);
+      IPv6Addresses.ConvertToSys(address, addr);
+      IF UnixSockets.Listen(socket, SysSockets.afINET6,
+	       SysSockets.stream, addr, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, listenFailed, address);
+      RETURN FALSE
+   END Listen;
+
+   PROCEDURE ListenOn(VAR socket: Socket; address: SocketAddress;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+	 fd: SysSockets.Socket;
+	 interrupted: BOOLEAN;
+   BEGIN
+      IPv6Addresses.ConvertToSys(address, addr);
+      IF UnixSockets.Listen(socket, SysSockets.afINET6, SysSockets.stream,
+	       addr, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, listenFailed, address);
+      RETURN FALSE
+   END ListenOn;
+
+   PROCEDURE Accept(socket: Socket;
+		    VAR s: Streams.Stream; bufmode: Streams.BufMode;
+		    VAR peer: SocketAddress) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+   BEGIN
+      IF UnixSockets.Accept(socket, s, bufmode, addr) THEN
+	 IPv6Addresses.ConvertFromSys(addr, peer);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Accept;
+
+   PROCEDURE GetName(socket: Socket; VAR address: SocketAddress;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+   BEGIN
+      IF UnixSockets.GetName(socket, addr, errors) THEN
+	 IPv6Addresses.ConvertFromSys(addr, address);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetName;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Socket;
+			      VAR address: SocketAddress;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN Listen(socket, 0, errors) &
+	     GetName(socket, address, errors)
+   END CreateSomeSocket;
+
+   PROCEDURE CreateSomeSocketOn(VAR socket: Socket;
+			        VAR address: SocketAddress;
+			        errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN ListenOn(socket, address, errors) &
+	     GetName(socket, address, errors)
+   END CreateSomeSocketOn;
+
+   PROCEDURE Release(socket: Socket);
+   BEGIN
+      UnixSockets.Release(socket);
+   END Release;
+
+   PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+			           socket: Socket);
+   BEGIN
+      UnixSockets.CreateAcceptCondition(condition, socket);
+   END CreateAcceptCondition;
+
+BEGIN
+   InitErrorHandling;
+   cdid := Disciplines.Unique();
+END IPv6TCPSockets.

@@ -1,0 +1,188 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerRel.om,v 1.2 2004/09/10 06:00:40 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerRel.om,v $
+   Revision 1.2  2004/09/10 06:00:40  borchert
+   formatting fixed
+
+   Revision 1.1  2004/09/06 14:51:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerRelocations; (* Christian Ehrhardt *)
+
+   (* support for relocations and declaration of internal symbols:
+      Relocations: once we discover that a relocation record
+      is needed for an operand we create a RelocRequest for this operand.
+      The creator should fill in the symbol Reference (ref and type).
+      OpcodeGen will add off and len. label should mark the first byte
+      of the instruction.
+      Symbols: Just call NewSymbol. <ARCH>Relocations.Process will deal
+      with the declaration later on.
+      All Requests are collected by an owner Object.  The
+      FragmentedStreams.Stream or the code block can be used for
+      this. Once all labels are fixed these requests are translated into
+      real relocation entries.
+   *)
+
+   IMPORT ConstStrings, Disciplines, FragmentedStreams, Types;
+
+   CONST
+      noReloc = 0;   (* no relocation needed *)
+      addSym  = 1;   (* add the symbol value to the target *)
+      setSym  = 2;   (* set the target to the symbol value *)
+      (* not necessarily complete *)
+   TYPE
+      RelocType = SHORTINT;
+
+   TYPE
+      Instance = POINTER TO InstanceRec;
+      InstanceRec =
+	 RECORD
+	    next: Instance;
+	    label: FragmentedStreams.Label;
+	    off, len: Types.Size;
+	 END;
+
+      SymRef = POINTER TO SymRefRec;
+      SymRefRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    modname: ConstStrings.String;
+	    symname: ConstStrings.String;
+	 END;
+
+      Request = POINTER TO RequestRec;
+      RequestRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    next: Request;
+	 END;
+
+      RelocRequest = POINTER TO RelocRequestRec;
+      RelocRequestRec =
+	 RECORD
+	    (RequestRec)
+	    instances: Instance;
+	    type: RelocType;
+	    ref: SymRef;
+	 END;
+
+      SymRequest = POINTER TO SymRequestRec;
+      SymRequestRec =
+	 RECORD
+	    (RequestRec)
+	    name: ConstStrings.String;
+	    label: FragmentedStreams.Label;
+	 END;
+
+   TYPE
+      Disc = POINTER TO DiscRec;
+      DiscRec = RECORD
+	 (Disciplines.DisciplineRec)
+	 list: Request;
+	 last: Request; (* end of list *)
+      END;
+
+   VAR
+      relocID: Disciplines.Identifier;
+
+   (* === private procedures =========================================== *)
+
+   PROCEDURE GetDisc(obj: Disciplines.Object) : Disc;
+      VAR
+	 disc: Disc;
+   BEGIN
+      IF ~Disciplines.Seek(obj, relocID, disc) THEN
+	 NEW(disc); disc.id := relocID;
+	 disc.list := NIL;
+	 disc.last := NIL;
+	 Disciplines.Add(obj, disc);
+      END;
+      RETURN disc
+   END GetDisc;
+
+   (* === exported procedures ========================================== *)
+
+   PROCEDURE Create(VAR ret: Request; owner: Disciplines.Object;
+		    type: RelocType; ref: SymRef);
+      (* create a request and add it to the request list of owner *)
+      VAR
+	 disc: Disc;
+	 reloc: RelocRequest;
+   BEGIN
+      ASSERT((owner # NIL) & (ref # NIL));
+      NEW(reloc);
+      reloc.type := type;
+      reloc.ref  := ref;
+      reloc.next := NIL;
+      reloc.instances := NIL;
+      disc := GetDisc(owner);
+      IF disc.list = NIL THEN
+	 disc.list := reloc;
+      ELSE
+	 disc.last.next := reloc;
+      END;
+      disc.last := reloc;
+      ret := reloc;
+   END Create;
+
+   PROCEDURE NewSymbol(owner: Disciplines.Object;
+		       name: ConstStrings.String;
+		       lab: FragmentedStreams.Label);
+      VAR
+	 sym: SymRequest;
+	 disc: Disc;
+   BEGIN
+      ASSERT(lab # NIL);
+      NEW(sym);
+      sym.name := name;
+      sym.label := lab;
+      disc := GetDisc(owner);
+      IF disc.list = NIL THEN
+	 disc.list := sym;
+      ELSE
+	 disc.last.next := sym;
+      END;
+      disc.last := sym;
+   END NewSymbol;
+
+   PROCEDURE GetRequests(obj: Disciplines.Object) : Request;
+      (* Return a pointer to the list of Requests. This should be more
+         efficient than an Iterator. We also remove the request list
+         from obj; they will be freed when the reference that we return
+         is dropped.
+      *)
+      VAR
+         disc: Disc;
+   BEGIN
+      IF Disciplines.Seek(obj, relocID, disc) THEN
+	 Disciplines.Remove(obj, relocID);
+	 RETURN disc.list
+      END;
+      RETURN NIL
+   END GetRequests;
+
+BEGIN
+   relocID := Disciplines.Unique();
+END CompilerRelocations.

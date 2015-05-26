@@ -1,0 +1,198 @@
+
+
+
+Operations(3)          Ulm's Oberon System          Operations(3)
+
+
+NNAAMMEE
+       Operations - generic interface for arithmetic operations
+
+SSYYNNOOPPSSIISS
+       CONST add = 0; sub = 1; mul = 2; div = 3; cmp = 4;
+       TYPE Operation = SHORTINT; (* [add..div] *)
+       TYPE Operand = POINTER TO OperandRec;
+       TYPE OperandRec = RECORD (PersistentDisciplines.ObjectRec) END;
+       TYPE CapabilitySet = SET; (* SET OF [add..cmp] *)
+       TYPE CreateProc = PROCEDURE (VAR op: Operand);
+       TYPE OperatorProc = PROCEDURE (op: Operation; op1, op2: Operand; VAR result: Operand);
+       TYPE AssignProc = PROCEDURE (VAR target: Operand; source: Operand);
+       TYPE CompareProc = PROCEDURE (op1, op2: Operand) : INTEGER;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             create: CreateProc;
+             assign: AssignProc;
+             op: OperatorProc;
+             compare: CompareProc;
+          END;
+
+       PROCEDURE Init(op: Operand; if: Interface; caps: CapabilitySet);
+       PROCEDURE Capabilities(op: Operand) : CapabilitySet;
+       PROCEDURE Compatible(op1, op2: Operand) : BOOLEAN;
+       PROCEDURE Add(op1, op2: Operand) : Operand;
+       PROCEDURE Add2(VAR op1: Operand; op2: Operand);
+       PROCEDURE Add3(VAR result: Operand; op1, op2: Operand);
+       PROCEDURE Sub(op1, op2: Operand) : Operand;
+       PROCEDURE Sub2(VAR op1: Operand; op2: Operand);
+       PROCEDURE Sub3(VAR result: Operand; op1, op2: Operand);
+       PROCEDURE Mul(op1, op2: Operand) : Operand;
+       PROCEDURE Mul2(VAR op1: Operand; op2: Operand);
+       PROCEDURE Mul3(VAR result: Operand; op1, op2: Operand);
+       PROCEDURE Div(op1, op2: Operand) : Operand;
+       PROCEDURE Div2(VAR op1: Operand; op2: Operand);
+       PROCEDURE Div3(VAR result: Operand; op1, op2: Operand);
+       PROCEDURE Compare(op1, op2: Operand) : INTEGER;
+       PROCEDURE Assign(VAR target: Operand; source: Operand);
+       PROCEDURE Copy(source, target: Operand);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _O_p_e_r_a_t_i_o_n_s  provides  a  generic  interface for arithmetic
+       operators which covers the most  usual  operations:  addi­
+       tion,  subtraction, multiplication and division.  Compari­
+       son and assignment are also supported.
+
+       The interface describes the set  of  available  operations
+       and contains the necessary procedures.  The interface pro­
+       cedures should meet the specifications following:
+
+
+
+
+
+Release 0.5       Last change: 16 September 1996                1
+
+
+
+
+
+Operations(3)          Ulm's Oberon System          Operations(3)
+
+
+       _c_r_e_a_t_e: PPRROOCCEEDDUURREE(VVAARR _o_p: _O_p_e_r_a_n_d);
+            create _o_p and call _I_n_i_t for _o_p.  Note that _O_p_e_r_a_n_d is
+            an extension of _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._O_b_j_e_c_t.  Thus, _P_e_r_­
+            _s_i_s_t_e_n_t_O_b_j_e_c_t_s_._I_n_i_t must be called for newly  created
+            operands.
+       _a_s_s_i_g_n: PPRROOCCEEDDUURREE(VVAARR _t_a_r_g_e_t: _O_p_e_r_a_n_d; _s_o_u_r_c_e: _O_p_e_r_a_n_d);
+            copy  the value of _s_o_u_r_c_e to _t_a_r_g_e_t; _t_a_r_g_e_t is of the
+            appropriate type and already initialized.
+       _o_p:  PPRROOCCEEDDUURREE(_o_p:  _O_p_e_r_a_t_i_o_n;  _o_p_1,  _o_p_2:  _O_p_e_r_a_n_d;   VVAARR
+            _r_e_s_u_l_t: _O_p_e_r_a_n_d);
+            execute the given operator for the given operands _o_p_1
+            and _o_p_2 and store the result in the already  initial­
+            ized  _r_e_s_u_l_t.   _o_p_1  and  _o_p_2 are already checked for
+            type equality and _r_e_s_u_l_t is of the appropriate  type.
+            This  procedure  is not called with _o_p values outside
+            the  capability  set  of  the  associated  interface.
+            _r_e_s_u_l_t is guaranteed to be not equal to _o_p_1 or _o_p_2.
+       _c_o_m_p_a_r_e: PPRROOCCEEDDUURREE(_o_p_1, _o_p_2: _O_p_e_r_a_n_d) : IINNTTEEGGEERR;
+            compare  the  given  operands  and  return an integer
+            value less than zero if _o_p_1  is  less  than  _o_p_2,  or
+            equal to zero if _o_p_1 equals _o_p_2, or greater than zero
+            if _o_p_1 is greater than _o_p_2.  This procedure needs not
+            to  be  implemented if _c_m_p is not in the set of capa­
+            bilities.
+
+       _I_n_i_t is typically called by  modules  which  implement  an
+       arithmetic  data  type  to connect the interface _i_f to the
+       operand _o_p.  _C_a_p_a_b_i_l_i_t_i_e_s returns the set of  capabilities
+       of  _o_p.   _C_o_m_p_a_t_i_b_l_e checks _o_p_1 and _o_p_2 for being compati­
+       ble, i.e. they share the same interface.
+
+       Arithmetic operations are implemented in three forms:
+
+       _X_X_X(_o_p_1, _o_p_2: _O_p_e_r_a_n_d) : _O_p_e_r_a_n_d
+              Executes the named operation and  returns  a  newly
+              created operand.
+
+       _X_X_X_2(VVAARR _o_p_1, _o_p_2: _O_p_e_r_a_n_d)
+              Operates  on _o_p_1 and _o_p_2 and stores the result into
+              _o_p_1.
+
+       _X_X_X_3(VVAARR _r_e_s_u_l_t: _O_p_e_r_a_n_d; _o_p_1, _o_p_2: _O_p_e_r_a_n_d)
+              Operates on _o_p_1 and _o_p_2 and stores the result  into
+              _r_e_s_u_l_t.
+
+       This  procedures  are  provided for _X_X_X equal to _A_d_d, _S_u_b,
+       _M_u_l or _D_i_v.  _X_X_X_2 and _X_X_X_3 allow _r_e_s_u_l_t to be equal to _o_p_1
+       or _o_p_2.
+
+       _C_o_m_p_a_r_e compares the given operands and returns an integer
+       value which corresponds to the comparison  (see  interface
+       description of _c_o_m_p_a_r_e).
+
+       _A_s_s_i_g_n  copies  the  value of _s_o_u_r_c_e to _t_a_r_g_e_t.  Remember,
+
+
+
+Release 0.5       Last change: 16 September 1996                2
+
+
+
+
+
+Operations(3)          Ulm's Oberon System          Operations(3)
+
+
+       that operands are pointers and a pointer-assignment  (i.e.
+       _t_a_r_g_e_t  :=  _s_o_u_r_c_e) does not copy the value of an operand.
+       _t_a_r_g_e_t is newly created unless it is not equal to NNIILL  and
+       its type is identical to that of _s_o_u_r_c_e.
+
+       The  VVAARR parameters of the operation procedures are always
+       newly created.
+
+       _C_o_p_y copies the value of _s_o_u_r_c_e to _t_a_r_g_e_t without recreat­
+       ing  _t_a_r_g_e_t.   _t_a_r_g_e_t  must be of the appropriate type and
+       already initialized.  This is useful if old references  to
+       _t_a_r_g_e_t should reference the new value.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _O_p_e_r_a_t_i_o_n_s checks for some errors which may lead to failed
+       assertions:
+
+       ·      The interface of the given operands must match.
+
+       ·      Operations which are not supported by  the  associ­
+              ated interface must not be called.
+
+SSEEEE AALLSSOO
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   interface for persistent objects
+       _S_c_a_l_e_s_(_3_)              specialized  variant  of _O_p_e_r_a_t_i_o_n_s
+                              for measures
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 16 September 1996                3
+
+

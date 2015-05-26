@@ -1,0 +1,3456 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonParse.om,v 1.4 2007/10/18 16:19:44 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonParse.om,v $
+   Revision 1.4  2007/10/18 16:19:44  borchert
+   bug fix: do not permit indexing of constant strings as this
+            - is not supported by the language report and
+            - the code generator isn't prepared for that:
+              assertion failed in
+              I386ObCodeGen.GenDesignator at line 3084
+
+   Revision 1.3  2005/08/21 21:20:38  borchert
+   bug fix: desat.loc (with desat possibly NIL) used instead of
+            procat.loc in CallOrAssignment for error messages
+            (bug reported by Smoke Bellew <smoke.bellew@gmail.com>)
+
+   Revision 1.2  2005/08/21 17:55:56  borchert
+   bug fix: mark identifiers as used that are named within forward
+            declarations
+
+   Revision 1.1  2002/03/09 18:43:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   some code fragments have been stolen from the old Oberon parser
+   (written by Martin Hasch)
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonParser;
+
+   IMPORT Args, ASCII, BoolArgs, CompilerDatabases, CompilerErrors,
+      CompilerKeys, CompilerObjects, CompilerPragmas, Compilers,
+      Consts := OberonStdConstants, ConstStrings, Disciplines, Iterators,
+      Lex := OberonLex, ModularizedStructures, OberonBuiltIns, OberonPragmas,
+      OberonTypes, ObjectLoader, RelatedEvents, Resources, Scopes, Sets,
+      Sources := CompilerSources, StdScopes, Streams, Sym := OberonSymbols,
+      Write;
+
+   TYPE
+      SymSet = ARRAY (Lex.symbols + MAX(SET)) DIV (MAX(SET) + 1) OF SET;
+      SymString = ARRAY 32 OF CHAR;
+
+   VAR
+      declsyms: SymSet; (* const,type,var,procedure *)
+      reloperators: SymSet; (* eql, neq, lst, leq, grt, geq, in, is *)
+      addoperators: SymSet; (* plus, minus, or *)
+      muloperators: SymSet; (* times, slash, div, mod, ampersand *)
+      desoperators: SymSet; (* period, lbracket, lparen, arrow *)
+
+      exprbegsyms: SymSet;  (* plus, minus, intconst, hexconst, realconst,
+                               longrealconst, charconst, string,
+			       nil, lbrace, ident, lparen, tilde *)
+      typebegsyms: SymSet;  (* ident, array, record, pointer, procedure *)
+      identbegsyms: SymSet; (* ident *)
+      fieldbegsyms: SymSet; (* ident, semicolon *)
+      fpbegsyms: SymSet;    (* ident, var *)
+      colonsyms: SymSet;    (* colon *)
+      periodsyms: SymSet;   (* period *)
+      modbegsyms: SymSet;   (* definition, module *)
+      factorbegsyms: SymSet; (* intconst..string, nil, lbrace, ident,
+                                lparen, tilde
+			     *)
+      importbegsyms: SymSet; (* import *)
+      bodybegsyms: SymSet;  (* begin *)
+      stmtsyms: SymSet;     (* ident, if, case, while, repeat, loop, with
+                               exit, return
+			    *)
+      endsyms: SymSet;      (* end *)
+      commasyms: SymSet;    (* comma *)
+      rbracketsyms: SymSet; (* rbracket *)
+      rbracesyms: SymSet;   (* rbrace *)
+      rparensyms: SymSet;   (* rparen *)
+      semicolonsyms: SymSet; (* semicolon *)
+      ofsyms: SymSet;       (* of *)
+      ftbegsyms: SymSet;    (* array, ident *)
+      endifsyms: SymSet;    (* elsif, else, end *)
+      elsesyms: SymSet;     (* else, end *)
+      casebegsyms: SymSet;  (* exprbegsyms + bar *)
+      casetermsyms: SymSet; (* bar, else, end *)
+      labeltermsyms: SymSet; (* comma, colon *)
+      untilsyms: SymSet;    (* until *)
+
+   CONST
+      genM = 0;
+      defM = 1;
+      modM = 2;
+   TYPE
+      ParseMesg = SHORTINT; (* genM..modM *)
+
+   CONST
+      none = 0;
+      const = 1;
+      type = 2;
+      var = 3;
+      procedure = 4;
+   TYPE
+      DefinitionType = SHORTINT; (* none..procedure *)
+
+   TYPE
+      IdList = POINTER TO IdListRec;
+      IdListRec =
+	 RECORD
+	    ident: Lex.Token;
+	    next: IdList;
+	 END;
+
+   TYPE
+      Location = CompilerObjects.Location;
+
+   TYPE
+      QualifiedIdentifier = POINTER TO QualifiedIdentifierRec;
+      QualifiedIdentifierRec =
+	 RECORD
+	    qualified: BOOLEAN; (* TRUE if module is defined *)
+	    module, ident: Lex.Token;
+	    loc: Location;
+	 END;
+
+   TYPE
+      ForwardReferences = POINTER TO ForwardReferencesRec;
+      ForwardReferencesRec =
+	 RECORD
+	    next: ForwardReferences;
+	    type: Sym.Type;
+	    ident: ConstStrings.String;
+	    loc: Location;
+	 END;
+      ForwardDeclarations = POINTER TO ForwardDeclarationsRec;
+      ForwardDeclarationsRec =
+	 RECORD
+	    next: ForwardDeclarations;
+	    decl: Sym.Ident;
+	 END;
+      LoopList = POINTER TO LoopListRec;
+      LoopListRec =
+	 RECORD
+	    next: LoopList;
+	    stmt: Sym.Attribute; (* LOOP statement *)
+	 END;
+      ScopeDiscipline = POINTER TO ScopeDisciplineRec;
+      ScopeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    ident: Sym.Ident; (* defining ident of scope *)
+	    fwdrefs: ForwardReferences;
+	    fwddecls: ForwardDeclarations;
+	    loops: LoopList; (* current nesting of LOOP statements *)
+	 END;
+      IdentDiscipline = POINTER TO IdentDisciplineRec;
+      IdentDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    declared: BOOLEAN; (* FALSE if just fwd decl seen *)
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+      idid: Disciplines.Identifier;
+
+   PROCEDURE Init;
+   BEGIN
+      Sets.InitSet(declsyms);
+      Sets.Incl(declsyms, Lex.const);
+      Sets.Incl(declsyms, Lex.type);
+      Sets.Incl(declsyms, Lex.var);
+      Sets.Incl(declsyms, Lex.procedure);
+
+      Sets.InitSet(muloperators);
+      Sets.Incl(muloperators, Lex.times);
+      Sets.Incl(muloperators, Lex.slash);
+      Sets.Incl(muloperators, Lex.div);
+      Sets.Incl(muloperators, Lex.mod);
+      Sets.Incl(muloperators, Lex.ampersand);
+
+      Sets.InitSet(addoperators);
+      Sets.Incl(addoperators, Lex.plus);
+      Sets.Incl(addoperators, Lex.minus);
+      Sets.Incl(addoperators, Lex.or);
+
+      Sets.InitSet(reloperators);
+      Sets.Incl(reloperators, Lex.eql);
+      Sets.Incl(reloperators, Lex.neq);
+      Sets.Incl(reloperators, Lex.lst);
+      Sets.Incl(reloperators, Lex.leq);
+      Sets.Incl(reloperators, Lex.grt);
+      Sets.Incl(reloperators, Lex.geq);
+      Sets.Incl(reloperators, Lex.in);
+      Sets.Incl(reloperators, Lex.is);
+
+      Sets.InitSet(desoperators);
+      Sets.Incl(desoperators, Lex.period);
+      Sets.Incl(desoperators, Lex.lbracket);
+      Sets.Incl(desoperators, Lex.lparen);
+      Sets.Incl(desoperators, Lex.arrow);
+
+      Sets.InitSet(exprbegsyms);
+      Sets.Incl(exprbegsyms, Lex.plus);
+      Sets.Incl(exprbegsyms, Lex.minus);
+      Sets.Incl(exprbegsyms, Lex.intconst);
+      Sets.Incl(exprbegsyms, Lex.hexconst);
+      Sets.Incl(exprbegsyms, Lex.realconst);
+      Sets.Incl(exprbegsyms, Lex.longrealconst);
+      Sets.Incl(exprbegsyms, Lex.charconst);
+      Sets.Incl(exprbegsyms, Lex.string);
+      Sets.Incl(exprbegsyms, Lex.nil);
+      Sets.Incl(exprbegsyms, Lex.lbrace);
+      Sets.Incl(exprbegsyms, Lex.ident);
+      Sets.Incl(exprbegsyms, Lex.lparen);
+      Sets.Incl(exprbegsyms, Lex.tilde);
+
+      Sets.InitSet(typebegsyms);
+      Sets.Incl(typebegsyms, Lex.ident);
+      Sets.Incl(typebegsyms, Lex.array);
+      Sets.Incl(typebegsyms, Lex.record);
+      Sets.Incl(typebegsyms, Lex.pointer);
+      Sets.Incl(typebegsyms, Lex.procedure);
+
+      Sets.InitSet(identbegsyms);
+      Sets.Incl(identbegsyms, Lex.ident);
+
+      Sets.InitSet(fieldbegsyms);
+      Sets.Incl(fieldbegsyms, Lex.ident);
+      Sets.Incl(fieldbegsyms, Lex.semicolon);
+
+      Sets.InitSet(fpbegsyms);
+      Sets.Incl(fpbegsyms, Lex.ident);
+      Sets.Incl(fpbegsyms, Lex.var);
+
+      Sets.InitSet(colonsyms);
+      Sets.Incl(colonsyms, Lex.colon);
+
+      Sets.InitSet(periodsyms);
+      Sets.Incl(periodsyms, Lex.period);
+
+      Sets.InitSet(modbegsyms);
+      Sets.Incl(modbegsyms, Lex.definition);
+      Sets.Incl(modbegsyms, Lex.module);
+      
+      Sets.InitSet(factorbegsyms);
+      Sets.Incl(factorbegsyms, Lex.intconst);
+      Sets.Incl(factorbegsyms, Lex.hexconst);
+      Sets.Incl(factorbegsyms, Lex.realconst);
+      Sets.Incl(factorbegsyms, Lex.longrealconst);
+      Sets.Incl(factorbegsyms, Lex.charconst);
+      Sets.Incl(factorbegsyms, Lex.string);
+      Sets.Incl(factorbegsyms, Lex.nil);
+      Sets.Incl(factorbegsyms, Lex.lbrace);
+      Sets.Incl(factorbegsyms, Lex.ident);
+      Sets.Incl(factorbegsyms, Lex.lparen);
+      Sets.Incl(factorbegsyms, Lex.tilde);
+
+      Sets.InitSet(ftbegsyms);
+      Sets.Incl(ftbegsyms, Lex.array);
+      Sets.Incl(ftbegsyms, Lex.ident);
+
+      Sets.InitSet(importbegsyms);
+      Sets.Incl(importbegsyms, Lex.import);
+
+      Sets.InitSet(bodybegsyms);
+      Sets.Incl(bodybegsyms, Lex.begin);
+
+      Sets.InitSet(stmtsyms);
+      Sets.Incl(stmtsyms, Lex.ident);
+      Sets.Incl(stmtsyms, Lex.if);
+      Sets.Incl(stmtsyms, Lex.case);
+      Sets.Incl(stmtsyms, Lex.while);
+      Sets.Incl(stmtsyms, Lex.repeat);
+      Sets.Incl(stmtsyms, Lex.loop);
+      Sets.Incl(stmtsyms, Lex.with);
+      Sets.Incl(stmtsyms, Lex.exit);
+      Sets.Incl(stmtsyms, Lex.return);
+
+      Sets.InitSet(endsyms);
+      Sets.Incl(endsyms, Lex.end);
+
+      Sets.InitSet(commasyms);
+      Sets.Incl(commasyms, Lex.comma);
+
+      Sets.InitSet(rbracketsyms);
+      Sets.Incl(rbracketsyms, Lex.rbracket);
+
+      Sets.InitSet(rparensyms);
+      Sets.Incl(rparensyms, Lex.rparen);
+
+      Sets.InitSet(rbracesyms);
+      Sets.Incl(rbracesyms, Lex.rbrace);
+
+      Sets.InitSet(semicolonsyms);
+      Sets.Incl(semicolonsyms, Lex.semicolon);
+
+      Sets.InitSet(ofsyms);
+      Sets.Incl(ofsyms, Lex.of);
+
+      Sets.InitSet(endifsyms);
+      Sets.Incl(endifsyms, Lex.elsif);
+      Sets.Incl(endifsyms, Lex.else);
+      Sets.Incl(endifsyms, Lex.end);
+
+      casebegsyms := exprbegsyms;
+      Sets.Incl(casebegsyms, Lex.bar);
+
+      Sets.InitSet(casetermsyms);
+      Sets.Incl(casetermsyms, Lex.bar);
+      Sets.Incl(casetermsyms, Lex.else);
+      Sets.Incl(casetermsyms, Lex.end);
+
+      Sets.InitSet(elsesyms);
+      Sets.Incl(elsesyms, Lex.else);
+      Sets.Incl(elsesyms, Lex.end);
+
+      Sets.InitSet(labeltermsyms);
+      Sets.Incl(labeltermsyms, Lex.comma);
+      Sets.Incl(labeltermsyms, Lex.colon);
+
+      Sets.InitSet(untilsyms);
+      Sets.Incl(untilsyms, Lex.until);
+
+      sdid := Disciplines.Unique();
+      idid := Disciplines.Unique();
+   END Init;
+
+   PROCEDURE Parse(src: Sources.Source;
+		   compiler: Compilers.Compiler;
+		   context: Compilers.Context;
+                   VAR module: Sym.Ident) : BOOLEAN;
+
+      VAR
+	 args: Args.Arguments;
+	 pcontext: CompilerPragmas.PragmaContext;
+	 defunit: BOOLEAN;
+	 in: Streams.Stream;
+	 sy: Lex.Symbol;
+	 last, token: Lex.Token;
+	 dummyIdent: ConstStrings.String;
+	 builtins, stdScope, importScope, globalScope: Scopes.Scope;
+	 mainmod: Sym.Ident;
+	 definition: Sym.Ident;
+	 givenKey: CompilerKeys.Key; (* # NIL if our modname is in keys *)
+	 lasterrorloc: Location;
+	 abort: BOOLEAN; (* abort compilation? *)
+
+      PROCEDURE GetSy;
+	 VAR
+	    loc: CompilerObjects.Location;
+      BEGIN
+	 last := token;
+	 REPEAT
+	    Lex.GetToken(in, token);
+	    IF token.sy = Lex.comment THEN
+	       CompilerObjects.CreateLocation(loc, src,
+		  token.begin + 2, token.end - 2);
+	       CompilerPragmas.ProcessPragmas(pcontext, loc, token.text);
+	    END;
+	 UNTIL token.sy # Lex.comment;
+	 sy := token.sy;
+      END GetSy;
+
+      PROCEDURE ErrorsFound() : BOOLEAN;
+      BEGIN
+	 RETURN RelatedEvents.EventsPending(src)
+      END ErrorsFound;
+
+      PROCEDURE OpenError(VAR es: Streams.Stream; at: Lex.Token);
+	 VAR
+	    loc: Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, at.begin, at.end);
+	 lasterrorloc := loc;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+      END OpenError;
+
+      PROCEDURE OpenErrorRange(VAR es: Streams.Stream;
+                               begin, end: Streams.Count);
+	 VAR
+	    loc: Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, begin, end);
+	 lasterrorloc := loc;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+      END OpenErrorRange;
+
+      PROCEDURE OpenErrorLoc(VAR es: Streams.Stream; loc: Location);
+      BEGIN
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+	 lasterrorloc := loc;
+      END OpenErrorLoc;
+
+      PROCEDURE ErrorAt2(es: Streams.Stream; at: Lex.Token);
+	 VAR
+	    loc: Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, at.begin, at.end);
+	 CompilerErrors.At2(es, loc);
+      END ErrorAt2;
+
+      PROCEDURE ErrorRef(es: Streams.Stream; at: Lex.Token);
+	 VAR
+	    loc: Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, at.begin, at.end);
+	 CompilerErrors.Ref(es, loc);
+      END ErrorRef;
+
+      PROCEDURE CloseError(es: Streams.Stream);
+      BEGIN
+	 CompilerErrors.Close(es, src);
+      END CloseError;
+
+      PROCEDURE Abort;
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 IF ~abort THEN
+	    OpenErrorLoc(es, lasterrorloc);
+	    Write.StringS(es, "aborting compilation");
+	    CloseError(es);
+	    abort := TRUE;
+	 END;
+      END Abort;
+
+      PROCEDURE Error(msg: ARRAY OF CHAR);
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 OpenError(es, token);
+	 Write.StringS(es, msg);
+	 CloseError(es);
+      END Error;
+
+      PROCEDURE ErrorIdent(es: Streams.Stream; ident: Lex.Token);
+      BEGIN
+	 Write.CharS(es, ASCII.quote);
+	 ConstStrings.Write(es, ident.ident);
+	 Write.CharS(es, ASCII.quote);
+      END ErrorIdent;
+
+      PROCEDURE ErrorQualifiedIdentifier(es: Streams.Stream; ident: Sym.Ident);
+      BEGIN
+	 Write.CharS(es, ASCII.quote);
+	 IF (ident.module # NIL) & (ident.module # mainmod) &
+	       (ident.name # NIL) THEN
+	    ConstStrings.Write(es, ident.module.name);
+	    Write.CharS(es, ".");
+	 END;
+	 ConstStrings.Write(es, ident.name);
+	 Write.CharS(es, ASCII.quote);
+      END ErrorQualifiedIdentifier;
+
+      PROCEDURE ErrorString(es: Streams.Stream; string: ConstStrings.String);
+      BEGIN
+	 Write.CharS(es, ASCII.quote);
+	 ConstStrings.Write(es, string);
+	 Write.CharS(es, ASCII.quote);
+      END ErrorString;
+
+      PROCEDURE Expected(sy: Lex.Symbol);
+	 VAR
+	    symstring: SymString;
+	    es: Streams.Stream;
+      BEGIN
+	 Lex.GetSymString(sy, symstring);
+	 OpenError(es, token);
+	 Write.StringS(es, symstring);
+	 Write.StringS(es, " expected");
+	 CloseError(es);
+      END Expected;
+
+      PROCEDURE ExpectIdentGetSy(VAR ident: Lex.Token);
+      BEGIN
+	 ident := token;
+	 IF sy = Lex.ident THEN
+	    GetSy;
+	 ELSE
+	    Expected(Lex.ident);
+	    ident.sy := Lex.ident;
+	    ident.ident := dummyIdent;
+	 END;
+      END ExpectIdentGetSy;
+
+      PROCEDURE Skip(stopsyms: SymSet);
+      BEGIN
+	 WHILE ~Sets.In(stopsyms, sy) DO
+	    GetSy;
+	 END;
+      END Skip;
+
+      PROCEDURE Unexpected(first: Lex.Token; begin, endpos: Streams.Count);
+	 (* generate an error message about unexpected symbols,
+	    ``first'' being the first one, and begin..end specifying
+	    the whole range being ignored
+	 *)
+	 VAR
+	    es: Streams.Stream;
+	    symstring: SymString;
+      BEGIN
+	 OpenErrorRange(es, begin, endpos);
+	 Lex.GetSymString(first.sy, symstring);
+	 Write.StringS(es, symstring);
+	 IF endpos > first.end THEN
+	    Write.StringS(es, " and following symbols are");
+	 ELSE
+	    Write.StringS(es, " is");
+	 END;
+	 Write.StringS(es, " unexpected");
+	 CloseError(es);
+      END Unexpected;
+
+      PROCEDURE InsteadOf(expected: Lex.Symbol;
+                          first: Lex.Token; begin, endpos: Streams.Count);
+	 (* generate an error message about unexpected symbols while
+	    ``expected'' has been expected instead,
+	    ``first'' being the first one, and begin..end specifying
+	    the whole range being ignored
+	 *)
+	 VAR
+	    es: Streams.Stream;
+	    symstr: SymString;
+      BEGIN
+	 OpenErrorRange(es, begin, endpos);
+	 Write.StringS(es, "expected ");
+	 Lex.GetSymString(expected, symstr);
+	 Write.StringS(es, symstr);
+	 Write.StringS(es, " instead of ");
+	 Lex.GetSymString(first.sy, symstr);
+	 Write.StringS(es, symstr);
+	 IF endpos > first.end THEN
+	    Write.StringS(es, " and following symbols");
+	 END;
+	 CloseError(es);
+      END InsteadOf;
+
+      PROCEDURE Missing(missing: Lex.Symbol);
+	 VAR
+	    symstr: SymString;
+	    es: Streams.Stream;
+      BEGIN
+	 OpenError(es, token);
+	 ErrorRef(es, last);
+	 Lex.GetSymString(missing, symstr);
+	 Write.StringS(es, symstr);
+	 Write.StringS(es, " is missing");
+	 CloseError(es);
+      END Missing;
+
+      PROCEDURE SkipSymbol(termsy: Lex.Symbol; begsyms, stopsyms: SymSet);
+	 (* may be used at the end of a syntactial construct that
+	    is terminated by the symbol termsy;
+	    afterwards a symbol out of begsyms or stopsyms is expected
+	 *)
+	 VAR
+	    first: Lex.Token;
+	    begin, endpos: Streams.Count;
+      BEGIN
+	 IF sy = termsy THEN GetSy; RETURN END; (* everything is OK *)
+	 Sets.Union(stopsyms, begsyms, stopsyms);
+	 IF Sets.In(stopsyms, sy) THEN
+	    (* just the termination symbol is missing *)
+	    Missing(termsy); RETURN
+	 END;
+
+	 (* now we have to skip some garbage *)
+	 begin := token.begin; first := token;
+	 REPEAT
+	    endpos := token.end;
+	    GetSy;
+	 UNTIL (sy = termsy) OR Sets.In(stopsyms, sy);
+	 IF sy = termsy THEN
+	    Unexpected(first, begin, endpos);
+	    GetSy;
+	 ELSE
+	    InsteadOf(termsy, first, begin, endpos);
+	 END;
+      END SkipSymbol;
+
+      PROCEDURE Start(begsyms, stopsyms: SymSet) : BOOLEAN;
+	 VAR
+	    begin, endpos: Streams.Count;
+	    first: Lex.Token;
+      BEGIN
+	 IF Sets.In(begsyms, sy) THEN RETURN TRUE END;
+	 IF Sets.In(stopsyms, sy) THEN RETURN FALSE END;
+
+	 (* skip garbage *)
+	 begin := token.begin; first := token;
+	 REPEAT
+	    endpos := token.end;
+	    GetSy;
+	 UNTIL Sets.In(begsyms, sy) OR Sets.In(stopsyms, sy);
+
+	 Unexpected(first, begin, endpos);
+	 RETURN Sets.In(begsyms, sy)
+      END Start;
+
+      PROCEDURE ExpectStart(begsyms, stopsyms: SymSet;
+                            expected: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    begin, endpos: Streams.Count;
+	    es: Streams.Stream;
+	    first: Lex.Token;
+      BEGIN
+	 IF Sets.In(begsyms, sy) THEN RETURN TRUE END;
+	 IF Sets.In(stopsyms, sy) THEN
+	    OpenError(es, token);
+	    ErrorRef(es, last);
+	    Write.StringS(es, expected);
+	    Write.StringS(es, " expected");
+	    CloseError(es);
+	    RETURN FALSE
+	 END;
+
+	 (* skip garbage *)
+	 begin := token.begin; first := token;
+	 REPEAT
+	    endpos := token.end;
+	    GetSy;
+	 UNTIL Sets.In(begsyms, sy) OR Sets.In(stopsyms, sy);
+
+	 IF Sets.In(stopsyms, sy) THEN
+	    OpenErrorRange(es, begin, endpos);
+	    Write.StringS(es, expected);
+	    Write.StringS(es, " expected instead");
+	    CloseError(es);
+	 ELSE
+	    Unexpected(first, begin, endpos);
+	 END;
+	 RETURN Sets.In(begsyms, sy)
+      END ExpectStart;
+
+      PROCEDURE CheckSymbol(symbol: Lex.Symbol;
+                            begsyms, stopsyms: SymSet) : BOOLEAN;
+	 (* check whether the given symbol is given;
+	    typical pattern
+
+	    Construct = Part1 [ symbol ] Part2
+
+	    ParsePart1;
+	    IF CheckSymbol(symbol, begsyms, stopsyms) THEN
+	       (* symbol was given *)
+	    END;
+	    ParsePart2;
+	 *)
+	 VAR
+	    begin, end: Streams.Count;
+	    first: Lex.Token;
+      BEGIN
+	 IF symbol = sy THEN GetSy; RETURN TRUE END;
+	 IF Sets.In(begsyms, sy) OR Sets.In(stopsyms, sy) THEN
+	    RETURN FALSE
+	 END;
+
+	 begin := token.begin; first := token;
+	 REPEAT
+	    end := token.end;
+	    GetSy;
+	 UNTIL (sy = symbol) OR Sets.In(begsyms, sy) OR Sets.In(stopsyms, sy);
+
+	 Unexpected(first, begin, end);
+	 RETURN sy = symbol
+      END CheckSymbol;
+
+      PROCEDURE Operator(opsyms: SymSet;
+                         begsyms, stopsyms: SymSet) : BOOLEAN;
+	 (* may be used in loops that continue as long as an operator
+	    is present
+
+	    typical pattern:
+
+	    expr = subexpr { opsy subexpr } .
+
+	    SubExpr(stopsyms);
+	    WHILE Operator(opsyms, begsyms, stopsyms) DO
+	       IF Sets.In(opsyms, sy) THEN
+		  operation := sy; GetSy;
+	       END;
+	       SubExpr(stopsyms);
+	    END;
+	 *)
+	 VAR
+	    begin, end: Streams.Count;
+	    es: Streams.Stream;
+	    symstr: ARRAY 16 OF CHAR;
+	    continue: BOOLEAN;
+	    first: Lex.Token;
+      BEGIN
+	 IF Sets.In(opsyms, sy) THEN RETURN TRUE END;
+	 IF Sets.In(begsyms, sy) THEN
+	    OpenError(es, token);
+	    Write.StringS(es, "operator expected");
+	    ErrorRef(es, last);
+	    CloseError(es);
+	    RETURN TRUE
+	 END;
+	 IF Sets.In(stopsyms, sy) THEN RETURN FALSE END;
+
+	 begin := token.begin; first := token;
+	 REPEAT
+	    end := token.end;
+	    GetSy;
+	 UNTIL Sets.In(opsyms, sy) OR Sets.In(begsyms, sy) OR
+	       Sets.In(stopsyms, sy);
+
+	 IF Sets.In(opsyms, sy) THEN
+	    Unexpected(first, begin, end);
+	    continue := TRUE;
+	 ELSIF Sets.In(begsyms, sy) THEN
+	    OpenErrorRange(es, begin, end);
+	    Write.StringS(es, "operator expected instead");
+	    CloseError(es);
+	    continue := TRUE;
+	 ELSE
+	    Unexpected(first, begin, end);
+	    continue := FALSE;
+	 END;
+	 RETURN continue
+      END Operator;
+
+      PROCEDURE Sep(sep: Lex.Symbol;
+                    termsyms, begsyms, stopsyms: SymSet) : BOOLEAN;
+	 (* may be used in loops that continue as long as a seperator
+	    is present; this test allows to survive missing separators
+	    as long as if the separator is just missing or
+	    there is just garbage that does not belong to stopsyms
+	    before the next token that belongs to begsyms;
+
+	    typical pattern:
+
+	    list = element { sep element } termsy .
+
+	    Element;
+	    WHILE Sep(sep, endsy, elementbegsyms, stopsyms) DO
+	       Element;
+	    END;
+	    SkipSymbol(termsy, followlistsyms1, followlistsyms2);
+
+	    note that Sep eats up the seperator and some garbage
+	    but never one endsy or one of the stopsyms or begsyms
+	 *)
+	 VAR
+	    begin, end: Streams.Count;
+	    es: Streams.Stream;
+	    symstr: SymString;
+	    first: Lex.Token;
+	    continue: BOOLEAN;
+      BEGIN
+	 IF sy = sep THEN GetSy; RETURN TRUE END;
+	 IF Sets.In(begsyms, sy) THEN
+	    Missing(sep); RETURN TRUE
+	 END;
+	 IF Sets.In(termsyms, sy) OR Sets.In(stopsyms, sy) THEN
+	    RETURN FALSE
+	 END;
+
+	 Sets.Incl(stopsyms, Lex.end);
+	 begin := token.begin; first := token;
+	 REPEAT
+	    end := token.end;
+	    GetSy;
+	 UNTIL (sy = sep) OR Sets.In(termsyms, sy) OR
+	       Sets.In(begsyms, sy) OR Sets.In(stopsyms, sy);
+
+	 IF sy = sep THEN
+	    Unexpected(first, begin, end);
+	    GetSy;
+	    continue := TRUE;
+	 ELSIF Sets.In(termsyms, sy) THEN
+	    Unexpected(first, begin, end);
+	    continue := FALSE;
+	 ELSIF Sets.In(begsyms, sy) THEN
+	    InsteadOf(sep, first, begin, end);
+	    continue := TRUE;
+	 ELSE
+	    (* do not print an error message here because it
+	       will be generated by our caller;
+	       but at least we patch the begin pos of the
+	       final token to get a better error range for
+	       the error message following
+	    *)
+	    token.begin := begin;
+	    continue := FALSE;
+	 END;
+	 RETURN continue
+      END Sep;
+
+      PROCEDURE TestOrder(VAR lastdef: DefinitionType;
+			  VAR lasttoken: Lex.Token;
+                          newdef: DefinitionType);
+	 (* Oberon revision: rule for declaration order relaxed *)
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 IF (lastdef = procedure) & (newdef < procedure) THEN
+	    OpenError(es, token);
+	    ErrorRef(es, lasttoken);
+	    Write.StringS(es, "procedure declarations must not be");
+	    Write.StringS(es, " followed by other declarations");
+	    CloseError(es);
+	 END;
+	 lastdef := newdef; lasttoken := token;
+      END TestOrder;
+
+      PROCEDURE InitScope(scope: Scopes.Scope; ident: Sym.Ident);
+	 VAR
+	    disc: ScopeDiscipline;
+      BEGIN
+	 NEW(disc); disc.id := sdid; disc.ident := ident;
+	 disc.fwdrefs := NIL; disc.fwddecls := NIL; disc.loops := NIL;
+	 Disciplines.Add(scope, disc);
+      END InitScope;
+
+      PROCEDURE GetScopeIdent(scope: Scopes.Scope; VAR ident: Sym.Ident);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 ident := disc.ident;
+      END GetScopeIdent;
+
+      PROCEDURE OpenLoop(scope: Scopes.Scope; loop: Sym.Attribute);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+	    llist: LoopList;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 NEW(llist); llist.next := disc.loops; llist.stmt := loop;
+	 disc.loops := llist;
+      END OpenLoop;
+
+      PROCEDURE GetLoop(scope: Scopes.Scope;
+                        VAR loop: Sym.Attribute) : BOOLEAN;
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 IF disc.loops = NIL THEN
+	    RETURN FALSE
+	 ELSE
+	    loop := disc.loops.stmt;
+	    RETURN TRUE
+	 END;
+      END GetLoop;
+
+      PROCEDURE CloseLoop(scope: Scopes.Scope);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 ASSERT(disc.loops # NIL);
+	 disc.loops := disc.loops.next;
+      END CloseLoop;
+
+      PROCEDURE AddForward(scope: Scopes.Scope;
+                           type: Sym.Type; ident: ConstStrings.String;
+			   loc: CompilerObjects.Location);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+	    fwdref: ForwardReferences;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 NEW(fwdref);
+	 fwdref.type := type; fwdref.ident := ident; fwdref.loc := loc;
+	 fwdref.next := disc.fwdrefs; disc.fwdrefs := fwdref;
+      END AddForward;
+
+      PROCEDURE CheckForwards(scope: Scopes.Scope; printErrors: BOOLEAN);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+	    fwdref: ForwardReferences;
+	    ident: Sym.Ident;
+	    es: Streams.Stream;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 fwdref := disc.fwdrefs; disc.fwdrefs := NIL;
+	 WHILE fwdref # NIL DO
+	    IF printErrors THEN
+	       Scopes.Use(scope, fwdref.ident, fwdref.loc, ident);
+	    ELSIF ~Scopes.Lookup(scope, fwdref.ident, ident) THEN
+	       ASSERT(ident = NIL);
+	       AddForward(scope, fwdref.type, fwdref.ident, fwdref.loc);
+	    ELSE
+	       (* mark the identifier as used *)
+	       Scopes.Use(scope, fwdref.ident, fwdref.loc, ident);
+	       ASSERT(ident # NIL);
+	    END;
+	    IF ident # NIL THEN
+	       IF ident.class # Sym.typeC THEN
+		  OpenErrorLoc(es, fwdref.loc);
+		  IF ident.loc # NIL THEN
+		     CompilerErrors.Ref(es, ident.loc);
+		  END;
+		  ErrorString(es, fwdref.ident);
+		  Write.StringS(es, " is not a type");
+		  CloseError(es);
+	       ELSIF ident.type # NIL THEN
+		  IF ~(ident.type.form IN {Sym.array, Sym.record}) THEN
+		     OpenErrorLoc(es, fwdref.loc);
+		     IF ident.loc # NIL THEN
+			CompilerErrors.Ref(es, ident.loc);
+		     END;
+		     ErrorString(es, fwdref.ident);
+		     Write.StringS(es, " is not a record or array type");
+		     CloseError(es);
+		  ELSE
+		     fwdref.type.reftype := ident.type;
+		  END;
+	       END;
+	    END;
+	    fwdref := fwdref.next;
+	 END;
+      END CheckForwards;
+
+      PROCEDURE AddForwardDeclaration(scope: Scopes.Scope; decl: Sym.Ident);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+	    fwddecl: ForwardDeclarations;
+	    idisc: IdentDiscipline;
+      BEGIN
+	 IF ~Disciplines.Seek(decl, idid, idisc) THEN
+	    ASSERT((decl.loc # NIL) & (decl.name # NIL));
+	    ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	    NEW(fwddecl); fwddecl.decl := decl;
+	    fwddecl.next := disc.fwddecls; disc.fwddecls := fwddecl;
+	    NEW(idisc); idisc.id := idid; idisc.declared := FALSE;
+	    Disciplines.Add(decl, idisc);
+	 END;
+      END AddForwardDeclaration;
+
+      PROCEDURE UnresolvedForwardDeclarationPresent(scope: Scopes.Scope;
+                                          name: ConstStrings.String;
+					  VAR decl: Sym.Ident) : BOOLEAN;
+	 VAR
+	    idisc: IdentDiscipline;
+      BEGIN
+	 RETURN Scopes.LocalLookup(scope, name, decl) &
+	        Disciplines.Seek(decl, idid, idisc) & ~idisc.declared
+      END UnresolvedForwardDeclarationPresent;
+
+      PROCEDURE ForwardDeclarationIsResolved(ident: Sym.Ident);
+	 VAR
+	    idisc: IdentDiscipline;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := Disciplines.Seek(ident, idid, idisc); ASSERT(ok);
+	 ASSERT(~idisc.declared);
+	 idisc.declared := TRUE;
+      END ForwardDeclarationIsResolved;
+
+      PROCEDURE CheckForwardDeclarations(scope: Scopes.Scope);
+	 VAR
+	    disc: ScopeDiscipline;
+	    idisc: IdentDiscipline;
+	    ok: BOOLEAN;
+	    fwddecl: ForwardDeclarations;
+	    es: Streams.Stream;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 fwddecl := disc.fwddecls;
+	 WHILE fwddecl # NIL DO
+	    ok := Disciplines.Seek(fwddecl.decl, idid, idisc); ASSERT(ok);
+	    IF ~idisc.declared THEN
+	       OpenErrorLoc(es, fwddecl.decl.loc);
+	       Write.StringS(es, "actual declaration of ");
+	       ErrorString(es, fwddecl.decl.name);
+	       Write.StringS(es, " missing");
+	       CloseError(es);
+	    END;
+	    Disciplines.Remove(fwddecl.decl, idid);
+	    fwddecl := fwddecl.next;
+	 END;
+      END CheckForwardDeclarations;
+
+      PROCEDURE FinishScope(scope: Scopes.Scope);
+	 VAR
+	    disc: ScopeDiscipline;
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := Disciplines.Seek(scope, sdid, disc); ASSERT(ok);
+	 ASSERT(disc.loops = NIL);
+	 CheckForwards(scope, (* print errors = *) TRUE);
+	 CheckForwardDeclarations(scope);
+	 Disciplines.Remove(scope, sdid);
+      END FinishScope;
+
+      PROCEDURE Export(ident: Sym.Ident);
+	 VAR
+	    other: Sym.Ident;
+      BEGIN
+	 IF (module # NIL) & (ident # NIL) &
+	       (* avoid additional error messages *)
+	       ~Scopes.Lookup(module.export, ident.name, other) THEN
+	    Scopes.Add(module.export, ident.name, ident.loc, ident);
+	 END;
+      END Export;
+
+      PROCEDURE IdentList(stopsyms1, stopsyms2: SymSet;
+			  sepsy: Lex.Symbol;
+                          VAR idlist: IdList);
+	 VAR
+	    lastid: IdList;
+	    stopsyms: SymSet;
+	    termsyms: SymSet;
+      BEGIN
+	 Sets.InitSet(termsyms); Sets.Incl(termsyms, sepsy);
+	 Sets.Union(stopsyms1, stopsyms2, stopsyms);
+	 IF ExpectStart(identbegsyms, stopsyms, "identifier list") THEN
+	    Sets.Incl(stopsyms, sepsy);
+	    NEW(lastid);
+	    lastid.ident := token;
+	    idlist := lastid;
+	    GetSy;
+	    WHILE Sep(Lex.comma, termsyms, identbegsyms, stopsyms) DO
+	       NEW(lastid.next);
+	       lastid := lastid.next;
+	       lastid.ident := token;
+	       GetSy;
+	    END;
+	    lastid.next := NIL;
+	 ELSE
+	    idlist := NIL;
+	 END;
+      END IdentList;
+
+      PROCEDURE QualIdent(stopsyms: SymSet;
+                          VAR qualident: QualifiedIdentifier);
+	 VAR
+	    first: Lex.Token;
+      BEGIN
+	 ASSERT(sy = Lex.ident);
+	 first := token;
+	 GetSy;
+	 NEW(qualident);
+	 IF Start(periodsyms, stopsyms) THEN
+	    GetSy;
+	    IF ExpectStart(identbegsyms, stopsyms, "identifier") THEN
+	       qualident.qualified := TRUE;
+	       qualident.module := first;
+	       qualident.ident := token;
+	       GetSy;
+	    ELSE
+	       qualident.qualified := FALSE; qualident.ident := first;
+	    END;
+	 ELSE
+	    qualident.qualified := FALSE; qualident.ident := first;
+	 END;
+	 CompilerObjects.CreateLocation(qualident.loc, src,
+		  first.begin, qualident.ident.end);
+      END QualIdent;
+
+      PROCEDURE EndIdent(name: Lex.Token; termsy: Lex.Symbol;
+                         begsyms, stopsyms: SymSet) : BOOLEAN;
+	 VAR
+	    es: Streams.Stream;
+	    endtoken: Lex.Token;
+	    endseen: BOOLEAN;
+      BEGIN
+	 Sets.Incl(begsyms, Lex.ident);
+	 Sets.Incl(stopsyms, termsy);
+	 SkipSymbol(Lex.end, begsyms, stopsyms);
+	 IF last.sy = Lex.end THEN
+	    endtoken := last; endseen := TRUE;
+	 ELSE
+	    endseen := FALSE;
+	 END;
+	 IF sy = Lex.ident THEN
+	    IF (token.ident # name.ident) & (name.ident # dummyIdent) THEN
+	       OpenError(es, token);
+	       ErrorRef(es, name);
+	       ErrorIdent(es, token);
+	       Write.StringS(es, " does not match ");
+	       ErrorIdent(es, name);
+	       CloseError(es);
+	    END;
+	    GetSy;
+	    SkipSymbol(termsy, begsyms, stopsyms);
+	    RETURN TRUE
+	 ELSIF ~endseen THEN
+	    Expected(Lex.ident);
+	    Expected(termsy);
+	 ELSE
+	    OpenError(es, endtoken);
+	    Write.StringS(es, "bogus END?");
+	    CloseError(es);
+	 END;
+	 IF sy = termsy THEN
+	    GetSy;
+	 END;
+	 RETURN ~Sets.In(begsyms, sy) & Sets.In(stopsyms, sy)
+      END EndIdent;
+
+      PROCEDURE CurrentLoc() : CompilerObjects.Location;
+	 VAR
+	    loc: CompilerObjects.Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, token.begin, token.end);
+	 RETURN loc
+      END CurrentLoc;
+
+      PROCEDURE Loc(from, to: Streams.Count) : CompilerObjects.Location;
+	 VAR
+	    loc: CompilerObjects.Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(loc, src, from, to);
+	 RETURN loc
+      END Loc;
+
+      PROCEDURE ^ Expression(stopsyms: SymSet; scope: Scopes.Scope;
+                             VAR expat: Sym.Attribute);
+
+      PROCEDURE LookupIdent(token: Lex.Token;
+                            scope: Scopes.Scope; module: Sym.Ident;
+                            VAR desat: Sym.Attribute);
+	 (* lookup current identifier and convert it into an attribute;
+	    module is to be set if the scope is the export list of a module
+	 *)
+	 VAR
+	    loc: CompilerObjects.Location;
+	    ident: Sym.Ident;
+	    es: Streams.Stream;
+      BEGIN
+	 IF module # NIL THEN
+	    ASSERT(desat # NIL);
+	    IF scope = NIL THEN (* may be the case for invalid modules *)
+	       desat := NIL; RETURN
+	    ELSE
+	       CompilerObjects.CreateLocation(loc, src,
+	                                      desat.loc.begin, token.end);
+	       Scopes.Use(scope, token.ident, loc, ident);
+	    END;
+	 ELSE
+	    ASSERT(scope # NIL);
+	    CompilerObjects.CreateLocation(loc, src, token.begin, token.end);
+	    Scopes.Use(scope, token.ident, loc, ident);
+	 END;
+	 IF ident # NIL THEN
+	    Sym.CreateIdentAt(desat, ident, loc);
+	 ELSE
+	    desat := NIL;
+	 END;
+      END LookupIdent;
+
+      PROCEDURE ExpectType(at: Sym.Attribute; forms: Sym.FormSet) : BOOLEAN;
+	 (* check that at.type.form is defined and in forms;
+	    suppress an error message if at or at.type is NIL
+	    but print a detailed error message if at.type.form is defined
+	    and not in forms
+	 *)
+	 VAR
+	    es: Streams.Stream;
+	    type: Sym.Type;
+	    form: Sym.Form;
+	    first: BOOLEAN;
+	    formstr: ARRAY 32 OF CHAR;
+	    card: INTEGER; (* cardinality of forms *)
+	    cnt: INTEGER;
+      BEGIN
+	 IF (at = NIL) OR (at.type = NIL) THEN RETURN FALSE END;
+	 type := at.type;
+	 IF type.form IN forms THEN RETURN TRUE END;
+	 OpenErrorRange(es, at.loc.begin, at.loc.end);
+	 IF (type.ident # NIL) & (type.ident.loc # NIL) THEN
+	    CompilerErrors.Ref(es, type.ident.loc);
+	 ELSIF (at.mode IN Sym.identModes) & (at.ident # NIL) &
+	       (at.ident.loc # NIL) THEN
+	    CompilerErrors.Ref(es, at.ident.loc);
+	 END;
+	 Write.StringS(es, "is of ");
+	 Sym.GetFormString(type.form, formstr);
+	 Write.StringS(es, formstr);
+	 Write.StringS(es, " type but an expression of ");
+	 form := 0; card := 0;
+	 WHILE form < Sym.forms DO
+	    IF form IN forms THEN
+	       INC(card);
+	    END;
+	    INC(form);
+	 END;
+	 ASSERT(card > 0);
+	 form := 0; cnt := 0;
+	 WHILE cnt < card DO
+	    IF form IN forms THEN
+	       INC(cnt);
+	       IF (cnt = card) & (card > 1) THEN
+		  Write.StringS(es, " or ");
+	       ELSIF cnt > 1 THEN
+		  Write.StringS(es, ", ");
+	       END;
+	       Sym.GetFormString(form, formstr);
+	       Write.StringS(es, formstr);
+	    END;
+	    INC(form);
+	 END;
+	 Write.StringS(es, " type is expected here");
+	 CloseError(es);
+	 RETURN FALSE
+      END ExpectType;
+
+      PROCEDURE CheckType(at: Sym.Attribute; forms: Sym.FormSet);
+      BEGIN
+	 IF ~ExpectType(at, forms) THEN END;
+      END CheckType;
+
+      PROCEDURE Designator(stopsyms: SymSet; scope: Scopes.Scope;
+			   VAR desat: Sym.Attribute);
+	 VAR
+	    desid: Lex.Token;
+	    es: Streams.Stream;
+
+	 PROCEDURE IndexConstruction(stopsyms: SymSet);	(* modifies desat *)
+	    VAR
+	       indexat: Sym.Attribute;
+	       begin: Streams.Count;
+	       loc: CompilerObjects.Location;
+	       type: Sym.Type;
+	       es: Streams.Stream;
+
+	    PROCEDURE IndexType; (* sets type *)
+	    BEGIN
+	       IF ~ExpectType(desat, {Sym.array, Sym.pointer}) THEN
+		  type := NIL; RETURN
+	       END;
+	       type := desat.type;
+	       IF type.form = Sym.pointer THEN
+		  type := type.reftype;
+	       END;
+	       IF type = NIL THEN RETURN END;
+	       IF type.form # Sym.array THEN
+		  OpenErrorRange(es, desid.begin, token.end);
+		  Write.StringS(es, "is not a pointer to an array");
+		  IF (type.ident # NIL) & (type.ident.loc # NIL) THEN
+		     CompilerErrors.Ref(es, type.ident.loc);
+		  END;
+		  CloseError(es);
+		  type := NIL; RETURN
+	       END;
+	       IF desat.mode = Sym.constAt THEN
+		  OpenErrorRange(es, desid.begin, token.end);
+		  Write.StringS(es, "constant strings cannot be indexed");
+		  IF (desat.ident # NIL) & (desat.ident.loc # NIL) THEN
+		     CompilerErrors.Ref(es, desat.ident.loc);
+		  END;
+		  CloseError(es);
+	       END;
+	       type := type.element;
+	    END IndexType;
+
+	 BEGIN (* IndexConstruction *)
+	    IF desat # NIL THEN
+	       begin := desat.loc.begin;
+	    END;
+	    Sets.Incl(stopsyms, Lex.comma);
+	    Sets.Incl(stopsyms, Lex.rbracket);
+
+	    REPEAT
+	       Expression(stopsyms, scope, indexat);
+	       IF ~ExpectType(indexat, {Sym.integer}) THEN
+		  indexat := NIL;
+	       END;
+	       IF desat # NIL THEN
+		  IndexType; (* sets type *)
+		  IF type = NIL THEN
+		     desat := NIL;
+		  ELSE
+		     CompilerObjects.CreateLocation(loc, src, begin, token.end);
+		     Sym.CreateIndexAt(desat, desat, indexat, loc);
+		     desat.type := type;
+		  END;
+	       END;
+	    UNTIL ~Sep(Lex.comma, rbracketsyms, exprbegsyms, stopsyms);
+	    SkipSymbol(Lex.rbracket, stopsyms, stopsyms);
+	 END IndexConstruction;
+
+	 PROCEDURE Selection; (* modifies desat *)
+	    VAR
+	       type: Sym.Type;
+	       es: Streams.Stream;
+	       scope: Scopes.Scope;
+	       field: Sym.FieldList;
+	       loc: CompilerObjects.Location;
+	 BEGIN
+	    IF ~ExpectType(desat, {Sym.record, Sym.pointer}) THEN
+	       desat := NIL; RETURN
+	    END;
+	    IF desat.type.form = Sym.pointer THEN
+	       type := desat.type.reftype;
+	       IF type = NIL THEN desat := NIL; RETURN END;
+	    ELSE
+	       type := desat.type;
+	    END;
+	    IF type.form # Sym.record THEN
+	       OpenErrorRange(es, desid.begin, token.end);
+	       Write.StringS(es, "is not a pointer to a record");
+	       IF (type.ident # NIL) & (type.ident.loc # NIL) THEN
+		  CompilerErrors.Ref(es, type.ident.loc);
+	       END;
+	       CloseError(es);
+	       desat := NIL; RETURN
+	    END;
+	    IF (type.privatefieldscope # NIL) & (type.owner = mainmod) THEN
+	       scope := type.privatefieldscope;
+	    ELSE
+	       scope := type.publicfieldscope;
+	    END;
+	    ASSERT(scope # NIL);
+	    Scopes.Use(scope, token.ident, CurrentLoc(), field);
+	    IF field = NIL THEN
+	       desat := NIL;
+	    ELSE
+	       loc := Loc(desid.begin, token.end);
+	       Sym.CreateSelectionAt(desat, desat, field, loc);
+	       desat.type := field.type;
+	    END;
+	 END Selection;
+
+	 PROCEDURE Dereference; (* modifies desat *)
+	    VAR
+	       type: Sym.Type;
+	       loc: CompilerObjects.Location;
+	 BEGIN
+	    IF ExpectType(desat, {Sym.pointer}) THEN
+	       type := desat.type.reftype;
+	       CompilerObjects.CreateLocation(loc, src, desid.begin, token.end);
+	       Sym.CreateDerefAt(desat, desat, loc);
+	       desat.type := type;
+	    ELSE
+	       desat := NIL;
+	    END;
+	 END Dereference;
+
+	 PROCEDURE TypeGuard(stopsyms: SymSet); (* modifies desat *)
+	    VAR
+	       guard: Sym.Attribute;
+	       base: Sym.Type;
+	       es: Streams.Stream;
+	       loc: CompilerObjects.Location;
+	       endpos: Streams.Count;
+	 BEGIN
+	    Sets.Incl(stopsyms, Lex.rparen);
+	    Expression(stopsyms, scope, guard);
+	    endpos := token.end;
+	    SkipSymbol(Lex.rparen, stopsyms, stopsyms);
+
+	    IF OberonTypes.CheckGuard(desat, guard) THEN
+	       CompilerObjects.CreateLocation(loc, src,
+	                                      desat.loc.begin, endpos);
+	       Sym.CreateTypeGuardAt(desat, desat, guard, loc);
+	       desat.type := guard.type;
+	    ELSE
+	       desat := NIL;
+	    END;
+	 END TypeGuard;
+
+      BEGIN (* Designator *)
+	 Sets.Union(stopsyms, desoperators, stopsyms);
+	 ASSERT(sy = Lex.ident);
+	 desid := token;
+	 LookupIdent(token, scope, NIL, desat);
+	 GetSy;
+	 IF (sy = Lex.period) &
+	       (desat # NIL) & (desat.ident.class = Sym.moduleC) THEN
+	    GetSy;
+	    IF ExpectStart(identbegsyms, stopsyms, "identifier") THEN
+	       LookupIdent(token, desat.ident.export, desat.ident, desat);
+	       GetSy;
+	    END;
+	 END;
+	 WHILE Start(desoperators, stopsyms) DO
+	    CASE sy OF
+	    |  Lex.period:
+		     GetSy;
+		     IF ExpectStart(identbegsyms, stopsyms,
+		                    "field selector") THEN
+			Selection; GetSy;
+		     END;
+	    |  Lex.lbracket:
+		     GetSy;
+		     IndexConstruction(stopsyms);
+	    |  Lex.lparen:
+		     IF ~ExpectType(desat,
+			   {Sym.proceduretype, Sym.pointer, Sym.record}) THEN
+			Skip(stopsyms); desat := NIL; RETURN
+		     END;
+		     IF desat.type.form # Sym.proceduretype THEN
+			GetSy;
+			TypeGuard(stopsyms);
+		     ELSE
+			RETURN (* lparen belongs to actual parameters *)
+		     END;
+	    |  Lex.arrow:
+		     Dereference;
+		     GetSy;
+	    END;
+	 END;
+      END Designator;
+
+      PROCEDURE CheckQualIdent(qualident: QualifiedIdentifier;
+                               scope: Scopes.Scope;
+                               VAR qualidentat: Sym.Attribute);
+	 VAR
+	    module: Sym.Attribute;
+	    es: Streams.Stream;
+      BEGIN
+	 IF qualident.qualified THEN
+	    LookupIdent(qualident.module, scope, NIL, module);
+	    IF module = NIL THEN
+	       qualidentat := NIL; RETURN
+	    END;
+	    IF module.mode # Sym.moduleAt THEN
+	       OpenError(es, qualident.module);
+	       Write.StringS(es, "is not a module");
+	       IF (module.ident # NIL) & (module.ident.loc # NIL) THEN
+		  CompilerErrors.Ref(es, module.ident.loc);
+	       END;
+	       CloseError(es);
+	       qualidentat := NIL; RETURN
+	    END;
+	    qualidentat := module;
+	    LookupIdent(qualident.ident, module.ident.export, module.ident,
+	                qualidentat);
+	 ELSE
+	    LookupIdent(qualident.ident, scope, NIL, qualidentat);
+	 END;
+	 IF qualidentat # NIL THEN
+	    qualidentat.loc := qualident.loc;
+	 END;
+      END CheckQualIdent;
+
+      PROCEDURE ActualParameters(stopsyms: SymSet; scope: Scopes.Scope;
+                                 VAR desat: Sym.Attribute);
+	 (* transforming the designator desat into a procedure designator
+	    and appending actual parameters, if there are any
+	 *)
+	 VAR
+	    parmat: Sym.Attribute;
+	    head, tail: Sym.Attribute;
+	    returnNIL: BOOLEAN;
+	    innerstopsyms: SymSet;
+	    paramcnt: INTEGER;
+	    loc: CompilerObjects.Location;
+	    endpos: Streams.Count;
+	    restype: Sym.Type;
+	    es: Streams.Stream;
+      BEGIN (* ActualParameters *)
+	 head := NIL; tail := NIL; returnNIL := FALSE; paramcnt := 0;
+	 IF sy = Lex.lparen THEN
+	    GetSy;
+	    IF sy = Lex.rparen THEN
+	       endpos := token.end;
+	       GetSy;
+	    ELSE
+	       innerstopsyms := stopsyms;
+	       Sets.Incl(innerstopsyms, Lex.rparen);
+	       Sets.Incl(innerstopsyms, Lex.comma);
+	       REPEAT
+		  Expression(innerstopsyms, scope, parmat); INC(paramcnt);
+		  IF parmat = NIL THEN
+		     returnNIL := TRUE;
+		  ELSIF ~returnNIL THEN
+		     IF head = NIL THEN
+			head := parmat;
+		     ELSE
+			tail.next := parmat;
+		     END;
+		     tail := parmat;
+		  END;
+	       UNTIL ~Sep(Lex.comma, rparensyms, exprbegsyms, stopsyms);
+	       endpos := token.end;
+	       SkipSymbol(Lex.rparen, stopsyms, stopsyms);
+	    END;
+	 ELSE
+	    IF (desat # NIL) & (desat.loc # NIL) THEN
+	       endpos := desat.loc.end;
+	    ELSE
+	       endpos := last.end;
+	    END;
+	 END;
+	 IF returnNIL OR (desat = NIL) OR (desat.type = NIL) THEN
+	    desat := NIL; RETURN
+	 END;
+	 IF ~(desat.mode IN Sym.opModes + {Sym.procAt}) THEN
+	    OpenErrorLoc(es, desat.loc);
+	    Write.StringS(es, "designator expected");
+	    CloseError(es);
+	    desat := NIL; RETURN
+	 END;
+	 IF desat.type = NIL THEN
+	    desat := NIL; RETURN
+	 END;
+	 IF desat.type.form # Sym.proceduretype THEN
+	    OpenErrorLoc(es, desat.loc);
+	    Write.StringS(es, "procedure expected");
+	    CloseError(es);
+	    desat := NIL; RETURN
+	 END;
+	 CompilerObjects.CreateLocation(loc, src, desat.loc.begin, endpos);
+	 OberonTypes.CheckCall(desat, head, restype);
+	 Sym.CreateCallAt(desat, desat, head, paramcnt, loc);
+	 desat.type := restype;
+      END ActualParameters;
+
+      PROCEDURE Expression(stopsyms: SymSet; scope: Scopes.Scope;
+                           VAR expat: Sym.Attribute);
+	 VAR
+	    stopsyms1: SymSet;
+	    left, right: Sym.Attribute;
+	    operation: Lex.Symbol;
+
+	 PROCEDURE BinaryOp(opsy: Lex.Symbol;
+	                    left, right: Sym.Attribute;
+			    VAR at: Sym.Attribute);
+	    VAR
+	       loc: CompilerObjects.Location;
+	       restype: Sym.Type;
+	       begin, end: Streams.Count;
+	 BEGIN
+	    OberonTypes.CheckBinaryOp(opsy, left, right, restype);
+	    IF restype # NIL THEN
+	       ASSERT((left # NIL) OR (right # NIL));
+	       IF left # NIL THEN
+		  begin := left.loc.begin;
+	       ELSE
+		  begin := right.loc.begin;
+	       END;
+	       IF right # NIL THEN
+		  end := right.loc.end;
+	       ELSE
+		  end := left.loc.end;
+	       END;
+	       CompilerObjects.CreateLocation(loc, src, begin, end);
+	       Sym.CreateBinaryAt(at, opsy, left, right, loc);
+	       at.type := restype;
+	    ELSE
+	       at := NIL;
+	    END;
+	 END BinaryOp;
+
+	 PROCEDURE UnaryOp(optoken: Lex.Token;
+	                   VAR at: Sym.Attribute);
+	    VAR
+	       loc: CompilerObjects.Location;
+	       restype: Sym.Type;
+	 BEGIN
+	    IF at # NIL THEN
+	       OberonTypes.CheckUnaryOp(optoken.sy, at, restype);
+	       IF restype # NIL THEN
+		  CompilerObjects.CreateLocation(loc, src,
+						 optoken.begin, at.loc.end);
+		  Sym.CreateUnaryAt(at, optoken.sy, at, loc);
+		  at.type := restype;
+	       ELSE
+		  at := NIL;
+	       END;
+	    END;
+	 END UnaryOp;
+
+	 PROCEDURE SimpleExpression(stopsyms: SymSet;
+	                            VAR simpat: Sym.Attribute);
+	    VAR
+	       left, right: Sym.Attribute;
+	       optoken: Lex.Token;
+	       operation: Lex.Symbol;
+
+	    PROCEDURE Term(stopsyms: SymSet;
+	                   VAR termat: Sym.Attribute);
+	       VAR
+		  left, right: Sym.Attribute;
+		  operation: Lex.Symbol;
+
+	       PROCEDURE Factor(stopsyms: SymSet; VAR factat: Sym.Attribute);
+
+		  VAR
+		     optoken: Lex.Token;
+		     es: Streams.Stream;
+		     constval: Sym.ConstantValue;
+		     begin: Streams.Count;
+
+		  PROCEDURE SetConstruction;		(* modifies factat *)
+		     VAR
+			left, right: Sym.Attribute;
+
+		     PROCEDURE Element(stopsyms: SymSet;
+		                       VAR elemat: Sym.Attribute);
+			VAR
+			   left, right: Sym.Attribute;
+		     BEGIN
+			Sets.Incl(stopsyms, Lex.range);
+			Expression(stopsyms, scope, elemat);
+			OberonTypes.CheckSetMember(elemat);
+			IF sy = Lex.range THEN
+			   Sets.Excl(stopsyms, Lex.range);
+			   GetSy;
+			   left := elemat;
+			   Expression(stopsyms, scope, right);
+			   OberonTypes.CheckSetMember(right);
+			   BinaryOp(Lex.range, left, right, elemat);
+			END;
+		     END Element;
+
+		  BEGIN (* SetConstruction *)
+		     IF sy = Lex.rbrace THEN
+			Consts.CreateEmptySet(factat);
+		     ELSE
+			Sets.Incl(stopsyms, Lex.rbrace);
+			Sets.Incl(stopsyms, Lex.comma);
+			Element(stopsyms, factat);
+			WHILE Sep(Lex.comma, rbracesyms,
+				  exprbegsyms, stopsyms) DO
+			   left := factat;
+			   Element(stopsyms, right);
+			   BinaryOp(Lex.comma, left, right, factat);
+			END;
+			BinaryOp(Lex.comma, NIL, factat, factat);
+			IF factat = NIL THEN
+			   Consts.CreateEmptySet(factat);
+			END;
+		     END;
+		     factat.loc := Loc(begin, token.end);
+		     SkipSymbol(Lex.rbrace, stopsyms, stopsyms);
+		  END SetConstruction;
+
+	       BEGIN (* Factor *)
+		  IF ExpectStart(factorbegsyms, stopsyms, "factor") THEN
+		     begin := token.begin;
+		     CASE sy OF
+		     |  Lex.intconst .. Lex.string:
+			   Sym.CreateConstval(constval, Sym.tokenConst);
+			   constval.token := token;
+			   Sym.CreateConstvalAt(factat, constval, CurrentLoc());
+			   OberonTypes.GetConstType(constval, factat.type);
+			   GetSy;
+		     |  Lex.nil:
+			   Consts.CreateNIL(factat);
+			   factat.loc := CurrentLoc();
+			   GetSy;
+		     |  Lex.lbrace:
+			   GetSy;
+			   SetConstruction;
+		     |  Lex.ident:
+			   Designator(stopsyms, scope, factat);
+			   IF sy = Lex.lparen THEN
+			      ActualParameters(stopsyms, scope, factat);
+			      IF (factat # NIL) & (factat.mode = Sym.callAt) &
+				    ~factat.proc.type.function THEN
+				 OpenErrorLoc(es, factat.proc.loc);
+				 Write.StringS(es, "function expected");
+				 CloseError(es);
+			      END;
+			   END;
+		     |  Lex.lparen:
+			   GetSy;
+			   Sets.Incl(stopsyms, Lex.rparen);
+			   Expression(stopsyms, scope, factat);
+			   SkipSymbol(Lex.rparen, stopsyms, stopsyms);
+		     |  Lex.tilde:
+			   optoken := token;
+			   GetSy;
+			   Factor(stopsyms, factat);
+			   UnaryOp(optoken, factat);
+		     END;
+		  ELSE
+		     factat := NIL;
+		  END;
+	       END Factor;
+
+	    BEGIN (* Term *)
+	       IF ExpectStart(factorbegsyms, stopsyms, "term") THEN
+		  Sets.Union(stopsyms, muloperators, stopsyms);
+		  Factor(stopsyms, termat);
+		  WHILE Operator(muloperators, factorbegsyms, stopsyms) DO
+		     IF Sets.In(muloperators, sy) THEN
+			operation := sy;
+			GetSy;
+			left := termat;
+			Factor(stopsyms, right);
+			BinaryOp(operation, left, right, termat);
+		     ELSE
+			(* missing operator: parse and ignore *)
+			Factor(stopsyms, right);
+		     END;
+		  END;
+	       ELSE
+		  termat := NIL;
+	       END;
+	    END Term;
+
+	 BEGIN (* SimpleExpression *)
+	    IF ExpectStart(exprbegsyms, stopsyms, "simple expression") THEN
+	       Sets.Union(stopsyms, addoperators, stopsyms);
+	       IF (sy = Lex.plus) OR (sy = Lex.minus) THEN
+		  optoken := token;
+		  GetSy;
+		  Term(stopsyms, simpat);
+		  UnaryOp(optoken, simpat);
+	       ELSE
+		  Term(stopsyms, simpat);
+	       END;
+	       WHILE Operator(addoperators, factorbegsyms, stopsyms) DO
+		  IF Sets.In(addoperators, sy) THEN
+		     operation := sy;
+		     GetSy;
+		     left := simpat;
+		     Term(stopsyms, right);
+		     BinaryOp(operation, left, right, simpat);
+		  ELSE
+		     (* missing operator: parse and ignore *)
+		     Term(stopsyms, right);
+		  END;
+	       END;
+	    ELSE
+	       simpat := NIL;
+	    END;
+	 END SimpleExpression;
+
+      BEGIN (* Expression *)
+	 IF ExpectStart(exprbegsyms, stopsyms, "expression") THEN
+	    Sets.Union(stopsyms, reloperators, stopsyms1);
+	    SimpleExpression(stopsyms1, expat);
+	    IF Operator(reloperators, exprbegsyms, stopsyms) THEN
+	       IF Sets.In(reloperators, sy) THEN
+		  operation := sy;
+		  GetSy;
+		  left := expat;
+		  SimpleExpression(stopsyms, right);
+		  BinaryOp(operation, left, right, expat);
+	       ELSE
+		  (* operator missing: parse and ignore it *)
+		  SimpleExpression(stopsyms, right);
+	       END;
+	    END;
+	 ELSE
+	    expat := NIL;
+	 END;
+      END Expression;
+
+      PROCEDURE ConstExpression(stopsyms: SymSet; scope: Scopes.Scope;
+                                VAR val: Sym.Attribute);
+	 VAR
+	    exprat: Sym.Attribute;
+      BEGIN
+	 Expression(stopsyms, scope, exprat);
+	 IF (exprat # NIL) & (exprat.mode = Sym.constAt) &
+	       (exprat.ident # NIL) THEN
+	    (* avoid further indirections *)
+	    val := exprat.ident.constexpr;
+	 ELSE
+	    val := exprat;
+	 END;
+      END ConstExpression;
+
+      PROCEDURE CheckQualIdentType(qualident: QualifiedIdentifier;
+                                   scope: Scopes.Scope;
+				   VAR type: Sym.Type);
+	 VAR
+	    es: Streams.Stream;
+	    at: Sym.Attribute;
+      BEGIN
+	 CheckQualIdent(qualident, scope, at);
+	 IF at = NIL THEN type := NIL; RETURN END;
+	 IF at.mode # Sym.typeAt THEN 
+	    OpenErrorLoc(es, at.loc);
+	    Write.StringS(es, "is not a qualified type identifier");
+	    IF (at.ident # NIL) & (at.ident.loc # NIL) THEN
+	       CompilerErrors.Ref(es, at.ident.loc);
+	    END;
+	    CloseError(es);
+	    type := NIL; RETURN
+	 END;
+	 type := at.type;
+	 ASSERT((type = NIL) OR (type.ident # NIL));
+      END CheckQualIdentType;
+
+      PROCEDURE QualIdentType(stopsyms: SymSet; scope: Scopes.Scope;
+			      VAR loc: Location;
+                              VAR type: Sym.Type);
+	 VAR
+	    qualident: QualifiedIdentifier;
+      BEGIN
+	 IF sy # Lex.ident THEN
+	    Error("qualified type identifier expected");
+	    loc := NIL; type := NIL; RETURN
+	 END;
+	 QualIdent(stopsyms, qualident);
+	 loc := qualident.loc;
+	 CheckQualIdentType(qualident, scope, type);
+      END QualIdentType;
+
+      PROCEDURE FormalType(stopsyms: SymSet; scope: Scopes.Scope;
+			   VAR endpos: Streams.Count;
+                           VAR type: Sym.Type);
+	 VAR
+	    elemtype: Sym.Type;
+	    begin: Streams.Count;
+	    loc: Location;
+      BEGIN
+	 begin := token.begin;
+	 IF ExpectStart(ftbegsyms, stopsyms, "formal type") THEN
+	    CASE sy OF
+	    | Lex.array:
+		  GetSy;
+		  SkipSymbol(Lex.of, typebegsyms, stopsyms);
+		  FormalType(stopsyms, scope, endpos, elemtype);
+		  CompilerObjects.CreateLocation(loc, src, begin, endpos);
+		  Sym.CreateDynArrayOf(type, elemtype, loc);
+	    | Lex.ident:
+		  QualIdentType(stopsyms, scope, loc, type);
+		  endpos := loc.end;
+	    END;
+	 ELSE
+	    type := NIL;
+	 END;
+      END FormalType;
+
+      PROCEDURE FormalParameters(stopsyms: SymSet; scope: Scopes.Scope;
+                                 VAR endpos: Streams.Count;
+				 VAR type: Sym.Type);
+	 (* endpos should be properly initialized because
+	    FormalParameters is free to leave it undefined if
+	    there are no parameters given;
+	    likewise type.loc is to be fixed by the caller
+	 *)
+	 VAR
+	    resulttype: Sym.Type;
+	    rtloc: Location;
+	    paramscope: Scopes.Scope;
+	    head, tail: Sym.ParamList;
+	    es: Streams.Stream;
+
+	 PROCEDURE FPSection; (* modifies paramscope, head, and tail *)
+	    VAR
+	       paramkind: Sym.ParamKind;
+	       idlist: IdList;
+	       type: Sym.Type;
+	       endpos: Streams.Count;
+	       param: Sym.ParamList;
+	       loc: Location;
+	 BEGIN
+	    IF sy = Lex.var THEN
+	       GetSy;
+	       paramkind := Sym.callByReference;
+	    ELSE
+	       paramkind := Sym.callByValue;
+	    END;
+	    IdentList(stopsyms, typebegsyms, Lex.colon, idlist);
+	    SkipSymbol(Lex.colon, typebegsyms, stopsyms);
+	    FormalType(stopsyms, scope, endpos, type);
+	    WHILE idlist # NIL DO
+	       CompilerObjects.CreateLocation(loc, src, idlist.ident.begin,
+	                                    idlist.ident.end);
+	       Sym.CreateParameter(param, idlist.ident.ident,
+	                           paramkind, type, loc);
+	       Scopes.Add(paramscope, idlist.ident.ident, loc, param);
+	       IF head = NIL THEN
+		  head := param;
+	       ELSE
+		  tail.next := param;
+	       END;
+	       tail := param;
+	       idlist := idlist.next;
+	    END;
+	 END FPSection;
+
+      BEGIN (* FormalParameters *)
+	 StdScopes.Create(paramscope);
+	 head := NIL; tail := NIL; resulttype := NIL;
+	 IF sy = Lex.lparen THEN
+	    GetSy;
+	    Sets.Incl(stopsyms, Lex.rparen);
+	    Sets.Incl(stopsyms, Lex.semicolon);
+	    IF Start(fpbegsyms, stopsyms) THEN
+	       FPSection;
+	       WHILE Sep(Lex.semicolon, rparensyms, fpbegsyms, stopsyms) DO
+		  FPSection;
+	       END;
+	    END;
+	    endpos := token.end;
+	    SkipSymbol(Lex.rparen, colonsyms, stopsyms);
+	    IF Sep(Lex.colon, semicolonsyms, identbegsyms, stopsyms) THEN
+	       IF sy = Lex.ident THEN
+		  QualIdentType(stopsyms, scope, rtloc, resulttype);
+		  IF (resulttype # NIL) &
+			(resulttype.form IN {Sym.record, Sym.array}) THEN
+		     OpenErrorLoc(es, rtloc);
+		     Write.StringS(es, "the return type of a function");
+		     Write.StringS(es, " must not be an array or record");
+		     IF resulttype.ident.loc # NIL THEN
+			CompilerErrors.Ref(es, resulttype.ident.loc);
+		     END;
+		     CloseError(es);
+		  END;
+		  endpos := rtloc.end;
+	       ELSE
+		  Expected(Lex.ident);
+	       END;
+	    END;
+	 END;
+	 Sym.CreateProcedureType(type, head, paramscope, NIL);
+	 IF resulttype # NIL THEN
+	    type.function := TRUE; type.restype := resulttype;
+	 END;
+      END FormalParameters;
+
+      PROCEDURE TypeConstruction(stopsyms: SymSet; scope: Scopes.Scope;
+				 VAR endpos: Streams.Count;
+                                 VAR type: Sym.Type);
+
+	 VAR
+	    begin: Streams.Count;
+	    loc: Location;
+
+	 PROCEDURE ArrayType(stopsyms: SymSet;
+			     VAR end: Streams.Count;
+	                     VAR type: Sym.Type);
+	    VAR
+	       length: Sym.Attribute;
+	       elemtype: Sym.Type;
+	       stopsyms1: SymSet;
+	       loc: Location;
+	 BEGIN
+	    stopsyms1 := stopsyms;
+	    Sets.Incl(stopsyms1, Lex.comma);
+	    Sets.Incl(stopsyms1, Lex.of);
+	    ConstExpression(stopsyms1, scope, length);
+	    IF ~ExpectType(length, {Sym.integer}) THEN
+	       length := NIL;
+	    END;
+	    IF Sep(Lex.comma, ofsyms, exprbegsyms, stopsyms) THEN
+	       ArrayType(stopsyms, end, elemtype);
+	    ELSE
+	       SkipSymbol(Lex.of, typebegsyms, stopsyms);
+	       TypeConstruction(stopsyms, scope, end, elemtype);
+	    END;
+	    IF elemtype = NIL THEN
+	       type := NIL;
+	    ELSE
+	       CompilerObjects.CreateLocation(loc, src, begin, end);
+	       Sym.CreateArrayOf(type, length, elemtype, loc);
+	       type.hastracedptrs := type.hastracedptrs &
+				    CompilerPragmas.LookupFlag(pcontext, loc,
+				       OberonPragmas.tracePointerTypes);
+	    END;
+	 END ArrayType;
+
+	 PROCEDURE RecordType(stopsyms: SymSet;
+			      VAR end: Streams.Count;
+	                      VAR rectype: Sym.Type);
+	    VAR
+	       basetype: Sym.Type;
+	       fields: Sym.FieldList;
+	       fieldscope: Scopes.Scope;
+	       btloc, loc: Location;
+	       es: Streams.Stream;
+	       stopsyms1: SymSet;
+
+	    PROCEDURE FieldListSequence(stopsyms: SymSet;
+					VAR fieldscope: Scopes.Scope;
+	                                VAR fields: Sym.FieldList);
+	       VAR
+		  head, tail: Sym.FieldList;
+
+	       PROCEDURE Add(name: Lex.Token; type: Sym.Type);
+		  VAR
+		     field, other: Sym.FieldList;
+		     loc: Location;
+		     es: Streams.Stream;
+	       BEGIN
+		  CompilerObjects.CreateLocation(loc, src, name.begin, name.end);
+		  Sym.CreateField(field, name.ident, type, loc);
+		  IF head = NIL THEN
+		     head := field;
+		  ELSE
+		     tail.next := field;
+		  END;
+		  tail := field;
+		  IF (basetype # NIL) &
+			Scopes.Lookup(basetype.publicfieldscope,
+				      name.ident, other) THEN
+		     OpenErrorLoc(es, loc);
+		     ErrorIdent(es, name);
+		     Write.StringS(es, " has been declared ");
+		     Write.StringS(es, "in the base type already");
+		     IF other.loc # NIL THEN
+			CompilerErrors.Ref(es, other.loc);
+		     END;
+		     CloseError(es);
+		  END;
+		  Scopes.Add(fieldscope, name.ident, loc, field);
+	       END Add;
+
+	       PROCEDURE FieldList;
+		  VAR
+		     idlist: IdList;
+		     type: Sym.Type;
+		     pos: Streams.Count;
+	       BEGIN
+		  IF Start(identbegsyms, stopsyms) THEN
+		     IdentList(stopsyms, typebegsyms, Lex.colon, idlist);
+		     SkipSymbol(Lex.colon, typebegsyms, stopsyms);
+		     TypeConstruction(stopsyms, scope, pos, type);
+		     WHILE idlist # NIL DO
+			Add(idlist.ident, type);
+			idlist := idlist.next;
+		     END;
+		  END;
+	       END FieldList;
+
+	    BEGIN (* FieldListSequence *)
+	       head := NIL; tail := NIL;
+	       IF basetype # NIL THEN
+		  ASSERT(basetype.publicfieldscope # NIL);
+		  Scopes.Open(basetype.publicfieldscope, fieldscope);
+	       ELSE
+		  StdScopes.Create(fieldscope);
+	       END;
+	       FieldList;
+	       WHILE Sep(Lex.semicolon, endsyms, fieldbegsyms, stopsyms) DO
+		  FieldList;
+	       END;
+	       Scopes.Close(fieldscope);
+	       fields := head;
+	    END FieldListSequence;
+
+	 BEGIN (* RecordType *)
+	    Sets.Incl(stopsyms, Lex.end);
+	    basetype := NIL;
+	    IF sy = Lex.lparen THEN
+	       GetSy;
+	       IF sy = Lex.ident THEN
+		  stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.rparen);
+		  QualIdentType(stopsyms1, scope, btloc, basetype);
+		  IF basetype # NIL THEN
+		     IF basetype.form # Sym.record THEN
+			OpenErrorLoc(es, btloc);
+			Write.StringS(es, "record type expected");
+			IF basetype.ident.loc # NIL THEN
+			   CompilerErrors.Ref(es, basetype.ident.loc);
+			END;
+			CloseError(es);
+			basetype := NIL;
+		     END;
+		  END;
+	       ELSE
+		  Expected(Lex.ident); (* basetype remains NIL *)
+	       END;
+	       SkipSymbol(Lex.rparen, fieldbegsyms, stopsyms);
+	    END;
+	    FieldListSequence(stopsyms, fieldscope, fields);
+	    end := token.end;
+	    CompilerObjects.CreateLocation(loc, src, begin, end);
+	    Sym.CreateRecord(type, basetype, fields, fieldscope, loc);
+	    type.hastracedptrs := type.hastracedptrs &
+	                         CompilerPragmas.LookupFlag(pcontext, loc,
+				    OberonPragmas.tracePointerTypes);
+	    SkipSymbol(Lex.end, stopsyms, stopsyms);
+	 END RecordType;
+
+	 PROCEDURE PointerType(stopsyms: SymSet;
+	                       VAR endpos: Streams.Count; VAR type: Sym.Type);
+	    VAR
+	       reftype: Sym.Type;
+	       qualid: QualifiedIdentifier;
+	       forward: BOOLEAN;
+	       loc: Location;
+	       tagged: BOOLEAN;
+	 BEGIN
+	    SkipSymbol(Lex.to, typebegsyms, stopsyms);
+	    forward := FALSE;
+	    IF sy = Lex.ident THEN
+	       QualIdent(stopsyms, qualid);
+	       IF qualid.qualified THEN
+		  CheckQualIdentType(qualid, scope, reftype);
+	       ELSE
+		  (* may be a forward reference; check this later *)
+		  forward := TRUE; reftype := NIL;
+	       END;
+	       endpos := qualid.loc.end;
+	    ELSE
+	       TypeConstruction(stopsyms, scope, endpos, reftype);
+	    END;
+	    CompilerObjects.CreateLocation(loc, src, begin, endpos);
+	    tagged := CompilerPragmas.LookupFlag(pcontext, loc,
+			   OberonPragmas.tagPointerTypes);
+	    Sym.CreatePointerTo(type, reftype, tagged, loc);
+	    type.hastracedptrs := CompilerPragmas.LookupFlag(pcontext, loc,
+				 OberonPragmas.tracePointerTypes);
+	    IF forward THEN
+	       AddForward(scope, type, qualid.ident.ident, qualid.loc);
+	    END;
+	 END PointerType;
+
+      BEGIN (* TypeConstruction *)
+	 begin := token.begin;
+	 endpos := token.end; (* may be modified later *)
+	 IF ExpectStart(typebegsyms, stopsyms, "type definition") THEN
+	    CASE sy OF
+	    |  Lex.ident:
+		  QualIdentType(stopsyms, scope, loc, type);
+	    |  Lex.array:
+		  GetSy;
+		  ArrayType(stopsyms, endpos, type);
+	    |  Lex.record:
+		  GetSy;
+		  RecordType(stopsyms, endpos, type);
+	    |  Lex.pointer:
+		  GetSy;
+		  PointerType(stopsyms, endpos, type);
+	    |  Lex.procedure:
+		  GetSy;
+		  FormalParameters(stopsyms, scope, endpos, type);
+		  IF type # NIL THEN
+		     CompilerObjects.CreateLocation(loc, src, begin, endpos);
+		     type.loc := loc;
+		  END;
+	    END;
+	 ELSE
+	    type := NIL;
+	 END;
+      END TypeConstruction;
+
+      PROCEDURE AddIdent(scope: Scopes.Scope; token: Lex.Token;
+                         ident: Sym.Ident);
+	 VAR
+	    loc: CompilerObjects.Location;
+	    exportedident, otherident: Sym.Ident;
+	    es: Streams.Stream;
+      BEGIN
+	 ASSERT(token.sy = Lex.ident);
+	 CompilerObjects.CreateLocation(loc, src, token.begin, token.end);
+	 Scopes.Add(scope, token.ident, loc, ident);
+      END AddIdent;
+
+      PROCEDURE ImportList(stopsyms: SymSet; scope: Scopes.Scope);
+
+	 PROCEDURE LookupModule(token: Lex.Token;
+				loc: Location;
+	                        VAR module: Sym.Ident) : BOOLEAN;
+	    VAR
+	       es: Streams.Stream;
+	       header: CompilerObjects.Header;
+	       object: CompilerObjects.Object;
+	       foreignkeys: CompilerKeys.Set;
+	       loadedModule: Sym.Ident;
+
+	    PROCEDURE Error;
+	       VAR
+		  es: Streams.Stream;
+	    BEGIN
+	       OpenError(es, token);
+	       Write.StringS(es, "module ");
+	       ErrorIdent(es, token);
+	       Write.StringS(es, " not found");
+	       CloseError(es);
+	       module := NIL;
+	       Abort;
+	    END Error;
+
+	 BEGIN (* LookupModule *)
+	    IF (mainmod # NIL) &
+		  (ConstStrings.Compare(token.ident, mainmod.name) = 0) THEN
+	       OpenError(es, token);
+	       CompilerErrors.Ref(es, mainmod.loc);
+	       Write.StringS(es, "the own module must not be imported");
+	       CloseError(es);
+	       RETURN FALSE
+	    END;
+	    IF ~Scopes.Lookup(builtins, token.ident, loadedModule) THEN
+	       IF ~ObjectLoader.LoadObject(compiler, context, token.ident,
+					   CompilerObjects.public,
+					   (* arch = *) NIL,
+					   header, object, src) OR
+		     ~(object IS Sym.Ident) THEN
+		  Error; RETURN FALSE
+	       END;
+	       loadedModule := object(Sym.Ident);
+	       (* some sanity checks *)
+	       IF loadedModule.class # Sym.moduleC THEN
+		  Error; RETURN FALSE
+	       END;
+	       ASSERT((loadedModule.key # NIL) &
+	              (loadedModule.dependencies # NIL));
+	       IF mainmod # NIL THEN
+		  CompilerKeys.CreateSet(foreignkeys);
+		  CompilerKeys.Union(foreignkeys, foreignkeys,
+				     loadedModule.dependencies);
+		  CompilerKeys.Incl(foreignkeys, loadedModule.key);
+		  IF ~CompilerKeys.Compatible(mainmod.dependencies,
+					      foreignkeys) THEN
+		     Error; RETURN FALSE
+		  END;
+		  CompilerKeys.Union(mainmod.dependencies,
+				     mainmod.dependencies, foreignkeys);
+		  CompilerKeys.Union(context.keys, context.keys, foreignkeys);
+	       END;
+	    END;
+	    
+	    (* create own module ident so that the original module ident
+	       remains untouched; this is necessary because loadedModule
+	       is in our cache which may be used by other compilation runs
+	    *)
+	    Sym.CreateModuleIdent(module, token.ident, token.ident,
+	                          loadedModule.kind,
+				  loadedModule.pcontext, loc);
+	    module.scope := NIL; (* not used *)
+	    Scopes.Open(loadedModule.export, module.export);
+	    module.key := loadedModule.key;
+	    module.dependencies := loadedModule.dependencies;
+	    module.loc := loc;
+	    RETURN TRUE
+	 END LookupModule;
+
+	 PROCEDURE Import(modname: Lex.Token);
+	    VAR
+	       module: Sym.Ident;
+	       loc: Location;
+	 BEGIN
+	    CompilerObjects.CreateLocation(loc, src,
+					   modname.begin, modname.end);
+	    IF LookupModule(modname, loc, module) THEN
+	       Scopes.Add(scope, modname.ident, loc, module);
+	    END;
+	 END Import;
+
+	 PROCEDURE AliasImport(alias, modname: Lex.Token);
+	    VAR
+	       module: Sym.Ident;
+	       loc: Location;
+	 BEGIN
+	    CompilerObjects.CreateLocation(loc, src, alias.begin, alias.end);
+	    IF LookupModule(modname, loc, module) THEN
+	       module.origname := modname.ident; module.name := alias.ident;
+	       Scopes.Add(scope, alias.ident, loc, module);
+	    END;
+	 END AliasImport;
+
+	 PROCEDURE SingleImport;
+	    VAR
+	       name: Lex.Token;
+	 BEGIN
+	    IF sy = Lex.ident THEN
+	       name := token;
+	       GetSy;
+	       IF Sep(Lex.becomes, commasyms, identbegsyms, stopsyms) THEN
+		  IF sy = Lex.ident THEN
+		     AliasImport(name, token);
+		     GetSy;
+		  ELSE
+		     Expected(Lex.ident);
+		  END;
+	       ELSE
+		  Import(name);
+	       END;
+	    ELSE
+	       Expected(Lex.ident);
+	    END;
+	 END SingleImport;
+
+      BEGIN (* ImportList *)
+	 Sets.Incl(stopsyms, Lex.semicolon);
+	 SingleImport; IF abort THEN RETURN END;
+	 WHILE Sep(Lex.comma, semicolonsyms, identbegsyms, stopsyms) DO
+	    SingleImport; IF abort THEN RETURN END;
+	 END;
+	 SkipSymbol(Lex.semicolon, stopsyms, stopsyms);
+      END ImportList;
+
+      PROCEDURE ConstDeclaration(stopsyms: SymSet; scope: Scopes.Scope);
+	 VAR
+	    constval: Sym.Attribute;
+	    constid: Lex.Token;
+	    ident: Sym.Ident;
+	    loc: CompilerObjects.Location;
+	    stopsyms1: SymSet;
+      BEGIN
+	 CheckForwards(scope, (* print errors = *) FALSE);
+	 stopsyms1 := stopsyms;
+	 Sets.Incl(stopsyms1, Lex.semicolon);
+	 Sets.Incl(stopsyms1, Lex.ident);
+	 WHILE Start(identbegsyms, stopsyms) DO
+	    constid := token;
+	    GetSy;
+	    SkipSymbol(Lex.eql, exprbegsyms, stopsyms1);
+	    ConstExpression(stopsyms1, scope, constval);
+	    CompilerObjects.CreateLocation(loc, src,
+					   constid.begin, constid.end);
+	    Sym.CreateConstIdent(ident, constid.ident, constval, loc);
+	    ident.module := mainmod;
+	    AddIdent(scope, constid, ident);
+	    SkipSymbol(Lex.semicolon, identbegsyms, stopsyms);
+	 END;
+      END ConstDeclaration;
+
+      PROCEDURE TypeDeclaration(stopsyms: SymSet; scope: Scopes.Scope);
+	 VAR
+	    typeid: Lex.Token;
+	    type: Sym.Type;
+	    ident: Sym.Ident;
+	    loc: CompilerObjects.Location;
+	    endpos: Streams.Count;
+      BEGIN
+	 Sets.Incl(stopsyms, Lex.semicolon);
+	 Sets.Incl(stopsyms, Lex.ident);
+	 WHILE Start(identbegsyms, stopsyms) DO
+	    typeid := token;
+	    GetSy;
+	    SkipSymbol(Lex.eql, typebegsyms, stopsyms);
+	    TypeConstruction(stopsyms, scope, endpos, type);
+	    CompilerObjects.CreateLocation(loc, src,
+					 typeid.begin, typeid.end);
+	    Sym.CreateTypeIdent(ident, typeid.ident, type, loc);
+	    ident.module := mainmod;
+	    IF (type # NIL) & (type.ident = NIL) THEN
+	       type.ident := ident;
+	    END;
+	    AddIdent(scope, typeid, ident);
+	    SkipSymbol(Lex.semicolon, identbegsyms, stopsyms);
+	 END;
+      END TypeDeclaration;
+
+      PROCEDURE VarDeclaration(stopsyms: SymSet; scope: Scopes.Scope);
+	 VAR
+	    idlist: IdList;
+	    vartype: Sym.Type;
+	    ident: Sym.Ident;
+	    endpos: Streams.Count;
+	    loc: CompilerObjects.Location;
+      BEGIN
+	 CheckForwards(scope, (* print errors = *) FALSE);
+	 Sets.Incl(stopsyms, Lex.semicolon);
+	 Sets.Incl(stopsyms, Lex.ident);
+	 WHILE Start(identbegsyms, stopsyms) DO
+	    IdentList(stopsyms, typebegsyms, Lex.colon, idlist);
+	    SkipSymbol(Lex.colon, typebegsyms, stopsyms);
+	    TypeConstruction(stopsyms, scope, endpos, vartype);
+	    WHILE idlist # NIL DO
+	       CompilerObjects.CreateLocation(loc, src,
+					    idlist.ident.begin,
+					    idlist.ident.end);
+	       Sym.CreateVarIdent(ident, idlist.ident.ident, vartype,
+				  Scopes.Level(scope) - 2, Sym.noParam, loc);
+	       ident.module := mainmod;
+	       AddIdent(scope, idlist.ident, ident);
+	       idlist := idlist.next;
+	    END;
+	    SkipSymbol(Lex.semicolon, identbegsyms, stopsyms);
+	 END;
+      END VarDeclaration;
+
+      PROCEDURE Definition(stopsyms: SymSet);
+	 VAR
+	    modulename: Lex.Token;
+	    loc: CompilerObjects.Location;
+	    stopsyms1, stopsyms2: SymSet;
+	    lastdef: DefinitionType;
+	    lasttoken: Lex.Token;
+
+	 PROCEDURE DefSequence(stopsyms: SymSet);
+	    VAR
+	       begin: Streams.Count; (* in case of procedures only *)
+
+	    PROCEDURE ProcedureDeclaration(stopsyms: SymSet);
+		  (* within definition file! *)
+	       VAR
+		  procname: Lex.Token;
+		  proctype: Sym.Type;
+		  ident: Sym.Ident;
+		  loc: Location;
+		  endpos: Streams.Count;
+		  procvalok: BOOLEAN;
+	    BEGIN
+	       CheckForwards(globalScope, (* print errors = *) FALSE);
+	       procvalok := CheckSymbol(Lex.times, identbegsyms, stopsyms);
+	       IF ExpectStart(identbegsyms, stopsyms, "identifier") THEN
+		  procname := token; endpos := token.end;
+		  CompilerObjects.CreateLocation(loc, src,
+		                               token.begin, token.end);
+		  GetSy;
+		  FormalParameters(stopsyms, globalScope, endpos, proctype);
+		  CompilerObjects.CreateLocation(proctype.loc,
+		                               src, begin, endpos);
+		  Sym.CreateProcedureIdent(ident, procname.ident, proctype,
+		                           Scopes.Level(globalScope),
+					   loc);
+		  ident.module := mainmod;
+		  Scopes.Add(globalScope, procname.ident, loc, ident);
+		  SkipSymbol(Lex.semicolon, declsyms, stopsyms);
+	       END;
+	    END ProcedureDeclaration;
+
+	 BEGIN (* DefSequence *)
+	    Sets.Union(stopsyms, declsyms, stopsyms);
+	    WHILE Start(declsyms, stopsyms) DO
+	       CASE sy OF
+	       |  Lex.const:
+		     TestOrder(lastdef, lasttoken, const);
+		     GetSy;
+		     ConstDeclaration(stopsyms, globalScope);
+	       |  Lex.type:
+		     TestOrder(lastdef, lasttoken, type);
+		     GetSy;
+		     TypeDeclaration(stopsyms, globalScope);
+	       |  Lex.var:
+		     TestOrder(lastdef, lasttoken, var);
+		     GetSy;
+		     VarDeclaration(stopsyms, globalScope);
+	       |  Lex.procedure:
+		     lasttoken := token;
+		     begin := token.begin;
+		     lastdef := procedure;
+		     GetSy;
+		     ProcedureDeclaration(stopsyms);
+	       END;
+	    END;
+	 END DefSequence;
+
+      BEGIN (* Definition *)
+	 lastdef := none;
+	 stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.end);
+	 ExpectIdentGetSy(modulename);
+	 SkipSymbol(Lex.semicolon, declsyms, stopsyms);
+
+	 Sets.Union(stopsyms1, declsyms, stopsyms2);
+	 IF Start(importbegsyms, stopsyms2) THEN
+	    GetSy;
+	    ImportList(stopsyms2, importScope);
+	 END;
+	 IF ~abort THEN
+	    REPEAT
+	       DefSequence(stopsyms1);
+	    UNTIL EndIdent(modulename, Lex.period, declsyms, stopsyms);
+	 END;
+	 FinishScope(globalScope);
+	 Scopes.Close(globalScope);
+      END Definition;
+
+      PROCEDURE Module(stopsyms: SymSet);
+	 VAR
+	    modulename: Lex.Token;
+	    stopsyms1, stopsyms2, stopsyms3, stopsyms4: SymSet;
+	    body: Sym.Attribute;
+
+	 PROCEDURE StatementSequence(stopsyms, termsyms: SymSet;
+	                             scope: Scopes.Scope;
+				     VAR sequence: Sym.Attribute);
+	    (* stopsyms:  general set of stopping symbols,
+	       termsyms:  set of symbols expected after this sequence
+	    *)
+
+	    VAR
+	       head, tail: Sym.Attribute;
+	       statement: Sym.Attribute;
+	       stopsyms1: SymSet;
+
+	    PROCEDURE Statement(stopsyms: SymSet; VAR statement: Sym.Attribute);
+
+	       VAR
+		  begin, endpos: Streams.Count;
+
+	       PROCEDURE CheckBoolean(condition: Sym.Attribute);
+	       BEGIN
+		  CheckType(condition, {Sym.boolean});
+	       END CheckBoolean;
+
+	       PROCEDURE CreateLoc(VAR loc: CompilerObjects.Location;
+				   endpos: Streams.Count);
+	       BEGIN
+		  CompilerObjects.CreateLocation(loc, src,
+		                                 begin, endpos);
+	       END CreateLoc;
+
+	       PROCEDURE CallOrAssignment;
+		  VAR
+		     desat: Sym.Attribute;
+		     expat: Sym.Attribute;
+		     stopsyms1: SymSet;
+		     es: Streams.Stream;
+		     function: BOOLEAN;
+		     procat: Sym.Attribute;
+	       BEGIN
+		  Sets.Union(stopsyms, exprbegsyms, stopsyms1);
+		  Sets.Incl(stopsyms1, Lex.becomes);
+		  Designator(stopsyms1, scope, desat);
+		  IF CheckSymbol(Lex.becomes, exprbegsyms, stopsyms) THEN
+		     IF (desat # NIL) &
+			   ~(desat.mode IN Sym.designatorModes) THEN
+			OpenErrorLoc(es, desat.loc);
+			IF (desat.mode = Sym.constAt) & (desat.type # NIL) THEN
+			   CompilerErrors.At2(es, desat.type.loc);
+			   Write.StringS(es,
+			      "constants must not be assigned to");
+			ELSE
+			   Write.StringS(es, "is not a designator");
+			END;
+			CloseError(es);
+			desat := NIL;
+		     END;
+		     Expression(stopsyms, scope, expat);
+		     Sym.CreateBinaryAt(statement, Lex.becomes,
+				        desat, expat, NIL);
+		     IF (expat # NIL) & (desat # NIL) &
+			   ~OberonTypes.AssignComp(desat.type, expat.type,
+					  expat.mode IN Sym.constModes) THEN
+			OpenErrorLoc(es, desat.loc);
+			CompilerErrors.At2(es, expat.loc);
+			IF (desat.mode IN Sym.identModes) &
+			      (desat.ident # NIL) & (desat.ident.loc # NIL) THEN
+			   CompilerErrors.Ref(es, desat.ident.loc);
+			END;
+			Write.StringS(es, "expression ");
+			IF expat.type.ident # NIL THEN
+			   Write.StringS(es, "(of type ");
+			   ErrorString(es, expat.type.ident.name);
+			   Write.StringS(es, ") ");
+			END;
+			Write.StringS(es, "is not assignment compatible to ");
+			IF (desat.mode IN Sym.identModes) &
+			      (desat.ident # NIL) THEN
+			   ErrorString(es, desat.ident.name);
+			ELSE
+			   Write.StringS(es, "lhs of assignment");
+			END;
+			IF desat.type.ident # NIL THEN
+			   Write.StringS(es, " (of type ");
+			   ErrorString(es, desat.type.ident.name);
+			   Write.CharS(es, ")");
+			END;
+			CloseError(es);
+		     END;
+		  ELSE
+		     function := (desat # NIL) &
+			(desat.type # NIL) & desat.type.function;
+		     procat := desat;
+		     ActualParameters(stopsyms, scope, desat);
+		     IF function THEN
+			OpenErrorLoc(es, procat.loc);
+			IF (procat.mode IN Sym.identModes) &
+			      (procat.ident # NIL) &
+			      (procat.ident.loc # NIL) THEN
+			   CompilerErrors.Ref(es, procat.ident.loc);
+			END;
+			Write.StringS(es, "function return value is ignored");
+			CloseError(es);
+		     END;
+		     statement := desat;
+		  END;
+	       END CallOrAssignment;
+
+	       PROCEDURE IfStatement;
+		  VAR
+		     conditionat, elsifcondat: Sym.Attribute;
+		     stopsyms1, stopsyms2: SymSet;
+		     thenat, elsifat, elseat, stmtat: Sym.Attribute;
+		     head, tail: Sym.Attribute; (* elsif chain *)
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.then);
+		  Sets.Union(stopsyms, endifsyms, stopsyms2);
+		  Expression(stopsyms1, scope, conditionat);
+		  CheckBoolean(conditionat);
+		  SkipSymbol(Lex.then, stmtsyms, stopsyms2);
+		  StatementSequence(stopsyms, endifsyms, scope, thenat);
+
+		  head := NIL; tail := NIL;
+		  WHILE Sep(Lex.elsif, endifsyms, stmtsyms, stopsyms) DO
+		     Expression(stopsyms1, scope, elsifcondat);
+		     CheckBoolean(elsifcondat);
+		     SkipSymbol(Lex.then, stmtsyms, stopsyms2);
+		     StatementSequence(stopsyms, endifsyms, scope, stmtat);
+		     Sym.CreateIfAt(elsifat, elsifcondat, stmtat,
+		                    NIL, NIL, NIL);
+		     IF head = NIL THEN
+			head := elsifat;
+		     ELSE
+			tail.next := elsifat;
+		     END;
+		     tail := elsifat; tail.next := NIL;
+		  END;
+
+		  IF Sep(Lex.else, endsyms, stmtsyms, stopsyms) THEN
+		     StatementSequence(stopsyms, endsyms, scope, elseat);
+		  ELSE
+		     elseat := NIL;
+		  END;
+
+		  CreateLoc(loc, token.end);
+		  SkipSymbol(Lex.end, stmtsyms, stopsyms);
+		  Sym.CreateIfAt(statement, conditionat, thenat, head,
+		                 elseat, loc);
+	       END IfStatement;
+
+	       PROCEDURE CaseStatement;
+		  VAR
+		     forms: Sym.FormSet;
+		     expat: Sym.Attribute;
+		     stopsyms1: SymSet;
+		     head, tail: Sym.Attribute; (* list of cases *)
+		     case: Sym.Attribute;
+		     elseat: Sym.Attribute; haselse: BOOLEAN;
+		     loc: CompilerObjects.Location;
+
+		  PROCEDURE Case(stopsyms: SymSet);
+		     VAR
+			stopsyms1: SymSet;
+			labels, body: Sym.Attribute;
+			loc: CompilerObjects.Location;
+
+		     PROCEDURE CaseLabelList(stopsyms: SymSet;
+					     VAR labels: Sym.Attribute);
+
+			VAR
+			   morelabels: Sym.Attribute;
+
+			PROCEDURE CLabels(stopsyms: SymSet;
+			                  VAR labels: Sym.Attribute);
+			   VAR
+			      left, right: Sym.Attribute;
+			      stopsyms1: SymSet;
+
+			   PROCEDURE CheckExpr(at: Sym.Attribute);
+			   BEGIN
+			      IF (at # NIL) & (at.type # NIL) &
+				    (~(Sym.char IN forms) OR
+				    ~OberonTypes.IsChar(at)) THEN
+				 CheckType(at, forms);
+			      END;
+			   END CheckExpr;
+
+			BEGIN (* CLabels *)
+			   stopsyms1 := stopsyms;
+			   Sets.Incl(stopsyms1, Lex.range);
+			   Expression(stopsyms1, scope, left);
+			   CheckExpr(left);
+			   IF Sep(Lex.range, labeltermsyms, exprbegsyms,
+			          stopsyms) THEN
+			      Expression(stopsyms, scope, right);
+			      CheckExpr(right);
+			      Sym.CreateBinaryAt(labels, Lex.range,
+			                         left, right, NIL);
+			   ELSE
+			      labels := left;
+			   END;
+			END CLabels;
+
+		     BEGIN (* CaseLabelList *)
+			Sets.Incl(stopsyms, Lex.comma);
+			CLabels(stopsyms, labels);
+			WHILE Sep(Lex.comma, colonsyms,
+			          stmtsyms, stopsyms) DO
+			   CLabels(stopsyms, morelabels);
+			   IF morelabels # NIL THEN
+			      Sym.CreateBinaryAt(labels, Lex.comma,
+			                         labels, morelabels, NIL);
+			   END;
+			END;
+		     END CaseLabelList;
+
+		  BEGIN (* Case *)
+		     IF Start(exprbegsyms, stopsyms) THEN
+			stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.colon);
+			CaseLabelList(stopsyms1, labels);
+			SkipSymbol(Lex.colon, stmtsyms, stopsyms);
+			StatementSequence(stopsyms, casetermsyms, scope, body);
+			IF (labels = NIL) OR (labels.loc = NIL) THEN
+			   loc := NIL;
+			ELSIF (labels.loc # NIL) &
+			      (body # NIL) & (body.loc # NIL) THEN
+			   loc := Loc(labels.loc.begin, body.loc.end);
+			ELSE
+			   loc := labels.loc;
+			END;
+			Sym.CreateSingleCaseAt(case, labels, body, loc);
+		     ELSE
+			case := NIL;
+		     END;
+		  END Case;
+
+	       BEGIN (* CaseStatement *)
+		  stopsyms1 := stopsyms;
+		  Sets.Incl(stopsyms1, Lex.of);
+		  Sets.Incl(stopsyms1, Lex.end);
+		  Sets.Incl(stopsyms1, Lex.else);
+		  Sets.Incl(stopsyms1, Lex.bar);
+		  Expression(stopsyms1, scope, expat);
+		  IF (expat # NIL) & (expat.type # NIL) &
+			OberonTypes.IsChar(expat) THEN
+		     forms := {Sym.char};
+		  ELSIF ExpectType(expat, {Sym.integer, Sym.char}) THEN
+		     forms := {expat.type.form};
+		  ELSE
+		     forms := {Sym.integer, Sym.char};
+		  END;
+		  SkipSymbol(Lex.of, casebegsyms, stopsyms1);
+
+		  Case(stopsyms1);
+		  head := case; tail := case;
+		  WHILE Sep(Lex.bar, elsesyms, casebegsyms, stopsyms) DO
+		     Case(stopsyms1);
+		     IF case # NIL THEN
+			IF head = NIL THEN
+			   head := case;
+			ELSE
+			   tail.next := case;
+			END;
+			tail := case; tail.next := NIL;
+		     END;
+		  END;
+		  IF Sep(Lex.else, endsyms, stmtsyms, stopsyms) THEN
+		     haselse := TRUE;
+		     StatementSequence(stopsyms, endsyms, scope, elseat);
+		  ELSE
+		     elseat := NIL; haselse := FALSE;
+		  END;
+		  CreateLoc(loc, token.end);
+		  SkipSymbol(Lex.end, stmtsyms, stopsyms);
+
+		  Sym.CreateCaseAt(statement, expat, head, elseat, haselse,
+		     loc);
+	       END CaseStatement;
+
+	       PROCEDURE WhileStatement;
+		  VAR
+		     condat: Sym.Attribute;
+		     stmts: Sym.Attribute;
+		     stopsyms1: SymSet;
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  stopsyms1 := stopsyms;
+		  Sets.Incl(stopsyms1, Lex.do);
+		  Expression(stopsyms1, scope, condat);
+		  CheckBoolean(condat);
+		  SkipSymbol(Lex.do, stmtsyms, stopsyms);
+		  StatementSequence(stopsyms, endsyms, scope, stmts);
+		  CreateLoc(loc, token.end);
+		  SkipSymbol(Lex.end, stmtsyms, stopsyms);
+		  Sym.CreateWhileAt(statement, condat, stmts, loc);
+	       END WhileStatement;
+
+	       PROCEDURE RepeatStatement;
+		  VAR
+		     condat, stmts: Sym.Attribute;
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  StatementSequence(stopsyms, untilsyms, scope, stmts);
+		  SkipSymbol(Lex.until, exprbegsyms, stopsyms);
+		  Expression(stopsyms, scope, condat);
+		  IF (condat # NIL) & (condat.loc # NIL) THEN
+		     CreateLoc(loc, condat.loc.end);
+		  ELSE
+		     loc := NIL;
+		  END;
+		  Sym.CreateRepeatAt(statement, condat, stmts, loc);
+		  CheckBoolean(condat);
+	       END RepeatStatement;
+
+	       PROCEDURE LoopStatement;
+		  VAR
+		     stmts: Sym.Attribute;
+	       BEGIN
+		  Sym.CreateLoopAt(statement, NIL, NIL);
+		  OpenLoop(scope, statement);
+		  StatementSequence(stopsyms, endsyms, scope, statement.body);
+		  CreateLoc(statement.loc, token.end);
+		  SkipSymbol(Lex.end, stmtsyms, stopsyms);
+		  CloseLoop(scope);
+	       END LoopStatement;
+
+	       PROCEDURE ExitStatement;
+		  VAR
+		     loop: Sym.Attribute;
+		     es: Streams.Stream;
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  IF GetLoop(scope, loop) THEN
+		     CreateLoc(loc, endpos);
+		     Sym.CreateExitAt(statement, loop, loc);
+		  ELSE
+		     OpenErrorRange(es, begin, endpos);
+		     Write.StringS(es, "EXIT only inside ");
+		     Write.StringS(es, "LOOP statment permitted");
+		     CloseError(es);
+		  END;
+	       END ExitStatement;
+
+	       PROCEDURE ReturnStatement;
+		  VAR
+		     expat: Sym.Attribute;
+		     ident: Sym.Ident;
+		     es: Streams.Stream;
+		     exprgiven: BOOLEAN;
+		     type: Sym.Type;
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  loc := NIL;
+		  IF Start(exprbegsyms, stopsyms) THEN
+		     Expression(stopsyms, scope, expat);
+		     IF expat # NIL THEN
+			endpos := expat.loc.end;
+			CreateLoc(loc, endpos);
+		     END;
+		     exprgiven := TRUE;
+		  ELSE
+		     CreateLoc(loc, endpos);
+		     expat := NIL;
+		     exprgiven := FALSE;
+		  END;
+		  GetScopeIdent(scope, ident);
+		  IF ident = mainmod THEN
+		     OpenErrorRange(es, begin, endpos);
+		     Write.StringS(es, "RETURN must not be used inside ");
+		     Write.StringS(es, "of module bodies");
+		     CloseError(es);
+		  ELSIF ident.type # NIL THEN
+		     type := ident.type;
+		     ASSERT(type.form = Sym.proceduretype);
+		     IF type.function # exprgiven THEN
+			OpenErrorRange(es, begin, endpos);
+			CompilerErrors.Ref(es, ident.loc);
+			IF type.function THEN
+			   Write.StringS(es, "expression expected");
+			ELSE
+			   ErrorString(es, ident.name);
+			   Write.StringS(es, " is not a function procedure");
+			END;
+			CloseError(es);
+		     ELSIF type.function & (expat # NIL) &
+			   (type.restype # NIL) &
+			   ~OberonTypes.AssignComp(type.restype, expat.type,
+					  expat.mode IN Sym.constModes) THEN
+			OpenErrorLoc(es, expat.loc);
+			CompilerErrors.Ref(es, ident.loc);
+			Write.StringS(es, "type must be identical to ");
+			Write.StringS(es, "return type");
+			CloseError(es);
+		     END;
+		  END;
+		  Sym.CreateReturnAt(statement, expat, loc);
+	       END ReturnStatement;
+
+	       PROCEDURE WithStatement;
+		  VAR
+		     varat, typeat: Sym.Attribute;
+		     varident: Sym.Ident;
+		     regulartype, type: Sym.Type;
+		     qualident: QualifiedIdentifier;
+		     stopsyms1, stopsyms2: SymSet;
+		     stmts: Sym.Attribute;
+		     loc: CompilerObjects.Location;
+	       BEGIN
+		  stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.do);
+		  stopsyms2 := stopsyms1; Sets.Incl(stopsyms2, Lex.colon);
+		  IF ExpectStart(identbegsyms, stopsyms2,
+		                 "qualified identifier") THEN
+		     QualIdent(stopsyms2, qualident);
+		     CheckQualIdent(qualident, scope, varat);
+		     IF (varat # NIL) & (varat.mode IN Sym.identModes) THEN
+			varident := varat.ident;
+		     ELSE
+			varident := NIL;
+		     END;
+		  ELSE
+		     varident := NIL;
+		  END;
+		  SkipSymbol(Lex.colon, identbegsyms, stopsyms1);
+		  IF ExpectStart(identbegsyms, stopsyms1,
+		                 "qualified type identifier") THEN
+		     QualIdent(stopsyms1, qualident);
+		     CheckQualIdent(qualident, scope, typeat);
+		     IF (typeat # NIL) & (typeat.mode = Sym.typeAt) &
+			   (varat # NIL) &
+			   OberonTypes.CheckGuard(varat, typeat) THEN
+			type := typeat.type;
+		     ELSE
+			type := NIL;
+		     END;
+		  ELSE
+		     type := NIL;
+		  END;
+		  SkipSymbol(Lex.do, stmtsyms, stopsyms);
+
+		  IF varident # NIL THEN
+		     regulartype := varident.type;
+		     varident.type := type; (* patch type temporarily *)
+		  END;
+		  StatementSequence(stopsyms, endsyms, scope, stmts);
+		  IF varident # NIL THEN
+		     varident.type := regulartype; (* restore type *)
+		  END;
+
+		  CreateLoc(loc, token.end);
+		  SkipSymbol(Lex.end, stmtsyms, stopsyms);
+		  IF (varident # NIL) & (type # NIL) THEN
+		     Sym.CreateWithAt(statement, varident, type, stmts, loc);
+		  ELSE
+		     statement := NIL;
+		  END;
+	       END WithStatement;
+
+	    BEGIN (* Statement *)
+	       begin := token.begin; endpos := token.end;
+	       IF Start(stmtsyms, stopsyms) THEN
+		  CASE sy OF
+		  | Lex.ident:   CallOrAssignment;
+		  | Lex.if:      GetSy; IfStatement;
+		  | Lex.case:    GetSy; CaseStatement;
+		  | Lex.while:   GetSy; WhileStatement;
+		  | Lex.repeat:  GetSy; RepeatStatement;
+		  | Lex.loop:    GetSy; LoopStatement;
+		  | Lex.with:    GetSy; WithStatement;
+		  | Lex.exit:    GetSy; ExitStatement;
+		  | Lex.return:  GetSy; ReturnStatement;
+		  END;
+	       ELSE
+		  statement := NIL; (* empty statement *)
+	       END;
+	    END Statement;
+
+	 BEGIN (* StatementSequence *)
+	    Sets.Incl(stopsyms, Lex.semicolon);
+	    Sets.Union(stopsyms, termsyms, stopsyms1);
+	    Sets.Union(stopsyms1, stmtsyms, stopsyms1);
+	    Statement(stopsyms1, statement);
+	    head := statement; tail := statement;
+	    WHILE Sep(Lex.semicolon, termsyms, stmtsyms, stopsyms) DO
+	       Statement(stopsyms1, statement);
+	       IF statement # NIL THEN
+		  statement.next := NIL;
+		  IF head = NIL THEN
+		     head := statement;
+		  ELSE
+		     tail.next := statement;
+		  END;
+		  tail := statement; tail.next := NIL;
+	       END;
+	    END;
+	    sequence := head;
+	 END StatementSequence;
+
+	 PROCEDURE DeclarationSequence(stopsyms: SymSet; scope: Scopes.Scope);
+	    VAR
+	       lastdef: DefinitionType;
+	       lasttoken: Lex.Token;
+
+	    PROCEDURE ProcedureDeclaration(stopsyms: SymSet;
+	                                   scope: Scopes.Scope);
+	       (* within module file,
+		  includes procedure heading and forward declaration
+	       *)
+	       VAR
+		  procname: Lex.Token;
+		  begin, endpos: Streams.Count;
+		  forward: BOOLEAN;
+		  procvalok: BOOLEAN;
+		  loc: Location;
+		  proctype: Sym.Type;
+		  ident: Sym.Ident;
+		  stopsyms1, stopsyms2: SymSet;
+		  body: Sym.Attribute;
+		  fwddecl: Sym.Ident;
+		  es: Streams.Stream;
+		  prevident: Sym.Ident;
+		  endseen: BOOLEAN;
+
+	       PROCEDURE DeclareParameters;
+		  VAR
+		     param: Sym.ParamList;
+		     var: Sym.Ident;
+		     otherident: Sym.Ident;
+	       BEGIN
+		  IF ident.type # NIL THEN
+		     ASSERT(ident.type.form = Sym.proceduretype);
+		     param := ident.type.paramlist;
+		     WHILE param # NIL DO
+			Sym.CreateVarIdent(var, param.name, param.type,
+			                   Scopes.Level(ident.scope),
+					   param.paramkind, param.loc);
+			ASSERT(~Scopes.LocalLookup(ident.scope, var.name,
+			                           otherident));
+			Scopes.Add(ident.scope, var.name, var.loc, var);
+			param := param.next;
+		     END;
+		  END;
+	       END DeclareParameters;
+
+	    BEGIN (* ProcedureDeclaration *)
+	       CheckForwards(scope, (* print errors = *) FALSE);
+	       forward := CheckSymbol(Lex.arrow, identbegsyms, stopsyms);
+	       IF forward THEN
+		  procvalok := FALSE;
+	       ELSE
+		  procvalok := CheckSymbol(Lex.times, identbegsyms, stopsyms);
+	       END;
+	       IF ExpectStart(identbegsyms, stopsyms, "identifier") THEN
+		  procname := token; endpos := token.end;
+		  CompilerObjects.CreateLocation(loc, src,
+		                                 token.begin, token.end);
+		  GetSy;
+		  begin := token.begin;
+		  FormalParameters(stopsyms, scope, endpos, proctype);
+		  IF proctype # NIL THEN
+		     CompilerObjects.CreateLocation(proctype.loc,
+						    src, begin, endpos);
+		  END;
+		  IF ~forward &
+		        UnresolvedForwardDeclarationPresent(scope,
+			   procname.ident, fwddecl) THEN
+		     IF ~OberonTypes.ProcedureComp(fwddecl.type, proctype) THEN
+			OpenErrorLoc(es, loc);
+			ErrorString(es, procname.ident);
+			Write.StringS(es, " differs from forward declaration");
+			CompilerErrors.Ref(es, fwddecl.loc);
+			CloseError(es);
+			OberonTypes.ProcedureDiff(fwddecl.type, proctype, loc);
+		     END;
+		     ident := fwddecl;
+		     ident.loc := loc; (* patch location *)
+		     ForwardDeclarationIsResolved(ident);
+		  ELSE
+		     Sym.CreateProcedureIdent(ident, procname.ident, proctype,
+					      Scopes.Level(scope), loc);
+		     ident.module := mainmod;
+		     Scopes.Open(scope, ident.scope);
+		     InitScope(ident.scope, ident);
+		     DeclareParameters;
+		     IF Scopes.LocalLookup(scope, procname.ident,
+		                           prevident) THEN
+			IF UnresolvedForwardDeclarationPresent(scope,
+			      procname.ident, fwddecl) THEN
+			   OpenErrorLoc(es, loc);
+			   Write.StringS(es, "multiple forward declarations");
+			   Write.StringS(es, " for ");
+			   ErrorString(es, procname.ident);
+			   CompilerErrors.Ref(es, fwddecl.loc);
+			   CloseError(es);
+			ELSE
+			   (* will print standard error message: *)
+			   Scopes.Add(scope, procname.ident, loc, ident);
+			END;
+		     ELSE
+			Scopes.Add(scope, procname.ident, loc, ident);
+			IF forward THEN
+			   AddForwardDeclaration(scope, ident);
+			END;
+		     END;
+		  END;
+		  SkipSymbol(Lex.semicolon, declsyms, stopsyms);
+	       END;
+
+	       IF ~forward THEN
+		  stopsyms1 := stopsyms; Sets.Incl(stopsyms1, Lex.end);
+		  stopsyms2 := stopsyms1; Sets.Incl(stopsyms2, Lex.begin);
+		  endseen := FALSE;
+		  LOOP
+		     DeclarationSequence(stopsyms2, ident.scope);
+		     IF sy = Lex.begin THEN EXIT END;
+		     IF EndIdent(procname, Lex.semicolon,
+			         declsyms, stopsyms1) THEN
+			endseen := TRUE; EXIT
+		     END;
+		  END;
+
+		  CheckForwards(ident.scope, (* print errors = *) TRUE);
+
+		  IF ~endseen & Start(bodybegsyms, stopsyms1) THEN
+		     GetSy;
+		     REPEAT
+			StatementSequence(stopsyms1, endsyms,
+			                  ident.scope, body);
+		     UNTIL EndIdent(procname, Lex.semicolon,
+		                    stmtsyms, stopsyms);
+		     ident.body := body;
+		  END;
+		  Scopes.Close(ident.scope);
+	       END;
+	    END ProcedureDeclaration;
+
+	 BEGIN (* DeclarationSequence *)
+	    lastdef := none;
+	    Sets.Union(stopsyms, declsyms, stopsyms);
+	    WHILE Start(declsyms, stopsyms) DO
+	       CASE sy OF
+	       |  Lex.const:
+		     TestOrder(lastdef, lasttoken, const);
+		     GetSy;
+		     ConstDeclaration(stopsyms, scope);
+	       |  Lex.type:
+		     TestOrder(lastdef, lasttoken, type);
+		     GetSy;
+		     TypeDeclaration(stopsyms, scope);
+	       |  Lex.var:
+		     TestOrder(lastdef, lasttoken, var);
+		     GetSy;
+		     VarDeclaration(stopsyms, scope);
+	       |  Lex.procedure:
+		     lastdef := procedure;
+		     GetSy;
+		     ProcedureDeclaration(stopsyms, scope);
+	       END;
+	    END;
+	 END DeclarationSequence;
+
+      BEGIN (* Module *)
+	 stopsyms1 := stopsyms;
+	 Sets.Incl(stopsyms1, Lex.end);
+	 stopsyms2 := stopsyms1;
+	 Sets.Incl(stopsyms2, Lex.begin);
+	 ExpectIdentGetSy(modulename);
+	 stopsyms4 := stopsyms2;
+	 Sets.Incl(stopsyms4, Lex.import);
+	 SkipSymbol(Lex.semicolon, declsyms, stopsyms4);
+
+	 Sets.Union(stopsyms2, declsyms, stopsyms3);
+	 IF Start(importbegsyms, stopsyms3) THEN
+	    GetSy;
+	    ImportList(stopsyms3, importScope);
+	 END;
+
+	 body := NIL;
+	 IF ~abort THEN
+	    REPEAT
+	       DeclarationSequence(stopsyms2, globalScope);
+	    UNTIL (sy = Lex.begin) OR
+		  EndIdent(modulename, Lex.period, declsyms, stopsyms2);
+
+	    IF Start(bodybegsyms, stopsyms1) THEN
+	       GetSy;
+	       REPEAT
+		  StatementSequence(stopsyms1, endsyms, globalScope, body);
+	       UNTIL EndIdent(modulename, Lex.period, stmtsyms, stopsyms);
+	    END;
+	 END;
+	 IF mainmod # NIL THEN
+	    mainmod.body := body;
+	 END;
+
+	 FinishScope(globalScope);
+	 Scopes.Close(globalScope);
+      END Module;
+
+      PROCEDURE CompilationUnit;
+	 VAR
+	    stopsyms: SymSet;
+	    loc: Location;
+
+	 PROCEDURE FetchDefinition() : BOOLEAN;
+	    VAR
+	       header: CompilerObjects.Header;
+	       object: CompilerObjects.Object;
+	       loadedModule: Sym.Ident;
+
+	    PROCEDURE Error;
+	       VAR
+		  es: Streams.Stream;
+	    BEGIN
+	       OpenError(es, token);
+	       Write.StringS(es, "unable to load associated symbol file");
+	       CloseError(es);
+	       Abort;
+	    END Error;
+
+	 BEGIN (* FetchDefinition *)
+	    IF ~ObjectLoader.LoadObject(compiler, context, token.ident,
+					CompilerObjects.public,
+					(* arch = *) NIL,
+					header, object, src) OR
+		  ~(object IS Sym.Ident) THEN
+	       Error; RETURN FALSE
+	    END;
+	    loadedModule := object(Sym.Ident);
+
+	    (* some sanity checks *)
+	    IF loadedModule.class # Sym.moduleC THEN
+	       Error; RETURN FALSE
+	    END;
+	    ASSERT((loadedModule.key # NIL) &
+		   (loadedModule.dependencies # NIL));
+	    IF ~CompilerKeys.Compatible(context.keys,
+	                                loadedModule.dependencies) THEN
+	       Error; RETURN FALSE
+	    END;
+
+	    (* OK, accept it *)
+	    definition := loadedModule;
+	    mainmod.key.defsrcid := definition.key.defsrcid;
+	    mainmod.key.genkey := definition.key.genkey;
+	    CompilerKeys.Union(module.dependencies, definition.dependencies,
+	                       module.dependencies);
+	    RETURN TRUE
+	 END FetchDefinition;
+
+	 PROCEDURE CheckExportScope;
+	    (* check that all exported items have been declared *)
+	    VAR
+	       it: Iterators.Iterator;
+	       ident: Sym.Ident;
+	       otherident: Sym.Ident;
+	       es: Streams.Stream;
+	       ok: BOOLEAN;
+
+	    PROCEDURE CheckAgainstExport(defident, modident: Sym.Ident);
+	       VAR
+		  loc: Location;
+
+	       PROCEDURE IsChar(at: Sym.Attribute) : BOOLEAN;
+		  (* return TRUE even in error cases to avoid
+		     multiple error messages
+		  *)
+	       BEGIN
+		  RETURN (at = NIL) OR (at.type = NIL) OR
+		         OberonTypes.IsChar(at)
+	       END IsChar;
+
+	    BEGIN (* CheckAgainstExport *)
+	       loc := modident.loc;
+	       IF defident.class # modident.class THEN
+		  OpenErrorLoc(es, loc);
+		  CompilerErrors.Ref(es, defident.loc);
+		  ErrorIdent(es, token);
+		  Write.StringS(es, " is exported as ");
+		  CASE defident.class OF
+		  | Sym.constC:     Write.StringS(es, "constant");
+		  | Sym.typeC:      Write.StringS(es, "type");
+		  | Sym.varC:       Write.StringS(es, "variable");
+		  | Sym.procedureC: Write.StringS(es, "procedure");
+		  END;
+		  CloseError(es);
+	       ELSE
+		  (* check both types for (some limited form of) identity
+		     but be permissive in case of character constants,
+		     e.g.   "X"   vs   CAP("x")  will be accepted
+		  *)
+		  IF ((defident.class # Sym.constC) OR
+			   ~IsChar(defident.constexpr) OR
+			   ~IsChar(modident.constexpr)) &
+			~OberonTypes.CheckAgainstExportedType(
+			    defident.type, modident.type, loc, FALSE) THEN
+		     OpenErrorLoc(es, loc);
+		     CompilerErrors.Ref(es, defident.loc);
+		     ErrorString(es, defident.name);
+		     Write.StringS(es, " differs from export declaration:");
+		     CloseError(es);
+		     ok := ~OberonTypes.CheckAgainstExportedType(
+			      defident.type, modident.type, loc, TRUE);
+		     ASSERT(ok);
+		  END;
+	       END;
+	    END CheckAgainstExport;
+
+	 BEGIN (* CheckExportScope *)
+	    Scopes.GetIterator(definition.export, it);
+	    WHILE Iterators.Get(it, ident) DO
+	       IF Scopes.LocalLookup(mainmod.scope,
+	                             ident.name, otherident) THEN
+		  CheckAgainstExport(ident, otherident);
+		  Scopes.Add(mainmod.export, ident.name, ident.loc, otherident);
+	       ELSE
+		  OpenErrorLoc(es, ident.loc);
+		  Write.StringS(es, "not declared by corresponding module");
+		  CloseError(es);
+	       END;
+	    END;
+	 END CheckExportScope;
+
+      BEGIN (* CompilationUnit *)
+	 Sets.InitSet(stopsyms);
+	 Sets.Incl(stopsyms, Lex.eop);
+	 IF Start(modbegsyms, stopsyms) THEN
+	    IF defunit # (sy = Lex.definition) THEN
+	       IF defunit THEN
+		  Expected(Lex.module);
+	       ELSE
+		  Expected(Lex.definition);
+	       END;
+	       defunit := sy = Lex.definition;
+	    END;
+	    GetSy;
+	    Scopes.Open(importScope, globalScope);
+	    IF sy = Lex.ident THEN
+	       CompilerObjects.CreateLocation(loc, src, token.begin, token.end);
+	       Sym.CreateModuleIdent(module, token.ident, token.ident,
+	                             src.header.kind, pcontext, loc);
+	       module.scope := globalScope;
+	       InitScope(module.scope, module);
+	       globalScope := module.scope;
+	       CompilerKeys.Create(module.key, token.ident);
+	       IF defunit THEN
+		  module.key.modsrcid := NIL;
+	       ELSE
+		  module.key.defsrcid := NIL;
+		  module.key.modsrcid := src.header.srcid;
+	       END;
+	       mainmod := module;
+	       IF src.header.kind = Sources.module THEN
+	          IF ~FetchDefinition() THEN
+		     IF givenKey # NIL THEN
+			(* stay compatible to given key so that
+			   CompilerKeys.Incl does not abort; this is not
+			   a problem because the compilation fails anyway
+			*)
+			module.key.defsrcid := givenKey.defsrcid;
+			module.key.genkey := givenKey.genkey;
+		     ELSE
+			module.key.defsrcid := src.header.srcid;
+			CompilerKeys.CreateValue(module.key.genkey);
+		     END;
+		  END;
+	       ELSE
+		  module.key.defsrcid := src.header.srcid;
+		  IF src.header.kind = Sources.defmod THEN
+		     module.key.modsrcid := src.header.srcid;
+		  END;
+		  CompilerKeys.CreateValue(module.key.genkey);
+	       END;
+	       ASSERT(module.key.genkey # NIL);
+	       CompilerKeys.Incl(context.keys, module.key);
+	       StdScopes.Create(module.export);
+	    ELSE
+	       InitScope(globalScope, NIL);
+	       mainmod := NIL;
+	    END;
+	    IF ~abort THEN
+	       IF defunit THEN
+		  module.export := globalScope;
+		  Definition(stopsyms);
+	       ELSE
+		  Module(stopsyms);
+		  IF ~abort & (definition # NIL) THEN
+		     CheckExportScope;
+		  END;
+	       END;
+	    END;
+	 ELSE
+	    globalScope := NIL;
+	    IF defunit THEN
+	       Expected(Lex.definition);
+	    ELSE
+	       Expected(Lex.module);
+	    END;
+	 END;
+	 IF ~abort & (sy # Lex.eop) THEN
+	    Expected(Lex.eop);
+	 END;
+      END CompilationUnit;
+
+      PROCEDURE Init;
+	 VAR
+	    domain: ConstStrings.Domain;
+      BEGIN
+	 RelatedEvents.Save(src);
+	 RelatedEvents.QueueEvents(src);
+	 RelatedEvents.Forward(in, src);
+	 args := src.header.args;
+	 ASSERT(args # NIL);
+	 defunit := src.header.kind = Sources.definition;
+	 ConstStrings.CreateDomain(domain);
+	 Resources.DependsOn(domain, src);
+	 Lex.SetStringDomain(in, domain);
+	 ConstStrings.CreateD(dummyIdent, domain, "");
+	 StdScopes.Create(stdScope);
+	 Scopes.Open(stdScope, importScope);
+	 OberonBuiltIns.AddStd(stdScope, args);
+	 globalScope := NIL;
+	 StdScopes.Create(builtins);
+	 OberonBuiltIns.AddBuiltInModules(builtins, args);
+	 definition := NIL;
+	 IF CompilerKeys.Lookup(context.keys, src.header.modname, givenKey) THEN
+	    ASSERT((givenKey.defsrcid # NIL) &
+	           ((givenKey.modsrcid = NIL) OR
+	           (givenKey.modsrcid = src.header.srcid)));
+	 ELSE
+	    givenKey := NIL;
+	 END;
+	 OberonPragmas.Create(pcontext);
+	 RelatedEvents.Forward(pcontext, src);
+	 IF ~CompilerPragmas.ProcessArgs(pcontext, args) THEN
+	    abort := TRUE; RETURN
+	 END;
+	 abort := FALSE;
+	 GetSy;
+      END Init;
+
+      PROCEDURE Finish() : BOOLEAN;
+	 VAR
+	    queue: RelatedEvents.Queue;
+
+	 PROCEDURE CloseImportedScopes;
+	    (* necessary to get all suspended error events from Scopes *)
+	    VAR
+	       it: Iterators.Iterator;
+	       module: Sym.Ident;
+	 BEGIN
+	    Scopes.GetIterator(importScope, it);
+	    WHILE Iterators.Get(it, module) DO
+	       IF module.export # NIL THEN
+		  Scopes.Close(module.export);
+	       END;
+	    END;
+	 END CloseImportedScopes;
+
+      BEGIN (* Finish *)
+	 Scopes.Close(importScope);
+	 CloseImportedScopes;
+	 Scopes.Close(stdScope);
+	 IF globalScope # NIL THEN
+	    Scopes.Cut(globalScope);
+	 END;
+	 IF ~defunit THEN
+	    Scopes.Close(module.export);
+	 END;
+
+	 RelatedEvents.GetQueue(src, queue);
+	 RelatedEvents.Restore(src);
+	 IF queue = NIL THEN
+	    ASSERT(~abort);
+	    RETURN TRUE
+	 ELSE
+	    RelatedEvents.AppendQueue(src, queue);
+	    RETURN FALSE
+	 END;
+      END Finish;
+
+   BEGIN (* Parse *)
+      module := NIL;
+      IF ~Sources.Open(src, in) THEN RETURN FALSE END;
+      Init;
+      IF abort THEN RETURN FALSE END;
+      CompilationUnit;
+      RETURN Finish()
+   END Parse;
+
+BEGIN
+   Init;
+END OberonParser.

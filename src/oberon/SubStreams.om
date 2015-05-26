@@ -1,0 +1,263 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SubStreams.om,v 1.1 1996/12/09 19:20:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SubStreams.om,v $
+   Revision 1.1  1996/12/09  19:20:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SubStreams;
+
+   (* streams which represent an interval of another stream *)
+
+   IMPORT Disciplines, Events, Forwarders, Maps, Priorities,
+      RelatedEvents, Services, Streams;
+
+   TYPE
+      OpenProc = PROCEDURE (VAR s: Streams.Stream;
+                            base: Streams.Stream;
+			    from, length: Streams.Count;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+   VAR
+      service: Services.Service;
+      streamsType: Services.Type; (* type of Streams.Stream *)
+
+   TYPE
+      TypeDiscipline = POINTER TO TypeDisciplineRec;
+      TypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    open: OpenProc;
+	 END;
+   VAR
+      tdID: Disciplines.Identifier;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    base: Streams.Stream;
+	    from, length: Streams.Count;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   CONST
+      noSeek = 0; (* seek or tell capability is missing *)
+      noLength = 1; (* unable to determine length of stream *)
+      errors = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorCode = SHORTINT;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === private procedures ============================================ *)
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE Init;
+   BEGIN
+      tdID := Disciplines.Unique();
+      sdID := Disciplines.Unique();
+      Services.Create(service, "SubStreams");
+      Services.SeekType("Streams.Stream", streamsType);
+      ASSERT(streamsType # NIL);
+      Events.Define(error); Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[noSeek] :=
+      "cannot create substreams from streams without seek and tell capability";
+      errormsg[noLength] :=
+      "unable to determine length of stream";
+   END Init;
+
+   PROCEDURE InstallService(object: Services.Object;
+                            service: Services.Service);
+   END InstallService;
+
+   PROCEDURE Length(s: Streams.Stream; VAR length: Streams.Count;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 currpos: Streams.Count;
+   BEGIN
+      IF ~Streams.Tell(s, currpos) OR
+	    ~Streams.Seek(s, 0, Streams.fromEnd) OR
+	    ~Streams.Tell(s, length) OR
+	    ~Streams.Seek(s, currpos, Streams.fromStart) THEN
+	 Error(errors, noLength); RETURN FALSE
+      END;
+      RETURN TRUE
+   END Length;
+
+   (* === exported procedures =========================================== *)
+
+   PROCEDURE Register(type: Services.Type; open: OpenProc);
+      VAR
+	 typeDisc: TypeDiscipline;
+   BEGIN
+      ASSERT(~Disciplines.Seek(type, tdID, typeDisc));
+      ASSERT(open # NIL);
+      ASSERT(Services.IsExtensionOf(type, streamsType));
+      Services.Define(type, service, InstallService);
+      NEW(typeDisc); typeDisc.id := tdID;
+      typeDisc.open := open;
+      Disciplines.Add(type, typeDisc);
+   END Register;
+
+   PROCEDURE Open(VAR s: Streams.Stream;
+                  base: Streams.Stream;
+		  from, length: Streams.Count;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 baseType: Services.Type;
+	 typeDisc: TypeDiscipline;
+	 streamDisc: StreamDiscipline;
+	 ok: BOOLEAN;
+	 substream: Streams.Stream;
+	 caps: Streams.CapabilitySet;
+
+      PROCEDURE AttachParams(substream: Streams.Stream);
+	 VAR
+	    streamDisc: StreamDiscipline;
+      BEGIN
+	 NEW(streamDisc); streamDisc.id := sdID;
+	 streamDisc.base := base;
+	 streamDisc.from := from;
+	 streamDisc.length := length;
+	 Disciplines.Add(substream, streamDisc);
+      END AttachParams;
+
+   BEGIN (* Open *)
+      (* check whether base is already a substream --
+	 in this case we will avoid the unnecessary indirection
+      *)
+      IF Disciplines.Seek(base, sdID, streamDisc) THEN
+	 base := streamDisc.base;
+	 INC(from, streamDisc.from);
+      END;
+
+      (* check whether we have direct support for it *)
+      Services.GetSupportedBaseType(base, service, baseType);
+      IF baseType = NIL THEN
+	 caps := Streams.Capabilities(base);
+	 IF ~(Streams.seek IN caps) OR ~(Streams.tell IN caps) THEN
+	    Error(errors, noSeek); RETURN FALSE
+	 END;
+	 Maps.Open(substream);
+	 Maps.AddMap(substream, 0, length, from, base);
+	 Forwarders.Forward(substream, base);
+	 AttachParams(substream);
+	 s := substream;
+	 RETURN TRUE
+      ELSE
+	 ok := Disciplines.Seek(baseType, tdID, typeDisc); ASSERT(ok);
+	 IF typeDisc.open(s, base, from, length, errors) THEN
+	    Forwarders.Forward(s, base);
+	    AttachParams(s);
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END Open;
+
+   PROCEDURE DirectlySupported(s: Streams.Stream) : BOOLEAN;
+      (* return TRUE is substreams for s are directly supported
+	 by the implementation of s
+      *)
+      VAR
+	 baseType: Services.Type;
+   BEGIN
+      Services.GetSupportedBaseType(s, service, baseType);
+      RETURN baseType # NIL
+   END DirectlySupported;
+
+   PROCEDURE Supported(s: Streams.Stream) : BOOLEAN;
+      (* return TRUE if substreams may be created from s *)
+      VAR
+	 caps: Streams.CapabilitySet;
+   BEGIN
+      caps := Streams.Capabilities(s);
+      RETURN (Streams.seek IN caps) & (Streams.tell IN caps) OR
+             DirectlySupported(s)
+   END Supported;
+
+   PROCEDURE Join(VAR s: Streams.Stream; s1, s2: Streams.Stream;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+      (* return a stream which accesses s1 and s2 in a concatenated way;
+	 if s1 and s2 are neighbouring substreams of the same base
+	 stream, Join will create a new substream from the base stream --
+	 otherwise they will be tied together by Maps
+      *)
+      VAR
+	 streamDisc1, streamDisc2: StreamDiscipline;
+	 len1, len2: Streams.Count;
+	 mappedStream: Streams.Stream;
+   BEGIN
+      IF Disciplines.Seek(s1, sdID, streamDisc1) THEN
+	 len1 := streamDisc1.length;
+      ELSIF ~Length(s1, len1, errors) THEN
+	 RETURN FALSE
+      ELSE
+	 streamDisc1 := NIL;
+      END;
+      IF Disciplines.Seek(s2, sdID, streamDisc2) THEN
+	 len2 := streamDisc2.length;
+      ELSIF ~Length(s2, len2, errors) THEN
+	 RETURN FALSE
+      ELSE
+	 streamDisc2 := NIL;
+      END;
+      IF (streamDisc1 # NIL) & (streamDisc2 # NIL) &
+	    (streamDisc1.base = streamDisc2.base) &
+	    (streamDisc1.from + streamDisc1.length = streamDisc2.from) THEN
+	 RETURN Open(s, streamDisc1.base, streamDisc1.from,
+	             streamDisc1.length + streamDisc2.length, errors)
+      ELSE
+	 Maps.Open(mappedStream);
+	 Maps.AddMap(mappedStream, 0, len1, 0, s1);
+	 Maps.AddMap(mappedStream, len1, len1 + len2, 0, s2);
+	 s := mappedStream;
+	 RETURN TRUE
+      END;
+   END Join;
+
+BEGIN
+   Init;
+END SubStreams.

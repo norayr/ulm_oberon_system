@@ -1,0 +1,131 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XClientMess.om,v 1.1 2005/04/10 13:18:10 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XClientMess.om,v $
+   Revision 1.1  2005/04/10 13:18:10  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XClientMessages;
+
+   IMPORT Disciplines, Events, Streams, XAtoms, XDisplays, XResources;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    format: INTEGER; (* 8, 16, or 32 *)
+	    window: XResources.Window;
+	    msgtype: XAtoms.Atom;
+	    data: Streams.Stream;
+	 END;
+
+   TYPE
+      EventType = POINTER TO EventTypeRec;
+      EventTypeRec =
+	 RECORD
+	    msgtype: XAtoms.Atom;
+	    eventType: Events.EventType;
+	    next: EventType;
+	 END;
+      WindowDiscipline = POINTER TO WindowDisciplineRec;
+      WindowDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    types: EventType;
+	 END;
+   VAR
+      wdid: Disciplines.Identifier;
+
+   PROCEDURE HandleMessage(event: Events.Event);
+      VAR
+	 wd: WindowDiscipline;
+	 e: Event;
+	 cm: XDisplays.ClientMessageEvent;
+	 msgtype: XAtoms.Atom;
+	 type: EventType;
+   BEGIN
+      WITH event: XResources.Event DO
+	 IF ~Disciplines.Seek(event.resource, wdid, wd) THEN
+	    RETURN
+	 END;
+	 cm := event.xevent(XDisplays.ClientMessageEvent);
+	 IF ~XAtoms.LookupByID(XResources.GetDisplay(event.resource),
+	       cm.msgtype, msgtype) THEN
+	    RETURN
+	 END;
+	 type := wd.types;
+	 WHILE (type # NIL) & (type.msgtype # msgtype) DO
+	    type := type.next;
+	 END;
+	 IF type = NIL THEN RETURN END;
+	 NEW(e); e.type := type.eventType; e.message := "X client message";
+	 e.window := event.resource(XResources.Window);
+	 e.format := cm.format;
+	 e.data := cm.data;
+	 Events.Raise(e);
+      END;
+   END HandleMessage;
+
+   PROCEDURE GetDiscipline(win: XResources.Window;
+                           VAR wd: WindowDiscipline);
+      VAR
+	 et: Events.EventType;
+   BEGIN
+      IF ~Disciplines.Seek(win, wdid, wd) THEN
+	 NEW(wd); wd.id := wdid; wd.types := NIL;
+	 XResources.GetEventType(win, XDisplays.clientMessageEvent, et);
+	 Events.Handler(et, HandleMessage);
+	 Disciplines.Add(win, wd);
+      END;
+   END GetDiscipline;
+
+   PROCEDURE GetEventType(win: XResources.Window;
+                          type: ARRAY OF CHAR;
+			  VAR eventType: Events.EventType);
+      VAR
+	 wd: WindowDiscipline;
+	 t: EventType;
+	 msgtype: XAtoms.Atom;
+   BEGIN
+      IF XAtoms.LookupByName(XResources.GetDisplay(win), type,
+	    (* onlyIfExists = *) FALSE, msgtype) THEN
+	 GetDiscipline(win, wd);
+	 t := wd.types;
+	 WHILE (t # NIL) & (t.msgtype # msgtype) DO
+	    t := t.next;
+	 END;
+	 IF t = NIL THEN
+	    NEW(t); t.msgtype := msgtype; Events.Define(t.eventType);
+	    t.next := wd.types; wd.types := t;
+	 END;
+	 eventType := t.eventType;
+      ELSE
+	 eventType := NIL;
+      END;
+   END GetEventType;
+
+BEGIN
+   wdid := Disciplines.Unique();
+END XClientMessages.

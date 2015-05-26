@@ -1,0 +1,206 @@
+Compilers(3)                  Ulm's Oberon System                 Compilers(3)
+
+
+
+[1mNAME[0m
+       Compilers - general interface for two-pass compilers
+
+[1mSYNOPSIS[0m
+       TYPE Result = POINTER TO ResultRec;
+       TYPE ResultRec =
+             RECORD
+                (Disciplines.ObjectRec)
+                header: CompilerObjects.Header;
+                object: CompilerObjects.Object;
+             END;
+
+       TYPE Compiler = POINTER TO CompilerRec;
+       TYPE CompilerRec = RECORD (Services.ObjectRec) END;
+
+       TYPE Context = POINTER TO ContextRec;
+       TYPE ContextRec =
+             RECORD
+                (Disciplines.ObjectRec)
+                keys: CompilerKeys.Set;
+                mtab: CompilerObjects.ModuleTable;
+                tab: ModularizedStructures.ObjectTable;
+                db: CompilerDatabases.Database;
+                cachemode: CompilerObjects.CacheMode;
+                log: CompilerLogs.Log;
+             END;
+
+       TYPE Pass1Proc = PROCEDURE (compiler: Compiler; context: Context;
+                                   source: CompilerSources.Source;
+                                   VAR definition, module: Result) : BOOLEAN;
+       TYPE Pass2Proc = PROCEDURE (compiler: Compiler; context: Context;
+                                   definition, module: CompilerObjects.Object;
+                                   arch: Architectures.Architecture;
+                                   updatesPermitted: BOOLEAN;
+                                   VAR archdef, code: Result;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE DefineArgsProc = PROCEDURE (compiler: Compiler; args: Args.Arguments);
+       TYPE Pass1Interface = POINTER TO Pass1InterfaceRec;
+       TYPE Pass1InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                pass1: Pass1Proc;
+                defineArgs: DefineArgsProc; (* may be NIL *)
+             END;
+       TYPE Pass2Interface = POINTER TO Pass2InterfaceRec;
+       TYPE Pass2InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                pass2: Pass2Proc;
+                defineArgs: DefineArgsProc; (* may be NIL *)
+             END;
+
+       PROCEDURE Init(compiler: Compiler; if: Pass1Interface);
+       PROCEDURE Register(compiler: Compiler; arch: Architectures.Architecture;
+                          if: Pass2Interface);
+
+       PROCEDURE DefineArgs(compiler: Compiler; args: Args.Arguments);
+
+       PROCEDURE CreateCopyOfContext(VAR newcontext: Context; orig: Context);
+       PROCEDURE SynchronizeContext(context, ext: Context);
+
+       PROCEDURE Pass1(compiler: Compiler; context: Context;
+                       source: CompilerSources.Source;
+                       VAR definition, module: Result) : BOOLEAN;
+
+       PROCEDURE Pass2(compiler: Compiler; context: Context;
+                       definition, module: CompilerObjects.Object;
+                       arch: Architectures.Architecture;
+                       updatesPermitted: BOOLEAN;
+                       VAR archdef, code: Result;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Supported(compiler: Compiler;
+                           arch: Architectures.Architecture) : BOOLEAN;
+
+       PROCEDURE GetSupportedArchitectures(compiler: Compiler;
+                                           VAR it: Iterators.Iterator);
+
+
+[1mDESCRIPTION[0m
+       [4mCompilers[24m  provides  a  general  interface  for two-pass compilers. The
+       first pass is strictly architecture-independent and its results may  be
+       passed  in  case  of success to one of the back-ends that generate code
+       for a selected architecture.
+
+       This  interface  supports  the  separation  of  interface  descriptions
+       (called  definitions)  from  module implementations (called modules) as
+       known by Modula-2 and classic Oberon. Variants where both,  the  inter-
+       face  and  its implementation, are derived from one source (as in newer
+       variants of Oberon) are supported as well.
+
+       Program texts are represented by [4mCompilerSources(3)[24m. Note  that  source
+       objects  have  already their compilation options associated with.  Mod-
+       ules that create source objects for a particular compiler  are  obliged
+       to  include  all possible compilation options into their set of options
+       using [4mDefineArgs[24m.
+
+       A compilation process is set into a context that consists of
+
+       ·      a set of keys of type [4mCompilerKeys.Set[24m which is  to  be  created
+              using [4mCompilerKeys.CreateSet[24m,
+
+       ·      a module table of type [4mCompilerObjects.ModuleTable[24m that collects
+              all compilation results that are loaded or  generated  during  a
+              compilation  run  which  is  to  be  created  using  [4mCompilerOb-[0m
+              [4mjects.CreateModuleTable[24m,
+
+       ·      an object table of type  [4mModularizedStructures.ObjectTable[24m  that
+              keeps  track  of  all  persistent  data structures loaded so far
+              which is to be created using [4mModularizedStructures.CreateTable[24m,
+
+       ·      a database where sources and compilation results are loaded from
+              and  stored  to  of  type  [4mCompilerDatabases.Database[24m which, for
+              example, could be opened by [4mCDB(3)[24m,
+
+       ·      a cache mode of type  [4mCompilerObjects.CacheMode[24m  that  specifies
+              which  results  have  to  be  stored  back into the database for
+              retrieval by other compilation runs, and
+
+       ·      a log object of type [4mCompilerLogs.Log[24m which may be [1mNIL [22mif no log
+              is desired.
+
+       Contexts  can  be  cloned using [4mCreateCopyOfContext[24m and a branch can be
+       synchronized back using [4mSynchronizeContext[24m.  Note, however,  that  syn-
+       chronization  requires  both  contexts  to be compatible to each other.
+       Otherwise an assertion will fail.   Cloning  and  resynchronization  is
+       useful if an attempt is to be made to load an imported module and where
+       in case of failures the original context should remain unchanged.
+
+       Compilation results are of type [4mResult[24m and consist of a  header  object
+       ([4mCompilerObjects.Header[24m)  and  an  object  that  represents  the entire
+       result ([4mCompilerObjects.Object[24m).
+
+   [1mUsing a compiler[0m
+       [4mPass1[24m passes [4msource[24m to [4mcompiler[24m, and returns in case  of  a  successful
+       compilation  architecture-independent results in [4mdefinition[24m and/or [4mmod-[0m
+       [4mule[24m. The to be expected results depend on the  source  kind  ([4mCompiler-[0m
+       [4mSources.SourceKind[24m) of [4msource[24m:
+       [4mdefinition[24m   Just [4mdefinition[24m will be returned, [4mmodule[24m is set to [1mNIL[22m.
+       [4mmodule[24m       Just [4mmodule[24m will be returned, [4mdefinition[24m is set to [1mNIL[22m.
+       [4mdefmod[24m       Both,  [4mdefinition[24m and [4mmodule[24m will be returned and are non-
+                    [1mNIL[22m.
+
+       [4mPass2[24m generates, if successful, compilation results for  the  architec-
+       ture [4march[24m. If just an architecture-dependent definition object is to be
+       generated, an architecture-independent [4mdefinition[24m is to  be  given  and
+       [4mmodule[24m is to be set to [1mNIL[22m.  For the generation of machine code (repre-
+       sented by the [4mcode[24m result object) [4mdefinition[24m and [4mmodule[24m must be non-[1mNIL[0m
+       where  [4mdefinition[24m  may  be  either  architecture-independent, or, if it
+       already available for [4march[24m, architecture-dependent.  [4mPass2[24m  is  allowed
+       to  update  a  architecture-dependent [4mdefinition[24m if [4mupdatesPermitted[24m is
+       [1mTRUE[22m. However, if updates are permitted, [4mdefinition[24m must neither  be  a
+       member  of  [4mcontext.mtab[24m  and  its  key  must  not  be a member of [4mcon-[0m
+       [4mtext.keys[24m. Note that [4mupdatesPermitted[24m must be set to [1mTRUE [22mif [4mdefinition[0m
+       is architecture-independent.
+
+       [4mSupported[24m  return  [1mTRUE  [22mif [4march[24m is supported by [4mcompiler[24m.  The list of
+       supported architectures by a compiler can be  retrieved  using  [4mGetSup-[0m
+       [4mportedArchitectures[24m.
+
+   [1mImplementing a compiler[0m
+       For  each  compiler  an  architecture-independent pass has to be imple-
+       mented. Its interface is of type [4mPass1Interface[24m which is to  be  passed
+       to  [4mInit[24m.  Afterwards,  the architecture-dependent passes of a compiler
+       can be registered by [4mRegister[24m using an interface  of  type  [4mPass2Inter-[0m
+       [4mface[24m.  Both interfaces consist of an interface procedure similar to the
+       signatures of [4mPass1[24m and [4mPass2[24m which share the same semantics. In  addi-
+       tion,  an optional interface procedure [4mdefineArgs[24m can be defined or set
+       to [1mNIL[22m. This interface procedure, if non-[1mNIL[22m, can be used  to  register
+       compilation flags and options to [4margs[24m (see [4mArgs(3)[24m).
+
+[1mDIAGNOSTICS[0m
+       In  case  of  failures,  [4mPass1[24m relates all errors to [4msource[24m while [4mPass2[0m
+       related all errors to [4merrors[24m (see [4mRelatedEvents(3)[24m). As long as  errors
+       are  genuine compilation errors, they are of type [4mCompilerErrors.Error[24m.
+       However, occasional errors related to the compiler database  or  access
+       to  source  objects may result in other error objects.  [4mPass1[24m and [4mPass2[0m
+       return [1mTRUE [22min case of success and [1mFALSE [22min case of failures.
+
+[1mSEE ALSO[0m
+       [4mArchitectures(3)[24m           classification of hardware architectures and
+                                  operating systems
+       [4mArgs(3)[24m                    general abstraction for flags and options
+       [4mCompilerDatabases(3)[24m       interface  to  a  persistent  database where
+                                  sources and compilation  results  are  found
+                                  and stored to
+       [4mCompilerErrors(3)[24m          standardized events for compilation errors
+       [4mCompilerKeys(3)[24m            keys that identify dependencies of compiler-
+                                  generated objects
+       [4mCompilerLogs(3)[24m            filter and formatting tool for logs of  com-
+                                  pilation processes
+       [4mCompilerObjects(3)[24m         base  type  for compiler objects that repre-
+                                  sent compiler results and header structures
+       [4mCompilerSources(3)[24m         objects that represent program text sources
+       [4mModularizedStructures(3)[24m   modularized  byte  sequences  of  persistent
+                                  objects
+       [4mOberonCompiler(3)[24m          implementation of this interface for Oberon
+       [4mObjectLoader(3)[24m            general object loader on base of [4mCompilers[0m
+
+
+
+Release 0.5                Last change: 24 June 2004              Compilers(3)

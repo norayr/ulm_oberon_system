@@ -1,0 +1,253 @@
+Storage(3)                    Ulm's Oberon System                   Storage(3)
+
+
+
+[1mNAME[0m
+       Storage - storage allocating interface for the compiler
+
+[1mSYNOPSIS[0m
+       TYPE Address = Types.UntracedAddress;
+       TYPE Size = Types.Size;
+       TYPE Status = POINTER TO StatusRec;
+       TYPE StatusRec =
+          RECORD
+             (Objects.ObjectRec)
+             collection: INTEGER;
+             intensity: INTEGER;
+             allocated: Size;
+             consumed: Size;
+             chunksize: Size;
+          END;
+       TYPE AllocProc = PROCEDURE(VAR ptr: Address; tag: Address; size: Size);
+       TYPE AllocStackProc = PROCEDURE(VAR ptr: Address; size: Size; mode: SHORTINT);
+       TYPE GarbageCollectionProc = PROCEDURE;
+       TYPE EnableProc = PROCEDURE;
+       TYPE DisableProc = PROCEDURE;
+       TYPE GetStatusProc = PROCEDURE (VAR status: Status);
+       TYPE IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
+       TYPE ChunkSizeProc = PROCEDURE (size: Size) : Size;
+       TYPE FirstStackProc = PROCEDURE;
+       TYPE NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
+       TYPE Interface =
+          RECORD
+             alloc: AllocProc;
+             allocStack: AllocStackProc;
+             garbageCollection: GarbageCollectionProc;
+             enable: EnableProc;
+             disable: DisableProc;
+             intensity: IntensityProc;
+             getStatus: GetStatusProc;
+             chunkSize: ChunkSizeProc;
+             firstStack: FirstStackProc;
+             nextStack: NextStackProc;
+          END;
+
+       VAR end: Address; left: Size;
+
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             errors: RelatedEvents.Object;
+          END;
+       VAR outOfMemory: Events.EventType;
+
+       PROCEDURE AllocateWithTag(VAR ptr: Address; tag: Address; size: Size);
+       PROCEDURE AllocateStack(VAR ptr: Address; size: Size; mode: SHORTINT);
+
+       PROCEDURE GarbageCollection;
+       PROCEDURE EnableCollection;
+       PROCEDURE DisableCollection;
+
+       PROCEDURE Intensity(offset: INTEGER) : INTEGER;
+       PROCEDURE GetStatus(VAR status: Status);
+       PROCEDURE ChunkSize(size: Size) : Size;
+
+       PROCEDURE FirstStack;
+       PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+
+       PROCEDURE Init(if: Interface);
+
+
+[1mDESCRIPTION[0m
+       [4mStorage[24m  provides a system-independent storage allocating interface for
+       the compiler and should not be used otherwise except  as  noted  below.
+       There may be different implementations for this interface, e.g. with or
+       without garbage collector.
+
+       [4mInit[24m is to be called during startup by the module which is  responsible
+       for  storage  allocation (see [4mSysStorage(3)[24m).  All interface procedures
+       have to follow the semantics described below.
+
+       The variables [4mend[24m and [4mleft[24m define an interval [1m[[4m[22mend[24m[1m-[4m[22mleft[24m[1m, [4m[22mend[24m[1m) [22mwhich may
+       be  consumed  by  the inline code of [1mNEW [22mand [1mSYSTEM.NEW [22mwithout calling
+       any of the allocation procedures. Write  accesses  of  these  variables
+       must be atomic either by using appropriate compare-and-set instructions
+       of the native architecture or by blocking all  asynchronous  interrupts
+       (see [4mSysSignalOperations(3)[24m).
+
+       The  runtime start sets up an initial region which should be sufficient
+       to satisfy the memory requests in the early initialization stage.   The
+       module  which calls [4mInit[24m is free to modify [4mend[24m and [4mleft[24m.  For all other
+       modules these variables are to be considered  read-only.   Stacks  must
+       not  be  allocated  by  use of this region, and consequently coroutines
+       must not be created during the early startup  phase,  i.e.  before  the
+       storage allocator is initialized.
+
+       [4mAllocateWithTag[24m  is  to  be  called  by the inline code of [1mNEW [22mand [1mSYS-[0m
+       [1mTEM.NEW [22mif the interval marked by [4mend[24m and [4mleft[24m is not sufficient.  [4msize[0m
+       specifies the total number of bytes needed to store the record or array
+       and the tag field and, if necessary, the dummy tag.  The  type  tag  is
+       specified by [4mtag[24m which may be zero in case of [1mSYSTEM.NEW[22m.  In this case
+       a dummy tag record will be put behind the allocated area.  The returned
+       [4mptr[24m points behind the stored type tag.
+
+       [4mAllocateStack[24m  allocates a redzone-protected stack area for a coroutine
+       with the given growing mode. Fixed  redzone-protected  regions  may  be
+       requested by giving mode [1m0[22m, but [4mAllocateStack[24m does not expect that such
+       a region will become a coroutine stack.  A negative value of [4mmode[24m spec-
+       ifies  a  backward  growing stack.  A positive value is to be given for
+       forward growing stacks.  On return, [4mptr[24m points  to  the  begin  of  the
+       stack.   For  backward  growing  stacks  this is the end address of the
+       allocated region.  The calling procedure or inline code is  responsible
+       for adjusting [4mptr[24m and storing a tag reference to [4mCoroutines.tag[24m.
+
+       A call of [4mGarbageCollection[24m requests an immediate run of a garbage col-
+       lection. Before the  garbage  collector  is  invoked,  the  event  [4mPro-[0m
+       [4mcess.startOfGarbageCollection[24m is raised, while [4mProcess.endOfGarbageCol-[0m
+       [4mlection[24m signals the end of a collection.  Normally, there is no need to
+       call  [4mGarbageCollection[24m,  because the storage management is responsible
+       for activating the garbage collector from time to time, but every  mod-
+       ule is free to do this, too.
+
+       [4mGarbageCollection[24m  will  have  no  effect,  if there was a call of [4mDis-[0m
+       [4mableCollection[24m earlier. A single call of  [4mDisableCollection[24m  guarantees
+       that  the  garbage  collector is switched off. More than one calls in a
+       row make it necessary that [4mEnableCollection[24m  must  be  called  as  many
+       times  as  [4mDisableCollection[24m  before  to re-enable garbage collections.
+       The status record component [4mcollection[24m can be interpreted as the number
+       of  times  [4mEnableCollection[24m  must be called to enable a garbage collec-
+       tion.  At the beginning (i.e. after the storage management is  initial-
+       ized), garbage collection is enabled and [4mcollection[24m is set to [1m0[22m.
+
+       Likewise  garbage  collections  can be suppressed if one or more corou-
+       tines are in a non-tracable state (see [4mSysInterrupts(3)[24m).
+
+       The status record component [4mintensity[24m is an indicator for  the  current
+       garbage  collection  frequency.  This indicator can be interpreted as a
+       clue to the amount of storage which is allowed to be  consumed  between
+       two  garbage  collections.  By default, when the intensity indicator is
+       set to [1m0[22m, that limit is equal to the current size of new memory chunks.
+       [4mIntensity[24m  allows  to  change  the  frequency of garbage collections by
+       adding [4moffset[24m to the current frequency indicator.  If [4moffset[24m  is  posi-
+       tive,  the  current collection frequency is decreased, while a negative
+       value increases it. Please note, that [4mIntensity(-1)[24m causes the  current
+       garbage  collection frequency to be doubled and [4mIntensity(1)[24m halves it!
+       [4mIntensity[24m always returns the new  frequency  indicator.  The  following
+       example sets the current intensity indicator to default value [1m0[22m:
+
+       VAR defaultFrequency: INTEGER;
+       (* ... *)
+       defaultFrequency := Storage.Intensity(-Storage.Intensity(0));
+
+
+       [4mGetStatus[24m  returns  a  pointer  to  a record which contains information
+       about the current storage status. A positive value of component [4mcollec-[0m
+       [4mtion[24m  signals,  that garbage collection is currently disabled.  Garbage
+       collection is enabled when [4mcollection[24m is [1m0[22m.  The current  garbage  col-
+       lection  intensity  indicator  is  returned in [4mintensity[24m. The [4mchunksize[0m
+       component contains the  size  of  new  memory  regions  which  will  be
+       requested  from  the  operating  system when more memory is needed. The
+       value returned in [4mallocated[24m represents the total number of bytes  which
+       are  currently  under  control of the storage allocator, while [4mconsumed[0m
+       contains  the  number  of  bytes  which  are  currently  in  use  ([4mcon-[0m
+       [4msumed[24m<=[4mallocated[24m).
+
+       [4mChunkSize[24m  allows  to  change the current chunk size. The chunk size is
+       the size of new memory chunks which the storage allocator requests from
+       the  system.   There may be several system-dependent requirements which
+       the chunk size has to meet, such as concerning address  space  utiliza-
+       tion  or  the  system's  page  size:  [4mChunkSize[24m rounds [4msize[24m to the next
+       higher possible value, if the given parameter can not be  used  as  new
+       chunk size (generally, it should be a good idea when [4msize[24m is a power of
+       2 and greater than the page size).  As result, the  computed  value  is
+       returned.   In  case  of  [4msize[24m  = [1m0[22m, [4mChunkSize[24m only returns the current
+       chunk size and no change is made.
+       Especially, when allocating objects with sizes greater  than  the  page
+       size,  changing  the  chunk size can reduce the amount of memory needed
+       from the operating system and increase  performance.   Using  [4mChunkSize[0m
+       normally  effects  the current collection frequency, too, because it is
+       not only dependent on the intensity indicator but  also  on  the  chunk
+       size ([4mIntensity(0)[24m is performed).
+
+       [4mFirstStack[24m  and  [4mNextStack[24m allow to examine all coroutines. This can be
+       useful for debugging purposes (see [4mSysStacks(3)[24m and [4mSysStackTraces(3)[24m).
+
+[1mDIAGNOSTICS[0m
+       [4mAllocateWithTag[24m  and  [4mAllocateStack[24m  always return valid pointers which
+       need not to be checked against [1mNIL[22m.  The storage allocator is responsi-
+       ble  to raise the event [4moutOfMemory[24m short before it runs out of memory.
+       The [4merrors[24m component of [4mStorage.Event[24m contains, if not equal to [1mNIL[22m,  a
+       queue  of error events which were responsible for the ``out of memory''
+       event.  The remaining memory should be sufficient to allow  some  event
+       handling  and  a  controlled  termination.   The  storage  allocator is
+       expected to terminate the process immediately if,  after  raising  [4mout-[0m
+       [4mOfMemory[24m, the last memory resources get consumed.
+
+       Calls to all interface procedures before [4mInit[24m lead to immediate program
+       termination.
+
+[1mSEE ALSO[0m
+       [4mCoroutines(3)[24m        exports [4mCoroutines.tag[24m which marks coroutines.
+       [4mProcess(3)[24m           exports storage message events
+       [4mSysStorage(3)[24m        storage allocator with copying garbage collection.
+       [4mUntaggedStorage(3)[24m   alternative  interface  for  storage unaffected by
+                            the garbage collection
+
+[1mBUGS[0m
+       The default intensity of 0 is acceptable for very  simple  applications
+       only.  Everything else that is memory-intensive should raise this value
+       significantly. Otherwise these applications would  be  more  busy  with
+       garbage  collection  runs  than  their  intended  purpose.  Raising the
+       intensity reduces CPU time as the complexity of  a  garbage  collection
+       run  depends  only  on  the amount and size of living objects. However,
+       memory consumption will raise significantly for higher  intensity  val-
+       ues.   The  optimal intensity value depends on the allocation behaviour
+       of the application, the available virtual address space, and the avail-
+       able physical memory.
+
+       However,  as  large  intensity  values  can  lead to intensive swapping
+       activities of the operating system, things can turn significantly worse
+       by  rendering  the  application or in some cases even the entire system
+       unresponsive. Large intensity values can also  lead  to  address  space
+       problems which lead to a panic exit of [4mSysStorage(3)[24m.
+
+       Here  are some rough estimates for the upper limits of intensity values
+       in dependence of the physical memory that is available for this  appli-
+       cation:
+
+       memory   intensity
+       -------------------
+       1 GB     9
+       800 MB   8
+       600 MB   7
+       400 MB   6
+
+       Larger  values  than 9 may cause address space problems if the applica-
+       tion uses a considerable number of coroutines.  This is  an  issue  for
+       networked  applications  that  provide remote access to objects through
+       [4mRemoteObjects(3)[24m.
+
+       It is recommended  for  memory-intensive  applications  to  include  an
+       option  for  the  command line or configuration file that allows to set
+       the intensity. This has been implemented, for example, by  [4mcdbd(1)[24m  and
+       [4mobload(1)[24m.
+
+[1mAUTHOR[0m
+       Hansjörg Nägele, University of Ulm
+
+       revisions are due to Andreas Borchert
+
+
+
+Release 0.5               Last change: 23 August 2005               Storage(3)

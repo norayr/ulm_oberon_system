@@ -1,0 +1,182 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixClock.om,v 1.3 2004/02/19 15:21:45 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixClock.om,v $
+   Revision 1.3  2004/02/19 15:21:45  borchert
+   support of Passed added
+
+   Revision 1.2  1995/04/05 12:59:23  borchert
+   support of Services added
+
+   Revision 1.1  1994/02/23  07:26:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixClock;
+
+   (* initializes Clocks.system *)
+
+   IMPORT Clocks, Events, Op := Operations, Priorities, Services,
+      SysSignals, SysTime, SysTypes, Times;
+
+   TYPE
+      Clock = POINTER TO ClockRec;
+      ClockRec =
+	 RECORD
+	    (Clocks.ClockRec)
+	    timerOn: BOOLEAN;
+	    event: Events.Event;
+	    lasttime: SysTime.TimeVal;
+	 END;
+   VAR
+      clockType: Services.Type;
+
+   PROCEDURE FetchTime(clock: Clock);
+      VAR
+	 systime: SysTime.TimeVal;
+	 timezone: SysTime.TimeZone;
+   BEGIN
+      SysTime.GetTimeOfDay(systime, timezone);
+      clock.lasttime := systime;
+   END FetchTime;
+
+   PROCEDURE GetLastTime(clock: Clock; VAR time: Times.Time);
+   BEGIN
+      Times.CreateAndSet(time, Times.absolute, 0,
+	 clock.lasttime.sec, clock.lasttime.usec);
+   END GetLastTime;
+
+   PROCEDURE GetTime(clock: Clocks.Clock; VAR time: Times.Time);
+   BEGIN
+      WITH clock: Clock DO
+	 FetchTime(clock);
+	 Times.CreateAndSet(time, Times.absolute, 0,
+	    clock.lasttime.sec, clock.lasttime.usec);
+      END;
+   END GetTime;
+
+   PROCEDURE Passed(clock: Clocks.Clock; time: Times.Time) : BOOLEAN;
+      VAR
+	 timeval: Times.TimeValueRec;
+   BEGIN
+      WITH clock: Clock DO
+	 Times.GetValue(time, timeval);
+	 (* to be fixed before Tue Jan 19 04:14:07 2038 *)
+	 IF timeval.epoch > 0 THEN RETURN FALSE END;
+	 IF (timeval.second < clock.lasttime.sec) OR
+	       (timeval.second = clock.lasttime.sec) &
+	       (timeval.usec <= clock.lasttime.usec) THEN
+	    RETURN TRUE
+	 END;
+	 FetchTime(clock);
+	 RETURN (timeval.second < clock.lasttime.sec) OR
+	        (timeval.second = clock.lasttime.sec) &
+	        (timeval.usec <= clock.lasttime.usec)
+      END;
+   END Passed;
+
+   PROCEDURE CatchAlarm(event: Events.Event);
+   BEGIN
+      IF Clocks.system IS Clock THEN
+	 WITH Clocks.system: Clock DO
+	    IF Clocks.system.timerOn THEN
+	       Clocks.system.timerOn := FALSE;
+	       Events.Raise(Clocks.system.event);
+	    END;
+	 END;
+      END;
+   END CatchAlarm;
+
+   PROCEDURE TimerOn(clock: Clocks.Clock;
+		     time: Times.Time; event: Events.Event);
+      VAR
+	 currentTime: Times.Time;
+	 waitfor: Times.Time;
+	 timeval: Times.TimeValueRec;
+   BEGIN
+      WITH clock: Clock DO
+	 IF Passed(clock, time) THEN
+	    IF clock.timerOn THEN
+	       SysTime.Alarm(0);
+	       clock.timerOn := FALSE;
+	    END;
+	    Events.Raise(event);
+	 ELSE
+	    (* lasttime has been updated by Passed *)
+	    GetLastTime(clock, currentTime);
+	    Op.Sub3(waitfor, time, currentTime);
+	    Times.GetValue(waitfor, timeval);
+	    clock.timerOn := TRUE;
+	    clock.event := event;
+	    IF timeval.second = 0 THEN
+	       timeval.second := 1;
+	    END;
+	    SysTime.Alarm(timeval.second);
+	 END;
+      END;
+   END TimerOn;
+
+   PROCEDURE TimerOff(clock: Clocks.Clock);
+   BEGIN
+      WITH clock: Clock DO
+	 IF clock.timerOn THEN
+	    SysTime.Alarm(0);
+	    clock.timerOn := FALSE;
+	 END;
+      END;
+   END TimerOff;
+
+   PROCEDURE GetPriority(clock: Clocks.Clock;
+			 VAR priority: Priorities.Priority);
+   BEGIN
+      priority := Events.GetEventPriority(SysSignals.ALRM);
+   END GetPriority;
+
+   PROCEDURE Create(VAR clock: Clocks.Clock);
+      VAR
+	 if: Clocks.Interface;
+	 system: Clock;
+	 systime: SysTime.TimeVal;
+	 timezone: SysTime.TimeZone;
+   BEGIN
+      NEW(if);
+      if.gettime := GetTime;
+      if.passed := Passed;
+      if.timeron := TimerOn;
+      if.timeroff := TimerOff;
+      if.getpriority := GetPriority;
+      NEW(system);
+      Services.Init(system, clockType);
+      Clocks.Init(system, if, {Clocks.passed, Clocks.timer});
+      (* initialize lasttime *)
+      FetchTime(system);
+      clock := system;
+   END Create;
+
+BEGIN
+   Services.CreateType(clockType, "UnixClock.Clock", "Clocks.Clock");
+   Create(Clocks.system);
+   Events.Handler(SysSignals.ALRM, CatchAlarm);
+END UnixClock.

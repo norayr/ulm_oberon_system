@@ -1,0 +1,212 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSHeaders.od,v 1.2 2004/04/02 18:37:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSHeaders.od,v $
+   Revision 1.2  2004/04/02 18:37:41  borchert
+   converted VAR parameters into return values
+
+   Revision 1.1  2004/02/11 16:13:45  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION DNSHeaders;
+
+   IMPORT Types;
+
+   (* DNS header structure according to RFC 1035, section 4.1.1;
+      this header is present in every DNS packet
+   *)
+
+   CONST
+      headerlen = 12;
+   TYPE
+      Header = ARRAY headerlen OF CHAR;
+
+   CONST
+      minval = 0; maxval = 65535; (* of header ID and record counts *)
+
+   CONST
+      query = 0;
+      response = 1;
+   TYPE
+      QRValue = SHORTINT; (* query or response *)
+
+   CONST
+      standardQuery = 0;
+      inverseQuery = 1;
+      serverStatusRequest = 2;
+      (* RFC 2136 *)
+      update = 5;
+   TYPE
+      OpCode = SHORTINT; (* standardQuery .. *)
+
+   CONST
+      noError = 0;
+      formatError = 1;
+      serverFailure = 2;
+      nameError = 3;
+      notImplemented = 4;
+      refused = 5;
+      (* RFC 2136 *)
+      yxDomain = 6; (* some name that ought not to exist, does exist *)
+      yxRrset = 7; (* some RRset that ought not to exist, does exist *)
+      notAuth = 8;
+	 (* the server is not authoritative for the zone named
+	    in the Zone Section
+	 *)
+      notZone = 9;
+	 (* a name used in the prerequisite or update section is not
+	    within the zone denoted by the zone section
+	 *)
+   TYPE
+      ResponseCode = SHORTINT; (* noError .. *)
+
+   PROCEDURE Init(VAR header: Header);
+
+   PROCEDURE SetID(VAR header: Header; id: INTEGER);
+   PROCEDURE GetID(header: Header) : INTEGER;
+      (* cited from RFC 1035:
+	 A 16 bit identifier assigned by the program that generates any
+	 kind of query.  This identifier is copied the corresponding
+	 reply and can be used by the requester to match up replies to
+	 outstanding queries.
+      *)
+
+   PROCEDURE SetQR(VAR header: Header; qr: QRValue);
+   PROCEDURE GetQR(header: Header) : QRValue;
+      (* cited from RFC 1035:
+	 A one bit field that specifies whether this message is a query
+	 (0), or a response (1).
+      *)
+
+   PROCEDURE SetOpCode(VAR header: Header; opcode: OpCode);
+   PROCEDURE GetOpCode(header: Header) : OpCode;
+      (* cited from RFC 1035:
+	 A four bit field that specifies kind of query in this message.
+	 This value is set by the originator of a query and copied into
+	 the response.	The values are:
+
+	 0               a standard query (QUERY)
+	 1               an inverse query (IQUERY)
+	 2               a server status request (STATUS)
+	 3-15            reserved for future use
+      *)
+
+   PROCEDURE SetAAFlag(VAR header: Header; aa: BOOLEAN);
+   PROCEDURE GetAAFlag(header: Header) : BOOLEAN;
+      (* cited from RFC 1035:
+         Authoritative Answer - this bit is valid in responses, and
+         specifies that the responding name server is an authority for the
+         domain name in question section.  Note that the contents of the
+         answer section may have multiple owner names because of aliases.
+         The AA bit corresponds to the name which matches the query name,
+         or the first owner name in the answer section.
+      *)
+
+   PROCEDURE SetTCFlag(VAR header: Header; tc: BOOLEAN);
+   PROCEDURE GetTCFlag(header: Header) : BOOLEAN;
+      (* cited from RFC 1035:
+         TrunCation - specifies that this message was truncated due to
+         length greater than that permitted on the transmission channel.
+      *)
+
+   PROCEDURE SetRDFlag(VAR header: Header; rd: BOOLEAN);
+   PROCEDURE GetRDFlag(header: Header) : BOOLEAN;
+      (* cited from RFC 1035:
+         Recursion Desired - this bit may be set in a query and is
+         copied into the response.  If RD is set, it directs the name
+         server to pursue the query recursively.  Recursive query support
+         is optional.
+      *)
+
+   PROCEDURE SetRAFlag(VAR header: Header; ra: BOOLEAN);
+   PROCEDURE GetRAFlag(header: Header) : BOOLEAN;
+      (* cited from RFC 1035:
+	 Recursion Available - this be is set or cleared in a response,
+	 and denotes whether recursive query support is available in
+	 the name server.
+      *)
+
+   PROCEDURE SetResponseCode(VAR header: Header; rc: ResponseCode);
+   PROCEDURE GetResponseCode(header: Header) : ResponseCode;
+      (* cited from RFC 1035:
+         Response code - this 4 bit field is set as part of responses.
+         The values have the following interpretation:
+
+	 0               No error condition
+
+	 1		 Format error - The name server was unable to
+	 		 interpret the query.
+
+	 2		 Server failure - The name server was unable to
+			 process this query due to a problem with the
+			 name server.
+
+	 3		 Name Error - Meaningful only for responses
+			 from an authoritative name server, this code
+			 signifies that the domain name referenced in
+			 the query does not exist.
+
+	 4		 Not Implemented - The name server does not
+	                 support the requested kind of query.
+
+	 5		 Refused - The name server refuses to perform
+			 the specified operation for policy reasons.
+			 For example, a name server may not wish to
+			 provide the information to the particular
+			 requester, or a name server may not wish to
+			 perform a particular operation (e.g., zone
+			 transfer) for particular data.
+
+	 6-15            Reserved for future use.
+      *)
+
+   PROCEDURE SetQDCount(VAR header: Header; qdcount: INTEGER);
+   PROCEDURE GetQDCount(header: Header) : INTEGER;
+      (* cited from RFC 1035:
+	 an unsigned 16 bit integer specifying the number of entries in
+	 the question section.
+      *)
+
+   PROCEDURE SetANCount(VAR header: Header; ancount: INTEGER);
+   PROCEDURE GetANCount(header: Header) : INTEGER;
+      (* cited from RFC 1035:
+	 an unsigned 16 bit integer specifying the number of resource
+	 records in the answer section.
+      *)
+
+   PROCEDURE SetNSCount(VAR header: Header; nscount: INTEGER);
+   PROCEDURE GetNSCount(header: Header) : INTEGER;
+      (* cited from RFC 1035:
+	 an unsigned 16 bit integer specifying the number of name server
+	 resource records in the authority records section.
+      *)
+
+   PROCEDURE SetARCount(VAR header: Header; arcount: INTEGER);
+   PROCEDURE GetARCount(header: Header) : INTEGER;
+      (* cited from RFC 1035:
+	 an unsigned 16 bit integer specifying the number of resource
+	 records in the additional records section.
+      *)
+
+END DNSHeaders.

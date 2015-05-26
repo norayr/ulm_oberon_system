@@ -1,0 +1,464 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CDB.om,v 1.3 2004/09/10 21:23:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CDB.om,v $
+   Revision 1.3  2004/09/10 21:23:36  borchert
+   WriteError added
+
+   Revision 1.2  2004/09/10 17:31:45  borchert
+   language parameter removed
+
+   Revision 1.1  1998/04/14 08:50:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CDB;
+
+   IMPORT Architectures, CDBNames, CDBSources, CompilerDatabases,
+      CompilerKeys, CompilerObjects, ConstStrings, Errors, Events, Iterators,
+      Names, Paths, PersistentTexts, Priorities, RelatedEvents, Resources,
+      Services, Shards, Sources := CompilerSources, Streams, Strings, Write;
+
+   TYPE
+      Database = POINTER TO DatabaseRec;
+      DatabaseRec =
+	 RECORD
+	    (CompilerDatabases.DatabaseRec)
+	    root: CDBNames.Node;
+	    auth: Shards.Lid;
+	    basedir: ConstStrings.String;
+	 END;
+   VAR
+      dbType: Services.Type;
+      if: CompilerDatabases.Interface;
+
+   VAR
+      objString: ConstStrings.String; (* "obj" *)
+      defString: ConstStrings.String; (* "def" *)
+      modString: ConstStrings.String; (* "mod" *)
+      genString: ConstStrings.String; (* "gen" *)
+
+   CONST
+      noRoot = 0;
+      noSuchModule = 1;
+      objNotFound = 2;
+      errors = 3;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    object: RelatedEvents.Object;
+	    code: ErrorCode;
+	    name: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+      VAR
+	 db: Database;
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.object IS Database THEN
+	    db := event.object(Database);
+	    Write.StringS(s, "CDB database at ");
+	    ConstStrings.Write(s, db.basedir);
+	    Write.StringS(s, ": ");
+	 END;
+	 IF event.name # NIL THEN
+	    ConstStrings.Write(s, event.name);
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, errormsg[event.code]);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[noRoot] := "unable to access CDB root";
+      errormsg[noSuchModule] := "no such module in CDB";
+      errormsg[objNotFound] := "requested object not yet in CDB";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; code: ErrorCode;
+                   name: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.object := object;
+      event.code := code;
+      event.name := name;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* === internal stuff =================================================== *)
+
+   PROCEDURE InternalLookup(db: Database;
+			    modname: ConstStrings.String;
+                            type: CompilerObjects.ObjectType;
+		            arch: Architectures.Architecture;
+		            keys: CompilerKeys.Set;
+		            VAR header: CompilerObjects.Header;
+		            VAR cdbnode: CDBNames.Node;
+		            errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 subnode: Names.Node;
+	 key: CompilerKeys.Key;
+	 genkey: ConstStrings.String;
+
+      PROCEDURE ScanObjects(root: Names.Node) : BOOLEAN;
+	 (* scan through a  {def,mod}/<srcid>/<sth unique>  subtree
+	    and look for sth compatible to keys
+	 *)
+	 VAR
+	    dirname: ConstStrings.String;
+	    it1, it2: Iterators.Iterator;
+	    srcid: ConstStrings.String;
+	    dirnode: Names.Node;
+	    unique: ConstStrings.String;
+	    node: Names.Node;
+	    hdr: CompilerObjects.Header;
+      BEGIN
+	 CASE type OF
+	 | CompilerObjects.public:  dirname := defString;
+	 | CompilerObjects.private: dirname := modString;
+	 END;
+	 IF ~Names.GetNode(root, dirname, db.auth, root) OR
+	       ~Names.GetMembers(root, db.auth, it1) THEN
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Forward(root, errors);
+	 WHILE Iterators.Get(it1, srcid) DO
+	    IF Names.GetNode(root, srcid, db.auth, dirnode) &
+		  Names.GetMembers(dirnode, db.auth, it2) THEN
+	       RelatedEvents.Forward(dirnode, errors);
+	       WHILE Iterators.Get(it2, unique) DO
+		  IF Names.GetNode(dirnode, unique, db.auth, node) &
+			(node IS CDBNames.Node) &
+			CDBNames.GetObjectHeader(node(CDBNames.Node),
+			                         db.auth, hdr) &
+			CompilerKeys.Compatible(keys, hdr.dependencies) &
+			CompilerKeys.CompatibleWith(hdr.key, keys) THEN
+		     header := hdr; cdbnode := node(CDBNames.Node);
+		     RETURN TRUE
+		  END;
+	       END;
+	    END;
+	 END;
+	 RETURN FALSE
+      END ScanObjects;
+
+      PROCEDURE ExhaustiveScan(dirnode: Names.Node;
+                               next: ConstStrings.String) : BOOLEAN;
+	 VAR
+	    it: Iterators.Iterator;
+	    subnode: Names.Node;
+	    dirname: ConstStrings.String;
+      BEGIN
+	 IF ~Names.GetMembers(dirnode, db.auth, it) THEN
+	    RETURN FALSE
+	 END;
+	 WHILE Iterators.Get(it, dirname) DO
+	    IF Names.GetNode(dirnode, dirname, db.auth, subnode) &
+	          ((next = NIL) OR
+		     Names.GetNode(subnode, next, db.auth, subnode)) &
+		  ScanObjects(subnode) THEN
+	       RETURN TRUE
+	    END;
+	 END;
+	 RETURN FALSE
+      END ExhaustiveScan;
+
+      PROCEDURE ScanArchitectures(dirnode: Names.Node) : BOOLEAN;
+	 (* check all architectures in subnode and check those
+	    that are compatible to arch
+	 *)
+	 VAR
+	    archname: ConstStrings.String;
+	    it: Iterators.Iterator;
+	    otherarch, combined: Architectures.Architecture;
+	    subnode: Names.Node;
+	    archkey: ConstStrings.String;
+      BEGIN
+	 IF ~Names.GetMembers(dirnode, db.auth, it) THEN
+	    RETURN FALSE
+	 END;
+	 IF (key # NIL) & (key.archkey # NIL) THEN
+	    CompilerKeys.ValueToString(key.archkey, archkey);
+	 ELSE
+	    archkey := NIL;
+	 END;
+	 WHILE Iterators.Get(it, archname) DO
+	    Architectures.GetArch(archname, otherarch);
+	    IF Architectures.Compatible(arch, otherarch, combined) &
+		  Names.GetNode(dirnode, archname, db.auth, subnode) THEN
+	       IF archkey # NIL THEN
+		  IF Names.GetNode(subnode, archkey, db.auth, subnode) &
+			ScanObjects(subnode) THEN
+		     RETURN TRUE
+		  END;
+	       ELSIF ExhaustiveScan(subnode, NIL) THEN
+		  RETURN TRUE
+	       END;
+	    END;
+	 END;
+	 RETURN FALSE
+      END ScanArchitectures;
+
+      PROCEDURE ScanAllKeys(dirnode: Names.Node) : BOOLEAN;
+	 (* we do not have a specific generic key given, so search
+	    through all subdirectories
+	 *)
+	 VAR
+	    it: Iterators.Iterator;
+	    keyname: ConstStrings.String;
+	    subnode: Names.Node;
+      BEGIN
+	 key := NIL;
+	 IF ~Names.GetMembers(dirnode, db.auth, it) THEN
+	    RETURN FALSE
+	 END;
+	 WHILE Iterators.Get(it, keyname) DO
+	    IF Names.GetNode(dirnode, keyname, db.auth, subnode) &
+		  ScanArchitectures(subnode) THEN
+	       RETURN TRUE
+	    END;
+	 END;
+	 RETURN FALSE
+      END ScanAllKeys;
+
+   BEGIN (* InternalLookup *)
+      RelatedEvents.Save(db.root);
+      RelatedEvents.Forward(db.root, errors);
+      IF ~Names.GetNode(db.root, modname, db.auth, subnode) THEN
+	 RelatedEvents.Restore(db.root);
+	 Error(errors, noSuchModule, modname);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(subnode, errors);
+      IF ~Names.GetNode(subnode, objString, db.auth, subnode) THEN
+	 RelatedEvents.Restore(db.root);
+	 Error(errors, objNotFound, modname);
+	 RETURN FALSE
+      END;
+      IF CompilerKeys.Lookup(keys, modname, key) THEN
+	 ASSERT(key.genkey # NIL);
+	 RelatedEvents.Forward(subnode, errors);
+	 CompilerKeys.ValueToString(key.genkey, genkey);
+	 IF ~Names.GetNode(subnode, genkey, db.auth, subnode) THEN
+	    RelatedEvents.Restore(db.root);
+	    Error(errors, objNotFound, modname);
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Forward(subnode, errors);
+	 IF arch = NIL THEN
+	    IF ~Names.GetNode(subnode, genString, db.auth, subnode) THEN
+	       RelatedEvents.Restore(db.root);
+	       Error(errors, objNotFound, modname);
+	       RETURN FALSE
+	    END;
+	    ok := ScanObjects(subnode);
+	 ELSE
+	    ok := ScanArchitectures(subnode);
+	 END;
+      ELSIF arch # NIL THEN
+	 ok := ScanAllKeys(subnode);
+      ELSE
+	 (* exhaustive search through all generic keys *)
+	 ok := ExhaustiveScan(subnode, genString);
+      END;
+      RelatedEvents.Restore(db.root);
+      IF ~ok THEN
+	 Error(errors, objNotFound, modname);
+      END;
+      RETURN ok
+   END InternalLookup;
+
+   (* === CompilerDatabases if ============================================= *)
+
+   PROCEDURE Lookup(dbase: CompilerDatabases.Database;
+                    modname: ConstStrings.String;
+                    type: CompilerObjects.ObjectType;
+		    arch: Architectures.Architecture;
+		    keys: CompilerKeys.Set;
+		    VAR header: CompilerObjects.Header;
+		    VAR text: PersistentTexts.Text;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: CDBNames.Node;
+   BEGIN (* Lookup *)
+      WITH dbase: Database DO
+	 RETURN InternalLookup(dbase, modname, type, arch, keys, header,
+	                       node, errors) &
+	        CDBNames.GetText(node, dbase.auth, text)
+      END;
+   END Lookup;
+
+   PROCEDURE LookupHeader(dbase: CompilerDatabases.Database;
+                          modname: ConstStrings.String;
+                          type: CompilerObjects.ObjectType;
+		          arch: Architectures.Architecture;
+		          keys: CompilerKeys.Set;
+		          VAR header: CompilerObjects.Header;
+		          errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: CDBNames.Node;
+   BEGIN (* Lookup *)
+      WITH dbase: Database DO
+	 RETURN InternalLookup(dbase, modname, type, arch, keys, header,
+	                       node, errors)
+      END;
+   END LookupHeader;
+
+   PROCEDURE Store(db: CompilerDatabases.Database;
+                   header: CompilerObjects.Header;
+                   text: PersistentTexts.Text;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: CDBNames.Node;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH db: Database DO
+	 RelatedEvents.Save(db.root);
+	 RelatedEvents.Forward(db.root, errors);
+	 ok := CDBNames.AddObject(db.root, header, text, db.auth, node);
+	 RelatedEvents.Restore(db.root);
+	 RETURN ok
+      END;
+   END Store;
+
+   PROCEDURE LookupSrc(db: CompilerDatabases.Database;
+                       modname: ConstStrings.String;
+                       kind: Sources.SourceKind;
+                       VAR src: Sources.Source;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 source: Sources.Source;
+	 basedir, module: ARRAY 512 OF CHAR;
+   BEGIN
+      WITH db: Database DO
+	 ConstStrings.Extract(basedir, db.basedir);
+	 ConstStrings.Extract(module, modname);
+	 IF ~CDBSources.Create(source, basedir, module,
+	                       kind, db.auth, errors) THEN
+	    RETURN FALSE
+	 END;
+	 src := source;
+	 RETURN TRUE
+      END;
+   END LookupSrc;
+
+   PROCEDURE StoreSrc(db: CompilerDatabases.Database;
+                      src: Sources.Source;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: CDBNames.Node;
+	 ok: BOOLEAN;
+	 s: Streams.Stream;
+	 text: PersistentTexts.Text;
+   BEGIN
+      WITH db: Database DO
+	 RelatedEvents.Save(src);
+	 RelatedEvents.Forward(src, errors);
+	 ok := Sources.Open(src, s);
+	 RelatedEvents.Restore(src);
+	 IF ok THEN
+	    RelatedEvents.Forward(s, errors);
+	    IF ~PersistentTexts.Create(text, s) THEN
+	       RETURN FALSE
+	    END;
+	    RelatedEvents.Save(db.root);
+	    RelatedEvents.Forward(db.root, errors);
+	    ok := CDBNames.AddSource(db.root, src.header, text,
+	                             db.auth, node);
+	    RelatedEvents.Restore(db.root);
+	    Streams.Release(s);
+	 END;
+	 RETURN ok
+      END;
+   END StoreSrc;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(dbType, "CBD.Database", "CompilerDatabases.Database");
+      NEW(if);
+      if.lookup := Lookup; if.lookupHeader := LookupHeader; if.store := Store;
+      if.lookupSrc := LookupSrc; if.storeSrc := StoreSrc;
+      ConstStrings.Create(objString, "obj");
+      ConstStrings.Create(defString, "def");
+      ConstStrings.Create(modString, "mod");
+      ConstStrings.Create(genString, "gen");
+   END Init;
+
+   (* === exported constructor ============================================= *)
+
+   PROCEDURE Open(VAR db: CompilerDatabases.Database;
+                  basedir: ARRAY OF CHAR;
+		  auth: Shards.Lid;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 path: ARRAY 1024 OF CHAR;
+	 s: Streams.Stream;
+	 root: Names.Node;
+	 rootpath: ConstStrings.String;
+	 newdb: Database;
+   BEGIN
+      ASSERT(basedir[0] # 0X);
+      path[0] := 0X; Strings.Open(s, path);
+      Write.StringS(s, basedir);
+      Write.CharS(s, Paths.separator);
+      Write.StringS(s, "modules");
+      Streams.Release(s);
+      IF ~Paths.GetNode(path, auth, errors, root) OR
+	    ~(root IS CDBNames.Node) THEN
+	 ConstStrings.Create(rootpath, path);
+	 Error(errors, noRoot, rootpath);
+	 RETURN FALSE
+      END;
+      NEW(newdb); Services.Init(newdb, dbType);
+      CompilerDatabases.Init(newdb, if);
+      newdb.root := root(CDBNames.Node); newdb.auth := auth;
+      ConstStrings.Create(newdb.basedir, basedir);
+      Resources.DependsOn(newdb, root);
+      db := newdb;
+      RETURN TRUE
+   END Open;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END CDB.

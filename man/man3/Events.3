@@ -1,0 +1,557 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Events 3 "Last change: 30 March 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Events \- priority driven event handling
+.SH SYNOPSIS
+.Pg
+CONST default = 0; ignore = 1; funcs = 2;
+.sp 0.3
+TYPE EventType = POINTER TO EventTypeRec;
+TYPE EventTypeRec = RECORD (Services.ObjectRec) END;
+TYPE Reaction = INTEGER; (* one of default, ignore, or funcs *)
+TYPE Message = ARRAY 80 OF CHAR;
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Objects.ObjectRec)
+      type: EventType;
+      message: Message;
+   END;
+TYPE EventHandler = PROCEDURE (event: Event);
+TYPE EventManager = PROCEDURE (type: EventType; reaction: Reaction);
+TYPE HandlerList = POINTER TO HandlerRec;
+TYPE HandlerRec =
+   RECORD
+      (Objects.ObjectRec)
+      handler: EventHandler;
+      next: HandlerList;
+   END;
+.sp 0.3
+TYPE Priority = INTEGER; (* must be non-negative *)
+TYPE PrioritySystem = POINTER TO PrioritySystemRec;
+TYPE PrioritySystemRec = RECORD (Objects.ObjectRec) END;
+.sp 0.7
+CONST priorityViolation = 0;
+CONST unbalancedExitPriority = 1;
+CONST unbalancedRestoreReaction = 2;
+CONST negPriority = 3;
+CONST errorcodes = 4;
+.sp 0.2
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (EventRec)
+      errorcode: SHORTINT;
+   END;
+.sp 0.2
+VAR errormsg: ARRAY errorcodes OF Message;
+VAR error: EventType;
+.sp 0.7
+PROCEDURE Define(VAR type: EventType);
+PROCEDURE Init(type: EventType);
+.sp 0.3
+PROCEDURE GetReaction(type: EventType) : Reaction;
+.sp 0.3
+PROCEDURE SetPriority(type: EventType; priority: Priority);
+.sp 0.3
+PROCEDURE GetEventPriority(type: EventType) : Priority;
+.sp 0.3
+PROCEDURE Manager(type: EventType; manager: EventManager);
+.sp 0.3
+PROCEDURE Handler(type: EventType; handler: EventHandler);
+PROCEDURE RemoveHandlers(type: EventType);
+PROCEDURE Ignore(type: EventType);
+.sp 0.3
+PROCEDURE GetHandlers(type: EventType; handlers: HandlerList);
+.sp 0.3
+PROCEDURE Log(loghandler: EventHandler);
+PROCEDURE GetLog(VAR loghandler: EventHandler);
+.sp 0.3
+PROCEDURE QueueHandler(handler: EventHandler);
+.sp 0.3
+PROCEDURE AbortHandler(handler: EventHandler);
+PROCEDURE GetAbortHandler(VAR handler: EventHandler);
+.sp 0.3
+PROCEDURE Raise(event: Event);
+.sp 0.3
+PROCEDURE EnterPriority(priority: Priority);
+PROCEDURE AssertPriority(priority: Priority);
+PROCEDURE ExitPriority;
+.sp 0.3
+PROCEDURE CreatePrioritySystem(VAR prioritySystem: PrioritySystem);
+PROCEDURE CurrentPrioritySystem() : PrioritySystem;
+PROCEDURE SwitchPrioritySystem(prioritySystem: PrioritySystem);
+.sp 0.3
+PROCEDURE GetPriority() : Priority;
+.sp 0.3
+PROCEDURE NilHandler(event: Event);
+.sp 0.3
+PROCEDURE SaveReaction(type: EventType);
+PROCEDURE RestoreReaction(type: EventType);
+.Pe
+.SH DESCRIPTION
+.I Events
+allows to define the reaction on an event and
+the entry of an event independently from each other.
+Event types connect both parties:
+reactions are specified for event types and
+an event type must be given for each event.
+Typical events are UNIX signals, run time errors,
+library errors, and program termination.
+.LP
+The reaction on an event is either
+.Tb default
+.Tp default
+program termination (abort handler)
+.Tp ignore
+event is ignored
+.Tp funcs
+call associated event handlers
+.Te
+After defining an event type
+(by \fIDefine\fP or \fIInit\fP)
+the reaction is \fIdefault\fP.
+.LP
+Event handlers are procedures to be called on event entry.
+They are of type
+.I EventHandler
+and get one parameter of type
+.I Event
+which contains the necessary information about the event.
+The number of event handlers of an event is not limited.
+One good example for distributed event handling is program termination
+(which is an event of \fIProcess(3)\fP):
+this allows each module not only to have an initialization part
+but also to have a cleanup procedure which is called automatically.
+The calling order is reverse to the order of handler definitions.
+This is very important for program termination because
+the calling order of cleanup procedures must be
+reverse to the calling order of initializations parts.
+Normal execution resumes (\fIRaise\fP returns)
+after call of all event handlers.
+.LP
+.I Handler
+defines an additional event handler for \fItype\fP.
+The reaction is set to
+.I funcs
+if the previous reaction was
+.I default
+or \fIignore\fP.
+.I RemoveHandlers
+removes the list of event handlers of
+.I type
+and sets the reaction to
+.I default
+(i.e. program abortion).
+.I Ignore
+causes receipt of events of type
+.I type
+to be ignored.
+.I RemoveHandlers
+and
+.I Ignore
+cause the list of event handlers to be lost
+(if the previous reaction was \fIfuncs\fP).
+This is not appropriate in case of temporary reaction changes.
+.I SaveReaction
+and
+.I RestoreReaction
+implement a stack of event reactions.
+.I SaveReaction
+saves the old reaction and sets the current reaction to \fIignore\fP.
+The new reaction can be changed as usual by
+.I Handler
+or
+.IR RemoveHandlers .
+.LP
+The current type of reaction for
+.I type
+can be retrieved by call of
+.IR GetReaction .
+.I GetHandlers
+returns the list of event handlers in case of
+.I funcs
+reaction.
+.LP
+In some cases (e.g. inheritance of UNIX signals) there is a
+significant difference between
+.I ignore
+reaction and an empty event handler.
+.I NilHandler
+is of type
+.I EventHandler
+and can be given as argument to
+.IR Handler .
+.LP
+Some types of events need some extra action in case
+of reaction changes (e.g. UNIX signals).
+In this case,
+.I Manager
+allows to define an event manager which is called on
+all changes of reaction.
+.LP
+.I Events
+defines a software priority system analogous to the
+hardware priority system of the PDP11.
+Each event has a priority (default \fIPriorities.default\fP).
+The current priority is defined as following
+.IP (1)
+\fIPriorities.base\fP at beginning of execution.
+.IP (2)
+During the call of an event handler the current priority is
+set to the priority of the event.
+.IP (3)
+The priority can be raised by calling \fIEnterPriority\fP
+or \fIAssertPriority\fP and
+restored by \fIExitPriority\fP.
+.LP
+Events with priority less than or equal to the current
+priority are queued until the current priority is diminished
+to a value less than the priority of the event.
+Events with priority less than or equal to \fIPriorities.base\fP
+are ignored (independent from the reaction).
+System events with default reaction may cause abortion even
+if their priority is less than or equal to the current priority.
+Priority values must not be negative.
+.LP
+.I SetPriority
+redefines the priority of events of type
+.I type
+to
+.IR priority .
+.I GetEventPriority
+returns the priority of
+.IR type .
+.I GetPriority
+returns the current priority.
+.I EnterPriority
+sets the current priority to
+.IR priority .
+It is an error to give a priority less than the current priority
+\&(this error causes \fIbadpriority\fP to be raised).
+.I AssertPriority
+sets the current priority to \fIpriority\fP if the current priority
+is less than \fIpriority\fP.
+.I ExitPriority
+requests the priority that was valid before the last call of
+.I EnterPriority
+or
+.I AssertPriority
+to be restored.
+.LP
+A priority system is defined by a stack of priorities
+which is manipulated by \fIEnterPriority\fP,
+\fIAssertPriority\fP and \fIExitPriority\fP.
+In some cases coroutines or groups of coroutines need
+their own priority system:
+\fICreatePrioritySystem\fP creates a new priority system
+with an empty stack and a current priority which equals
+\fIPriorities.base\fP.
+\fICurrentPrioritySystem\fP returns the priority system
+which is currently active.
+\fISwitchPrioritySystem\fP changes the current priority system
+to \fIprioritySystem\fP.
+.LP
+.I Raise
+causes
+.I event
+to happen if the reaction of the associated event type (\fIevent.type\fP)
+is not equal to
+.IR ignore .
+If the priority of the event is less than or equal to the current
+priority the event is queued (events with higher priority
+will be handled earlier, FIFO for events with equal priority).
+The abort handler is called in the default case.
+If reaction equals
+.I funcs
+the event handlers are called in reverse order of definition.
+The parameter
+.I event
+is passed to all event handlers.
+\fIRaise\fP returns as follows:
+.LP
+.Tb default
+.Tp default
+no return
+.Tp ignore
+immediate return
+.Tp funcs
+either after queuing of the event or
+after call of the associated event handlers
+.Te
+.LP
+.I QueueHandler
+allows to replace the internal event queuing system of \fIEvents\fP by
+an alternative implementation. The handler is invoked for every event
+that was passed to \fIEvents.Raise\fP and whose priority does not exceed
+the current priority. \fISysMain(3)\fP installs its own queuing system
+which creates individual tasks for each event that cannot be processed
+immediately.
+.LP
+For tracing it is of interest to get a log of all events.
+.I Log
+defines an event handler which is called on each event
+with reaction
+.IR funcs .
+Subsequent calls of
+.I Log
+replace the log handler.
+.I GetLog
+sets
+.I loghandler
+to the current log handler.
+.LP
+.I Events
+does not know how to achieve program abortion
+(usually program termination with core dump).
+.I AbortHandler
+defines a handler for abortion which must not return.
+The module
+.I Process
+defines a procedure which calls
+.I Process.Abort
+as abort handler during its initialization phase.
+Because
+.I Process
+is part of each Oberon program
+there should be no need to redefine the abort handler.
+Multiple calls of
+.I AbortHandler
+replace the abort handler.
+.I GetAbortHandler
+sets
+.I handler
+to the current abort handler.
+.SH "SEE ALSO"
+.Tb EventConditions(3)
+.Tp EventConditions(3)
+supports synchronous event handling
+.Tp Priorities(3)
+defines the priorities used by the Oberon library
+.Tp Process(3)
+definition of termination events;
+program termination and abortion
+.Tp RTErrors(3)
+raises events for runtime errors
+.Tp Services(3)
+allows services for \fIEvents.EventType\fP
+to be defined
+.Tp SysErrors(3)
+common event driven error handling for system calls
+.Tp SysSignals(3)
+UNIX signals
+.Te
+.SH DIAGNOSTICS
+Some usage errors cause events with priority
+.I Priorities.liberrors
+to be raised.
+The event records are of type \fIErrorEvent\fP and contain
+one of the error codes given below:
+.Tb unbalancedRestoreReaction
+.Tp priorityViolation
+\fISetPriority\fP was called with a priority less
+than the current priority
+.Tp unbalancedExitPriority
+\fIExitPriority\fP was called without prior call of
+\fIEnterPriority\fP or \fIAssertPriority\fP.
+.Tp unbalancedRestoreReaction
+\fIRestoreReaction\fP was called without prior call of \fISaveReaction\fP
+.Tp negPriority
+A negative priority value was given.
+.Te
+.SH BUGS
+Some system events (i.e. UNIX signals) with default reaction
+have some different behavior:
+The abort handler is not necessarily called in case of
+default reaction and
+they can cause abortion even if their priority is less than
+or equal to the current priority.
+.\" ---------------------------------------------------------------------------
+.\" $Id: Events.3,v 1.15 2004/03/30 20:53:35 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Events.3,v $
+.\" Revision 1.15  2004/03/30 20:53:35  borchert
+.\" QueueHandler added
+.\"
+.\" Revision 1.14  2003/07/10 09:07:00  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.13  1996/09/13 08:00:15  borchert
+.\" more precise explanation of event queuing added
+.\"
+.\" Revision 1.12  1996/09/13  07:53:43  borchert
+.\" formatting changed
+.\"
+.\" Revision 1.11  1995/03/13  09:52:50  borchert
+.\" Events.EventType is now an extension of Services.Object
+.\"
+.\" Revision 1.10  1993/01/11  08:25:43  borchert
+.\" new error handling
+.\"
+.\" Revision 1.9  1992/04/22  10:36:26  borchert
+.\" termination events are now defined by Process
+.\"
+.\" Revision 1.8  1992/03/24  08:27:18  borchert
+.\" error handling changed
+.\" Process renamed to SysProcess
+.\" Signals renamed to UnixSignals
+.\"
+.\" Revision 1.7  1991/12/28  09:51:27  borchert
+.\" introduction of priority systems
+.\"
+.\" Revision 1.6  1991/11/12  08:42:49  borchert
+.\" event numbers replaced by event types
+.\"
+.\" Revision 1.5  1991/06/21  15:17:21  borchert
+.\" minor fix
+.\"
+.\" Revision 1.4  91/06/18  15:28:28  borchert
+.\" Raise: event parameter changed to call by value
+.\" 
+.\" Revision 1.3  90/12/17  08:07:15  oberon
+.\" typo error removed and table now in box
+.\" 
+.\" Revision 1.2  90/10/01  12:37:49  oberon
+.\" GetEventPriority and AssertPriority added
+.\" 
+.\" Revision 1.1  90/08/31  17:02:14  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

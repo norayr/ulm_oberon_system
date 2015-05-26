@@ -1,0 +1,898 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerObj.om,v 1.1 2001/02/23 06:39:15 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerObj.om,v $
+   Revision 1.1  2001/02/23 06:39:15  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerObjects;
+
+   IMPORT Architectures, CompilerKeys, ConstStrings, Disciplines, Errors,
+      Events, LinearizedStructures, ModularizedStructures, NetIO, Objects,
+      PersistentDisciplines, PersistentObjects, PersistentTexts, Priorities,
+      RelatedEvents, Services, Sources := CompilerSources, Streams,
+      Texts := LargeTexts, W := Write;
+
+   TYPE
+      Location = POINTER TO LocationRec;
+      LocationRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    src: Sources.Source;
+	    begin, end: Streams.Count;
+	 END;
+   VAR
+      locationType: Services.Type;
+
+   TYPE
+      Attachment = POINTER TO AttachmentRec;
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    loc: Location; (* defined only if not builtin *)
+	    builtin: BOOLEAN;
+	    attachment: Attachment;
+	    attachments: Attachment; (* list of attachments *)
+	    (* defined only if not builtin *)
+	    msmodname, msname: ConstStrings.String;
+	 END;
+   VAR
+      objectType: Services.Type;
+
+   CONST
+      attachmentSY = "A";
+      endSY = "E";
+
+   TYPE
+      AttachmentRec =
+	 RECORD
+	    (ObjectRec)
+	    object: Object;
+	    next: Attachment;
+	 END;
+   VAR
+      attachmentType: Services.Type;
+
+   (* the somewhat odd numbers of the following constants guarantee
+      that any product of an ObjectType with a Stage returns a
+      unique number; that is useful for the CacheMode set following
+   *)
+   CONST
+      public = 1; (* symbol file *)
+      private = 2; (* with private stuff and statements *)
+   TYPE
+      ObjectType = SHORTINT; (* public or private *)
+
+   CONST
+      archIndependent = 1;
+      archDependent = 3;
+   TYPE
+      Stage = SHORTINT; (* archIndependent or archDependent *)
+
+   TYPE
+      CacheMode = SET;
+	 (* selects the set of object types that are to be cached
+	    during a recursive load operation into persistent memory
+	 *)
+   CONST
+      cachePublic = {public * archIndependent, public * archDependent};
+      cachePrivate = {private * archIndependent, private * archDependent};
+      cacheAll = cachePublic + cachePrivate;
+      cacheArchIndependent = {public * archIndependent,
+                              private * archIndependent};
+      cacheArchDependent = {public * archDependent, private * archDependent};
+
+   TYPE
+      Header = POINTER TO HeaderRec;
+	 (* header object with language-independent meta informations
+	    about the object returned by a compiler;
+	    the separation of header and object allows language-independent
+	    server to seek for objects in its storage without loading them
+	    into memory
+	 *)
+      HeaderRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    modname: ConstStrings.String; (* module name *)
+	    src: Sources.Source; (* associated source, may be NIL *)
+	    srcid: ConstStrings.String; (* must be non-NIL *)
+	    key: CompilerKeys.Key; (* must be non-NIL *)
+	    dependencies: CompilerKeys.Set; (* non-NIL set of imported keys *)
+	    type: ObjectType; (* interface or code, private or public? *)
+	    stage: Stage; (* compilation stage *)
+	    arch: Architectures.Architecture;
+	       (* NIL if mode = archIndependent *)
+	 END;
+   VAR
+      headerType: Services.Type;
+
+   CONST
+      hashtablen = 223;
+   TYPE
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    modname: ConstStrings.String;
+	    type: ObjectType;
+	    arch: Architectures.Architecture;
+	    header: Header;
+	    object: Object;
+	    next: Entry;
+	 END;
+      BucketTable = POINTER TO ARRAY hashtablen OF Entry;
+      ModuleTable = POINTER TO ModuleTableRec;
+      ModuleTableRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    bucket: BucketTable;
+	    arch: Architectures.Architecture;
+	       (* make sure that all architectures of the modules
+		  involved are compatible to each other
+	       *)
+	    keys: CompilerKeys.Set;
+	       (* set of all keys involved *)
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    keys: CompilerKeys.Set;
+	    msmodname, modname: ConstStrings.String;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   VAR
+      srcType: Services.Type; (* that of Sources.Source *)
+      keyType: Services.Type; (* that of CompilerKeys.Key *)
+      setType: Services.Type; (* that of CompilerKeys.Set *)
+      archType: Services.Type; (* that of Architectures.Architecture *)
+
+   CONST
+      nilSY = "N";
+      builtinSY = "B";
+      objectSY = "O";
+
+   CONST
+      cannotOpenObjectText = 0;
+      cannotReadTextHeader = 1;
+      cannotDecodeObject = 2;
+      corruptedInput = 3;
+      invalidStructure = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* cannotOpenObjectText ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: ErrorCode;
+	    modname: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.modname # NIL THEN
+	    W.StringS(s, "module ");
+	    ConstStrings.Write(s, event.modname);
+	    W.StringS(s, ": ");
+	 END;
+	 W.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[cannotOpenObjectText] := "unable to open object text";
+      errormsg[cannotReadTextHeader] := "cannot read text header";
+      errormsg[cannotDecodeObject] := "cannot decode object";
+      errormsg[corruptedInput] := "corrupted input";
+      errormsg[invalidStructure] := "inconsistent input";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode;
+		   modname: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.modname := modname;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === PersistentObjects if procedures for Location ==================== *)
+
+   PROCEDURE InternalCreateLocation(VAR object: PersistentObjects.Object);
+      VAR
+	 loc: Location;
+   BEGIN
+      NEW(loc); PersistentObjects.Init(loc, locationType);
+      object := loc;
+   END InternalCreateLocation;
+
+   PROCEDURE ReadLocation(s: Streams.Stream;
+                          object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Location DO
+	 RETURN LinearizedStructures.GuardedRead(s, srcType, object.src) &
+	        NetIO.ReadLongInt(s, object.begin) &
+		NetIO.ReadLongInt(s, object.end)
+      END;
+   END ReadLocation;
+
+   PROCEDURE WriteLocation(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Location DO
+	 RETURN LinearizedStructures.Write(s, object.src) &
+	        NetIO.WriteLongInt(s, object.begin) &
+		NetIO.WriteLongInt(s, object.end)
+      END;
+   END WriteLocation;
+
+   (* === PersistentObjects if procedures for Object ====================== *)
+
+   PROCEDURE ^ GuardedRead(s: Streams.Stream; guard: Services.Type;
+                           VAR object: Object) : BOOLEAN;
+   PROCEDURE ^ Write(s: Streams.Stream;
+                     object: Object) : BOOLEAN;
+
+   PROCEDURE ReadObject(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 head, tail, attachment: Attachment;
+   BEGIN
+      WITH object: Object DO
+	 object.attachment := NIL;
+	 head := NIL; tail := NIL;
+	 LOOP
+	    IF ~NetIO.ReadChar(s, sy) THEN
+	       Error(s, corruptedInput, NIL); RETURN FALSE
+	    END;
+	    IF sy = endSY THEN EXIT END;
+	    IF sy # attachmentSY THEN
+	       Error(s, corruptedInput, NIL); RETURN FALSE
+	    END;
+	    IF ~GuardedRead(s, attachmentType, attachment) THEN
+	       RETURN FALSE
+	    END;
+	    IF attachment = NIL THEN
+	       Error(s, corruptedInput, NIL); RETURN FALSE
+	    END;
+	    attachment.next := NIL;
+	    IF head = NIL THEN
+	       head := attachment;
+	    ELSE
+	       tail.next := attachment;
+	    END;
+	    tail := attachment;
+	 END;
+	 object.attachments := head;
+	 RETURN NetIO.ReadBoolean(s, object.builtin) &
+		(object.builtin OR
+		   LinearizedStructures.GuardedRead(s, locationType,
+		                                    object.loc) &
+		   NetIO.ReadConstString(s, object.msmodname) &
+		   NetIO.ReadConstString(s, object.msname))
+      END;
+   END ReadObject;
+
+   PROCEDURE WriteObject(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 attachment: Attachment;
+   BEGIN
+      WITH object: Object DO
+	 attachment := object.attachments;
+	 WHILE attachment # NIL DO
+	    IF ~NetIO.WriteChar(s, attachmentSY) OR
+		  ~Write(s, attachment) THEN
+	       RETURN FALSE
+	    END;
+	    attachment := attachment.next;
+	 END;
+	 IF ~NetIO.WriteChar(s, endSY) THEN RETURN FALSE END;
+	 RETURN NetIO.WriteBoolean(s, object.builtin) &
+		(object.builtin OR
+		   LinearizedStructures.Write(s, object.loc) &
+		   NetIO.WriteConstString(s, object.msmodname) &
+		   NetIO.WriteConstString(s, object.msname))
+      END;
+   END WriteObject;
+
+   (* === PersistentObjects if procedures for Header ====================== *)
+
+   PROCEDURE InternalCreateHeader(VAR object: PersistentObjects.Object);
+      VAR
+	 header: Header;
+   BEGIN
+      NEW(header); PersistentObjects.Init(header, headerType);
+      object := header;
+   END InternalCreateHeader;
+
+   PROCEDURE ReadHeader(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Header DO
+	 RETURN NetIO.ReadConstString(s, object.modname) &
+	        LinearizedStructures.GuardedRead(s, srcType, object.src) &
+		NetIO.ReadConstString(s, object.srcid) &
+		PersistentObjects.GuardedRead(s, keyType, object.key) &
+		PersistentObjects.GuardedRead(s, setType, object.dependencies) &
+	        NetIO.ReadShortInt(s, object.type) &
+		NetIO.ReadShortInt(s, object.stage) &
+		PersistentObjects.GuardedReadObjectOrNIL(s, archType,
+		                                         object.arch)
+      END;
+   END ReadHeader;
+
+   PROCEDURE WriteHeader(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Header DO
+	 ASSERT((object.key # NIL) & (object.dependencies # NIL));
+	 RETURN NetIO.WriteConstString(s, object.modname) &
+	        LinearizedStructures.Write(s, object.src) &
+		NetIO.WriteConstString(s, object.srcid) &
+		PersistentObjects.Write(s, object.key) &
+		PersistentObjects.Write(s, object.dependencies) &
+	        NetIO.WriteShortInt(s, object.type) &
+		NetIO.WriteShortInt(s, object.stage) &
+		PersistentObjects.WriteObjectOrNIL(s, object.arch)
+      END;
+   END WriteHeader;
+
+   (* === PersistentObjects if procedures for Attachment ================== *)
+
+   PROCEDURE ReadAttachment(s: Streams.Stream;
+                            object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 obj: Object;
+   BEGIN
+      WITH object: Attachment DO
+	 (* object.next component is processed by ReadObject *)
+	 IF ~GuardedRead(s, objectType, object.object) THEN
+	    RETURN FALSE
+	 END;
+	 obj := object.object;
+	 IF (obj = NIL) OR
+	       (obj.attachment # NIL) & (obj.attachment # object) THEN
+	    Error(s, corruptedInput, NIL); RETURN FALSE
+	 END;
+	 obj.attachment := object;
+	 RETURN TRUE
+      END;
+   END ReadAttachment;
+
+   PROCEDURE WriteAttachment(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Attachment DO
+	 ASSERT((object.object # NIL) & (object.object.attachment = object));
+	 (* object.next component is processed by WriteObject *)
+	 RETURN Write(s, object.object)
+      END;
+   END WriteAttachment;
+
+   (* === module table management ========================================= *)
+
+   PROCEDURE InternalAddModule(mtab: ModuleTable;
+		               header: Header; module: Object;
+			       include: BOOLEAN);
+      (* module may be NIL; in this case just the header is added *)
+      VAR
+	 modname: ConstStrings.String;
+	 entry: Entry;
+	 index: LONGINT;
+	 carch: Architectures.Architecture;
+	 ok: BOOLEAN;
+	 found: BOOLEAN;
+   BEGIN
+      IF (mtab.arch # NIL) & (header.arch # NIL) THEN
+	 ok := Architectures.Compatible(header.arch, mtab.arch, carch);
+	 ASSERT(ok);
+      ELSIF header.arch # NIL THEN
+	 carch := header.arch;
+      ELSE
+	 carch := mtab.arch;
+      END;
+      ASSERT(CompilerKeys.CompatibleWith(header.key, mtab.keys));
+      ASSERT(CompilerKeys.Compatible(header.dependencies, mtab.keys));
+      modname := header.modname;
+      index := modname.hashval MOD hashtablen;
+      entry := mtab.bucket[index];
+      found := FALSE;
+      WHILE entry # NIL DO
+	 IF (module # NIL) & (entry.object = module) THEN RETURN END;
+	 found := (ConstStrings.Compare(modname, entry.modname) = 0) &
+	          (header.type = entry.type) &
+		  ((header.arch = NIL) = (entry.header.arch = NIL));
+	 ASSERT(~found OR (module = NIL) OR (entry.object = NIL) OR include);
+	 IF found THEN
+	    IF module # NIL THEN
+	       mtab.arch := carch;
+	       entry.header := header; entry.object := module; (* update it *)
+	    END;
+	    RETURN
+	 END;
+	 entry := entry.next;
+      END;
+      NEW(entry);
+      entry.modname := modname;
+      entry.type := header.type; entry.arch := header.arch;
+      entry.header := header;
+      entry.object := module;
+      entry.next := mtab.bucket[index];
+      mtab.bucket[index] := entry;
+      mtab.arch := carch;
+      IF module # NIL THEN
+	 (* do not include the keys if we do not have the object yet
+	    because it might be updated
+	 *)
+	 CompilerKeys.InclSet(mtab.keys, header.dependencies);
+	 CompilerKeys.Incl(mtab.keys, header.key);
+      END;
+   END InternalAddModule;
+
+   PROCEDURE InternalLookup(mtab: ModuleTable;
+                            modname: ConstStrings.String;
+		            type: ObjectType;
+		            arch: Architectures.Architecture;
+		            VAR header: Header;
+		            VAR module: Object) : BOOLEAN;
+      VAR
+	 entry: Entry;
+	 index: LONGINT;
+	 carch: Architectures.Architecture; (* ignored *)
+   BEGIN
+      index := modname.hashval MOD hashtablen;
+      entry := mtab.bucket[index];
+      WHILE entry # NIL DO
+	 IF (ConstStrings.Compare(modname, entry.modname) = 0) &
+	       (type = entry.type) &
+	       ((arch = NIL) = (entry.arch = NIL)) &
+	       Architectures.Compatible(arch, entry.arch, carch) THEN
+	    IF ~CompilerKeys.CompatibleWith(entry.header.key, mtab.keys) THEN
+	       (* suppress it if it no longer conforms to newer additions *)
+	       RETURN FALSE
+	    END;
+	    module := entry.object; header := entry.header; RETURN TRUE
+	 END;
+	 entry := entry.next;
+      END;
+      module := NIL; header := NIL;
+      RETURN FALSE
+   END InternalLookup;
+
+   PROCEDURE CreateCopyOfEntry(VAR list: Entry; entry: Entry);
+      VAR
+	 newentry: Entry;
+   BEGIN
+      NEW(newentry);
+      newentry.modname := entry.modname;
+      newentry.type := entry.type;
+      newentry.arch := entry.arch;
+      newentry.header := entry.header;
+      newentry.object := entry.object;
+      newentry.next := list; list := newentry;
+   END CreateCopyOfEntry;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 locPersIF, objPersIF,
+	 hdrPersIF, attachPersIF: PersistentObjects.Interface;
+   BEGIN
+      NEW(locPersIF);
+      locPersIF.create := InternalCreateLocation;
+      locPersIF.read := ReadLocation;
+      locPersIF.write := WriteLocation;
+      locPersIF.createAndRead := NIL;
+      PersistentObjects.RegisterType(locationType,
+	 "CompilerObjects.Location", "", locPersIF);
+
+      NEW(objPersIF);
+      objPersIF.create := NIL;
+      objPersIF.read := ReadObject;
+      objPersIF.write := WriteObject;
+      objPersIF.createAndRead := NIL;
+      PersistentObjects.RegisterType(objectType,
+	 "CompilerObjects.Object", "PersistentDisciplines.Object", objPersIF);
+
+      NEW(hdrPersIF);
+      hdrPersIF.create := InternalCreateHeader;
+      hdrPersIF.read := ReadHeader;
+      hdrPersIF.write := WriteHeader;
+      hdrPersIF.createAndRead := NIL;
+      PersistentObjects.RegisterType(headerType,
+         "CompilerObjects.Header", "PersistentDisciplines.Object", hdrPersIF);
+
+      NEW(attachPersIF);
+      attachPersIF.create := NIL;
+      attachPersIF.read := ReadAttachment;
+      attachPersIF.write := WriteAttachment;
+      attachPersIF.createAndRead := NIL;
+      PersistentObjects.RegisterType(attachmentType,
+	 "CompilerObjects.Attachment", "CompilerObjects.Object", attachPersIF);
+
+      Services.SeekType("CompilerSources.Source", srcType);
+      ASSERT(srcType # NIL);
+      Services.SeekType("CompilerKeys.Key", keyType); ASSERT(keyType # NIL);
+      Services.SeekType("CompilerKeys.Set", setType); ASSERT(setType # NIL);
+      Services.SeekType("Architectures.Architecture", archType);
+      ASSERT(archType # NIL);
+
+      sdID := Disciplines.Unique();
+   END InitModule;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE CreateLocation(VAR location: Location;
+                            src: Sources.Source;
+			    begin, end: Streams.Count);
+      VAR
+	 loc: Location;
+   BEGIN
+      ASSERT((begin >= 0) & (end >= 0) & (begin <= end));
+      InternalCreateLocation(loc);
+      loc.src := src; loc.begin := begin; loc.end := end;
+      location := loc;
+   END CreateLocation;
+
+   PROCEDURE CreateHeader(VAR header: Header; modname: ConstStrings.String);
+   BEGIN
+      ASSERT(modname # NIL);
+      InternalCreateHeader(header); header.modname := modname;
+   END CreateHeader;
+
+   (* cache of module objects; note that their keys must be compatible
+      to each other
+   *)
+
+   PROCEDURE CreateModuleTable(VAR mtab: ModuleTable);
+   BEGIN
+      NEW(mtab); NEW(mtab.bucket); mtab.arch := NIL;
+      CompilerKeys.CreateSet(mtab.keys);
+   END CreateModuleTable;
+
+   PROCEDURE AddModule(mtab: ModuleTable;
+		       header: Header; module: Object);
+   BEGIN
+      ASSERT((header # NIL) & (module # NIL));
+      InternalAddModule(mtab, header, module, (* include = *) FALSE);
+   END AddModule;
+
+   PROCEDURE AddHeader(mtab: ModuleTable; header: Header);
+   BEGIN
+      ASSERT(header # NIL);
+      InternalAddModule(mtab, header, NIL, (* include = *) FALSE);
+   END AddHeader;
+
+   PROCEDURE Lookup(mtab: ModuleTable;
+                    modname: ConstStrings.String;
+		    type: ObjectType;
+		    arch: Architectures.Architecture;
+		    VAR header: Header;
+		    VAR module: Object) : BOOLEAN;
+   BEGIN
+      RETURN InternalLookup(mtab, modname, type, arch, header, module) &
+             (module # NIL)
+   END Lookup;
+
+   PROCEDURE LookupHeader(mtab: ModuleTable;
+                          modname: ConstStrings.String;
+			  type: ObjectType;
+			  arch: Architectures.Architecture;
+			  VAR header: Header) : BOOLEAN;
+      VAR
+	 module: Object;
+   BEGIN
+      RETURN InternalLookup(mtab, modname, type, arch, header, module)
+   END LookupHeader;
+
+   PROCEDURE CreateCopyOfModuleTable(VAR mtab: ModuleTable;
+				     orig: ModuleTable);
+      (* clone entire module table *)
+      VAR
+	 newtab: ModuleTable;
+	 index: INTEGER;
+	 newentry, entry: Entry;
+   BEGIN
+      CreateModuleTable(newtab);
+      CompilerKeys.CreateSetCopy(newtab.keys, orig.keys);
+      Architectures.CreateCopy(newtab.arch, orig.arch);
+      index := 0;
+      WHILE index < hashtablen DO
+	 newtab.bucket[index] := NIL;
+	 entry := orig.bucket[index];
+	 WHILE entry # NIL DO
+	    CreateCopyOfEntry(newtab.bucket[index], entry);
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+      mtab := newtab;
+   END CreateCopyOfModuleTable;
+
+   PROCEDURE SynchronizeModuleTable(mtab, extendedtab: ModuleTable);
+      VAR
+	 index: INTEGER;
+	 entry: Entry;
+   BEGIN
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := extendedtab.bucket[index];
+	 WHILE entry # NIL DO
+	    InternalAddModule(mtab, entry.header, entry.object,
+	       (* include = *) TRUE);
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+   END SynchronizeModuleTable;
+
+   PROCEDURE Init(object: Object);
+      (* initialization of objects defined by language sources;
+         may be later overridden by InitBuiltInObject
+      *)
+   BEGIN
+      object.builtin := FALSE;
+      object.msmodname := NIL; object.msname := NIL;
+      object.attachment := NIL;
+      object.attachments := NIL;
+   END Init;
+
+   PROCEDURE InitBuiltInObject(object: Object);
+      (* initialization of built-in objects *)
+   BEGIN
+      ASSERT(object.msmodname = NIL);
+      object.builtin := TRUE;
+      object.attachment := NIL;
+      object.attachments := NIL;
+   END InitBuiltInObject;
+
+   PROCEDURE Attach(module, object: Object; attachment: Attachment);
+      (* attach `attachment' to `object' and include this
+	 attachment to set of attachments associated with
+	 the descendants of module; note that multiple
+	 attachments are not permitted;
+      *)
+   BEGIN
+      ASSERT(object.attachment = NIL);
+      ASSERT(attachment.object = NIL);
+      ASSERT(attachment.next = NIL);
+      object.attachment := attachment;
+      attachment.object := object;
+      attachment.next := module.attachments;
+      module.attachments := attachment;
+   END Attach;
+
+   PROCEDURE RemoveAttachments(module: Object);
+      (* remove all attachments of all descendants of module *)
+      VAR
+	 attachment, next: Attachment;
+   BEGIN
+      attachment := module.attachments;
+      module.attachments := NIL;
+      WHILE attachment # NIL DO
+	 attachment.object.attachment := NIL;
+	 attachment.object := NIL;
+	 next := attachment.next;
+	 attachment.next := NIL;
+	 attachment := next;
+      END;
+   END RemoveAttachments;
+
+   PROCEDURE GetAttachment(object: Object; VAR attachment: Attachment);
+      (* may return NIL if there does not exist a attachment yet *)
+   BEGIN
+      attachment := object.attachment;
+   END GetAttachment;
+
+   (* operations on base of ModularizedStructures *)
+
+   PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                         VAR object: Object) : BOOLEAN;
+      VAR
+	 modname: ConstStrings.String;
+	 table: ModularizedStructures.ObjectTable;
+	 other: Object;
+	 sy: CHAR;
+   BEGIN
+      IF ~NetIO.ReadChar(s, sy) THEN
+	 Error(s, corruptedInput, NIL); RETURN FALSE
+      END;
+      IF sy = nilSY THEN
+	 object := NIL; RETURN TRUE
+      ELSIF sy = builtinSY THEN
+	 RETURN LinearizedStructures.GuardedRead(s, guard, object)
+      END;
+      IF sy # objectSY THEN
+	 Error(s, corruptedInput, NIL); RETURN FALSE
+      END;
+      IF ~ModularizedStructures.GuardedRead(s, guard, object) THEN
+	 RETURN FALSE
+      END;
+      ModularizedStructures.GetParams(s, modname, table);
+      IF ConstStrings.Compare(modname, object.msmodname) = 0 THEN
+	 IF ModularizedStructures.Lookup(table, object.msmodname,
+					 object.msname,
+		      other) & (other # object) THEN
+	    Error(s, invalidStructure, modname);
+	    RETURN FALSE
+	 END;
+	 ModularizedStructures.Add(table, object, object.msmodname,
+	                           object.msname);
+      END;
+      RETURN TRUE
+   END GuardedRead;
+      
+   PROCEDURE Write(s: Streams.Stream;
+                   object: Object) : BOOLEAN;
+      VAR
+	 modname, msmodname: ConstStrings.String;
+	 table: ModularizedStructures.ObjectTable;
+	 sd: StreamDiscipline;
+	 ok: BOOLEAN;
+	 key: CompilerKeys.Key;
+
+      PROCEDURE ExtractModname(msmodname: ConstStrings.String;
+                               VAR modname: ConstStrings.String);
+	 VAR
+	    cs, s: Streams.Stream;
+	    ch: CHAR;
+      BEGIN
+	 ConstStrings.Open(s, msmodname);
+	 ConstStrings.Init(cs);
+	 WHILE Streams.ReadByte(s, ch) & (ch # "-") &
+	       Streams.WriteByte(cs, ch) DO
+	 END;
+	 ConstStrings.Close(cs, modname);
+	 Streams.Release(s);
+      END ExtractModname;
+
+   BEGIN
+      IF object = NIL THEN
+	 RETURN NetIO.WriteChar(s, nilSY)
+      END;
+      IF object.builtin THEN
+	 RETURN NetIO.WriteChar(s, builtinSY) &
+	        LinearizedStructures.Write(s, object)
+      END;
+      IF (object.msmodname = NIL) OR (object.msname = NIL) THEN
+	 ModularizedStructures.GetParams(s, msmodname, table);
+	 IF object.msmodname = NIL THEN
+	    object.msmodname := msmodname;
+	 END;
+	 IF object.msname = NIL THEN
+	    ModularizedStructures.Insert(table, object, msmodname,
+	                                 object.msname);
+	 ELSE
+	    ModularizedStructures.Add(table, object, msmodname, object.msname);
+	 END;
+      ELSE
+	 (* check that all modules referenced are mentioned in
+	    the set of dependencies
+	 *)
+	 ok := Disciplines.Seek(s, sdID, sd); ASSERT(ok);
+	 IF ConstStrings.Compare(sd.msmodname, object.msmodname) # 0 THEN
+	    ExtractModname(object.msmodname, modname);
+	    ASSERT((ConstStrings.Compare(modname, sd.modname) = 0) OR
+	           CompilerKeys.Lookup(sd.keys, modname, key));
+	 END;
+      END;
+      RETURN NetIO.WriteChar(s, objectSY) &
+             ModularizedStructures.Write(s, object,
+                                         object.msmodname, object.msname)
+   END Write;
+
+   PROCEDURE ConvertObjectToText(object: Object;
+				 table: ModularizedStructures.ObjectTable;
+				 header: Header;
+                                 VAR text: PersistentTexts.Text;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 msmodname: ConstStrings.String;
+	 cs: Streams.Stream;
+	 archstring: ConstStrings.String;
+	 s: Streams.Stream;
+	 sd: StreamDiscipline;
+   BEGIN
+      ConstStrings.Init(cs);
+      ConstStrings.Write(cs, header.modname);
+      CASE header.type OF
+      | public:   W.StringS(cs, "-def");
+      | private:  W.StringS(cs, "-mod");
+      END;
+      IF header.stage = archDependent THEN
+	 Architectures.GetString(header.arch, archstring);
+	 W.CharS(cs, "-");
+	 ConstStrings.Write(cs, archstring);
+      END;
+      ConstStrings.Close(cs, msmodname);
+
+      Texts.Open(s); RelatedEvents.Forward(s, errors);
+      ModularizedStructures.Init(s, msmodname, table);
+      PersistentObjects.SetMode(s, PersistentObjects.incrTypeCode +
+	 PersistentObjects.withoutSize + PersistentObjects.withoutHier);
+
+      NEW(sd); sd.id := sdID; sd.keys := header.dependencies;
+      sd.msmodname := msmodname; sd.modname := header.modname;
+      Disciplines.Add(s, sd);
+
+      RETURN NetIO.WriteConstString(s, msmodname) &
+             Write(s, object) &
+	     PersistentTexts.Create(text, s)
+   END ConvertObjectToText;
+
+   PROCEDURE ConvertTextToObject(text: PersistentTexts.Text;
+                                 table: ModularizedStructures.ObjectTable;
+				 header: Header;
+				 VAR object: Object;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 msmodname: ConstStrings.String;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~PersistentTexts.Open(s, text, errors) THEN
+	 Error(errors, cannotOpenObjectText, header.modname);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~NetIO.ReadConstString(s, msmodname) THEN
+	 Error(errors, cannotReadTextHeader, header.modname);
+	 RETURN FALSE
+      END;
+      ASSERT(~ModularizedStructures.InTab(table, msmodname));
+      ModularizedStructures.Init(s, msmodname, table);
+      ok := GuardedRead(s, objectType, object);
+      IF ~ok THEN
+	 Error(errors, cannotDecodeObject, header.modname);
+      END;
+      Streams.Release(s);
+      RETURN ok
+   END ConvertTextToObject;
+
+BEGIN
+   InitModule;
+   InitErrorHandling;
+END CompilerObjects.

@@ -1,0 +1,1878 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixTermina.om,v 1.4 2006/04/04 14:55:05 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: UnixTermina.om,v $
+   Revision 1.4  2006/04/04 14:55:05  borchert
+   bug fix: do not use the terminfo sequences below if we are not
+            in raw mode as CR or NL mappings could be harmful
+
+   Revision 1.3  2004/10/04 20:27:04  borchert
+   support of TermColors added
+
+   Revision 1.2  2004/09/30 08:43:25  borchert
+   major revision:
+   - KeyTask is only spawned if input is asked for
+   - KeyTask consumes immediately all characters available
+   - KeyTask terminates in case of input failures or Process.softTermination
+   - stream conditions return TRUE in case of terminated streams
+   - semaphore is used for output operations only
+   - code cleanup and minor bug fixes
+
+   Revision 1.1  2000/11/12 12:52:23  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixTerminals; (* Ralf Beck *)
+
+   IMPORT ASCII, Clocks, Conditions, Coroutines, Disciplines,
+      EventConditions, Events, Forwarders, LocalSemaphores, Priorities,
+      Process, Rd := Read, RelatedEvents, Resources, Semaphores, Services,
+      Sets, StreamConditions, StreamDisciplines, Streams, Strings, SysIO,
+      SysSelect, SysSignals, SysStat, SYSTEM, SysTermIO, SysTypes, Tasks,
+      TermAttributes, TermColors, Terminals, TermInfos, TermKeys,
+      TermLineGraphics, TimeConditions, Times, UnixEnvironment,
+      UnixFileConditions, UnixFiles, UnixPipes;
+
+   (* this module opens Terminals.console during initialization *)
+
+   CONST
+      graphicschars = "|-+++++++++"; (* default graphics chars *)
+      delay = 500000; (* timeout functionkeys in microseconds *)
+
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+         END;
+
+      KeyListElement = POINTER TO KeyListElementRec;
+      KeyListElementRec = 
+	 RECORD
+	    char: CHAR;
+	    key: TermKeys.Key;
+	    nextchar: KeyListElement;
+	       (* points to next element in key list *)
+	    lastchar: KeyListElement;
+	       (* points to last char of _this_ key;
+		  in case of simple keys lastchar points
+		  to the same key list element
+	       *)
+         END;
+
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Terminals.StreamRec) 
+	    instream: UnixFiles.Stream; (* stream to read from *)
+	    outstream: UnixFiles.Stream; (* stream to write to *)
+	    readcond: Conditions.Condition;
+	       (* used by internal read procedures *)
+	    terminfo: TermInfos.TermInfo;
+	       (* terminfo structure *)
+	    speed: INTEGER;
+	       (* speed, used for calculating padding information *)
+	    oldintermio, (* initial termio of instream *)
+	    oldouttermio: SysTermIO.TermIO; (* same for outstream *)
+	    rawmode: BOOLEAN;
+	    (* next are needed for TermKeys *)
+            keylisthead, keylisttail: KeyListElement; (* list of read keys *)
+	    keystrings: ARRAY TermKeys.functionkeys OF TermInfos.String;
+	       (* keystrings read from terminfo *)
+	    funckeycount: INTEGER; (* number of supported functionkeys *)
+	    keytaskStarted: BOOLEAN; (* task already started? *)
+	    keytask: Tasks.Task; (* task which reads keys *)
+	    keycr: Coroutines.Coroutine; (* corresponding coroutine *)
+	    semaphore: Semaphores.Semaphore;
+	       (* needed for syncronising input and output *)
+	    ansiColors: BOOLEAN;
+	    colorsChanged: BOOLEAN;
+         END;
+
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    stream: Stream;
+	    operation: SHORTINT;
+         END;
+
+      TerminalList = POINTER TO TerminalListRec;
+      TerminalListRec =
+	 RECORD
+	    stream: Stream;
+	    previous, next: TerminalList;
+         END;
+
+   CONST
+      caps = {Streams.read, Streams.write, Streams.bufio,
+	      Streams.flush, Streams.close, Streams.handler};
+
+   VAR
+      if: Streams.Interface; (* streaminterface, same for all terminals *)
+      streamType: Services.Type; (* UnixTerminals.Stream *)
+      termif: Terminals.Interface;
+	 (* terminalinterface, same for all terminals *)
+      colorif: TermColors.Interface;
+      terminallist: TerminalList; (* list of open terminals *)
+      conditiondomain: Conditions.Domain; (* for StreamConditions *)
+
+   (* =========== private procedures ================================== *)
+
+   PROCEDURE ^KeyTask(VAR cr: Coroutines.Coroutine; s: Stream);
+   PROCEDURE ^CreateCondition(VAR condition: Conditions.Condition;
+                              stream: Stream; operation: SHORTINT);
+
+   PROCEDURE CheckKeyTask(s: Stream);
+   BEGIN
+      IF ~SYSTEM.TAS(s.keytaskStarted) THEN
+	 CreateCondition(s.readcond, s, StreamConditions.read);
+	 KeyTask(s.keycr, s);
+	 Tasks.Create(s.keytask, s.keycr);
+      END;
+   END CheckKeyTask;
+
+   (* ====== Implementation for StreamConditions ========= *)
+
+   PROCEDURE CreateCondition(VAR condition: Conditions.Condition;
+                             stream: Stream; operation: SHORTINT);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, conditiondomain);
+      newcond.stream := stream;
+      newcond.operation := operation;
+      IF operation = StreamConditions.read THEN
+	 CheckKeyTask(stream);
+      END;
+      condition := newcond;
+   END CreateCondition;
+
+   PROCEDURE TestCondition(stream: Stream; operation: SHORTINT;
+			   errors: RelatedEvents.Object): BOOLEAN;
+   BEGIN
+      IF Resources.Terminated(stream) THEN RETURN TRUE END;
+      IF operation = StreamConditions.read THEN
+	 RETURN stream.keylisthead # NIL
+      END;
+      RETURN
+	 UnixFileConditions.Test(stream,
+	    stream.outstream.file,
+	    StreamConditions.write, stream);
+   END TestCondition;
+
+   PROCEDURE TestConditionIF(domain: Conditions.Domain;
+			     condition: Conditions.Condition; 
+			     errors: RelatedEvents.Object): BOOLEAN;
+      (* Conditions if procedure *)
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN TestCondition(condition.stream, condition.operation, errors)
+      END;
+   END TestConditionIF;
+
+   PROCEDURE InitTerminalConditions;
+      VAR
+         desc: Conditions.Description;
+         if: Conditions.Interface;
+   BEGIN
+      NEW(if);
+      if.test := TestConditionIF;
+      NEW(desc);
+      desc.caps := {};
+      desc.internal := FALSE;
+      NEW(conditiondomain);
+      Conditions.InitDomain(conditiondomain, if, desc);
+   END InitTerminalConditions;
+
+   (* ======== end implementation for StreamConditons ============== *)
+
+   (* ======== implementation for TermAttributes =================== *)
+
+   PROCEDURE SetAttribute(s: Streams.Stream; at: SHORTINT);
+      (* set a single attribute *)
+      VAR
+	 cap: INTEGER;
+   BEGIN
+      WITH s: Stream DO
+	 CASE at OF
+	 | TermAttributes.standout:   cap := TermInfos.enterStandoutMode;
+	 | TermAttributes.underline:  cap := TermInfos.enterUnderlineMode; 
+         | TermAttributes.reverse:    cap := TermInfos.enterReverseMode; 
+         | TermAttributes.blink:      cap := TermInfos.enterBlinkMode;
+         | TermAttributes.dim:        cap := TermInfos.enterDimMode;
+         | TermAttributes.bold:       cap := TermInfos.enterBoldMode;
+         END;
+	 Semaphores.P(s.semaphore);
+         TermInfos.PutCapString(s.terminfo, cap, NIL, s.speed, 1, s.outstream);
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetAttribute;
+
+   PROCEDURE Reset(s: Streams.Stream);
+      (* reset all attributes *)
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.exitAttributeMode) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.exitAttributeMode,
+			           NIL, s.speed, 1, s.outstream);
+         ELSE
+	    IF TermInfos.CapStringOk(s.terminfo,
+		  TermInfos.exitStandoutMode) THEN
+	       TermInfos.PutCapString(s.terminfo, TermInfos.exitStandoutMode,
+			              NIL, s.speed, 1, s.outstream);
+            END;
+            IF TermInfos.CapStringOk(s.terminfo,
+		  TermInfos.exitUnderlineMode) THEN
+	       TermInfos.PutCapString(s.terminfo, TermInfos.exitUnderlineMode,
+			              NIL, s.speed, 1, s.outstream);
+            END;
+         END;
+	 Semaphores.V(s.semaphore);
+      END;
+   END Reset;
+
+   (* interface procedure *)
+
+   PROCEDURE Set(s: Streams.Stream; atts: TermAttributes.AttributeSet);
+      (* set multiple attributes *)
+      (* atts: attributes to be set *)
+      CONST
+	 unixattributes = 9; (* number of attributes supported by unix *)
+      VAR
+         string: TermInfos.String; (* terminfostring to set attribute *)
+	 attribute: SHORTINT;  (* number of current attribute *)
+	 plist: TermInfos.ParameterList; (* parameterlist for terminfo *)
+	 para: TermInfos.IntPara; (* single parameter *)
+   BEGIN
+      WITH s: Stream DO
+	 Reset(s);
+	 IF atts # {} THEN
+	    IF TermInfos.CapStringOk(s.terminfo, TermInfos.setAttributes) THEN
+	       NEW(plist);
+	       attribute := TermAttributes.standout;
+	       WHILE attribute < unixattributes DO
+	          NEW(para);
+	          IF attribute IN atts THEN
+	             para.int := 1;
+                  ELSE
+                     para.int := 0;
+                  END;
+		  plist.para[attribute] := para;
+                  INC(attribute);
+               END;
+	       Semaphores.P(s.semaphore);
+               TermInfos.PutCapString(s.terminfo, TermInfos.setAttributes,
+	                              plist, s.speed, 1, s.outstream);
+	       Semaphores.V(s.semaphore);
+            ELSE
+	       attribute := TermAttributes.standout;
+	       WHILE attribute < TermAttributes.attributes DO
+		  IF attribute IN atts THEN
+		     SetAttribute(s, attribute);
+                  END;
+		  INC(attribute);
+               END;
+            END;
+         END;
+      END;
+   END Set;
+
+   PROCEDURE OpenTermAttributes(s: Streams.Stream);
+      (* checks terminfo for available attributes and initializes *)
+      (* TermAttributes                                           *)
+      (* attributes are disabled for terminals which leave magic  *)
+      (* cookies                                                  *)
+      VAR
+	 if: TermAttributes.Interface;
+	 available: TermAttributes.AttributeSet;
+   BEGIN
+      available := {};
+      WITH s: Stream DO
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterStandoutMode) &
+	       ~TermInfos.GetBoolean(s.terminfo, TermInfos.ceolStandoutGlitch) &
+	       TermInfos.GetBoolean(s.terminfo, TermInfos.moveStandoutMode) THEN
+	    INCL(available, TermAttributes.standout);
+         END;
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterUnderlineMode) &
+	       TermInfos.GetBoolean(s.terminfo, TermInfos.moveStandoutMode) THEN
+	    INCL(available, TermAttributes.underline);
+         END;
+	 IF TermInfos.CapStringOk(s.terminfo, TermInfos.exitAttributeMode) THEN
+            IF TermInfos.CapStringOk(s.terminfo,
+		  TermInfos.enterReverseMode) THEN
+	       INCL(available, TermAttributes.reverse);
+            END;
+            IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterBlinkMode) THEN
+	       INCL(available, TermAttributes.blink);
+            END;
+            IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterDimMode) THEN
+	       INCL(available, TermAttributes.dim);
+            END;
+            IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterBoldMode) THEN
+	       INCL(available, TermAttributes.bold);
+            END;
+         END;
+
+         IF TermInfos.GetNumber(s.terminfo,
+	       TermInfos.magicCookieGlitch) > 0 THEN
+	    available := {};
+         END;
+      END; 
+
+      NEW(if);
+      if.set := Set;
+      TermAttributes.Init(s, available, if);
+   END OpenTermAttributes;
+
+   (* =========== end implementation of TermAttributes =========== *)
+
+   (* =========== implementation of TermColors =================== *)
+
+   PROCEDURE MapColor(color: TermColors.Color) : TermColors.Color;
+      (* map colors from the traditional number scheme to that
+	 of ANSI
+      *)
+   BEGIN
+      CASE color OF
+      | 1: RETURN 4 (* red *)
+      | 3: RETURN 6 (* yellow *)
+      | 4: RETURN 1 (* blue *)
+      | 6: RETURN 3 (* cyan *)
+      ELSE
+	 (* all other colors remain unchanged *)
+      END;
+   END MapColor;
+
+   PROCEDURE SetColors(s: Streams.Stream;
+                       foreground, background: TermColors.Color);
+      VAR
+	 plist: TermInfos.ParameterList;
+	 param: TermInfos.IntPara;
+   BEGIN (* SetColors *)
+      WITH s: Stream DO
+	 ASSERT((foreground >= 0) & (foreground < TermColors.colors));
+	 ASSERT((background >= 0) & (background < TermColors.colors));
+	 Semaphores.P(s.semaphore);
+	 NEW(param); NEW(plist); plist.para[0] := param;
+	 IF s.ansiColors THEN
+	    param.int := foreground;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setAForeground,
+	                           plist, s.speed, 1, s.outstream);
+	    param.int := background;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setABackground,
+	                           plist, s.speed, 1, s.outstream);
+	 ELSE
+	    (* same colors but other numbers *)
+	    param.int := MapColor(foreground);
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setForeground,
+	                           plist, s.speed, 1, s.outstream);
+	    param.int := MapColor(background);
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setBackground,
+	                           plist, s.speed, 1, s.outstream);
+	 END;
+	 s.colorsChanged := TRUE;
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetColors;
+
+   PROCEDURE SetForegroundColor(s: Streams.Stream;
+                                foreground: TermColors.Color);
+      VAR
+	 plist: TermInfos.ParameterList;
+	 param: TermInfos.IntPara;
+   BEGIN (* SetColors *)
+      WITH s: Stream DO
+	 ASSERT((foreground >= 0) & (foreground < TermColors.colors));
+	 Semaphores.P(s.semaphore);
+	 NEW(param); NEW(plist); plist.para[0] := param;
+	 IF s.ansiColors THEN
+	    param.int := foreground;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setAForeground,
+	                           plist, s.speed, 1, s.outstream);
+	 ELSE
+	    (* same color but other number *)
+	    param.int := MapColor(foreground);
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setForeground,
+	                           plist, s.speed, 1, s.outstream);
+	 END;
+	 s.colorsChanged := TRUE;
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetForegroundColor;
+
+   PROCEDURE SetBackgroundColor(s: Streams.Stream;
+                                background: TermColors.Color);
+      VAR
+	 plist: TermInfos.ParameterList;
+	 param: TermInfos.IntPara;
+   BEGIN (* SetColors *)
+      WITH s: Stream DO
+	 ASSERT((background >= 0) & (background < TermColors.colors));
+	 Semaphores.P(s.semaphore);
+	 NEW(param); NEW(plist); plist.para[0] := param;
+	 IF s.ansiColors THEN
+	    param.int := background;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setABackground,
+	                           plist, s.speed, 1, s.outstream);
+	 ELSE
+	    (* same color but other number *)
+	    param.int := MapColor(background);
+	    TermInfos.PutCapString(s.terminfo, TermInfos.setBackground,
+	                           plist, s.speed, 1, s.outstream);
+	 END;
+	 s.colorsChanged := TRUE;
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetBackgroundColor;
+
+   PROCEDURE InternalResetColors(s: Stream);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      IF s.colorsChanged THEN
+	 ok := TRUE;
+	 IF TermInfos.CapStringOk(s.terminfo, TermInfos.origPair) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.origPair,
+				   NIL, s.speed, 1, s.outstream);
+	 ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.origColors) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.origColors,
+				   NIL, s.speed, 1, s.outstream);
+	 ELSE
+	    ok := FALSE;
+	 END;
+	 IF ~ok THEN
+	    (* if the appropriate terminfo entries are missing
+	       we resort to the standard setting of black foreground
+	       and white background; we lose, of course, in case of
+	       reverse video
+	    *)
+	    SetColors(s, 0, 7);
+	 END;
+	 s.colorsChanged := FALSE;
+      END;
+   END InternalResetColors;
+
+   PROCEDURE ResetColors(s: Streams.Stream);
+   BEGIN
+      WITH s: Stream DO
+	 IF s.colorsChanged THEN
+	    Semaphores.P(s.semaphore);
+	    InternalResetColors(s);
+	    Semaphores.V(s.semaphore);
+	 END;
+      END;
+   END ResetColors;
+
+   PROCEDURE InitColors(s: Stream);
+      VAR
+	 maxcolors, maxpairs: INTEGER;
+	 ncv: INTEGER;
+   BEGIN
+      s.colorsChanged := FALSE;
+      maxcolors := TermInfos.GetNumber(s.terminfo, TermInfos.maxColors);
+      maxpairs := TermInfos.GetNumber(s.terminfo, TermInfos.maxPairs);
+      IF (maxcolors <= 0) OR (maxpairs <= 0) OR
+	    (maxcolors * maxcolors # maxpairs) THEN
+	 (* no support of colors or no Tektronix color method;
+	    current we do not support the HP color method
+	 *)
+	 RETURN
+      END;
+      ncv := TermInfos.GetNumber(s.terminfo, TermInfos.noColorVideo);
+      IF ncv > 0 THEN
+	 (* currently no support of conflicts of terminal attributes
+	    vs terminal colors
+	 *)
+	 RETURN
+      END;
+      IF TermInfos.CapStringOk(s.terminfo, TermInfos.setAForeground) &
+            TermInfos.CapStringOk(s.terminfo, TermInfos.setABackground) THEN
+	 s.ansiColors := TRUE;
+      ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.setForeground) &
+	    TermInfos.CapStringOk(s.terminfo, TermInfos.setBackground) THEN
+	 s.ansiColors := FALSE;
+      ELSE
+	 RETURN
+      END;
+      TermColors.Init(s, colorif);
+   END InitColors;
+
+   (* =========== implementation of TermKeys ===================== *)
+
+   PROCEDURE ReadKey(s: Streams.Stream; VAR key: TermKeys.Key): BOOLEAN;
+      (* read key from s.keylist                                     *)
+      (* s. outstream gets flushed before read                       *)
+      (* this procedure is not supported if instream is linebuffered *)
+   BEGIN
+      WITH s: Stream DO
+	 CheckKeyTask(s);
+	 IF s.keylisthead = NIL THEN
+	    Semaphores.P(s.semaphore);
+	    Streams.Touch(s.outstream);
+	    Semaphores.V(s.semaphore);
+	    Tasks.WaitFor(s.readcond);
+	    IF s.keylisthead = NIL THEN
+	       RETURN FALSE
+	    END;
+	 END;
+	 key := s.keylisthead.key;
+	 (* skip the remaining characters of this key *)
+	 s.keylisthead := s.keylisthead.lastchar.nextchar;
+      END;
+      RETURN TRUE
+   END ReadKey;
+
+   PROCEDURE OpenTermKeys(s: Streams.Stream);
+      (* read keysstrings from terminfo structure and initialize *)
+      (* TermKeys                                                *)
+      VAR
+	 available: TermKeys.FunctionKeySet;
+	 if: TermKeys.Interface;
+	 keyindex: INTEGER; (* index of keystring in s.keystrings-RECORD  *)
+
+      PROCEDURE GetKeyFromTermInfo(keynumber: INTEGER);
+	 (* read key from terminfo into s.keystrings-RECORD *)
+	 (* keynumber: index of keystring in terminfo       *)
+      BEGIN
+	 WITH s: Stream DO
+            IF TermInfos.CapStringOk(s.terminfo, keynumber) THEN
+	       TermInfos.GetCapString(s.terminfo, keynumber,
+		  s.keystrings[keyindex]);
+	       Sets.Incl(available, keyindex);
+	       INC(s.funckeycount);
+	    END;
+	    INC(keyindex);
+         END;
+      END GetKeyFromTermInfo;
+
+   BEGIN (* OpenTermKeys *)
+      Sets.InitSet(available);
+      keyindex := 0;
+      WITH s: Stream DO
+         s.funckeycount := 0;
+
+         GetKeyFromTermInfo(TermInfos.keyF0);
+         GetKeyFromTermInfo(TermInfos.keyF1);
+         GetKeyFromTermInfo(TermInfos.keyF2);
+         GetKeyFromTermInfo(TermInfos.keyF3);
+         GetKeyFromTermInfo(TermInfos.keyF4);
+         GetKeyFromTermInfo(TermInfos.keyF5);
+         GetKeyFromTermInfo(TermInfos.keyF6);
+         GetKeyFromTermInfo(TermInfos.keyF7);
+         GetKeyFromTermInfo(TermInfos.keyF8);
+         GetKeyFromTermInfo(TermInfos.keyF9);
+         GetKeyFromTermInfo(TermInfos.keyF10);
+         GetKeyFromTermInfo(TermInfos.keyF11);
+         GetKeyFromTermInfo(TermInfos.keyF12);
+         GetKeyFromTermInfo(TermInfos.keyF13);
+         GetKeyFromTermInfo(TermInfos.keyF14);
+         GetKeyFromTermInfo(TermInfos.keyF15);
+         GetKeyFromTermInfo(TermInfos.keyF16);
+         GetKeyFromTermInfo(TermInfos.keyF17);
+         GetKeyFromTermInfo(TermInfos.keyF18);
+         GetKeyFromTermInfo(TermInfos.keyF19);
+         GetKeyFromTermInfo(TermInfos.keyF20);
+
+         GetKeyFromTermInfo(TermInfos.keyUp);
+         GetKeyFromTermInfo(TermInfos.keyDown);
+         GetKeyFromTermInfo(TermInfos.keyLeft);
+         GetKeyFromTermInfo(TermInfos.keyRight);
+
+         GetKeyFromTermInfo(TermInfos.keyIc);
+         GetKeyFromTermInfo(TermInfos.keyDc);
+         GetKeyFromTermInfo(TermInfos.keyHome);
+         GetKeyFromTermInfo(TermInfos.keyEnd);
+         GetKeyFromTermInfo(TermInfos.keyPpage);
+         GetKeyFromTermInfo(TermInfos.keyNpage);
+       
+         NEW(if);
+         if.read := ReadKey;
+         TermKeys.Init(s, available, if);
+
+         (* enable functionkeys if necessary *)
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.keypadXmit) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.keypadXmit, NIL, 
+				   s.speed, 1, s.outstream);
+         END;
+      END; (* WITH *)
+   END OpenTermKeys;
+
+   (* ========= end implementation of TermKeys ================ *)
+
+   (* ========= implementation of TermLineGraphics ============ *)
+
+   PROCEDURE SetCharset(s: Streams.Stream; charset: SHORTINT);
+      (* set character set                              *)
+      (* under unix there are only one standard set and *)
+      (* one graphics (alternate char) set available    *)
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+         IF charset = TermLineGraphics.standard THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.exitAltCharSet, NIL, 
+				   s.speed, 1, s.outstream);
+         ELSE (* charset = TermLineGraphics.graphics *)
+	    TermInfos.PutCapString(s.terminfo, TermInfos.enterAltCharSet, NIL, 
+				   s.speed, 1, s.outstream);
+         END;
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetCharset;
+
+   PROCEDURE OpenTermLineGraphics(s: Streams.Stream): BOOLEAN;
+      (* read alternate character information from terminfo structure *)
+      (* and initialize TermLineGraphics                              *)
+      VAR
+	 defaultchars: ARRAY TermLineGraphics.chars OF CHAR;
+	 index: INTEGER;
+	 chars: TermInfos.String;
+	 charset: TermLineGraphics.CharSet;
+   BEGIN
+      Strings.Copy(defaultchars, graphicschars);
+      WITH s: Stream DO
+	 index := 0;
+	 WHILE index < TermLineGraphics.chars DO
+	    charset[index].set := TermLineGraphics.standard;
+	    charset[index].char := defaultchars[index];
+	    INC(index);
+         END;
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.enterAltCharSet) &
+	       TermInfos.CapStringOk(s.terminfo, TermInfos.exitAltCharSet) &
+	       TermInfos.CapStringOk(s.terminfo, TermInfos.acsChars)  THEN
+	    TermInfos.GetCapString(s.terminfo, TermInfos.acsChars, chars);
+	    index := 0;
+	    WHILE index < Strings.Len(chars) DO
+	       CASE chars[index] OF
+	       | "x":
+		  charset[TermLineGraphics.verticalLine].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.verticalLine].char := chars[index+1];
+	       | "q":
+		  charset[TermLineGraphics.horizontalLine].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.horizontalLine].char :=
+		     chars[index+1];
+	       | "j":
+		  charset[TermLineGraphics.lowerRightCorner].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.lowerRightCorner].char :=
+		     chars[index+1];
+	       | "k":
+		  charset[TermLineGraphics.upperRightCorner].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.upperRightCorner].char :=
+		     chars[index+1];
+	       | "l":
+		  charset[TermLineGraphics.upperLeftCorner].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.upperLeftCorner].char :=
+		     chars[index+1];
+	       | "m":
+		  charset[TermLineGraphics.lowerLeftCorner].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.lowerLeftCorner].char :=
+		     chars[index+1];
+	       | "n":
+		  charset[TermLineGraphics.cross].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.cross].char := chars[index+1];
+	       | "t":
+		  charset[TermLineGraphics.leftTee].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.leftTee].char := chars[index+1];
+	       | "u":
+		  charset[TermLineGraphics.rightTee].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.rightTee].char := chars[index+1];
+	       | "v":
+		  charset[TermLineGraphics.bottomTee].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.bottomTee].char := chars[index+1];
+	       | "w":
+		  charset[TermLineGraphics.topTee].set :=
+		     TermLineGraphics.graphics;
+		  charset[TermLineGraphics.topTee].char := chars[index+1];
+               ELSE
+               END;
+	       INC(index, 2);
+            END; 
+
+	    (* enable alternate charset if needed *)
+	    IF TermInfos.CapStringOk(s.terminfo, TermInfos.enaAcs) THEN
+	       TermInfos.PutCapString(s.terminfo, TermInfos.enaAcs, NIL,
+				      s.speed, 1, s.outstream);
+            END;
+         END;
+      END;
+      TermLineGraphics.Init(s, charset, SetCharset);
+      RETURN TRUE
+   END OpenTermLineGraphics;
+
+   (* ========= end implementation of TermLineGraphics ================ *)
+
+   (* ========= implementation of Terminals =========================== *)
+
+   (* ------ interface procedures ------------- *)
+
+   PROCEDURE SetEcho(s: Streams.Stream; mode: Terminals.EchoMode);
+      (* switches echoing of characters on or off                            *)
+      (* this procedure is supported only if instream is associated to a TTY *)
+      VAR 
+	 termio: SysTermIO.TermIO;
+   BEGIN
+      WITH s: Stream DO
+	 IF SysTermIO.GetTermIO(s.instream.file, termio, s) THEN 
+            IF mode = Terminals.on THEN
+               termio.linemodes := termio.linemodes + SysTermIO.echo;
+            ELSE (* mode = Terminals.off *)
+               termio.linemodes := termio.linemodes - SysTermIO.echo;
+            END;
+	    IF SysTermIO.SetTermIO(s.instream.file, termio, s) THEN
+	    END;
+	 END;
+      END;
+   END SetEcho;
+
+   PROCEDURE SetTermMode(s: Streams.Stream; mode: Terminals.TermMode);
+      (* set the terminal driver's inputmode to raw or cooked *)
+      (* TerminalDisicplines.Lineterminator is set to nl, when in cooked mode *)
+      (*        "                                     cr-nl, "    raw mode    *)
+      (* modesetting affects both instream and outstream                      *)
+      (* this procedure is supported only if instream and outstream are       *)
+      (* associated to a TTY                                                  *)
+      VAR 
+	 termio: SysTermIO.TermIO;
+	 lineterm: StreamDisciplines.LineTerminator;
+   BEGIN
+      WITH s: Stream DO
+	 IF SysTermIO.GetTermIO(s.instream.file, termio, s) THEN 
+            IF mode = Terminals.cooked THEN
+	       termio.inputmodes := termio.inputmodes + SysTermIO.icrnl;
+               termio.linemodes := termio.linemodes + SysTermIO.icanon;
+	       termio.cc[SysTermIO.veof] := ASCII.eot;
+	       termio.cc[SysTermIO.veol] := ASCII.nl;
+               lineterm[0] := ASCII.nl;
+               lineterm[1] := 000X;
+               StreamDisciplines.SetLineTerm(s, lineterm);
+            ELSE  (* Terminals.raw *)
+	       termio.inputmodes := termio.inputmodes - SysTermIO.icrnl;
+               termio.linemodes := termio.linemodes - SysTermIO.icanon;
+	       termio.cc[SysTermIO.vmin] := 001X;
+	       termio.cc[SysTermIO.vtime] := 000X;
+               lineterm[0] := ASCII.cr;
+               lineterm[1] := 000X;
+               StreamDisciplines.SetLineTerm(s, lineterm);
+            END;
+	    IF SysTermIO.SetTermIO(s.instream.file, termio, s) THEN
+	    END;
+	    s.rawmode := FALSE;
+         END;
+	 IF SysTermIO.GetTermIO(s.outstream.file, termio, s) THEN 
+	    IF mode = Terminals.cooked THEN
+               termio.outputmodes := termio.outputmodes +
+		  SysTermIO.opost + SysTermIO.ocrnl + SysTermIO.onlcr;
+            ELSE (* Terminals.raw *)
+               termio.outputmodes := termio.outputmodes -
+		  SysTermIO.opost - SysTermIO.ocrnl - SysTermIO.onlcr;
+            END;
+	    IF SysTermIO.SetTermIO(s.outstream.file, termio, s) THEN
+            END;
+	    s.rawmode := TRUE;
+	 END;
+      END;
+   END SetTermMode;
+
+   PROCEDURE ClearScreen(s: Streams.Stream);
+      (* clear the screen trying fastest strategy          *)
+      (* terminal must be in raw mode for proper operation *)
+      VAR
+         plist: TermInfos.ParameterList;
+         para: TermInfos.IntPara;
+         string: TermInfos.String;
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+	 IF s.colorsChanged THEN
+	    InternalResetColors(s);
+	 END;
+         IF TermInfos.CapStringOk(s.terminfo, TermInfos.clearScreen) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.clearScreen, NIL,
+				   s.speed, 1, s.outstream);
+         ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.cursorHome) &
+               TermInfos.CapStringOk(s.terminfo, TermInfos.clrEos) THEN
+            TermInfos.PutCapString(s.terminfo, TermInfos.cursorHome, NIL, 
+				   s.speed, 1, s.outstream);
+            TermInfos.PutCapString(s.terminfo, TermInfos.clrEos, NIL, s.speed, 
+				   1, s.outstream);
+         ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.cursorAddress) &
+               TermInfos.CapStringOk(s.terminfo, TermInfos.clrEos) THEN
+            NEW(plist);
+            NEW(para);
+            para.int := 0;
+            plist.para[0] := para;
+            plist.para[1] := para;
+            TermInfos.PutCapString(s.terminfo, TermInfos.cursorAddress, plist, 
+				   s.speed, 1, s.outstream);
+            TermInfos.PutCapString(s.terminfo, TermInfos.clrEos, NIL, s.speed, 
+				   1, s.outstream);
+         END;
+	 Semaphores.V(s.semaphore);
+      END;
+   END ClearScreen;
+
+   PROCEDURE CheckClearScreen(terminfo: TermInfos.TermInfo): BOOLEAN;
+      (* check terminal's capabilities to clear the screen *)
+   BEGIN
+      RETURN TermInfos.CapStringOk(terminfo, TermInfos.clearScreen) OR
+	 (TermInfos.CapStringOk(terminfo, TermInfos.cursorHome) &
+          TermInfos.CapStringOk(terminfo, TermInfos.clrEos)) OR
+         (TermInfos.CapStringOk(terminfo, TermInfos.cursorAddress) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.clrEos));
+   END CheckClearScreen;
+
+   PROCEDURE SetCursor(s: Streams.Stream; line, column: INTEGER);
+      (* set cursor relative to upper left corner          *)
+      (* line: line relative to upper left corner          *)
+      (* column: column relative to upper left corner      *)
+      (* procedure tries to use fastest strategy           *)
+      (* terminal must be in raw mode for proper operation *)
+      VAR
+	 string: TermInfos.String;
+	 plist: TermInfos.ParameterList;
+	 para: TermInfos.IntPara;
+	 i: INTEGER;
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+         IF (line = 0) & (column = 0) & 
+	    TermInfos.CapStringOk(s.terminfo, TermInfos.cursorHome) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.cursorHome, NIL, 
+				   s.speed, 1, s.outstream);
+         ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.cursorAddress) THEN
+	    NEW(plist);
+	    NEW(para); para.int := line;
+	    plist.para[0] := para;
+	    NEW(para); para.int := column;
+	    plist.para[1] := para;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.cursorAddress, plist, 
+				   s.speed, 1, s.outstream);
+         ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.cursorHome) &
+               TermInfos.CapStringOk(s.terminfo, TermInfos.parmRightCursor) &
+	       TermInfos.CapStringOk(s.terminfo, TermInfos.parmDownCursor) 
+            THEN
+	       TermInfos.PutCapString(s.terminfo, TermInfos.cursorHome, NIL, 
+				      s.speed, 1, s.outstream);
+	       NEW(plist);
+	       NEW(para); para.int := line;
+               plist.para[0] := para;
+	       TermInfos.PutCapString(s.terminfo, TermInfos.parmDownCursor, 
+				      plist, s.speed, 1, s.outstream);
+	       NEW(para); para.int := column;
+	       plist.para[0] := para;
+	       TermInfos.PutCapString(s.terminfo, TermInfos.parmRightCursor, 
+				      plist, s.speed, 1, s.outstream);
+         ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.cursorHome) &
+	       TermInfos.CapStringOk(s.terminfo, TermInfos.cursorRight) &
+	       TermInfos.CapStringOk(s.terminfo, TermInfos.cursorDown) 
+            THEN
+	       TermInfos.PutCapString(s.terminfo, TermInfos.cursorHome, NIL, 
+				      s.speed, 1, s.outstream);
+	       i := 0;
+	       WHILE i < line DO
+                  TermInfos.PutCapString(s.terminfo, TermInfos.cursorDown, NIL, 
+					 s.speed, 1, s.outstream);
+	          INC(i);
+               END;
+	       i := 0;
+	       WHILE i < line DO
+                  TermInfos.PutCapString(s.terminfo, TermInfos.cursorRight, NIL, 
+					 s.speed, 1, s.outstream);
+	          INC(i);
+               END;
+         END;
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetCursor;
+
+   PROCEDURE CheckSetCursor(terminfo: TermInfos.TermInfo): BOOLEAN;
+      (* check terminal for capability to set the cursor absolute *)
+   BEGIN
+      RETURN TermInfos.CapStringOk(terminfo, TermInfos.cursorAddress) OR
+	 (TermInfos.CapStringOk(terminfo, TermInfos.cursorHome) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.parmRightCursor) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.parmDownCursor))  OR
+         (TermInfos.CapStringOk(terminfo, TermInfos.cursorHome) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.cursorRight) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.cursorDown));
+   END CheckSetCursor;
+
+   PROCEDURE MoveCursor(s: Streams.Stream; oldl, oldc, newl, newc: INTEGER);
+      (* move the cursor relative to current position trying fastest strategy *)
+      (* oldl: current line                                                   *)
+      (* oldc: current column                                                 *)
+      (* newl: new line                                                       *)
+      (* newc: new column                                                     *)
+      (* terminal must be in raw mode for proper operation                    *)
+      VAR
+	 plist: TermInfos.ParameterList;
+         para: TermInfos.IntPara;
+         index, (* index in WHILE loop *)
+	 linediff, coldiff, (* differences between old and new position *)
+	 cap: INTEGER;      (* capability to use for moving *)
+
+   BEGIN
+      linediff := newl - oldl;
+      coldiff := newc - oldc;
+      WITH s: Stream DO
+	 IF ~s.rawmode THEN
+	    (* do not use the terminfo sequences below if we are not
+	       in raw mode as CR or NL mappings could be harmful
+	    *)
+	    SetCursor(s, newl, newc); RETURN
+	 END;
+	 Semaphores.P(s.semaphore);
+         IF (newc = 0) & (newl = oldl+1) & 
+	    TermInfos.CapStringOk(s.terminfo, TermInfos.newline) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.newline, NIL, 
+				   s.speed, 1, s.outstream);
+         ELSIF (newl = 0) & (newc = 0) & 
+	    TermInfos.CapStringOk(s.terminfo, TermInfos.cursorHome) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.cursorHome, NIL, 
+				   s.speed, 1, s.outstream);
+         ELSIF (ABS(linediff) + ABS(coldiff) > 6) &
+               TermInfos.CapStringOk(s.terminfo, TermInfos.cursorAddress) THEN
+	    NEW(plist);
+	    NEW(para);
+	    para.int := newl;
+	    plist.para[0] := para;
+	    NEW(para);
+	    para.int := newc;
+	    plist.para[1] := para;
+	    TermInfos.PutCapString(s.terminfo, TermInfos.cursorAddress, plist, 
+				   s.speed, 1, s.outstream);
+         ELSE
+            IF coldiff # 0 THEN
+               IF (ABS(coldiff) <= 4) & 
+		     TermInfos.CapStringOk(s.terminfo, TermInfos.cursorRight) &
+		     TermInfos.CapStringOk(s.terminfo,
+			TermInfos.cursorLeft) THEN
+                  IF coldiff > 0 THEN
+                     cap := TermInfos.cursorRight;
+                  ELSE
+                     cap := TermInfos.cursorLeft;
+                  END;
+                  index := 0;
+                  WHILE index < ABS(coldiff) DO
+                     TermInfos.PutCapString(s.terminfo, cap, NIL, s.speed, 1, 
+					    s.outstream);
+		     INC(index);
+                  END;
+               ELSIF TermInfos.CapStringOk(s.terminfo,
+			TermInfos.parmRightCursor) &
+                     TermInfos.CapStringOk(s.terminfo,
+			TermInfos.parmLeftCursor) THEN
+                  NEW(plist);
+                  NEW(para);
+                  para.int := ABS(coldiff);
+                  plist.para[0] := para;
+                  IF coldiff > 0 THEN
+                     cap := TermInfos.parmRightCursor;
+                  ELSE
+                     cap := TermInfos.parmLeftCursor;
+                  END;
+                  TermInfos.PutCapString(s.terminfo, cap, plist, s.speed, 
+					 para.int, s.outstream);
+               ELSE
+		  NEW(plist);
+                  NEW(para);
+                  para.int := newl;
+                  plist.para[0] := para;
+                  NEW(para);
+                  para.int := newc;
+                  plist.para[1] := para;
+                  TermInfos.PutCapString(s.terminfo, TermInfos.cursorAddress,
+		                         plist, s.speed, 1, s.outstream);
+		  Semaphores.V(s.semaphore);
+		  RETURN
+               END;
+            END;
+            IF linediff # 0 THEN
+               IF (ABS(linediff) <= 4) & 
+		     TermInfos.CapStringOk(s.terminfo, TermInfos.cursorUp) &
+		     TermInfos.CapStringOk(s.terminfo,
+			TermInfos.cursorDown) THEN
+                  IF linediff > 0 THEN
+                     cap := TermInfos.cursorDown;
+                  ELSE
+                     cap := TermInfos.cursorUp;
+                  END;
+                  index := 0;
+                  WHILE index < ABS(linediff) DO
+                     TermInfos.PutCapString(s.terminfo, cap, NIL, s.speed, 1, 
+					    s.outstream);
+		     INC(index);
+                  END;
+               ELSIF TermInfos.CapStringOk(s.terminfo,
+			TermInfos.parmDownCursor) &
+                     TermInfos.CapStringOk(s.terminfo,
+			TermInfos.parmUpCursor) THEN
+                  NEW(plist);
+                  NEW(para);
+                  para.int := ABS(linediff);
+                  plist.para[0] := para;
+                  IF linediff > 0 THEN
+                     cap := TermInfos.parmDownCursor;
+                  ELSE
+                     cap := TermInfos.parmUpCursor;
+                  END;
+                  TermInfos.PutCapString(s.terminfo, cap, plist, s.speed, 
+					 para.int, s.outstream);
+               ELSE
+		  NEW(plist);
+                  NEW(para);
+                  para.int := newl;
+                  plist.para[0] := para;
+                  NEW(para);
+                  para.int := newc;
+                  plist.para[1] := para;
+                  TermInfos.PutCapString(s.terminfo, TermInfos.cursorAddress,
+		                         plist, s.speed, 1, s.outstream);
+               END;
+            END;
+         END;
+	 Semaphores.V(s.semaphore);
+      END;
+   END MoveCursor; 
+
+   PROCEDURE CheckMoveCursor(terminfo: TermInfos.TermInfo): BOOLEAN;
+      (* check terminal for capability to move cursor relative to  *)
+      (* current position                                          *)
+   BEGIN
+      RETURN TermInfos.CapStringOk(terminfo, TermInfos.cursorAddress) OR
+	 (TermInfos.CapStringOk(terminfo, TermInfos.cursorUp) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.cursorDown) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.cursorLeft) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.cursorRight))     OR 
+         (TermInfos.CapStringOk(terminfo, TermInfos.parmUpCursor) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.parmDownCursor) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.parmLeftCursor) &
+	  TermInfos.CapStringOk(terminfo, TermInfos.parmRightCursor));  
+   END CheckMoveCursor;
+
+   PROCEDURE Appearance(s: Streams.Stream; appearance: Terminals.Shape);
+      (* set the appearance of the cursor to visible or invisible *)
+      VAR
+	 cap: INTEGER;
+   BEGIN
+      WITH s: Stream DO
+         CASE appearance OF
+         | Terminals.visible:     cap := TermInfos.cursorNormal;
+         | Terminals.invisible:   cap := TermInfos.cursorInvisible;
+         END;
+	 Semaphores.P(s.semaphore);
+         TermInfos.PutCapString(s.terminfo, cap, NIL, s.speed, 1, s.outstream);
+	 Semaphores.V(s.semaphore);
+      END;
+   END Appearance;
+
+   PROCEDURE Scroll(s: Streams.Stream; dir: Terminals.Direction);
+      (* scroll scrollregion up or down a single line *)
+      VAR
+	 cap: INTEGER;
+   BEGIN
+      WITH s: Stream DO
+         CASE dir OF
+         | Terminals.forward: cap := TermInfos.scrollForward;
+         | Terminals.reverse: cap := TermInfos.scrollReverse;
+         END;
+	 Semaphores.P(s.semaphore);
+         TermInfos.PutCapString(s.terminfo, cap, NIL, s.speed, 1, s.outstream);
+	 Semaphores.V(s.semaphore);
+      END;
+   END Scroll;
+
+   PROCEDURE SetScrollRegion(s: Streams.Stream; line1, line2: INTEGER);
+      (* set scroll region if supported by terminal *)
+      VAR 
+	 plist: TermInfos.ParameterList;
+	 para: TermInfos.IntPara;
+	 string: TermInfos.String;
+   BEGIN
+      NEW(plist);
+      NEW(para); para.int := line1;
+      plist.para[0] := para;
+      NEW(para); para.int := line2;
+      plist.para[1] := para;
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+         TermInfos.PutCapString(s.terminfo, TermInfos.changeScrollRegion, 
+				plist, s.speed, 1, s.outstream);
+	 Semaphores.V(s.semaphore);
+      END;
+   END SetScrollRegion;
+
+   (* ============= end implementation of Terminals ================== *)
+
+   (* ============= private procedures =============================== *)
+
+   PROCEDURE KeyTask(VAR cr: Coroutines.Coroutine; s: Stream);
+      (* tasks that reads keys into keylist;
+	 terminal must be in raw mode for proper recognition of function keys
+      *)
+      VAR
+	 closeeventtype: Events.EventType;
+	 closecond, (* is stream going to be closed ? *)
+	 readcond,  (* is instream ready to read ? *)
+	 timecond: Conditions.Condition;
+	    (* timeout while waiting for terminals ? *)
+	 softtermcond: Conditions.Condition; (* soft termination of Process? *)
+	 event: Events.Event;  
+	 conditions: Conditions.ConditionSet; (* set to wait for *)
+	 selected: Conditions.ConditionSet;
+	 localkeylisthead,  (* first char of possible functionkey *)
+	 localkeylisttail: KeyListElement; (* current char of "   *)
+	 keyset: TermKeys.FunctionKeySet; (* set of functionkeys, that match
+					     current pattern *)
+	 char: CHAR; (* read char *)
+         index,      (* index into characterstring processed *) 
+	 keycount,   (* number of keys, which match current keypattern *)
+	 foundkey: INTEGER; (* number of first matching key *)
+	 time: Times.Time; (* timeout delay *)
+
+      PROCEDURE DeleteNotMatchingKeys(char: CHAR);
+	 (* perform a lexical analysis                          *)
+	 (* filter out all keys of keyset, which don't match    *)
+	 (* the current pattern                                 *)
+	 (* foundkey gets assigned number of first matching key *)    
+	 VAR
+	    keynumber: INTEGER;
+      BEGIN
+         keynumber := 0;
+         WHILE keynumber < TermKeys.functionkeys DO
+	    IF Sets.In(keyset, keynumber) THEN
+	       IF s.keystrings[keynumber][index] # char THEN
+	          Sets.Excl(keyset, keynumber);
+	          DEC(keycount);
+               ELSE
+	          foundkey := keynumber;
+               END;
+            END;
+            INC(keynumber);
+         END;
+      END DeleteNotMatchingKeys;
+
+      PROCEDURE AddList;
+	 (* add local keylist to s.keylist *)
+      BEGIN
+	 IF s.keylisthead = NIL THEN
+	    s.keylisthead := localkeylisthead;
+         ELSE
+	    s.keylisttail.nextchar := localkeylisthead;
+         END;
+	 s.keylisttail := localkeylisttail;
+	 localkeylisthead := NIL;
+	 localkeylisttail := NIL;
+	 keycount := 0;
+      END AddList;
+
+      PROCEDURE ProcessChars;
+	 CONST
+	    inbuflen = 512;
+	 VAR
+	    fkey: TermKeys.FunctionKey;
+	    input: ARRAY inbuflen OF CHAR;
+	    count: Streams.Count;
+	    inputIndex: INTEGER;
+
+	 PROCEDURE AddChar;
+	    (* add character (char) to local keylist *)
+	    VAR
+	       status: Terminals.Status;
+	       keyelement: KeyListElement;
+	       skey: TermKeys.SimpleKey;
+	 BEGIN
+	    TermKeys.CreateSimpleKey(skey);
+	    skey.char := char;
+	    NEW(keyelement);
+	    keyelement.char := char;
+	    keyelement.key := skey;
+	    keyelement.nextchar := NIL;
+	    keyelement.lastchar := keyelement;
+	    IF localkeylisthead = NIL THEN
+	       localkeylisthead := keyelement;
+	    ELSE
+	       localkeylisttail.nextchar := keyelement;
+	    END;
+	    localkeylisttail := keyelement;
+	    INC(inputIndex);
+	 END AddChar;
+
+      BEGIN (* ProcessChars *)
+	 count := Streams.ReadPacket(s.instream, input, 0, inbuflen);
+	 IF count = 0 THEN
+	    Resources.Notify(s, Resources.terminated);
+	    RETURN
+         END;
+	 inputIndex := 0;
+	 REPEAT (* until all read characters are processed *)
+	    char := input[inputIndex];
+	    IF keycount = 0 THEN
+	       index := 0;
+	       keycount := s.funckeycount;
+	       TermKeys.Available(s, keyset);
+	    END;
+	    DeleteNotMatchingKeys(char);
+	    (* keycount gives us here the number of remaining matches *)
+	    IF (keycount = 1) & 
+		  (index = Strings.Len(s.keystrings[foundkey])-1) THEN
+	       (* only one candidate is left and this one matches exactly *)
+	       AddChar;
+	       TermKeys.CreateFunctionKey(fkey);
+	       fkey.code := foundkey;
+	       localkeylisthead.key := fkey;
+	       localkeylisthead.lastchar := localkeylisttail;
+	       AddList;
+	    ELSIF keycount > 0 THEN
+	       AddChar;
+	       INC(index);
+	    ELSIF index = 0 THEN
+	       (* this is not a function key *)
+	       AddChar;
+	       AddList;
+	    ELSE
+	       AddList;
+	    END;
+	 UNTIL inputIndex >= count;
+	 IF keycount > 0 THEN
+	    IF timecond = NIL THEN
+	       TimeConditions.Create(timecond, Clocks.system, time);
+	       Conditions.Incl(conditions, timecond);
+	    END;
+	 ELSE
+	    IF timecond # NIL THEN
+	       Conditions.Excl(conditions, timecond); timecond := NIL;
+	    END;
+	 END;
+      END ProcessChars;
+
+   BEGIN (* KeyTask *)
+      SYSTEM.CRSPAWN(cr);
+      keycount := 0;
+      Conditions.CreateSet(conditions);
+      Streams.GetCloseEvent(s, closeeventtype);
+      EventConditions.Create(closecond, closeeventtype);
+      StreamConditions.Create(readcond, s.instream, 
+		              StreamConditions.read);
+      EventConditions.Create(softtermcond, Process.softTermination);
+      Conditions.Incl(conditions, readcond);
+      Conditions.Incl(conditions, closecond);
+      Conditions.Incl(conditions, softtermcond);
+      localkeylisthead := NIL; localkeylisttail := NIL;
+      Times.CreateAndSet(time, Times.relative, 0, 0, delay);
+      LOOP
+	 Tasks.Select(conditions, selected);
+	 IF EventConditions.TestAndGet(closecond, event) OR
+	       EventConditions.TestAndGet(softtermcond, event) THEN
+	    EXIT
+	 END;
+	 IF Conditions.In(selected, readcond) THEN
+            ProcessChars;
+	 ELSE
+	    (* the timelimit condition is the only condition left *)
+	    ASSERT((keycount > 0) & (timecond # NIL) &
+	       Conditions.In(selected, timecond));
+            Conditions.Excl(conditions, timecond); timecond := NIL;
+            AddList;
+         END;
+      END; 
+      EventConditions.Drop(closecond);
+      EventConditions.Drop(softtermcond);
+      Tasks.Terminate;
+   END KeyTask;
+
+   PROCEDURE Cleanup(s: Stream);
+      (* restore terminal to original termio status before close *)
+   BEGIN
+      IF TermColors.Supported(s) THEN
+	 TermColors.Reset(s);
+      END;
+      Semaphores.P(s.semaphore);
+      Streams.Touch(s.outstream);
+      IF SysIO.Isatty(s.instream.file) THEN
+         IF SysTermIO.SetTermIO(s.instream.file, s.oldintermio, s) THEN
+	 END;
+      END;
+      IF SysIO.Isatty(s.outstream.file) THEN
+         IF SysTermIO.SetTermIO(s.outstream.file, s.oldouttermio, s) THEN
+	 END;
+      END;
+      Semaphores.V(s.semaphore);
+   END Cleanup;
+
+   PROCEDURE Add(s: Stream);
+      VAR
+	 list, newlist: TerminalList;
+   BEGIN
+      NEW(newlist);
+      newlist.stream := s;
+      newlist.next := NIL;
+      IF terminallist = NIL THEN
+	 newlist.previous := NIL;
+	 terminallist := newlist;
+      ELSE
+	 list := terminallist;
+	 WHILE list.next # NIL DO
+	    list := list.next;
+         END;
+	 list.next := newlist;
+	 newlist.previous := list;
+      END;
+   END Add;
+
+   PROCEDURE Remove(s: Stream);
+      VAR
+	 list: TerminalList;
+   BEGIN
+      list := terminallist;
+      WHILE list.stream # s DO
+	 list := list.next;
+      END;
+      IF list.previous # NIL THEN
+         list.previous.next := list.next;
+      END;
+      IF list.next # NIL THEN
+         list.next.previous := list.previous;
+      END;
+      IF list = terminallist THEN
+	 terminallist := NIL;
+      END;
+   END Remove;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      (* handler called to cleanup terminals before process' termination *)
+   BEGIN
+      WHILE terminallist # NIL DO
+	 Streams.Release(terminallist.stream);
+      END;
+   END TerminationHandler;
+
+   PROCEDURE WindowChangeHandler(windowchanged: Events.Event);
+      (* Handler for Window-changed signal                         *)
+      (* checks all open terminals for a windowchange and sets new *)
+      (* windowsize if necessary using Terminals.SetScreenSize     *)
+      VAR
+	 event: Terminals.WindowChangeEvent;
+	 listelement: TerminalList;
+	 file: SysIO.File;
+	 lines, columns: INTEGER;
+	 status: Terminals.Status;
+   BEGIN
+      listelement := terminallist;
+      WHILE listelement # NIL DO
+	 IF listelement.stream.outstream IS UnixFiles.Stream THEN
+	    file := listelement.stream.outstream.file;
+	    IF SysIO.Isatty(file) THEN
+	       IF SysTermIO.GetScreenSize(file, lines, columns, 
+					 listelement.stream) THEN
+	          Terminals.GetStatus(listelement.stream, status);
+	          IF (status.lines # lines) OR (status.columns # columns) THEN
+		     NEW(event);
+		     event.type := Terminals.windowchanged;
+		     event.stream := listelement.stream;
+		     event.newlines := lines;
+		     event.newcolumns := columns;
+	             Events.Raise(event);
+                  END;
+               END;
+	    END;
+         END;
+	 listelement := listelement.next;
+      END;
+   END WindowChangeHandler;
+
+   PROCEDURE SignalHandler(event: Events.Event);
+      VAR
+	 interrupt: Terminals.InterruptEvent;
+         quit: Terminals.QuitEvent;
+	 hangup: Terminals.HangupEvent;
+   BEGIN
+      WITH event: SysSignals.Event DO
+	 CASE event.signo OF
+	 | SysSignals.sigINT: NEW(interrupt);
+			      interrupt.type := Terminals.interrupt;
+			      interrupt.stream := Terminals.console;
+			      Events.Raise(interrupt);
+         | SysSignals.sigQUIT: NEW(quit);
+			       quit.type := Terminals.quit;
+			       quit.stream := Terminals.console;
+			       Events.Raise(quit);
+         | SysSignals.sigHUP: NEW(hangup);
+			      hangup.type := Terminals.hangup;
+			      hangup.stream := Terminals.console;
+			      Events.Raise(hangup);
+         END;
+      END;
+   END SignalHandler;
+
+   (* =========== end private procedures ===================== *)
+
+   (* =========== public procedures ========================== *)
+
+   PROCEDURE Open(VAR s: Streams.Stream; instream, outstream: Streams.Stream;
+		  tiname: ARRAY OF CHAR; errors: RelatedEvents.Object): BOOLEAN;
+      (* open terminal and perform intialization of terminal and stream *)
+      (* components                                                     *)
+      (* instream: stream to read from                                  *)
+      (* outstream: stream to write to                                  *)
+      (* tiname: name of terminfo file, may be empty string             *)
+      (* errors: object to forward errors to                            *)
+
+      VAR
+	 mystream: Stream; (* UnixTerminals.Stream *)
+	 inspeed, outspeed: INTEGER; (* speed of instream and outstream *)
+	 termstatus: Terminals.Status; 
+	 termcaps: Terminals.CapabilitySet;
+	 termmode: Terminals.TermMode;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 listelement: TerminalList;
+
+      PROCEDURE GetScreenSize(VAR lines, columns: INTEGER);
+	 (* get the screen size                               *)
+	 (* try reading from kernel, if that fails            *)
+	 (* try shell variables, if that fails                *)
+	 (* try terminfo entry                                *)
+         VAR
+	    stream: Streams.Stream;
+	    string: ARRAY 10 OF CHAR;
+      BEGIN
+         lines := 0; columns := 0;
+	 IF outstream IS UnixFiles.Stream THEN
+	    WITH outstream: UnixFiles.Stream DO
+	       IF SysIO.Isatty(outstream.file) THEN
+	          IF SysTermIO.GetScreenSize(outstream.file, lines, columns, 
+					    errors) THEN END;
+               END;
+            END;
+         END;
+         IF (lines = 0) & (columns = 0) THEN
+	    IF UnixEnvironment.Open(stream, "LINES")  THEN
+	       Rd.IntS(stream, lines);
+	       IF Streams.Close(stream) THEN END;
+            END;
+	    IF UnixEnvironment.Open(stream, "COLUMNS") THEN
+	       Rd.IntS(stream, columns);
+	       IF Streams.Close(stream) THEN END;
+            END;
+         END;
+         IF (lines = 0) & (columns = 0) THEN
+	    lines := TermInfos.GetNumber(mystream.terminfo, TermInfos.lines);
+	    columns := TermInfos.GetNumber(mystream.terminfo,
+	       TermInfos.columns);
+         END;
+      END GetScreenSize;
+
+   BEGIN (* Open *)
+      NEW(mystream);
+      mystream.instream := instream(UnixFiles.Stream);
+      mystream.outstream := outstream(UnixFiles.Stream);
+      LocalSemaphores.Create(mystream.semaphore);
+
+      (* init keylist and keytask *)
+      mystream.keylisthead := NIL;
+      mystream.keylisttail := NIL;
+      mystream.keytaskStarted := FALSE;
+
+      termcaps := {};
+
+      IF ~TermInfos.Open(tiname, mystream.terminfo, errors) THEN 
+	 RETURN FALSE
+      END;
+
+      (* init termstatus and termif *)
+      GetScreenSize(termstatus.lines, termstatus.columns);
+      termstatus.scrtop := 0;
+      termstatus.scrbottom := termstatus.lines-1;
+      termstatus.characteristics := {};
+      termstatus.scrollDirections := {};
+      termstatus.cursorShape := Terminals.visible;
+
+      (* create terminal interface *)
+
+      IF TermInfos.CapStringOk(mystream.terminfo,
+	    TermInfos.changeScrollRegion) THEN
+         INCL(termcaps, Terminals.setScrollRegion);
+      END;
+
+      IF CheckSetCursor(mystream.terminfo) THEN
+         INCL(termcaps, Terminals.setCursor);
+      END;
+
+      IF CheckClearScreen(mystream.terminfo) THEN
+	 INCL(termcaps, Terminals.clearScreen);
+      END;
+
+      IF CheckMoveCursor(mystream.terminfo) THEN
+	 INCL(termcaps, Terminals.moveCursor);
+      END;
+
+      IF TermInfos.CapStringOk(mystream.terminfo, TermInfos.cursorNormal) &
+	 TermInfos.CapStringOk(mystream.terminfo,
+	    TermInfos.cursorInvisible) THEN
+         INCL(termcaps, Terminals.setAppearance);
+      END;
+
+      IF TermInfos.CapStringOk(mystream.terminfo, TermInfos.scrollForward) THEN
+	 INCL(termstatus.scrollDirections, Terminals.forward);
+      END;
+      IF TermInfos.CapStringOk(mystream.terminfo, TermInfos.scrollReverse) THEN
+	 INCL(termstatus.scrollDirections, Terminals.reverse);
+      END;
+ 
+      (* set terminal in cursor-addressing mode *)
+      IF TermInfos.CapStringOk(mystream.terminfo, TermInfos.enterCaMode) THEN
+         TermInfos.PutCapString(mystream.terminfo, TermInfos.enterCaMode, NIL, 
+				mystream.speed, 1, mystream);
+      END;
+
+      (* initialize terminal characteristics *)
+      termstatus.characteristics := {};
+      IF TermInfos.GetBoolean(mystream.terminfo, TermInfos.autoLeftMargin) THEN
+	 INCL(termstatus.characteristics, Terminals.autoleftmargin);
+      END;
+      IF TermInfos.GetBoolean(mystream.terminfo, TermInfos.autoRightMargin) THEN
+	 INCL(termstatus.characteristics, Terminals.autorightmargin);
+      END;
+      IF TermInfos.GetBoolean(mystream.terminfo, TermInfos.overStrike) THEN
+	 INCL(termstatus.characteristics, Terminals.overstrikes);
+      END;
+      IF TermInfos.GetBoolean(mystream.terminfo, TermInfos.autoRightMargin) &
+	    TermInfos.GetBoolean(mystream.terminfo,
+	       TermInfos.eatNewlineGlitch) OR
+	    ~TermInfos.GetBoolean(mystream.terminfo,
+	       TermInfos.autoRightMargin) THEN
+	  INCL(termstatus.characteristics, Terminals.safelastcolumn);
+      END;
+
+      (* initialize TermMode and Echo *)
+      mystream.rawmode := FALSE;
+      termmode := Terminals.raw;
+      IF SysIO.Isatty(mystream.instream.file) THEN
+         IF ~SysTermIO.GetTermIO(mystream.instream.file, 
+			         mystream.oldintermio, errors) THEN
+	    RETURN FALSE
+	 END;
+	 SetEcho(mystream, Terminals.on);
+	 termstatus.echo := Terminals.on;
+	 termcaps := termcaps + {Terminals.setEcho, Terminals.setTermMode};
+	 termmode := Terminals.cooked;
+      END;
+      IF SysIO.Isatty(mystream.outstream.file) THEN
+         IF ~SysTermIO.GetTermIO(mystream.outstream.file, 
+			         mystream.oldouttermio, errors) THEN
+	    RETURN FALSE
+	 END;
+	 mystream.speed := SysTermIO.Baudrate(mystream.oldouttermio);
+	 termcaps := termcaps + {Terminals.setTermMode};
+      ELSE
+	 mystream.speed := 0;
+      END;
+      SetTermMode(mystream, termmode);
+      termstatus.mode := termmode;
+
+      Services.Init(mystream, streamType);
+      Streams.Init(mystream, if, caps, Streams.nobuf);
+      Terminals.Init(mystream, termstatus, termcaps, termif);
+
+      RelatedEvents.QueueEvents(mystream);
+      RelatedEvents.Forward(mystream.instream, mystream);
+      Forwarders.Forward(mystream, mystream.outstream);
+      RelatedEvents.Forward(mystream.terminfo, mystream);
+
+      (* inititialize TermLineGraphics *)
+      IF OpenTermLineGraphics(mystream) THEN END;
+
+      (* initialize TermAttributes *)
+      OpenTermAttributes(mystream);
+
+      OpenTermKeys(mystream);
+      InitColors(mystream);
+
+      Add(mystream);
+
+      s := mystream;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE OpenByName(VAR s: Streams.Stream;
+                        devicename, tiname: ARRAY OF CHAR;
+		        errors: RelatedEvents.Object): BOOLEAN;
+      (* open terminal by it's name, so that instream and outstream  *)
+      (* are associatied to the same terminal device                 *)
+      (* devicename: name of terminal device, may be empty string    *)
+      (* tiname: name of terminfo file, may be empty string          *)
+      (* errors: Object to forward errors to                         *)
+      VAR
+	 stream: Streams.Stream;
+         
+   BEGIN
+      IF devicename = "" THEN
+         IF ~UnixFiles.Open(stream, "/dev/tty", UnixFiles.rdwr,
+	                    Streams.onebuf, errors) THEN
+            RETURN FALSE;
+	 END;
+      ELSE
+         IF ~UnixFiles.Open(stream, devicename, UnixFiles.rdwr,
+	                    Streams.onebuf, errors) THEN
+            RETURN FALSE;
+         END;
+      END;
+      IF Open(s, stream, stream, tiname, errors) THEN
+	 RETURN TRUE;
+      ELSE
+	 Streams.Release(stream);
+	 RETURN FALSE;
+      END;
+   END OpenByName;
+
+   (* =========== end public procedures ======================= *)
+
+   (* =========== stream interface procedures ================= *) 
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: BYTE): BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 CheckKeyTask(s);
+	 IF s.keylisthead = NIL THEN
+	    Semaphores.P(s.semaphore);
+	    Streams.Touch(s.outstream);
+	    Semaphores.V(s.semaphore);
+	    Tasks.WaitFor(s.readcond);
+	    IF s.keylisthead = NIL THEN
+	       RETURN FALSE
+	    END;
+	 END;
+	 byte := s.keylisthead.char;
+         s.keylisthead := s.keylisthead.nextchar;
+      END;
+      RETURN TRUE
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; byte: BYTE): BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+	 IF ~Streams.WriteByte(s.outstream, byte) THEN
+	    Semaphores.V(s.semaphore);
+	    RETURN FALSE
+         END; 
+	 Semaphores.V(s.semaphore);
+	 RETURN TRUE
+      END;
+   END Write;
+
+   PROCEDURE Flush(s: Streams.Stream): BOOLEAN;
+      VAR
+	 done: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+	 done := Streams.Flush(s.outstream);
+	 Semaphores.V(s.semaphore);
+      END;
+      RETURN done
+   END Flush;
+
+   PROCEDURE BufRead(s: Streams.Stream; VAR buf: ARRAY OF BYTE;
+		     off, cnt: Streams.Count): Streams.Count;
+      VAR
+	 count: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CheckKeyTask(s);
+	 count := 0;
+	 IF s.keylisthead = NIL THEN
+	    IF ~Read(s, buf[off]) THEN RETURN 0 END;
+	    INC(off); INC(count);
+	 END;
+	 WHILE (s.keylisthead # NIL) & (count < cnt) DO
+	    buf[off] := s.keylisthead.char;
+	    s.keylisthead := s.keylisthead.nextchar;
+	    INC(off); INC(count);
+	 END;
+	 RETURN count
+      END;
+   END BufRead;
+
+   PROCEDURE BufWrite(s: Streams.Stream; VAR buf: ARRAY OF BYTE;
+		      off, cnt: Streams.Count): Streams.Count;
+      VAR
+	 count: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 Semaphores.P(s.semaphore);
+	 IF Streams.WritePart(s.outstream, buf, off, cnt) THEN
+	    count := s.outstream.count;
+	 ELSE
+	    count := 0;
+	 END;
+	 Semaphores.V(s.semaphore);
+	 RETURN count
+      END;
+   END BufWrite;
+
+   PROCEDURE Close(s: Streams.Stream): BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         Cleanup(s);
+         Remove(s);
+      END;
+      RETURN TRUE
+   END Close;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Stream DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+               CreateCondition(msg.condition, s, msg.operation);
+	       ASSERT(msg.condition # NIL);
+               msg.stream := s;
+	       msg.msgProcessed := TRUE;
+            END;
+         ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       IF msg.operation = StreamConditions.read THEN
+		  CheckKeyTask(s);
+	       END;
+	       msg.wouldblock := ~TestCondition(s, msg.operation,
+					        msg.errors);
+               msg.msgProcessed := TRUE;
+            END;
+         END;
+      END;
+   END Handler;
+
+   (* =============== end stream interface procedures ================== *)
+
+   PROCEDURE OpenConsole;
+      (* open Terminals.console = the controlling terminal *)
+      VAR
+	 console: Streams.Stream;
+	 stdinIsTTY, stdoutIsTTY: BOOLEAN;
+	 stdinDevice, stdoutDevice: SysTypes.Device;
+	 tty: Streams.Stream;
+	 ttyDevice: SysTypes.Device;
+
+      PROCEDURE CheckStream(s: Streams.Stream;
+                            VAR device: SysTypes.Device) : BOOLEAN;
+	 VAR
+	    statbuf: SysStat.StatRec;
+      BEGIN
+	 IF ~(s IS UnixFiles.Stream) THEN
+	    RETURN FALSE
+	 END;
+	 WITH s: UnixFiles.Stream DO
+	    IF ~SysIO.Isatty(s.file) OR
+		  ~SysStat.Fstat(s.file, statbuf, RelatedEvents.null) THEN
+	       RETURN FALSE
+	    END;
+	    device := statbuf.rdev;
+	    RETURN TRUE
+	 END;
+      END CheckStream;
+
+   BEGIN (* OpenConsole *)
+      stdinIsTTY := CheckStream(Streams.stdin, stdinDevice);
+      stdoutIsTTY := CheckStream(Streams.stdout, stdoutDevice);
+      IF stdinIsTTY & stdoutIsTTY & (stdinDevice = stdoutDevice) &
+	    Open(console, Streams.stdin, Streams.stdout, "",
+	         RelatedEvents.null) THEN
+	 Terminals.console := console;
+	 RETURN
+      END;
+
+      IF ~UnixFiles.Open(tty, "/dev/tty", UnixFiles.rdwr,
+			 Streams.onebuf, RelatedEvents.null) THEN
+	 RETURN
+      END;
+      IF ~CheckStream(tty, ttyDevice) OR
+	    ~Open(console, tty, tty, "", RelatedEvents.null) THEN
+	 Streams.Release(tty); RETURN
+      END;
+      Terminals.console := console;
+
+      IF stdinIsTTY & (stdinDevice = ttyDevice) THEN
+	 (*
+	 Streams.stdin := Terminals.console;
+	 *)
+      END;
+      IF stdoutIsTTY & (stdoutDevice = ttyDevice) THEN
+	 Streams.stdout := Terminals.console;
+      END;
+   END OpenConsole;
+
+BEGIN
+   terminallist := NIL;
+   Events.Handler(SysSignals.WINCH, WindowChangeHandler);
+   (*
+   Events.Handler(SysSignals.INT, SignalHandler);
+   Events.Handler(SysSignals.QUIT, SignalHandler);
+   Events.Handler(SysSignals.HUP, SignalHandler);
+   *)
+   Events.Handler(Process.termination, TerminationHandler);
+   Services.CreateType(streamType, "UnixTerminals.Stream", "Terminals.Stream");
+   InitTerminalConditions;
+
+   NEW(termif);
+   termif.setEcho := SetEcho;
+   termif.setTermMode := SetTermMode;
+   termif.setCursor := SetCursor;
+   termif.moveCursor := MoveCursor;
+   termif.setAppearance := Appearance;
+   termif.scroll := Scroll;
+   termif.setScrollRegion := SetScrollRegion;
+   termif.clearScreen := ClearScreen;
+
+   NEW(if);
+   if.addrread := NIL;
+   if.addrwrite := NIL;
+   if.bufread := BufRead;
+   if.bufwrite := BufWrite;
+   if.read := Read;
+   if.write := Write;
+   if.flush := Flush;
+   if.close := Close;
+   if.handler := Handler;
+
+   NEW(colorif);
+   colorif.set := SetColors;
+   colorif.reset := ResetColors;
+   colorif.setForeground := SetForegroundColor;
+   colorif.setBackground := SetBackgroundColor;
+
+   OpenConsole;
+END UnixTerminals.

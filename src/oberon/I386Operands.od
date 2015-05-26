@@ -1,0 +1,145 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: I386OberonO.od,v 1.1 2004/09/06 16:28:53 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: I386OberonO.od,v $
+   Revision 1.1  2004/09/06 16:28:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION I386Operands; (* Christian Ehrhardt *)
+
+   IMPORT FragmentedStreams, Objects, Registers := CompilerRegisters,
+      Relocations := CompilerRelocations, Types;
+
+   TYPE
+      Register = INTEGER;
+      Location = INTEGER;
+
+   CONST
+      noConst = 0;          (* Record doesn't contain constant data *)
+      integerConst = 1;     (* Record contains an integer or cardinal *)
+      realConst = 2;        (* Reocrd contains a real number *)
+      setConst = 3;         (* Record contains a set *)
+      charConst = 4;        (* Record contains a character *)
+      booleanConst = 5;     (* Record contains a boolean *)
+      nilConst = 6;         (* Record contains a NIL pointer *)
+      dataConst = 7;        (* Record contains other constant data *)
+   TYPE
+      ConstantKind = SHORTINT; (* noConst..dataConst *)
+      ConstantData = POINTER TO ConstantDataRec;
+      ConstantDataRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    kind: ConstantKind;
+	    intval: Types.Int32;
+	    realval: Types.Real64;
+	    setval: SET;
+	    charval: CHAR;
+	    boolval: BOOLEAN;
+	 END;
+
+   TYPE
+      Operand = POINTER TO OperandRec;
+      OperandRec = RECORD
+	 (Objects.ObjectRec)
+	 reg1, reg2 : Registers.Value;
+	 immsz,memsz, dispsz : LONGINT;
+	 disp : LONGINT;
+	 data : ConstantData;
+	 volatile : BOOLEAN;
+      END;
+
+      OperandCache = POINTER TO OperandCacheRec;
+      OperandCacheRec = RECORD (Objects.ObjectRec) END;
+
+   CONST
+      error = 31;        (* An error occured during Operand generation *)
+      none = 0;	         (* Operand is not (yet) usable for an Instruction *)
+      immediate = 1;	 (* Operand data is immediate *)
+      immediateDyn = 2;  (* Operand data is immediate and extendable *)
+      register = 3;	 (* Operand data is in a register *)
+      register2 = 4;	 (* Operand data consists of two registers *)
+      memory = 5;	 (* Operand data is in memory *)
+      fpuRegister = 6;   (* Operand data is in a FPU register *)
+      condition = 7;     (* Operand data is a boolean condition code
+			  * stored in reg1. This type can't be passed
+			  * to OpcodeGen.EmitGeneric *)
+
+   (* Operand cache realted functions *)
+   PROCEDURE CreateCache (VAR opcache : OperandCache);
+   PROCEDURE Alloc(opcache : OperandCache) : Operand;
+   PROCEDURE Free(opcache : OperandCache; op : Operand);
+
+   (* New Operand Creation *)
+   PROCEDURE Dup (op : Operand) : Operand;
+   PROCEDURE ImmOp (dyn : BOOLEAN) : Operand;
+   PROCEDURE ImmOpV (cache : OperandCache; dyn : BOOLEAN) : Operand;
+   PROCEDURE Error () : Operand;
+   PROCEDURE IsError (op : Operand) : BOOLEAN;
+   PROCEDURE ImmIntFixed (i : Types.Int32; sz : LONGINT) : Operand;
+   PROCEDURE ImmInt (i : Types.Int32) : Operand;
+   PROCEDURE ImmIntV (cache : OperandCache; i : Types.Int32) : Operand;
+   PROCEDURE ImmReal (r : Types.Real64) : Operand;
+   PROCEDURE ImmSet (s : SET) : Operand;
+   PROCEDURE ImmChar (c : CHAR) : Operand;
+   PROCEDURE ImmBool (b : BOOLEAN) : Operand;
+   PROCEDURE ImmNil () : Operand;
+   PROCEDURE ImmData (dyn : BOOLEAN; sz : LONGINT; data : ARRAY OF BYTE) : Operand;
+
+   PROCEDURE RegOp (reg : Registers.Value; size : LONGINT) : Operand;
+   PROCEDURE RegOpV (cache : OperandCache; reg : Registers.Value;
+                     size : LONGINT) : Operand;
+   PROCEDURE Reg2Op (reg1, reg2 : Registers.Value; size : LONGINT) : Operand;
+   PROCEDURE MemOp0 (memsz, disp, dispsz : LONGINT) : Operand;
+   PROCEDURE MemOp1 (reg : Registers.Value; memsz, disp, dispsz : LONGINT)
+				   : Operand;
+   PROCEDURE MemOp2 (reg1, reg2 : Registers.Value; memsz, disp, dispsz : LONGINT;
+		     scale : INTEGER) : Operand;
+   PROCEDURE FPUOp (reg : Registers.Value) : Operand;
+   PROCEDURE CCOp (cc : LONGINT) : Operand;
+
+   PROCEDURE SetLoc (op : Operand; newloc : Location);
+
+   PROCEDURE Loc (op : Operand) : INTEGER;
+   PROCEDURE Scale (op : Operand; VAR scale : INTEGER);
+   PROCEDURE SetScale (op : Operand; newscale : INTEGER);
+   PROCEDURE Sizes (op: Operand; VAR immsz : LONGINT; VAR memsz : LONGINT)
+			     : BOOLEAN;
+   PROCEDURE Reg (op: Operand; VAR reg : Register) : BOOLEAN;
+   PROCEDURE Reg2 (op : Operand; VAR reg1, reg2 : Register) : BOOLEAN;
+   (* Return the register Code of a two register Operand
+      (Location = Register2)
+   *)
+   PROCEDURE Mem16 (op : Operand; VAR reg1 : Register; VAR reg2 : Register;
+		    VAR disp : LONGINT; VAR dispsize : LONGINT) : BOOLEAN;
+   PROCEDURE Mem32 (op : Operand; VAR base : Register; VAR index : Register;
+		    VAR scale : INTEGER; VAR disp : LONGINT;
+		    VAR dispsize : LONGINT) : BOOLEAN;
+   PROCEDURE GetImmData (op : Operand; VAR arr : ARRAY OF BYTE; len : LONGINT);
+
+   PROCEDURE NeedReloc (op : Operand) : BOOLEAN;
+   PROCEDURE RelocOpen (op : Operand; reloc : Relocations.RelocRequest);
+   PROCEDURE RelocInstance (op : Operand; l : FragmentedStreams.Label);
+   PROCEDURE RelocInfo (op : Operand; off, len : LONGINT);
+
+END I386Operands.

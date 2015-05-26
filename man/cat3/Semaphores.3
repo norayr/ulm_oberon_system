@@ -1,0 +1,198 @@
+
+
+
+Semaphores(3)          Ulm's Oberon System          Semaphores(3)
+
+
+NNAAMMEE
+       Semaphores - general interface for semaphores
+
+SSYYNNOOPPSSIISS
+       TYPE Semaphore = POINTER TO SemaphoreRec;
+       TYPE SemaphoreRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE SemaOp = PROCEDURE (sema: Semaphore);
+       TYPE StatusProc = PROCEDURE (sema: Semaphore) : INTEGER;
+       TYPE GetConditionProc = PROCEDURE (sema: Semaphore;
+                                          VAR condition: Conditions.Condition);
+       TYPE DropProc = PROCEDURE (condition: Conditions.Condition);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             p: SemaOp; (* optional: may be NIL *)
+             v: SemaOp;
+             getcondition: GetConditionProc;
+             drop: DropProc;
+             status: StatusProc;
+          END;
+
+       PROCEDURE Init(sema: Semaphore; if: Interface);
+       PROCEDURE P(sema: Semaphore);
+       PROCEDURE V(sema: Semaphore);
+       PROCEDURE GetCondition(sema: Semaphore; VAR condition: Conditions.Condition);
+       PROCEDURE Drop(condition: Conditions.Condition);
+       PROCEDURE Status(sema: Semaphore) : INTEGER;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_e_m_a_p_h_o_r_e_s   provides   an   interface   for   semaphores.
+       Semaphores are used  for  synchronization  where  multiple
+       processes  want  to share common accessible resources.  If
+       the number of resources equals one, semaphores may be used
+       to  assure  mutual exclusion if several processes possibly
+       access the same data structure.
+
+       _I_n_i_t initializes a newly created semaphore and  associates
+       it  with the given interface _i_f.  The interface procedures
+       are expected to meet the specifications following:
+       _p: PPRROOCCEEDDUURREE(_s_e_m_a: _S_e_m_a_p_h_o_r_e);
+            block the current task until  one  of  the  resources
+            becomes  free and allocate it.  This interface proce­
+            dure is optional (i.e. it may be set to NNIILL)  because
+            it may be replaced by _g_e_t_c_o_n_d_i_t_i_o_n and _T_a_s_k_s_._W_a_i_t_F_o_r.
+            It  is  provided,  however,   to   allow   to   avoid
+            _T_a_s_k_s_._W_a_i_t_F_o_r  if  one  of  the  resources is already
+            free.
+       _v: PPRROOCCEEDDUURREE(_s_e_m_a: _S_e_m_a_p_h_o_r_e);
+            free one of the claimed resources.
+       _s_t_a_t_u_s: PPRROOCCEEDDUURREE() : IINNTTEEGGEERR;
+            return the number of free resources, or, if zero, the
+            negated  number  of  processes  which  wait  for this
+
+
+
+
+Release 0.5         Last change: 11 July 1997                   1
+
+
+
+
+
+Semaphores(3)          Ulm's Oberon System          Semaphores(3)
+
+
+            resource to become available.
+       _g_e_t_c_o_n_d_i_t_i_o_n: PPRROOCCEEDDUURREE(_s_e_m_a:  _S_e_m_a_p_h_o_r_e;  VVAARR  _c_o_n_d_i_t_i_o_n:
+            _C_o_n_d_i_t_i_o_n_s_._C_o_n_d_i_t_i_o_n);
+            create  a  condition  which allows to wait for one of
+            the resources.  The condition must not only  indicate
+            the availability of the resource but has to claim it.
+       _d_r_o_p: PPRROOCCEEDDUURREE(_c_o_n_d_i_t_i_o_n: _C_o_n_d_i_t_i_o_n_s_._C_o_n_d_i_t_i_o_n);
+            remove the condition from the list of waiting  condi­
+            tions, or, release the resource if it has already has
+            been claimed.
+
+       _P and _V  realize  Dijkstra's  semaphore  operations  which
+       claim and release a resource.
+
+       _G_e_t_C_o_n_d_i_t_i_o_n  returns  a condition which evaluates to TTRRUUEE
+       when the resource has been claimed.  Note that the  condi­
+       tion returned by _G_e_t_C_o_n_d_i_t_i_o_n does not indicate the avail­
+       ability of the  resource  only  but  claims  the  resource
+       itself,  i.e.  _P must not be called additionally if _C_o_n_d_i_­
+       _t_i_o_n_s_._T_e_s_t_C_o_n_d_i_t_i_o_n returns TTRRUUEE.  For this reason  condi­
+       tions  may not be recycled, i.e. for each new try to claim
+       a resource a new condition has to be created.
+
+       To undo _G_e_t_C_o_n_d_i_t_i_o_n, _D_r_o_p may  be  called.   _D_r_o_p  either
+       unqueues the condition from the list of conditions waiting
+       for one of the resource becoming  available,  or  releases
+       the resource if it was already claimed by the condition.
+
+       _S_t_a_t_u_s  reports  the current status of _s_e_m_a.  If positive,
+       the returned value indicates the number of free resources.
+       If  less  or  equal  to  zero,  the  absolute value of the
+       returned number gives the number of processes which  waits
+       for the resource to become available.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _S_e_m_a_p_h_o_r_e_s   does  not  produce  itself  any  diagnostics.
+       Implementations are expected to relate any error events to
+       the  semaphore.  For external semaphores (i.e. those which
+       are maintained outside) it is wise to setup an event queue
+       for  the semaphore and to check for pending events after _P
+       operations for lost resources.
+
+       Following runtime tests are performed by assertions:
+
+       ·      _I_n_i_t checks the validity of the interface record.
+
+       ·      _D_r_o_p verifies that the condition has been  returned
+              formerly by _G_e_t_C_o_n_d_i_t_i_o_n.
+
+CCAAVVEEAATT
+       Critical  regions  which  are  threatened  by asynchronous
+       interrupts, (i.e.  which  are  possible  reentered  during
+       interrupt processing) must be also protected by use of the
+       priority system to assure avoidance of  dead  locks.   The
+
+
+
+Release 0.5         Last change: 11 July 1997                   2
+
+
+
+
+
+Semaphores(3)          Ulm's Oberon System          Semaphores(3)
+
+
+       general pattern for these cases looks as following:
+
+       Events.AssertPriority(Priorities.interrupts);
+       Semaphores.P(mutex);
+          (* ... critical region ... *)
+       Semaphores.V(mutex);
+       Events.ExitPriority;
+
+
+SSEEEE AALLSSOO
+       _E_v_e_n_t_s_(_3_)            priority system
+       _L_o_c_a_l_S_e_m_a_p_h_o_r_e_s_(_3_)   implementation of internal semaphores
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)     setup of event queues
+
+BBUUGGSS
+       Neither _S_e_m_a_p_h_o_r_e_s nor its  implementations  are  able  to
+       check whether _P and _V operations are properly nested.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 11 July 1997                   3
+
+

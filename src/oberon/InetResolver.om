@@ -1,0 +1,133 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: InetResolve.om,v 1.4 2006/08/11 15:09:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: InetResolve.om,v $
+   Revision 1.4  2006/08/11 15:09:52  borchert
+   HostByIPv6Addr and IPv6AddrByHost added
+
+   Revision 1.3  2004/04/02 18:44:47  borchert
+   - depends now on the DNS modules instead of the ypmatch hack
+   - host and domain name are now served by UnixHost
+
+   Revision 1.2  1994/09/22  07:28:40  borchert
+   Resolver renamed to InetResolver
+
+   Revision 1.1  1994/02/23  07:25:44  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE InetResolver;
+
+   IMPORT DNSRecords, DNSResolvers, DNSStdResolvers, IPv4Addresses,
+      IPv6Addresses, RelatedEvents, Streams, Strings, UnixHost;
+
+   VAR
+      cachedHostname, cachedDomain: DNSRecords.Name;
+
+   PROCEDURE HostByAddr(address: IPv4Addresses.SocketAddress;
+                        VAR host: ARRAY OF CHAR;
+			errors: RelatedEvents.Object);
+      VAR
+	 hosts: DNSResolvers.HostnameList;
+	 s: Streams.Stream;
+   BEGIN
+      IF DNSResolvers.GetHostByIPv4Addr(DNSResolvers.std,
+	       address.host, hosts, errors) THEN
+	 COPY(hosts.hostname, host);
+      ELSE
+	 host[0] := 0X; Strings.Open(s, host);
+	 IPv4Addresses.WriteText(s, address.host);
+      END;
+   END HostByAddr;
+
+   PROCEDURE AddrByHost(host: ARRAY OF CHAR;
+                        VAR address: IPv4Addresses.SocketAddress;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addresses: DNSResolvers.IPv4AddressList;
+	 s: Streams.Stream;
+   BEGIN
+      IF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+	       host, addresses, errors) THEN
+	 address.host := addresses.addr;
+	 RETURN TRUE
+      ELSE
+	 Strings.Open(s, host);
+	 RETURN IPv4Addresses.ReadText(s, address.host)
+      END;
+   END AddrByHost;
+
+   PROCEDURE HostByIPv6Addr(address: IPv6Addresses.SocketAddress;
+                            VAR host: ARRAY OF CHAR;
+			    errors: RelatedEvents.Object);
+      VAR
+	 hosts: DNSResolvers.HostnameList;
+	 s: Streams.Stream;
+   BEGIN
+      IF DNSResolvers.GetHostByIPv6Addr(DNSResolvers.std,
+	       address.host, hosts, errors) THEN
+	 COPY(hosts.hostname, host);
+      ELSE
+	 host[0] := 0X; Strings.Open(s, host);
+	 IPv6Addresses.WriteText(s, address.host);
+      END;
+   END HostByIPv6Addr;
+
+   PROCEDURE IPv6AddrByHost(host: ARRAY OF CHAR;
+			    VAR address: IPv6Addresses.SocketAddress;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addresses: DNSResolvers.IPv6AddressList;
+	 s: Streams.Stream;
+   BEGIN
+      IF DNSResolvers.GetIPv6AddrByHost(DNSResolvers.std,
+	       host, addresses, errors) THEN
+	 address.host := addresses.addr;
+	 RETURN TRUE
+      ELSE
+	 Strings.Open(s, host);
+	 RETURN IPv6Addresses.ReadText(s, address.host)
+      END;
+   END IPv6AddrByHost;
+
+   PROCEDURE GetHostName(VAR hostname: ARRAY OF CHAR);
+   BEGIN
+      IF cachedHostname = "" THEN
+	 UnixHost.GetHostName(cachedHostname);
+      END;
+      COPY(cachedHostname, hostname);
+   END GetHostName;
+
+   PROCEDURE GetDomainName(VAR domain: ARRAY OF CHAR);
+   BEGIN
+      IF cachedDomain = "" THEN
+	 UnixHost.GetDomainName(cachedDomain);
+      END;
+      COPY(cachedDomain, domain);
+   END GetDomainName;
+
+BEGIN
+   cachedHostname := ""; cachedDomain := "";
+END InetResolver.

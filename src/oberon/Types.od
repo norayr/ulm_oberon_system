@@ -1,0 +1,127 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Types.od,v 1.5 2000/12/13 10:02:47 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Types.od,v $
+   Revision 1.5  2000/12/13  10:02:47  borchert
+   SetInt type used in msb constant
+
+   Revision 1.4  2000/12/13  09:51:37  borchert
+   constants and types for the relationship of INTEGER and SET added
+
+   Revision 1.3  1998/09/25 15:22:55  borchert
+   Real32..Real128 added
+
+   Revision 1.2  1994/07/01  11:07:49  borchert
+   IntAddress, Int8/16/32, ToInt8/16/32 and bit/little endian stuff added
+
+   Revision 1.1  1994/02/22  20:12:11  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 9/93
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Types;
+
+   (* compiler-dependent type definitions;
+      this version works for Ulm's Oberon Compilers on
+      following architectures: m68k and sparc
+   *)
+
+   IMPORT SYS := SYSTEM;
+
+   TYPE
+      Address = SYS.ADDRESS;
+      UntracedAddress = SYS.UNTRACEDADDRESS;
+	 (* address types for address arithmetic:
+	    both types are compatible to LONGINT;
+	    values of type Address are traced by the garbage collection
+	       (thus values of type Address may be changed by the
+	       garbage collector)
+	    values of type UntracedAddress are ignored by the
+	    garbage collector
+
+	    Ulm's Oberon compiler issues warnings if values of these
+	    types are assigned to LONGINT
+
+	    for foreign compilers it is safe to define both types
+	    as LONGINT
+	 *)
+      IntAddress = LONGINT;
+	 (* the integer type which is large enough to hold an address *)
+
+      Count = LONGINT;
+      Size = Count;    (* SIZE should return this type *)
+      Byte = BYTE;
+
+   TYPE
+      (* there are not always fitting base types that correspond exactly
+	 to the given size; in those cases the next-best type is to
+	 be taken that is larger than the given size, or, if no such
+	 type is available, the largest base type is to be given
+      *)
+      Int8 = SHORTINT;
+      Int16 = SYS.INT16;
+      Int32 = LONGINT;
+
+   TYPE
+      Real32 = REAL;
+      Real64 = REAL;
+
+   CONST
+      bigEndian = 0;    (* SPARC, M68K etc *)
+      littleEndian = 1; (* Intel 80x86, VAX etc *)
+      byteorder = littleEndian; (* machine-dependent constant *)
+   TYPE
+      ByteOrder = SHORTINT; (* bigEndian or littleEndian *)
+
+   (* following constants and type definitions try to make
+      conversions from INTEGER to SET and vice versa more portable
+      to allow for bit operations on INTEGER values
+   *)
+   TYPE
+      SetInt = INTEGER; (* INTEGER type that corresponds to SET *)
+   CONST
+      msb = SYS.VAL(SET, MIN(SetInt));
+	 (* most significant bit, converted to a SET *)
+      (* we expect msbIsMax XOR msbIs0 to be 1;
+	 this is checked for by an assertion
+      *)
+      msbIsMax = SYS.VAL(SHORTINT, (msb = {MAX(SET)}));
+	 (* is 1, if msb equals {MAX(SET)} *)
+      msbIs0 = SYS.VAL(SHORTINT, (msb = {0}));
+	 (* is 0, if msb equals {0} *)
+      msbindex = msbIsMax * MAX(SET);
+	 (* set element that corresponds to the most-significant-bit *)
+      lsbindex = MAX(SET) - msbindex;
+	 (* set element that corresponds to the lowest-significant-bit *)
+      nofbits = MAX(SET) + 1;
+	 (* number of elements in SETs *)
+
+   PROCEDURE ToInt8(int: LONGINT) : Int8;
+   PROCEDURE ToInt16(int: LONGINT) : Int16;
+   PROCEDURE ToInt32(int: LONGINT) : Int32;
+
+   PROCEDURE ToReal32(real: LONGREAL) : Real32;
+   PROCEDURE ToReal64(real: LONGREAL) : Real64;
+
+END Types.

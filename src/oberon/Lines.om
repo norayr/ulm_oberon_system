@@ -1,0 +1,327 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Lines.om,v 1.4 1998/02/22 17:34:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Lines.om,v $
+   Revision 1.4  1998/02/22  17:34:46  borchert
+   several bug fixes:
+   - InitErrorHandling was not called
+   - correct handling of eof position
+   - Read.LnS instead of Read.LineS
+   - defined return values even in case of errors
+
+   Revision 1.2  1996/12/02  14:24:09  borchert
+   Scanned added
+
+   Revision 1.1  1994/07/25  12:19:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Lines;
+
+   IMPORT Disciplines, Events, Objects, Priorities, Read, RelatedEvents,
+      StreamDisciplines, Streams, Strings;
+
+   TYPE
+      Location =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* location in input stream *)
+	    line, pos: Streams.Count; (* both starting from 0 *)
+	 END;
+
+   CONST
+      streamNotScannedYet = 0;
+	 (* Scan must be called before Seek or NumberOfLines *)
+      lineNumberOutOfRange = 1;
+	 (* a line number was given to Seek which was outside of
+	    [0..NumberOfLines(s)-1]
+	 *)
+      positionOutOfRange = 2;
+	 (* a pos (= column) was given to Seek which was outside
+	    the range of the associated line
+	 *)
+      invalidPos = 3;
+	 (* returned by GetPos: stream at not yet scanned area 
+	    or inside a line terminator
+	 *)
+      errorcodes = 4;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   (* private declarations *)
+
+   CONST
+      linebufsize = 512; (* number of line entries per line buffer *)
+   TYPE
+      LineBuf = POINTER TO LineBufRec;
+      LineBufRec =
+	 RECORD
+	    firstline: Streams.Count;
+	    offset: ARRAY linebufsize OF Streams.Count;
+	    length: ARRAY linebufsize OF Streams.Count;
+	    next: LineBuf;
+	 END;
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    noflines: Streams.Count; (* number of lines *)
+	    length: Streams.Count;
+	    linebufs: LineBuf;
+	 END;
+   VAR
+      discId: Disciplines.Identifier;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[streamNotScannedYet] :=
+	 "Lines.Scan has not been called yet for the given stream";
+      errormsg[lineNumberOutOfRange] :=
+	 "the given line number is out of range";
+      errormsg[positionOutOfRange] :=
+	 "the given position is out of range";
+      errormsg[invalidPos] := "invalid position";
+   END InitErrorHandling;
+
+   PROCEDURE Error(s: Streams.Stream; errorcode: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.message := errormsg[errorcode];
+      event.type := error;
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(s, event);
+   END Error;
+
+   PROCEDURE Scan(s: Streams.Stream);
+      (* scan the entire stream from the curr. pos. and setup the line table *)
+      VAR
+	 disc: Discipline;
+	 head, tail: LineBuf;
+	 noflines: Streams.Count;
+	 lastpos, currpos: Streams.Count;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 linetermlen: Streams.Count;
+
+      PROCEDURE AddEntry(offset: Streams.Count);
+	 VAR
+	    linebuf: LineBuf;
+      BEGIN
+	 IF head = NIL THEN
+	    NEW(head); head.next := NIL; tail := head; head.firstline := 0;
+	 ELSIF tail.firstline + linebufsize = noflines THEN
+	    NEW(linebuf); linebuf.next := NIL;
+	    tail.next := linebuf; tail := linebuf;
+	    linebuf.firstline := noflines;
+	 END;
+	 tail.offset[noflines MOD linebufsize] := offset;
+	 INC(noflines);
+      END AddEntry;
+
+      PROCEDURE SetLength;
+      BEGIN
+	 IF noflines > 0 THEN
+	    tail.length[(noflines-1) MOD linebufsize] :=
+	       currpos - lastpos - linetermlen;
+	 END;
+      END SetLength;
+
+   BEGIN
+      (* be sure to remove any old discipline record, if existant *)
+      Disciplines.Remove(s, discId);
+
+      head := NIL; tail := NIL; noflines := 0;
+      StreamDisciplines.GetLineTerm(s, lineterm);
+      linetermlen := Strings.Len(lineterm);
+      LOOP
+	 lastpos := currpos;
+	 IF ~Streams.Tell(s, currpos) THEN
+	    RETURN
+	 END;
+	 SetLength; (* of previous entry *)
+	 (* use Read.Line to take advantage of StreamDisciplines *)
+	 Read.LnS(s);
+	 IF s.error THEN
+	    RETURN
+	 END;
+	 IF s.eof THEN
+	    EXIT
+	 END;
+	 AddEntry(currpos);
+      END;
+
+      NEW(disc); disc.id := discId;
+      disc.noflines := noflines;
+      disc.linebufs := head;
+      disc.length := currpos;
+      Disciplines.Add(s, disc);
+   END Scan;
+
+   PROCEDURE Scanned(s: Streams.Stream) : BOOLEAN;
+      (* has the stream scanned yet by Lines? *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      RETURN Disciplines.Seek(s, discId, disc)
+   END Scanned;
+
+   PROCEDURE ConvertPos(s: Streams.Stream; pos: Streams.Count;
+		        VAR loc: Location);
+      VAR
+	 disc: Discipline;
+	 prev, linebuf: LineBuf;
+	 count: Streams.Count;
+	 upper, lower: Streams.Count; (* interval is [lower, upper) *)
+	 middle: Streams.Count; (* middle of [lower, upper) *)
+   BEGIN
+      IF ~Disciplines.Seek(s, discId, disc) THEN
+	 Error(s, streamNotScannedYet);
+	 loc.line := 0; loc.pos := 0; RETURN
+      END;
+      IF pos < 0 THEN
+	 Error(s, invalidPos); loc.line := 0; loc.pos := 0; RETURN
+      ELSIF pos >= disc.length THEN
+	 IF pos > disc.length THEN
+	    Error(s, invalidPos);
+	 END;
+	 loc.line := disc.noflines; loc.pos := 0; RETURN
+      END;
+
+      prev := NIL; linebuf := disc.linebufs; count := 0;
+      WHILE (linebuf # NIL) & (pos > linebuf.offset[0]) DO
+	 prev := linebuf;
+	 linebuf := linebuf.next;
+	 INC(count);
+      END;
+      IF (linebuf = NIL) OR (pos < linebuf.offset[0]) THEN
+	 linebuf := prev; DEC(count);
+      END;
+      ASSERT(linebuf # NIL);
+
+      (* binary search inside linebuf *)
+      lower := 0;
+      IF count >= disc.noflines DIV linebufsize THEN
+	 upper := disc.noflines MOD linebufsize;
+      ELSE
+	 upper := linebufsize;
+      END;
+      WHILE upper - lower > 1 DO
+	 middle := (upper + lower) DIV 2;
+	 IF pos >= linebuf.offset[middle] THEN
+	    lower := middle;
+	 ELSE
+	    upper := middle;
+	 END;
+      END;
+
+      ASSERT(pos >= linebuf.offset[lower]);
+
+      loc.line := count * linebufsize + lower;
+      loc.pos := pos - linebuf.offset[lower];
+
+      IF loc.pos > linebuf.length[lower] THEN
+	 (* inside of a line terminator *)
+	 ASSERT(loc.pos - linebuf.length[lower] <= 4);
+	 Error(s, invalidPos);
+      END;
+   END ConvertPos;
+
+   PROCEDURE ConvertLoc(s: Streams.Stream; loc: Location;
+			VAR pos: Streams.Count);
+      VAR
+	 disc: Discipline;
+	 count: Streams.Count;
+	 linebuf: LineBuf;
+   BEGIN
+      IF ~Disciplines.Seek(s, discId, disc) THEN
+	 pos := 0;
+	 Error(s, streamNotScannedYet); RETURN
+      END;
+      IF (loc.line < 0) OR (loc.line > disc.noflines) THEN
+	 pos := disc.length;
+	 Error(s, lineNumberOutOfRange); RETURN
+      END;
+      IF loc.line = disc.noflines THEN
+	 IF loc.pos > 0 THEN
+	    Error(s, invalidPos);
+	 END;
+	 pos := disc.length;
+	 RETURN
+      END;
+
+      (* get the stream pos of the given line *)
+      count := loc.line DIV linebufsize; linebuf := disc.linebufs;
+      WHILE count > 0 DO
+	 linebuf := linebuf.next; DEC(count);
+      END;
+      IF (loc.pos < 0) OR
+	    (loc.pos > linebuf.length[loc.line MOD linebufsize]) THEN
+	 Error(s, positionOutOfRange); RETURN
+      END;
+      pos := linebuf.offset[loc.line MOD linebufsize] + loc.pos;
+   END ConvertLoc;
+
+   PROCEDURE SetPos(s: Streams.Stream; loc: Location);
+      (* seek to the given line number; the first line has the number 0 *)
+      VAR
+	 offset: Streams.Count;
+   BEGIN
+      ConvertLoc(s, loc, offset);
+      Streams.SetPos(s, offset);
+   END SetPos;
+
+   PROCEDURE GetPos(s: Streams.Stream; VAR loc: Location);
+      VAR
+	 currpos: Streams.Count;
+   BEGIN
+      Streams.GetPos(s, currpos);
+      ConvertPos(s, currpos, loc);
+   END GetPos;
+
+   PROCEDURE NumberOfLines(s: Streams.Stream) : Streams.Count;
+      (* return the number of lines *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF ~Disciplines.Seek(s, discId, disc) THEN
+	 Error(s, streamNotScannedYet); RETURN 0
+      END;
+
+      RETURN disc.noflines
+   END NumberOfLines;
+
+BEGIN
+   discId := Disciplines.Unique();
+   InitErrorHandling;
+END Lines.

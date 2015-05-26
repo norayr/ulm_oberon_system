@@ -1,0 +1,477 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH RandomGenerators 3 "Last change: 11 December 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+RandomGenerators \-  general abstraction for pseudo random number generation 
+.SH SYNOPSIS
+.Pg
+TYPE Sequence = POINTER TO SequenceRec;
+TYPE SequenceRec = RECORD (Services.ObjectRec) END;
+TYPE Int32ValSProc = PROCEDURE (sequence: Sequence): Types.Int32;
+TYPE LongRealValSProc = PROCEDURE (sequence: Sequence): LONGREAL;
+TYPE RewindSequenceProc = PROCEDURE (sequence: Sequence);
+TYPE RestartSequenceProc = PROCEDURE (sequence, seed: Sequence);
+TYPE SetValSProc = PROCEDURE (sequence: Sequence; value: Operations.Operand);
+.sp 0.3
+CONST int32ValS = 0; longRealValS = 1; rewindSequence = 2; restartSequence = 3;
+TYPE CapabilitySet = SET; (* of [int32ValS..restartSequence] *)
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      int32ValS: Int32ValSProc;
+      longRealValS: LongRealValSProc;
+      rewindSequence: RewindSequenceProc;
+      restartSequence: RestartSequenceProc;
+   END;
+.sp 0.7
+VAR std: Sequence;  (* default sequence *)
+VAR seed: Sequence; (* sequence of seed values *)
+VAR unpredictable: Sequence; (* initially NIL *)
+.sp 0.7
+PROCEDURE Init(sequence: Sequence; if: Interface; caps: CapabilitySet);
+PROCEDURE Capabilities(sequence: Sequence): CapabilitySet;
+.sp 0.3
+PROCEDURE RewindSequence(sequence : Sequence);
+PROCEDURE RestartSequence(sequence, seed: Sequence);
+.sp 0.3
+PROCEDURE Int32Val(): Types.Int32;
+PROCEDURE Int32ValS(sequence: Sequence): Types.Int32;
+.sp 0.3
+PROCEDURE LongRealVal(): LONGREAL;
+PROCEDURE LongRealValS(sequence: Sequence): LONGREAL;
+PROCEDURE RealVal(): REAL;
+PROCEDURE RealValS(sequence: Sequence): REAL;
+.sp 0.3
+PROCEDURE Val(low, high: LONGINT): LONGINT;
+PROCEDURE ValS(sequence: Sequence; low, high: LONGINT): LONGINT;
+.sp 0.3
+PROCEDURE Flip(): BOOLEAN;
+PROCEDURE FlipS(sequence: Sequence): BOOLEAN;
+.sp 0.3
+PROCEDURE Support(type: Services.Type; setValS: SetValSProc);
+PROCEDURE SetVal(value: Operations.Operand);
+PROCEDURE SetValS(sequence: Sequence; value: Operations.Operand);
+.Pe
+.SH DESCRIPTION
+.I RandomGenerators
+provides a general interface for the generation of pseudo random numbers.
+It also provides a linear congruential generator
+taken from Knuth, \fISeminumerical Algorithms\fP, Third Edition, Sect. 3.6,
+as a default implementation.
+.LP
+.I std
+is a sequence predefined by the default implementation that can (and
+probably should) be replaced by any convenient alternative, like, e.g.,
+a sequence from \fISubtractiveRandomGenerator(3)\fP.
+It serves as a default for all procedures without a
+.I sequence
+argument.
+.LP
+.I seed
+is a sequence of seed values useful to initialize other sequences.
+By default, it depends on the system clock at program initialization in
+a half-hearted effort to get something different each time a program is
+run.
+A better job will be done if a more sophisticated system-dependent true
+random generator like
+.I UnixSeeds(3)
+is imported, which will replace this sequence.
+.LP
+.I unpredictable
+is, if non-\fBNIL\fP, to be considered as a sequence of fairly
+unpredictable values that is based upon good seed values
+and a generator like \fISurfRandomGenerators(3)\fP.
+The current version of \fIUnixSeeds(3)\fP attempts to
+initialize this sequence, if imported.
+.LP
+.I Init
+initializes a newly created sequence and associates it with the given
+interface
+.I if
+and set of capabilities
+.IR caps .
+At least one of
+.I int32ValS
+or
+.I longRealValS
+must be in
+.I caps
+and for each capability in
+.I caps
+a corresponding interface procedure must be defined in
+.IR if .
+The interface procedures are expected to meet the specifications following:
+.LP
+.Is
+.If int32ValS "\fIsequence\fP: \fISequence\fP" "\fITypes.Int32\fP"
+return a uniformly distributed random 32 bit integer value.
+.If longRealValS "\fIsequence\fP: \fISequence\fP" "\fILONGREAL\fP"
+return an approximately uniformly distributed random
+.B LONGREAL
+value in the half-open interval [0, 1).
+The distribution of the most significant bits will have the greatest impact
+on the distribution of integer values constructed from such values.
+.If rewindSequence "\fIsequence\fP: \fISequence\fP"
+allow to re-examine the sequence from the beginning.
+Only deterministic generators will implement this.
+.If restartSequence "\fIsequence, seed\fP: \fISequence\fP"
+restart a sequence with new seed values, supplied by
+.IR seed .
+Only generators benefiting from seed values will implement this.
+.Ef
+.LP
+.I Capabilities 
+returns the set of capabilities of
+.IR sequence .
+.LP
+.I RewindSequence 
+allows to re-examine the sequence, if supported by the implementation.
+It must not be called unless
+.I rewindSequence
+is a capability of
+.IR sequence .
+.LP
+.I RestartSequence 
+restarts a sequence with new seed values supplied by
+.IR seed ,
+if supported by the implementation.
+It must not be called unless
+.I restartSequence
+is a capability of
+.IR sequence .
+.LP
+.I Int32Val
+returns a random 32 bit integer value,
+.I Val
+returns a random
+.B LONGINT
+value in the range from
+.I low
+up to
+.I high
+inclusively,
+where
+.I low
+must be less or equal to
+.IR high ,
+.I Flip
+returns a random boolean value,
+and
+.I LongRealVal
+and
+.I RealVal
+return random real values greater or equal to zero and less than one.
+All these functions iterate the
+.I std
+sequence.
+Their dual versions,
+.IR Int32ValS ,
+.IR ValS ,
+.IR FlipS ,
+.IR LongRealValS ,
+and
+.IR RealValS ,
+each iterate the sequence specified by the first parameter.
+.LP
+.I RandomGenerators
+defines a service for the creation of random values of a specific type.
+With
+.IR Support ,
+a service provider can bind an implementation of
+.I setValS
+to the specified type.
+The interface procedure is expected to meet the specification following:
+.LP
+.Is
+.If setValS "\fIsequence\fP: \fISequence\fP; \fIvalue\fP: \fIOperations.Operand\fP"
+store a random value obtained from
+.I sequence
+into
+.IR value ,
+which is supposed to be initialized already.
+The range of the type specified by
+.I op
+has to be determined by the service provider.
+.Ef
+.LP
+.I SetVal
+and
+.I SetValS
+store random values obtained from
+.I std
+or a given sequence, respectively, into
+.I value,
+which is supposed to be initialized already.
+.SH EXAMPLE
+Following example shows how a service provider for random complex numbers may be
+implemented:
+.LP
+Suppose, a module called
+.I ComplexNumbers
+defines a type for complex numbers:
+.Pg
+TYPE ComplexNumber = POINTER TO ComplexNumberRec;
+TYPE ComplexNumberRec =
+   RECORD
+      (Operations.OperandRec)
+      real: LONGREAL;
+      imag: LONGREAL;
+   END;
+.Pe
+Now an implementation of the service can be realized as follows:
+.Pg
+MODULE RandComplexNumbers;
+
+   IMPORT ComplexNumbers, Math, RandomGenerators, Services;
+
+   VAR
+      complexType: Services.Type;
+
+   PROCEDURE RandComplexNumber(sequence: RandomGenerators.Sequence;
+                               value: Operations.Operand);
+      VAR
+         arg: LONGREAL;
+   BEGIN
+      WITH value: ComplexNumbers.ComplexNumber DO
+         arg := 2. * Math.pi * RandomGenerators.LongRealValS(sequence);
+         value.real := Math.CosL(arg);
+         value.imag := Math.SinL(arg);
+      END;
+   END RandComplexNumber;
+
+BEGIN
+   Services.SeekType("ComplexNumbers.ComplexNumber", complexType);
+   ASSERT(complexType # NIL);
+   RandomGenerators.Support(complexType, RandComplexNumber);
+END RandComplexNumbers.
+.Pe
+Applications may now import
+.I RandComplexNumbers
+and generate random complex numbers with an absolute value of one by calling
+.I RandomGenerators.SetValS
+or
+.IR RandomGenerators.SetVal .
+.SH DIAGNOSTICS
+All of the following errors lead to failed assertions:
+Calling
+.I Init
+without at least one of
+.I int32ValS
+or
+.I longRealValS
+in
+.I caps
+or with capabilities not matched by corresponding interface procedures;
+calling
+.I RewindSequence
+or
+.I RestartSequence
+with a sequence lacking the corresponding capability;
+calling
+.I Val
+or
+.I ValS
+with a value of
+.I low
+greater than
+.IR high .
+.SH AUTHOR
+Frank B.J. Fischer,
+extended by Martin Hasch and Andreas Borchert
+.SH "SEE ALSO"
+.Tb SubtractiveRandomGenerator(3)
+.Tp BBS(3)
+implementation of the Blum, Blum, and Shub pseudo random number generator
+.Tp SubtractiveRandomGenerator(3)
+pseudo random number generator that is based on the
+subtractive method
+.Tp SurfRandomGenerators(3)
+implementation of SURF, a simple unpredictable random function
+that is reasonably fast
+.Tp UnixSeeds(3)
+generation of seed values in a UNIX environment
+.Te
+.SH BUGS
+John von Neumann (1951): Anyone who considers arithmetical methods of producing
+random digits is, of course, in a state of sin.
+.\" ---------------------------------------------------------------------------
+.\" $Id: RandomGenerators.3,v 1.10 2004/12/11 08:13:47 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: RandomGenerators.3,v $
+.\" Revision 1.10  2004/12/11 08:13:47  borchert
+.\" - macros were missing
+.\" - typo fixed
+.\"
+.\" Revision 1.9  2004/05/22 06:58:20  borchert
+.\" unpredictable added
+.\"
+.\" Revision 1.8  2004/03/04 10:10:43  borchert
+.\" reference to SurfRandomGenerators added
+.\"
+.\" Revision 1.7  1997/10/11 20:56:20  martin
+.\" description of RestartSequence added
+.\"
+.\" Revision 1.6  1997/10/11  20:26:06  martin
+.\" new method RestartSequence added
+.\" capabilities renamed to method names
+.\" example modified
+.\" diagnostics section extended
+.\" most descriptions revised
+.\"
+.\" Revision 1.5  1997/04/16  13:00:20  borchert
+.\" - Random --> RandomGenerators (two times the old name survived)
+.\" - qualified references fixed
+.\"
+.\" Revision 1.4  1997/04/02  09:40:54  borchert
+.\" Subtractive renamed to SubtractiveRandomGenerator
+.\"
+.\" Revision 1.3  1997/04/02  09:30:44  borchert
+.\" major revision:
+.\" - Random renamed to RandomGenerators
+.\" - this is module is now an abstraction rather than a particular
+.\"   implementation
+.\"
+.\" Revision 1.2  1994/08/30  10:06:35  borchert
+.\" sequences added
+.\"
+.\" Revision 1.1  1990/08/31  17:02:17  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

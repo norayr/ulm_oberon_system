@@ -1,0 +1,310 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH ModularizedStructures 3 "Last change: 27 April 2000" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+ModularizedStructures \- distribute graphs of persistent objects
+across multiple byte sequences
+.SH SYNOPSIS
+.Pg
+TYPE ObjectTable = POINTER TO ObjectTableRec;
+TYPE ObjectTableRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+CONST corruptedInput = 0; readFailed = 1;
+CONST typeGuardFailure = 2; unknownObject = 3;
+CONST writeFailed = 4; errors = 5;
+.sp 0.3
+TYPE ErrorCode = SHORTINT; (* corruptedInput ... *)
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      s: Streams.Stream;
+      code: ErrorCode;
+      otype, guard: Services.Type;
+      modname, name: ConstStrings.String;
+   END;
+.sp 0.3
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+.sp 0.7
+PROCEDURE CreateTable(VAR table: ObjectTable);
+PROCEDURE Add(table: ObjectTable;
+              object: PersistentObjects.Object;
+              modname, name: ConstStrings.String);
+PROCEDURE Insert(table: ObjectTable;
+                 object: PersistentObjects.Object;
+                 modname: ConstStrings.String;
+                 VAR name: ConstStrings.String);
+PROCEDURE Lookup(table: ObjectTable;
+                 modname, name: ConstStrings.String;
+                 VAR object: PersistentObjects.Object) : BOOLEAN;
+PROCEDURE GetObjects(table: ObjectTable; it: Iterators.Iterator);
+PROCEDURE InTab(table: ObjectTable; modname: ConstStrings.String) : BOOLEAN;
+.sp 0.7
+PROCEDURE Init(s: Streams.Stream;
+               modname: ConstStrings.String;
+               table: ObjectTable);
+PROCEDURE GetParams(s: Streams.Stream;
+                    VAR modname: ConstStrings.String;
+                    VAR table: ObjectTable);
+.sp 0.7
+PROCEDURE Read(s: Streams.Stream;
+               VAR object: PersistentObjects.Object) : BOOLEAN;
+PROCEDURE GuardedRead(s: Streams.Stream;
+                      guard: Services.Type;
+                      VAR object: PersistentObjects.Object) : BOOLEAN;
+PROCEDURE Write(s: Streams.Stream;
+                object: PersistentObjects.Object;
+                modname, name: ConstStrings.String) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I ModularizedStructures
+allows to store and restore graphs of persistent objects across
+multiple byte sequences. This works by associating objects with
+modules that correspond to separate byte sequences and giving
+objects names that may be used to reference objects in foreign modules.
+These graphs may contain cycles as \fIModularizedStructures\fP is
+based upon \fILinearizedStructures(3)\fP.
+.LP
+Graphs are written module-wise: Open an individual stream for
+each module, call \fIInit\fP for it, and invoke \fIWrite\fP for
+a root object of that module. Root objects have the property that all other
+objects of that module can be reached from them without crossing
+module boundaries.
+.LP
+On reading, modules have to be read in topological order
+by invoking \fIRead\fP or \fIGuardedRead\fP for each of the
+root objects on each individual stream representing a module. An object
+table allows to resolve references across module boundaries by
+storing all objects read so far by their module and object names.
+.LP
+Note that \fIModularizedStructures\fP does \fBnot\fP store any
+information (using \fIPersistentDisciplines(3)\fP or whatever)
+about module and/or object names at the objects itself.
+Instead these names must be explicitly passed to \fIWrite\fP,
+and the reading marshalling procedures are expected to
+add objects to the object table.
+This avoids redundancy and gives more flexibility in allowing
+objects to be used in more than one context of \fIModularizedStructures\fP.
+It is recommended to put support for this in an application-dependent
+persistent object type. An example for this is \fICompilerObjects(3)\fP.
+.LP
+Not all objects belonging to a modularized graph need to be named and
+read or written using \fIModularizedStructures\fP. This is necessary
+only for objects that are possibly referenced across module boundaries.
+Objects that are referenced by multiple modules but not saved and
+restored using \fIModularizedStructures\fP will be duplicated.
+.LP
+.I CreateTable
+creates an object table that stores persistent objects by their
+module and object name. Object tables are later associated by
+\fIInit\fP with a stream that represents a module, and used
+(but not maintained) by \fIRead\fP and \fIGuardedRead\fP.
+.LP
+.I Add
+adds \fIobject\fP to \fItable\fP with the given module and object name.
+Module names do not have to be registered before, they come into
+existence when they are mentioned first.
+.I Insert
+works like \fIAdd\fP but generates an unique name for it.
+.I Lookup
+allows to access objects of a table by their module and object name.
+.I GetObjects
+returns an iterator that allows to iterate through all objects of
+an object table.
+.I InTab
+returns \fBTRUE\fP if objects of module \fImodname\fP are included
+in the table.
+.LP
+.I Init
+associates a stream with a module name and a table. There is only one
+such association active for a stream and multiple calls of \fIInit\fP
+allow to change an association. Note that the object table parameter
+may be \fBNIL\fP if neither \fIRead\fP nor \fIGuardedRead\fP will be
+called for that stream.
+.I GetParams
+returns the parameters passed earlier to \fIInit\fP. Note that
+\fIGetParams\fP must not be called if \fIInit\fP has not been called
+before.
+.LP
+.I Read
+and
+.I GuardedRead
+work like their counterparts in \fILinearizedStructures(3)\fP
+but support references across modules if referenced objects
+are to be found in the object table associated with \fIs\fP.
+.I Write
+writes a reference of \fIobject\fP (if \fImodname\fP is non-\fBNIL\fP and
+not equal to the module associated with \fIs\fP), or the object
+itself using \fILinearizedStructures(3)\fP otherwise.
+.SH DIAGNOSTICS
+In addition to the error events generated by \fILinearizedStructures(3)\fP,
+\fIPersistentObjects(3)\fP, the marshalling procedures in use, and
+the underlying stream, \fIModularizedStructures\fP may return following
+error codes for its error events:
+.Tb typeGuardFailure
+.Tp corruptedInput
+\fIRead\fP or \fIGuardedRead\fP found input that was not generated
+by \fIWrite\fP.
+.Tp readFailed
+One of the reading operations of \fINetIO(3)\fP failed
+(most probably due to an unexpected end of input).
+.Tp typeGuardFailure
+The type guard of \fIGuardedRead\fP failed.
+.Tp unknownObject
+An object reference was found that is not included in the object table.
+.Tp writeFailed
+The write operation failed due to a failure returned by \fINetIO(3)\fP
+or \fILinearizedStructures(3)\fP.
+.Te
+.SH "SEE ALSO"
+.Tb LinearizedStructures(3)
+.Tp LinearizedStructures(3)
+support of graphs of persistent objects
+.Tp PersistentObjects(3)
+interface of persistent objects
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: ModularizedStructures.3,v 1.1 2000/04/27 12:16:17 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: ModularizedStructures.3,v $
+.\" Revision 1.1  2000/04/27  12:16:17  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

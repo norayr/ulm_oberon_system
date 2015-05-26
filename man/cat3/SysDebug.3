@@ -1,0 +1,240 @@
+SysDebug(3)                   Ulm's Oberon System                  SysDebug(3)
+
+
+
+[1mNAME[0m
+       SysDebug - process trace
+
+[1mSYNOPSIS[0m
+       (* requests *)
+       CONST traceme    =  0;  (* by tracee to begin tracing *)
+       CONST childdone  =  0;  (* tracee is done with his half *)
+       CONST peektext   =  1;  (* read word from text segment *)
+       CONST peekdata   =  2;  (* read word from data segment *)
+       CONST peekuser   =  3;  (* read word from user struct *)
+       CONST poketext   =  4;  (* write word into text segment *)
+       CONST pokedata   =  5;  (* write word into data segment *)
+       CONST pokeuser   =  6;  (* write word into user struct *)
+       CONST cont       =  7;  (* continue process *)
+       CONST kill       =  8;  (* terminate process *)
+       CONST singlestep =  9;  (* single step process *)
+       CONST attach     = 10;  (* attach to an existing process *)
+       CONST detach     = 11;  (* detach from a process *)
+       CONST getregs    = 12;  (* get all registers *)
+       CONST setregs    = 13;  (* set all registers *)
+       CONST getfpregs  = 14;  (* get all floating point regs *)
+       CONST setfpregs  = 15;  (* set all floating point regs *)
+       CONST readdata   = 16;  (* read data segment *)
+       CONST writedata  = 17;  (* write data segment *)
+       CONST readtext   = 18;  (* read text segment *)
+       CONST writetext  = 19;  (* write text segment *)
+       CONST getfparegs = 20;  (* get all fpa regs *)
+       CONST setfparegs = 21;  (* set all fpa regs *)
+       CONST getwindow  = 22;  (* get register window n *)
+       CONST setwindow  = 23;  (* set register window n *)
+       CONST syscall    = 24;  (* trap next sys call *)
+       CONST dumpcore   = 25;  (* dump process core *)
+       CONST setwrbkpt  = 26;  (* set write breakpoint *)
+       CONST setacbkpt  = 27;  (* set access breakpoint *)
+       CONST clrdr7     = 28;  (* clear debug register 7 *)
+       CONST getucode   = 29;  (* get u.u_code *)
+
+       (* spaces *)
+       CONST text = 1;  (* program text *)
+       CONST data = 2;  (* global variables + heap + stack *)
+       CONST user = 3;  (* kernel's per-process data pages *)
+
+       TYPE Regs = (* MC68000 family *)
+          RECORD
+             dreg: ARRAY 8 OF SysTypes.Word;
+             areg: ARRAY 8 OF SysTypes.Word;
+             sreg: SysTypes.Word; (* status register *)
+             pc: SysTypes.Address;
+          END;
+       TYPE FPRegs = (* 68881 and up *)
+          RECORD
+             regs: ARRAY 8 OF LONGREAL; (* floating point regs *)
+             control: SysTypes.Word;    (* control reg *)
+             status: SysTypes.Word;     (* status reg *)
+             iaddr: SysTypes.Address;   (* instruction address reg *)
+             flags: SysTypes.Word;      (* unused, idle or busy *)
+          END;
+
+       PROCEDURE TraceMe;
+       PROCEDURE Peek(pid: SysProcess.ProcessId; space: SHORTINT;
+                      addr: SysTypes.Address;
+                      VAR dataword: SysTypes.Word;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Poke(pid: SysProcess.ProcessId; space: SHORTINT;
+                      addr: SysTypes.Address;
+                      dataword: SysTypes.Word;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Continue(pid: SysProcess.ProcessId;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ContinueWithSig(pid: SysProcess.ProcessId;
+                                 signal: SysSignals.Signal;
+                                 errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ContinueAt(pid: SysProcess.ProcessId;
+                            signal: SysSignals.Signal; (* maybe 0 *)
+                            addr: SysTypes.Address;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Kill(pid: SysProcess.ProcessId;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SingleStep(pid: SysProcess.ProcessId;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SingleStepWithSig(pid: SysProcess.ProcessId;
+                                   signal: SysSignals.Signal;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SingleStepAt(pid: SysProcess.ProcessId;
+                              signal: SysSignals.Signal; (* maybe 0 *)
+                              addr: SysTypes.Address;
+                              errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Attach(pid: SysProcess.ProcessId;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Detach(pid: SysProcess.ProcessId;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE DetachWithSig(pid: SysProcess.ProcessId;
+                               signal: SysSignals.Signal;
+                               errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE DetachAt(pid: SysProcess.ProcessId;
+                          signal: SysSignals.Signal; (* maybe 0 *)
+                          addr: SysTypes.Address;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetRegs(pid: SysProcess.ProcessId; VAR regs: Regs;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SetRegs(pid: SysProcess.ProcessId; regs: Regs;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetFPRegs(pid: SysProcess.ProcessId; VAR fpregs: FPRegs;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SetFPRegs(pid: SysProcess.ProcessId; fpregs: FPRegs;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Read(pid: SysProcess.ProcessId;
+                      space: SHORTINT; addr: SysTypes.Address;
+                      VAR buf: ARRAY OF BYTE;
+                      off, cnt: LONGINT;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Write(pid: SysProcess.ProcessId;
+                       space: SHORTINT; addr: SysTypes.Address;
+                       buf: ARRAY OF BYTE;
+                       off, cnt: LONGINT;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ContUntilSysCall(pid: SysProcess.ProcessId;
+                                  errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ContUntilSysCallWithSig(pid: SysProcess.ProcessId;
+                                         signal: SysSignals.Signal;
+                                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ContUntilSysCallAt(pid: SysProcess.ProcessId;
+                                    signal: SysSignals.Signal; (* maybe 0 *)
+                                    addr: SysTypes.Address;
+                                    errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE DumpCore(pid: SysProcess.ProcessId;
+                          filename: ARRAY OF CHAR;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Trace(request: SHORTINT;
+                       pid: SysProcess.ProcessId;
+                       addr: SysTypes.Address;
+                       data: SysTypes.Word;
+                       addr2: SysTypes.Address;
+                       VAR result: SysTypes.Word;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mSysDebug[24m  interfaces  the  [4mptrace(2)[24m  system  call.  These system calls
+       allow a debugging process to examine and control another process.  Tra-
+       ditionally, the process to be debugged is a child of the debugging pro-
+       cess:
+
+       PROCEDURE StartProcess(VAR child: SysProcess.ProcessId;
+                              path: ARRAY OF CHAR;
+                              argv: SysArgs.Arguments) : BOOLEAN;
+          (* start a new process and prepare it for debugging *)
+          VAR
+             child: SysProcess.ProcessId;
+             status: SysProcess.Status;
+       BEGIN
+          IF SysProcess.Fork(child, NIL) THEN
+             IF child = 0 THEN
+                (* child process *)
+                SysDebug.TraceMe;
+                SysProcess.Exec(path, argv, NIL);
+                (* Exec failed? *)
+                SysProcess.ImmediateExit(255);
+             ELSE
+                (* debugging process *)
+                RETURN SysProcess.WaitFor(child, status, NIL) & status.stopped
+             END;
+          ELSE
+             RETURN FALSE
+          END;
+       END StartProcess;
+
+       [4mTraceMe[24m causes the child process  to  be  stopped  after  the  call  of
+       [4mSysProcess.Exec[24m,  i.e.  just  befor the given program starts execution.
+       [4mSysProcess.WaitFor[24m waits until the child  process  gets  stopped.   All
+       other operations requires the given process to be in a stopped state.
+
+       The address space of the process is divided into three parts (spaces):
+
+       [4mtext[24m   program text and constants (sometimes read-only)
+       [4mdata[24m   global variables, heap and stack
+       [4muser[24m   system's per-process data (user structure)
+       On  some  systems  (e.g. PDP11 but not on Sun workstations) the process
+       spaces [4mtext[24m and [4mdata[24m are separated.  On  other  systems  (e.g.  on  Sun
+       workstations)  there  is  no distinction between both spaces.  The [4muser[0m
+       space allows the user structure to be  accessed.   This  is  especially
+       necessary  to  examine  and modify the register values on some systems.
+       Fortunately, Sun supports direct access via [4mGetReg[24m  and  [4mSetReg[24m.   [4mPeek[0m
+       and  [4mPoke[24m  support  access  of a single word.  Many systems (e.g. Sun4)
+       requires addresses to be aligned (i.e. dividable by 4).
+
+       [4mRead[24m and [4mWrite[24m allow larger quantities to be transferred  but  are  not
+       portable.   For convenience, the parameters of [4mRead[24m and [4mWrite[24m are close
+       to that of [4mStreams.BufIO[24m procedures.  The only difference is the return
+       type;  in  comparison to [4mStreams.BufIO[24m procedures [4mRead[24m and [4mWrite[24m either
+       transfer the whole quantity or nothing (return  of  [1mFALSE[22m).   [4mRead[24m  and
+       [4mWrite[24m do not support the [4muser[24m space.
+
+       If  the  process  is in a stopped state and all necessary work has been
+       done, the execution may be continued in different ways:
+       [4mContinue[24m           continue execution until the process terminates,  or
+                          until a signal is received
+       [4mSingleStep[24m         execution  stops  after  execution  of  at least one
+                          instruction;  this  feature  needs  hardware  assist
+                          which is not given on all systems (e.g. Sun4)
+       [4mContUntilSysCall[24m   execution  stops  before  and after the execution of
+                          system calls
+       [4mDetach[24m             continue execution and stop process tracing
+
+       By default, these operations cause the process to resume execution from
+       where  it  was  stopped,  and if a signal was causing the process to be
+       stopped it will be ignored.  [4mContinueWithSig[24m and [4mContinueAt[24m  work  like
+       [4mContinue[24m  but allow the signal ([4mContinueWithSig[24m and [4mContinueAt[24m) and the
+       address where the execution should continue ([4mContinueAt[24m) to  be  given.
+       Similar procedures exist for the other variants.
+
+       As  before,  further  process  tracing operations require the debugging
+       process to wait for the child process to be stopped.
+
+       [4mTrace[24m provides a raw interface to [4mptrace(2)[24m.  [4mresult[24m equals the  return
+       value of the equivalent call in C.
+
+[1mDIAGNOSTICS[0m
+       All  procedures  return [1mFALSE [22mon failure.  System call failures lead to
+       events of [4mSysError(3)[24m.   The  [4merrors[24m  parameter  is  passed  to  [4mSysEr-[0m
+       [4mrors.Raise[24m.
+
+       Illegal [4mspace[24m values cause runtime error exceptions.
+
+[1mSEE ALSO[0m
+       [4mptrace(2)[24m       underlying system call
+       [4mSysError(3)[24m     handling of failed system calls
+       [4mSysProcess(3)[24m   basic process primitives like [4mExec[24m and [4mWait[0m
+
+[1mBUGS[0m
+       Many  calls are very system dependent, e.g. [4mGetRegs[24m is available on Sun
+       workstations only.
+
+
+
+Release 0.5                Last change: 10 July 2003               SysDebug(3)

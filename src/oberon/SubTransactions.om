@@ -1,0 +1,507 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SubTransactions;
+
+   IMPORT Disciplines, Events, Iterators, LocalSemaphores, Objects,
+      Priorities, RelatedEvents, Resources, Semaphores, Services, Shards,
+      Transactions;
+
+   TYPE
+      CreateTransactionProc = PROCEDURE (VAR trans: Transactions.Transaction;
+                                     object: Transactions.Object;
+				     pot: Shards.Pot;
+				     errors: RelatedEvents.Object) : BOOLEAN;
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    createTransaction: CreateTransactionProc;
+	 END;
+
+   TYPE
+      Transaction = POINTER TO TransactionRec;
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    object: Transactions.Object;
+	    root: ObjectDiscipline;
+	    isroot: BOOLEAN;
+	    trans: Transaction;
+	    (* if isroot *)
+	    if: Interface;
+	    mutex: Semaphores.Semaphore;
+	 END;
+   VAR
+      odid: Disciplines.Identifier;
+
+   TYPE
+      ObjectList = POINTER TO ObjectListRec;
+      ObjectListRec =
+	 RECORD
+	    od: ObjectDiscipline;
+	    next: ObjectList;
+	 END;
+      TransactionRec =
+	 RECORD
+	    (Transactions.TransactionRec)
+	    trans: Transactions.Transaction; (* superior transaction *)
+	    released: BOOLEAN;
+	    state: Transactions.State;
+	    eventType: Events.EventType;
+	    root: ObjectDiscipline;
+	    objects: ObjectList;
+	    pot: Shards.Pot;
+	 END;
+   VAR
+      transType: Services.Type;
+      tif: Transactions.Interface;
+
+   CONST
+      notSupported = 0; (* given object has no support for SubTransactions *)
+      alreadyAttached = 1; (* object is already attached to a transaction *)
+      authorizationFailed = 2; (* given shard was not valid *)
+      invalidTransition = 3; (* invalid state transition *)
+      noObjectAttached = 4; (* transactions must not be started w/o object *)
+      transReleased = 5; (* transaction is already released *)
+      transStarted = 6; (* transaction has already begun *)
+      unassociatedObjects = 7; (* objects that cannot participate in the
+	 same transaction *)
+      errors = 8;
+   TYPE
+      ErrorCode = SHORTINT; (* notSupported.. *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[notSupported] := "object has no support for ObjectTransactions";
+      errormsg[alreadyAttached] := "object must not be attached twice";
+      errormsg[authorizationFailed] := "authorization failed";
+      errormsg[invalidTransition] := "invalid state transition on transaction";
+      errormsg[noObjectAttached] := "transaction has no objects attached";
+      errormsg[transReleased] := "transaction is already released";
+      errormsg[transStarted] := "transaction has already begun";
+      errormsg[unassociatedObjects] := "unassociated objects";
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   (* === auxiliary procedures ============================================ *)
+
+   PROCEDURE IterateAttachedObjects(it: Iterators.Iterator;
+                                    ref: Iterators.Reference;
+				    mode: Iterators.Mode);
+      VAR
+	 entry: ObjectList;
+   BEGIN
+      WITH ref: Transaction DO
+	 entry := ref.objects;
+	 WHILE entry # NIL DO
+	    Iterators.Yield(it, entry.od.object);
+	    entry := entry.next;
+	 END;
+      END;
+   END IterateAttachedObjects;
+
+   PROCEDURE Notify(trans: Transaction);
+      (* notify about state transitions, if requested to do so *)
+      VAR
+	 event: Transactions.Event;
+   BEGIN
+      IF trans.eventType # NIL THEN
+	 NEW(event);
+	 event.type := trans.eventType;
+	 event.message := "transaction state transition";
+	 event.state := trans.state;
+	 event.trans := trans;
+	 Events.Raise(event);
+      END;
+   END Notify;
+
+   PROCEDURE InternalRelease(trans: Transaction; state: Transactions.State);
+      VAR
+	 entry: ObjectList;
+	 ok: BOOLEAN;
+   BEGIN
+      entry := trans.objects; trans.objects := NIL;
+      WHILE entry # NIL DO
+	 entry.od.trans := NIL;
+	 entry := entry.next;
+      END;
+      IF trans.trans # NIL THEN
+	 ok := Transactions.Release(trans.trans, NIL);
+	 trans.trans := NIL;
+	 Semaphores.V(trans.root.mutex);
+      END;
+      IF state # trans.state THEN
+	 ASSERT(state IN {Transactions.committed, Transactions.aborted});
+	 trans.state := state; Notify(trans);
+      END;
+      trans.released := TRUE;
+      Resources.Notify(trans, Resources.terminated);
+   END InternalRelease;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 trans: Transaction;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    trans := event.resource(Transaction);
+	    InternalRelease(trans, Transactions.aborted);
+	 END;
+      END;
+   END TerminationHandler;
+
+   (* === Transactions if ================================================= *)
+
+   PROCEDURE Attach(trans: Transactions.Transaction;
+                    auth: Shards.Lid;
+		    obj: Transactions.Object;
+		    aspec: Transactions.AccessSpecification) : BOOLEAN;
+      VAR
+	 od: ObjectDiscipline;
+	 entry: ObjectList;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF ~Disciplines.Seek(obj, odid, od) THEN
+	    Error(trans, notSupported); RETURN FALSE
+	 END;
+	 IF od.trans # NIL THEN
+	    Error(trans, alreadyAttached); RETURN FALSE
+	 END;
+	 IF trans.root = NIL THEN
+	    trans.root := od.root;
+	 ELSIF trans.root # od.root THEN
+	    Error(trans, unassociatedObjects); RETURN FALSE
+	 END;
+	 od.trans := trans;
+	 NEW(entry); entry.od := od;
+	 entry.next := trans.objects; trans.objects := entry;
+	 RETURN TRUE
+      END;
+   END Attach;
+
+   PROCEDURE Attachable(trans: Transactions.Transaction;
+                        auth: Shards.Lid;
+		        obj: Transactions.Object;
+		        aspec: Transactions.AccessSpecification) : BOOLEAN;
+      VAR
+	 od: ObjectDiscipline;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF ~Disciplines.Seek(obj, odid, od) THEN
+	    Error(trans, notSupported); RETURN FALSE
+	 END;
+	 IF od.trans # NIL THEN
+	    Error(trans, alreadyAttached); RETURN FALSE
+	 END;
+	 IF trans.root = NIL THEN
+	    RETURN TRUE
+	 END;
+	 IF od.root # trans.root THEN
+	    Error(trans, unassociatedObjects); RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+   END Attachable;
+
+   PROCEDURE Attached(trans: Transactions.Transaction;
+                      auth: Shards.Lid;
+		      obj: Transactions.Object) : BOOLEAN;
+      VAR
+	 od: ObjectDiscipline;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 RETURN Disciplines.Seek(obj, odid, od) & (od.trans = trans)
+      END;
+   END Attached;
+
+   PROCEDURE GetAttached(trans: Transactions.Transaction;
+			 auth: Shards.Lid;
+			 VAR it: Iterators.Iterator) : BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    it := NIL;
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 Iterators.Create(it, IterateAttachedObjects, trans, 0);
+	 RETURN TRUE
+      END;
+   END GetAttached;
+
+   PROCEDURE Begin(trans: Transactions.Transaction;
+                   auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF trans.objects = NIL THEN
+	    Error(trans, noObjectAttached); RETURN FALSE
+	 END;
+	 IF trans.state # Transactions.defined THEN
+	    Error(trans, invalidTransition); RETURN FALSE
+	 END;
+	 Semaphores.P(trans.root.mutex);
+	 IF ~trans.root.if.createTransaction(trans.trans,
+	       trans.root.object, NIL, trans) THEN
+	    Semaphores.V(trans.root.mutex);
+	    RETURN FALSE
+	 END;
+	 trans.state := Transactions.begun;
+	 Notify(trans);
+	 RETURN TRUE
+      END;
+   END Begin;
+
+   PROCEDURE Commit(trans: Transactions.Transaction;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 state: Transactions.State;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF trans.state # Transactions.begun THEN
+	    Error(trans, invalidTransition); RETURN FALSE
+	 END;
+	 IF Transactions.Commit(trans.trans, NIL) THEN
+	    ok := TRUE;
+	    state := Transactions.committed;
+	 ELSE
+	    ok := FALSE;
+	    (* unsuccessful commits are considered as aborts *)
+	    state := Transactions.aborted;
+	 END;
+	 InternalRelease(trans, state);
+	 RETURN ok
+      END;
+   END Commit;
+
+   PROCEDURE Abort(trans: Transactions.Transaction;
+                   auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF trans.state # Transactions.begun THEN
+	    Error(trans, invalidTransition); RETURN FALSE
+	 END;
+	 ok := Transactions.Abort(trans.trans, NIL);
+	 InternalRelease(trans, Transactions.aborted);
+	 RETURN ok
+      END;
+   END Abort;
+
+   PROCEDURE Release(trans: Transactions.Transaction;
+                     auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF trans.state = Transactions.begun THEN
+	    ok := Abort(trans, auth);
+	    InternalRelease(trans, Transactions.aborted);
+	    RETURN ok
+	 END;
+	 InternalRelease(trans, trans.state);
+	 trans.released := TRUE;
+      END;
+   END Release;
+
+   PROCEDURE GetState(trans: Transactions.Transaction;
+                      auth: Shards.Lid;
+		      VAR state: Transactions.State) : BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 state := trans.state;
+	 RETURN TRUE
+      END;
+   END GetState;
+
+   PROCEDURE TakeInterest(trans: Transactions.Transaction;
+                          auth: Shards.Lid;
+			  VAR eventType: Events.EventType) : BOOLEAN;
+   BEGIN
+      WITH trans: Transaction DO
+	 IF (trans.pot # NIL) & ~Shards.Fits(trans.pot, auth) THEN
+	    Error(trans, authorizationFailed); RETURN FALSE
+	 END;
+	 IF trans.released THEN
+	    Error(trans, transReleased); RETURN FALSE
+	 END;
+	 IF trans.eventType = NIL THEN
+	    Events.Define(trans.eventType);
+	    Events.SetPriority(trans.eventType, Priorities.message);
+	    Events.Ignore(trans.eventType);
+	 END;
+	 eventType := trans.eventType;
+	 RETURN TRUE
+      END;
+   END TakeInterest;
+
+   (* === module initialization =========================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      odid := Disciplines.Unique();
+      Services.CreateType(transType, "SubTransactions.Transaction",
+	 "Transactions.Transaction");
+      NEW(tif);
+      tif.attach := Attach;
+      tif.attachable := Attachable;
+      tif.attached := Attached;
+      tif.getAttached := GetAttached;
+      tif.begin := Begin;
+      tif.commit := Commit;
+      tif.abort := Abort;
+      tif.release := Release;
+      tif.getState := GetState;
+      tif.getName := NIL;
+      tif.takeInterest := TakeInterest;
+   END InitModule;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Create(VAR trans: Transactions.Transaction; pot: Shards.Pot);
+      VAR
+	 t: Transaction;
+	 eventType: Events.EventType;
+   BEGIN
+      NEW(t); Services.Init(t, transType); Transactions.Init(t, tif);
+      t.trans := NIL; t.released := FALSE; t.state := Transactions.defined;
+      t.eventType := NIL; t.root := NIL; t.objects := NIL; t.pot := pot;
+      Resources.TakeInterest(t, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      trans := t;
+   END Create;
+
+   PROCEDURE Supported(object: Transactions.Object) : BOOLEAN;
+      VAR
+	 od: ObjectDiscipline;
+   BEGIN
+      RETURN Disciplines.Seek(object, odid, od)
+   END Supported;
+
+   PROCEDURE Associated(object1, object2: Transactions.Object) : BOOLEAN;
+      VAR
+	 od1, od2: ObjectDiscipline;
+   BEGIN
+      RETURN Disciplines.Seek(object1, odid, od1) &
+             Disciplines.Seek(object2, odid, od2) &
+	     (od1.root = od2.root)
+   END Associated;
+
+   PROCEDURE RegisterRoot(root: Transactions.Object; if: Interface);
+      VAR
+	 od: ObjectDiscipline;
+   BEGIN
+      ASSERT((if # NIL) & (if.createTransaction # NIL));
+      NEW(od); od.id := odid; od.object := root; od.root := od;
+      od.isroot := TRUE; od.if := if;
+      LocalSemaphores.Create(od.mutex);
+      Disciplines.Add(root, od);
+   END RegisterRoot;
+
+   PROCEDURE RegisterSubnode(parent, child: Transactions.Object);
+      VAR
+	 ok: BOOLEAN;
+	 rd, od: ObjectDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(parent, odid, rd); ASSERT(ok);
+      NEW(od); od.id := odid; od.object := child; od.root := rd.root;
+      od.isroot := FALSE;
+      Disciplines.Add(child, od);
+   END RegisterSubnode;
+
+BEGIN
+   InitModule;
+END SubTransactions.

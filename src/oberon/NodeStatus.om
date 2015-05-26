@@ -1,0 +1,178 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NodeStatus;
+
+   IMPORT Args, CommandNodes, Conclusions, ControlNodes, Errors, InetTCP,
+      Names, Paths, PersistentEvents, PersistentObjects, PrivateShards,
+      Process, RelatedEvents, RemoteEvents, RemoteNames, RemoteStreams,
+      Resources, Services, Shards, Streams, StringArgs,
+      UArgs := UnixArguments, UnixFiles, UnixNames, VolatileShards, Write;
+
+   VAR
+      path: ARRAY 512 OF CHAR;
+      auth: Shards.Lid;
+      node: Names.Node;
+      errors: RelatedEvents.Object;
+      lidType: Services.Type;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArgs;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+   BEGIN
+      auth := NIL;
+      UArgs.Init("[-a auth] path");
+      WHILE UArgs.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a":
+	       UArgs.FetchString(filename);
+	       CreateLid(auth, filename);
+	 ELSE
+	    UArgs.Usage;
+	 END;
+      END;
+      UArgs.FetchString(path);
+      UArgs.AllArgs;
+   END ProcessArgs;
+
+   PROCEDURE FetchNode;
+   BEGIN
+      IF ~Paths.GetNode(path, auth, errors, node) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, path);
+      END;
+   END FetchNode;
+
+   PROCEDURE PrintStatus(node: Names.Node);
+      VAR
+	 args: Args.Arguments;
+	 value: StringArgs.Value;
+
+      PROCEDURE StandardStatus;
+	 (* stolen from NamesShell *)
+	 VAR
+	    caps: Names.CapabilitySet;
+	    first: BOOLEAN;
+	    queue: RelatedEvents.Queue;
+
+	 PROCEDURE WriteCap(cap: ARRAY OF CHAR; set: BOOLEAN);
+	 BEGIN
+	    IF set THEN
+	       IF ~first THEN
+		  Write.String(", ");
+	       ELSE
+		  first := FALSE;
+	       END;
+	       Write.String(cap);
+	    END;
+	 END WriteCap;
+
+	 PROCEDURE WritePerm(cap: ARRAY OF CHAR; mode: Names.AccessMode);
+	 BEGIN
+	    IF ~first THEN
+	       Write.String(", ");
+	    ELSE
+	       first := FALSE;
+	    END;
+	    IF ~Names.Access(node, mode, NIL) THEN
+	       IF (auth # NIL) & Names.Access(node, mode, auth) THEN
+		  Write.Char("+");
+	       ELSE
+		  Write.Char("-");
+	       END;
+	    END;
+	    Write.String(cap);
+	 END WritePerm;
+
+      BEGIN (* StandardStatus *)
+	 caps := Names.Capabilities(node);
+	 first := TRUE;
+	 Write.String("caps = { ");
+	 WriteCap("access", Names.accessCap IN caps);
+	 WriteCap("status", Names.statusCap IN caps);
+	 WriteCap("domain", Names.domainCap IN caps);
+	 WriteCap("makesubnode", Names.makeSubnodeCap IN caps);
+	 WriteCap("destroy", Names.destroyCap IN caps);
+	 Write.Line(" }");
+	 RelatedEvents.Save(node);
+	 RelatedEvents.Forward(node, RelatedEvents.null);
+	 first := TRUE;
+	 Write.String("permissions: ");
+	 WritePerm("examine", Names.examine);
+	 WritePerm("change", Names.change);
+	 WritePerm("read", Names.read);
+	 WritePerm("search", Names.search);
+	 WritePerm("insert", Names.insert);
+	 WritePerm("delete", Names.delete);
+	 WritePerm("destroy", Names.destroy);
+	 Write.Ln;
+	 RelatedEvents.Restore(node);
+      END StandardStatus;
+
+   BEGIN (* PrintStatus *)
+      IF Resources.Stopped(node) THEN
+	 Write.Line("node is currently suspended");
+      ELSIF Resources.Terminated(node) THEN
+	 Write.Line("node is terminated");
+      ELSIF (node IS CommandNodes.Node) &
+	    CommandNodes.GetArgs(node(CommandNodes.Node), args) &
+	    Args.Exists(args, "command") THEN
+	 WITH node: CommandNodes.Node DO
+	    StringArgs.Create(value, "status");
+	    Args.SetValue(args, "command", value);
+	    RelatedEvents.Forward(node, errors);
+	    IF ~CommandNodes.Invoke(node, args, NIL, Streams.stdout, auth) THEN
+	       IF RelatedEvents.EventsPending(errors) THEN
+		  Conclusions.Conclude(errors, Errors.fatal, path);
+	       END;
+	    END;
+	 END;
+      ELSE
+	 StandardStatus;
+      END;
+   END PrintStatus;
+
+BEGIN
+   Services.SeekType("Shards.Lid", lidType);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   ProcessArgs;
+   FetchNode;
+   PrintStatus(node);
+   Process.TerminateSoftly;
+END NodeStatus.

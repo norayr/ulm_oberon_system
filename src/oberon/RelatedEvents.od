@@ -1,0 +1,110 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RelatedEven.od,v 1.3 1994/09/08 14:24:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RelatedEven.od,v $
+   Revision 1.3  1994/09/08  14:24:36  borchert
+   Save & Restore added
+
+   Revision 1.2  1994/08/27  14:49:30  borchert
+   null object added
+
+   Revision 1.1  1994/02/22  20:09:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION RelatedEvents;
+
+   (* relate events to objects *)
+
+   IMPORT Disciplines, Events, Objects;
+
+   TYPE
+      Object = Disciplines.Object;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    object: Object;
+	    event: Events.Event;
+	 END;
+      Queue = POINTER TO QueueRec;
+      QueueRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    event: Events.Event;
+	    next: Queue;
+	 END;
+
+   VAR
+      null: Object; (* object which ignores all related events *)
+
+   PROCEDURE GetEventType(object: Object; VAR eventType: Events.EventType);
+      (* returns an event type for the given object;
+	 all events related to the object are also handled by this event type
+      *)
+
+   PROCEDURE Forward(from, to: Object);
+      (* causes all events related to `from' to be forwarded to `to' *)
+
+   PROCEDURE QueueEvents(object: Object);
+      (* put all incoming events into a queue *)
+
+   PROCEDURE GetQueue(object: Object; VAR queue: Queue);
+      (* return queue of related events which is removed
+	 from the object;
+	 object must have been prepared by QueueEvents;
+	 queue may be NIL (empty queue) on return
+      *)
+
+   PROCEDURE EventsPending(object: Object) : BOOLEAN;
+      (* return TRUE if GetQueue will return a queue # NIL *)
+
+   PROCEDURE AppendQueue(object: Object; queue: Queue);
+      (* Raise(object, event) for all events of the queue *)
+
+   PROCEDURE Reset(object: Object);
+      (* return to normal behaviour *)
+
+   PROCEDURE Save(object: Object);
+      (* save current status of the given object and reset to
+	 default behaviour;
+	 the status includes the reaction types and event queues;
+	 Save operations may be nested
+      *)
+
+   PROCEDURE Restore(object: Object);
+      (* restore status saved earlier by Save *)
+
+   PROCEDURE Raise(object: Object; event: Events.Event);
+      (* three types of reaction are possible depending
+	 of the procedures called earlier for object:
+
+	 no preparation:      ususal event handling
+	 GetEventType         translate event
+	 Forward              forward event to another object
+	 QueueEvents          append event to queue
+      *)
+
+END RelatedEvents.

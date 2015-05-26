@@ -1,0 +1,240 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Storage.od,v 1.6 2004/09/16 13:39:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Storage.od,v $
+   Revision 1.6  2004/09/16 13:39:49  borchert
+   FirstStack & NextStack added
+   (was necessary to support SysStackTraces)
+
+   Revision 1.5  2004/09/16 09:39:51  borchert
+   switched from [next, next+left) to [end-left,end) to make
+   life easier on architectures without atomar instructions
+   that compare and set two values simultaneously
+
+   Revision 1.4  1995/11/17  13:11:43  naegele
+   interface procedure SetChunkSize (size : Size) : BOOLEAN
+   changed to          ChunkSize (size : Size) : Size
+
+   Revision 1.3  1994/07/19  12:11:08  naegele
+   intensity: SHORTINT changed to INTEGER
+
+   Revision 1.2  1994/04/05  12:00:25  naegele
+   New/Dispose moved to UntaggedStorage
+
+   Revision 1.1  1994/02/23  07:48:38  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/93
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Storage;
+
+   (* storage allocating interface for the compiler *)
+
+   IMPORT Coroutines, Events, Objects, RelatedEvents, Types;
+
+   TYPE
+      Address = Types.UntracedAddress;
+      Size = Types.Size;
+
+   TYPE
+      Status = POINTER TO StatusRec;
+      StatusRec = RECORD
+         (Objects.ObjectRec)
+         collection: INTEGER;
+            (* = 0   garbage collection is enabled
+               > 0   garbage collection is disabled
+               this value indicates how many times PROC
+               EnableGarbageCollection has to be called to enable 
+               garbage collection
+            *)
+         intensity: INTEGER;
+            (* indicator for current garbage collection intensity
+               < 0   increased intensity
+               = 0   default (normal) intensity
+               > 0   decreased intensity
+            *)
+         allocated: Size;
+            (* total number of bytes which are currently under
+               control of AllocateWithTag and GarbageCollection
+            *)
+         consumed: Size;
+            (* total number of bytes which are currently in use
+               (<= allocated)
+            *)
+         chunksize: Size;
+            (* size of new memory chunks which will be allocated from the
+               operating system when more memory is needed
+            *)
+      END;
+
+   TYPE
+      AllocProc = PROCEDURE(VAR ptr: Address; tag: Address; size: Size);
+      AllocStackProc = PROCEDURE(VAR ptr: Address; size: Size; mode: SHORTINT);
+      GarbageCollectionProc = PROCEDURE;
+      EnableProc = PROCEDURE;
+      DisableProc = PROCEDURE;
+      GetStatusProc = PROCEDURE (VAR status: Status);
+      IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
+      ChunkSizeProc = PROCEDURE (size: Size) : Size;
+      FirstStackProc = PROCEDURE;
+      NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
+
+      Interface =
+         RECORD
+            alloc: AllocProc;
+            allocStack: AllocStackProc;
+            garbageCollection: GarbageCollectionProc;
+            enable: EnableProc;
+            disable: DisableProc;
+            intensity: IntensityProc;
+            getStatus: GetStatusProc;
+            chunkSize: ChunkSizeProc;
+	    firstStack: FirstStackProc;
+	    nextStack: NextStackProc;
+         END;
+   VAR
+      lock: BOOLEAN;
+      end: Address; left: Size;
+         (* the interval [end-left, end) marks an interval
+            which may be consumed by the inline code of NEW
+            without calling any of these procedures
+
+            the runtime start sets up a initial region which should
+            be sufficient to satisfy the memory requests in the early
+            initialisation stage
+
+            the module which calls Init is free to modify next and left;
+            for all other modules these variables are to be considered
+            read-only
+
+            stacks must not be allocated by use of this region
+
+	    on v8 architectures lock is to be used to access end & left
+         *)
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+         RECORD
+            (Events.EventRec)
+            errors: RelatedEvents.Object;
+               (* if # NIL, it contains a queue of error events which
+                  were responsible for the "out of memory" event
+               *)
+         END;
+   VAR
+      outOfMemory: Events.EventType;
+         (* this event is raised by the allocator (the module
+            which calls Init) short before it gets out of memory --
+            there may be a small amount of memory available which
+            allows some event handling and a controlled termination
+         *)
+
+   PROCEDURE AllocateWithTag(VAR ptr: Address; tag: Address; size: Size);
+      (* allocation with tag field;
+         tag may be zero: in this case we assume SYS.NEW and put a
+         dummy tag record behind the allocated area --
+         in this case the size includes the record, the tag pointer
+         and the dummy tag record
+      *)
+
+   PROCEDURE AllocateStack(VAR ptr: Address; size: Size; mode: SHORTINT);
+      (* allocate a stack for a coroutine with the given growing mode:
+            mode > 0: stack grows forward
+            mode < 0: stack grows backward
+         on return, ptr points to the begin of the stack (for backward
+            growing stacks this is the end address of the allocated region)
+         the calling procedure is responsible for adjusting ptr and
+            storing a tag reference to Coroutines.tag
+      *)
+
+   PROCEDURE GarbageCollection;
+      (* immediate run of a garbage collection
+         this procedure has no effect if garbage collection has
+         been disabled earlier by calling DisableCollection
+
+         the event Process.startOfGarbageCollection is raised at the beginning
+         and Process.endOfGarbageCollection when it is finished
+      *)
+
+   PROCEDURE EnableCollection;
+   (* if there were more than one calls of DisableCollection in a row
+      without calling EnableCollection between, EnableCollection must
+      be called as many times as DisableCollection before, to switch
+      on garbage collection
+   *)
+
+   PROCEDURE DisableCollection;
+   (* a single call of DisableCollection guarantees that
+      garbage collection is switched off
+   *)
+
+   PROCEDURE Intensity(offset: INTEGER) : INTEGER;
+      (* adds (!) offset to the current collection intensity indicator:
+         offset < 0   increase intensity
+         offset = 0   no change, just return current intensity
+         offset > 0   decrease intensity
+         Intensity returns the new collection intensity indicator
+
+         changing the current collection indicator can be interpreted as
+         manipulating the variable which defines the maximal number
+         of bytes which can be allocated before the next garbage
+         collection should run
+         initially, the current intensity is 0 which sets the maximal
+         number of bytes to the current chunk size
+
+         offset = -1 doubles current intensity and
+         offset = 1  halves it
+
+         this example sets the current intensity to a default value:
+            current_intensity := Intensity(-Intensity(0));
+      *)
+
+   PROCEDURE GetStatus(VAR status: Status);
+      (* return storage status information *)
+
+   PROCEDURE ChunkSize(size: Size) : Size;
+      (* set/get the current chunk size of the memory management
+         the chunk size is the size of new memory chunks allocated from
+         the operating system when more memory is needed
+         size # 0  rounds size to the next possible value (>= size) which
+		   can be used as chunk size
+		   the new value is returned
+         size = 0  no change, just return the current value
+         when changing the chunk size, note that the intensity of
+         garbage collections depends not only on the current
+         collection intensity indicator which can be manipulated by using
+         PROC Intensity, it also depends on the chunk size
+      *)
+
+   PROCEDURE FirstStack;
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+      (* allow to iterate through all allocated coroutines for
+	 debugging purposes
+      *)
+
+   PROCEDURE Init(if: Interface);
+      (* may be called only once during startup *)
+
+END Storage.

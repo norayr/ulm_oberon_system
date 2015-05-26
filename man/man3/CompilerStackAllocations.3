@@ -1,0 +1,254 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH CompilerStackAllocations 3 "Last change: 26 August 2005" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+CompilerStackAllocations \- static allocations for stack frames
+.SH SYNOPSIS
+.Pg
+CONST growsup = 1; growsdown = 2;
+TYPE Direction = SHORTINT; (* growsup, growsdown *)
+.sp 0.7
+TYPE Stack = POINTER TO StackRec;
+TYPE StackRec =
+   RECORD
+      (Disciplines.ObjectRec)
+      align: Types.Size;
+   END;
+.sp 0.7
+PROCEDURE Init(stack: Stack; baseoff, align: Types.Size; dir: Direction);
+.sp 0.7
+PROCEDURE Allocate(stack: Stack; size, align: Types.Size;
+                   autofree: BOOLEAN) : Types.Size;
+PROCEDURE Free(stack: Stack; offset: Types.Size);
+.sp 0.7
+PROCEDURE Close(stack: Stack);
+PROCEDURE AllocateClosed(stack: Stack; size: Types.Size) : Types.Size;
+.sp 0.7
+PROCEDURE GetSize(stack: Stack) : Types.Size;
+.Pe
+.SH DESCRIPTION
+Stack frames provide space for parameters, saved registers,
+local variables, and temporary values. All offsets relative
+to the frame pointer can be computed at compile time with the
+exception of dynamic arrays.
+.I CompilerStackAllocations
+supports the code generator in allocating static space within a stack
+frame for items that are not known from the signature of a procedure
+and its local variable list.  Typical examples are the construction of
+constants that do not fit into a register, passing constants or register
+values to a procedure that expects an address, and cases where we run
+out of registers.
+.PP
+.I Init
+initializes the stack frame object \fIstack\fP for the 
+direction \fIdir\fP (usually \fIgrowsdown\fP) with an initial
+offset of \fIbaseoff\fP. The frame pointer and \fIbaseoff\fP
+are considered to be multiplies of \fIalign\fP. All alignment
+parameters given to \fIAllocate\fP must be divisors of this alignment.
+.PP
+.I Allocate
+allocates \fIsize\fP bytes (must be positive) for the stack
+frame associated with \fIstack\fP and returns the offset which
+is a multiply of \fIalign\fP. If \fIautofree\fP is set to \fBTRUE\fP,
+the area remains allocated until \fIClose\fP gets called. Otherwise,
+the area has to be freed using \fIFree\fP.
+.PP
+.I Free
+allows to deallocate the area at \fIoffset\fP which was formerly
+returned by \fIAllocate\fP with \fIautofree\fP set to \fBFALSE\fP.
+.PP
+.I Close
+closes the regular allocation phase of the stack. Neither \fIAllocate\fP
+nor \fIFree\fP may be called for \fIstack\fP afterwards. All offsets
+returned by \fIAllocate\fP with \fIautofree\fP set to \fBFALSE\fP must
+have been freed before.
+.PP
+.I AllocateClosed
+allows to allocate space (with the alignment given to \fIInit\fP)
+that is available from begin to end of the procedure.
+In contrast, areas allocated by
+.I Allocate
+are only available from the point where
+.I Allocate
+was called until the area is either freed using
+.I Free
+or automatically closed by
+.IR Close .
+.I AllocateClosed
+is useful if we want to save only those registers that are actually
+used. But this is not known until the code for the whole block is
+generated.
+Please note that
+.I AllocateClosed
+must not be called before closing the stack
+and not after
+.I GetSize
+was called for the stack.
+.PP
+.I GetSize
+returns the next aligned offset beyond the allocated area.
+This is the size of the allocated area if \fIbaseoff\fP
+was 0.
+This procedure must not be called unless
+.I Close
+has already been called for
+.IR stack .
+.SH BUGS
+The procedure \fIGetSize\fP is not properly named
+if \fIbaseoff\fP is non-zero.
+.PP
+Currently,
+.I CompilerStackAllocations
+has no way of generating \fICompilerErrors(3)\fP events
+for the current compilation process.
+Hence,
+.I CompilerStackAllocations
+has to resort to assertions to assure that offsets are kept
+within the limits of the representation of \fITypes.Size\fP.
+.SH AUTHOR
+This module was written by Christian Ehrhardt.
+The manual page is due to Andreas Borchert.
+.\" ---------------------------------------------------------------------------
+.\" $Id: CompilerStackAllocations.3,v 1.1 2005/08/26 16:08:28 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: CompilerStackAllocations.3,v $
+.\" Revision 1.1  2005/08/26 16:08:28  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

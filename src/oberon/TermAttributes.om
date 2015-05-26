@@ -1,0 +1,156 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TermAttribu.om,v 1.1 2004/06/11 12:10:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: TermAttribu.om,v $
+   Revision 1.1  2004/06/11 12:10:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermAttributes; (* Ralf Beck *)
+
+   IMPORT Disciplines, Events, Objects, Priorities, RelatedEvents, Streams;
+
+   CONST 
+      (* attributes *)
+      standout = 0;
+      underline = 1;
+      reverse = 2;
+      blink = 3;
+      dim = 4;
+      bold = 5;
+      attributes = 6;
+
+      (* errorcodes *)
+      unknownAttribute = 0;
+      notSupported = 1;
+      errorcodes = 2;
+
+   TYPE 
+      AttributeSet = SET;  (* of attributes *)
+
+      SetProc = PROCEDURE (s: Streams.Stream; atts: AttributeSet);
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec = 
+         RECORD
+            (Objects.ObjectRec)
+            set: SetProc;
+         END;
+ 
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+         RECORD
+            (Disciplines.DisciplineRec)
+            available: AttributeSet;
+            current: AttributeSet;
+            if: Interface;
+         END;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec)
+            errorcode: SHORTINT;
+         END;
+
+   VAR 
+      id: Disciplines.Identifier;
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[unknownAttribute] :=
+        "attribute unknown to terminal";
+      errormsg[notSupported] :=
+	 "attributes not supported by implementation";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: SHORTINT);
+      VAR
+         event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE Init(s: Streams.Stream; available: AttributeSet; if: Interface);
+      VAR
+         disc: Discipline;
+   BEGIN
+      NEW(disc);
+      disc.id := id;
+      disc.available := available;
+      disc.current := {};
+      disc.if := if;
+      Disciplines.Add(s, disc);
+   END Init;
+
+   PROCEDURE Set(s: Streams.Stream; attributes: AttributeSet);
+      VAR disc: Discipline;
+	  at: SHORTINT;
+   BEGIN
+      IF Disciplines.Seek(s, id, disc) THEN
+         IF disc.available * attributes = attributes THEN
+            disc.if.set(s, attributes);
+            disc.current := attributes;
+            Disciplines.Add(s, disc);
+         ELSE
+            Error(s, unknownAttribute);
+         END;
+      ELSE
+         Error(s, notSupported);
+      END;
+   END Set;
+
+   PROCEDURE Current(s: Streams.Stream): AttributeSet;
+      VAR
+         disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, id, disc) THEN
+         RETURN disc.current;
+      ELSE
+         RETURN {};
+      END;
+   END Current;
+
+   PROCEDURE Available(s: Streams.Stream): AttributeSet;
+      VAR
+         disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, id, disc) THEN
+         RETURN disc.available;
+      ELSE
+         RETURN {};
+      END;
+   END Available;
+
+BEGIN
+   id := Disciplines.Unique();
+   InitErrorHandling;
+END TermAttributes.

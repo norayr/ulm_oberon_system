@@ -1,0 +1,472 @@
+MODULE RemoteOps;
+
+   IMPORT DummyOps, Iterators, Messages, NetIO, PersistentObjects,
+      RelatedEvents, RemoteIterators, RemoteObjects, RemoteStreams,
+      Services, Streams, Strings;
+
+   CONST
+      kb = 1024;
+      maxdata = 64 * kb;
+      smallbuf = 512;
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec = RECORD (DummyOps.ObjectRec) END;
+      SmallBuffer = ARRAY smallbuf OF CHAR;
+      DataBuffer = POINTER TO ARRAY maxdata OF CHAR;
+   VAR
+      type: Services.Type;
+      if: DummyOps.Interface;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+      NullOpMsg = POINTER TO NullOpMsgRec;
+      NullOpMsgRec = RECORD (MessageRec) END;
+      TransferDataMsg = POINTER TO TransferDataMsgRec;
+      TransferDataMsgRec =
+	 RECORD
+	    (MessageRec)
+	    length: LONGINT;
+	    smallbuf: SmallBuffer; (* in *)
+	    data: DataBuffer; (* in *)
+	 END;
+      GetInfoMsg = POINTER TO GetInfoMsgRec;
+      GetInfoMsgRec =
+	 RECORD
+	    (MessageRec)
+	    info: SmallBuffer; (* out *)
+	 END;
+      GetItemsMsg = POINTER TO GetItemsMsgRec;
+      GetItemsMsgRec =
+	 RECORD
+	    (MessageRec)
+	    param: INTEGER; (* in *)
+	    it: Iterators.Iterator; (* out *)
+	 END;
+      OpenStreamMsg = POINTER TO OpenStreamMsgRec;
+      OpenStreamMsgRec =
+	 RECORD
+	    (MessageRec)
+	    name: ARRAY 128 OF CHAR; (* in *)
+	    s: Streams.Stream; (* out *)
+	 END;
+   VAR
+      nullOpMsgType: Services.Type;
+      transferDataMsgType: Services.Type;
+      getInfoMsgType: Services.Type;
+      getItemsMsgType: Services.Type;
+      openStreamMsgType: Services.Type;
+
+   (* === proxy objects: convert operations into messages ================= *)
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+			 params: PersistentObjects.Object);
+      VAR
+	 newobject: Object;
+   BEGIN
+      NEW(newobject);
+      Services.Init(newobject, type);
+      DummyOps.Init(newobject, if);
+      object := newobject;
+   END CreateProxy;
+
+   PROCEDURE CreateNullOpMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: NullOpMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, nullOpMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateNullOpMsg;
+   
+   PROCEDURE ReadNullOpMsg(s: Streams.Stream;
+                           object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NullOpMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN TRUE
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END;
+   END ReadNullOpMsg;
+   
+   PROCEDURE WriteNullOpMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NullOpMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN TRUE
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END;
+   END WriteNullOpMsg;
+   
+   PROCEDURE CreateTransferDataMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: TransferDataMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, transferDataMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateTransferDataMsg;
+   
+   PROCEDURE ReadTransferDataMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: TransferDataMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN TRUE
+         ELSE
+            (* in parameters *)
+	    IF NetIO.ReadLongInt(s, object.length) THEN
+	       IF object.length >= smallbuf THEN
+		  NEW(object.data);
+		  RETURN NetIO.ReadString(s, object.data^)
+	       ELSE
+		  object.data := NIL;
+		  RETURN NetIO.ReadString(s, object.smallbuf)
+	       END;
+	    ELSE
+	       RETURN FALSE
+	    END;
+         END;
+      END;
+   END ReadTransferDataMsg;
+   
+   PROCEDURE WriteTransferDataMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: TransferDataMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN TRUE
+         ELSE
+            (* in parameters *)
+	    IF NetIO.WriteLongInt(s, object.length) THEN
+	       IF object.length >= smallbuf THEN
+		  NEW(object.data);
+		  RETURN NetIO.WriteString(s, object.data^)
+	       ELSE
+		  RETURN NetIO.WriteString(s, object.smallbuf)
+	       END;
+	    ELSE
+	       RETURN FALSE
+	    END;
+         END;
+      END;
+   END WriteTransferDataMsg;
+   
+   PROCEDURE CreateGetInfoMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: GetInfoMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, getInfoMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateGetInfoMsg;
+   
+   PROCEDURE ReadGetInfoMsg(s: Streams.Stream;
+                            object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetInfoMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN NetIO.ReadString(s, object.info)
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END;
+   END ReadGetInfoMsg;
+   
+   PROCEDURE WriteGetInfoMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetInfoMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN NetIO.WriteString(s, object.info)
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END;
+   END WriteGetInfoMsg;
+
+   PROCEDURE CreateGetItemsMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: GetItemsMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, getItemsMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateGetItemsMsg;
+   
+   PROCEDURE ReadGetItemsMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetItemsMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN RemoteObjects.Import(s, object.it)
+         ELSE
+            (* in parameters *)
+            RETURN NetIO.ReadInteger(s, object.param)
+         END;
+      END;
+   END ReadGetItemsMsg;
+   
+   PROCEDURE WriteGetItemsMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetItemsMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN RemoteObjects.Export(s, object.it)
+         ELSE
+            (* in parameters *)
+            RETURN NetIO.WriteInteger(s, object.param)
+         END;
+      END;
+   END WriteGetItemsMsg;
+
+   PROCEDURE CreateOpenStreamMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: OpenStreamMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, openStreamMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateOpenStreamMsg;
+   
+   PROCEDURE ReadOpenStreamMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: OpenStreamMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN RemoteObjects.Import(s, object.s)
+         ELSE
+            (* in parameters *)
+            RETURN NetIO.ReadString(s, object.name)
+         END;
+      END;
+   END ReadOpenStreamMsg;
+   
+   PROCEDURE WriteOpenStreamMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: OpenStreamMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN RemoteObjects.Export(s, object.s)
+         ELSE
+            (* in parameters *)
+            RETURN NetIO.WriteString(s, object.name)
+         END;
+      END;
+   END WriteOpenStreamMsg;
+
+   PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      RelatedEvents.GetQueue(from, queue);
+      RelatedEvents.AppendQueue(to, queue);
+   END ForwardErrors;
+
+   PROCEDURE NullOp(object: DummyOps.Object);
+      VAR
+	 msg: NullOpMsg;
+   BEGIN
+      CreateNullOpMsg(msg);
+      Messages.Send(object, msg);
+      ForwardErrors(msg.errors, object);
+   END NullOp;
+
+   PROCEDURE TransferData(object: DummyOps.Object; data: ARRAY OF CHAR);
+      VAR
+	 msg: TransferDataMsg;
+   BEGIN
+      WITH object: Object DO
+	 CreateTransferDataMsg(msg);
+	 msg.length := Strings.Len(data);
+	 IF msg.length >= smallbuf THEN
+	    NEW(msg.data);
+	    COPY(data, msg.data^);
+	 ELSE
+	    COPY(data, msg.smallbuf);
+	 END;
+	 Messages.Send(object, msg);
+      END;
+      ForwardErrors(msg.errors, object);
+   END TransferData;
+
+   PROCEDURE GetInfo(object: DummyOps.Object; VAR info: ARRAY OF CHAR);
+      VAR
+	 msg: GetInfoMsg;
+   BEGIN
+      WITH object: Object DO
+	 CreateGetInfoMsg(msg);
+	 Messages.Send(object, msg);
+	 IF msg.done THEN
+	    COPY(msg.info, info);
+	 ELSE
+	    msg.info[0] := 0X;
+	 END;
+      END;
+      ForwardErrors(msg.errors, object);
+   END GetInfo;
+
+   PROCEDURE GetItems(object: DummyOps.Object; param: INTEGER;
+		      VAR it: Iterators.Iterator);
+      VAR
+	 msg: GetItemsMsg;
+   BEGIN
+      WITH object: Object DO
+	 CreateGetItemsMsg(msg);
+	 msg.param := param;
+	 Messages.Send(object, msg);
+	 IF msg.done THEN
+	    it := msg.it;
+	 ELSE
+	    it := NIL;
+	 END;
+      END;
+      ForwardErrors(msg.errors, object);
+   END GetItems;
+
+   PROCEDURE OpenStream(object: DummyOps.Object; name: ARRAY OF CHAR;
+			VAR s: Streams.Stream) : BOOLEAN;
+      VAR
+	 msg: OpenStreamMsg;
+   BEGIN
+      WITH object: Object DO
+	 CreateOpenStreamMsg(msg);
+	 COPY(name, msg.name);
+	 Messages.Send(object, msg);
+	 IF msg.done THEN
+	    s := msg.s;
+	 END;
+	 RETURN msg.done
+      END;
+   END OpenStream;
+
+   (* === exported objects: convert messages into operations ============== *)
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+   BEGIN
+      IF ~(message IS Message) THEN RETURN END;
+      WITH object: DummyOps.Object DO
+	 message.processed := TRUE;
+	 IF message IS NullOpMsg THEN
+	    DummyOps.NullOp(object);
+	    message.done := TRUE;
+	 ELSIF message IS TransferDataMsg THEN
+	    WITH message: TransferDataMsg DO
+	       IF message.length >= smallbuf THEN
+		  DummyOps.TransferData(object, message.data^);
+	       ELSE
+		  DummyOps.TransferData(object, message.smallbuf);
+	       END;
+	    END;
+	    message.done := TRUE;
+	 ELSIF message IS GetInfoMsg THEN
+	    WITH message: GetInfoMsg DO
+	       DummyOps.GetInfo(object, message.info);
+	    END;
+	    message.done := TRUE;
+	 ELSIF message IS GetItemsMsg THEN
+	    WITH message: GetItemsMsg DO
+	       DummyOps.GetItems(object, message.param, message.it);
+	       IF message.it # NIL THEN
+		  RemoteIterators.SetMode(message.it, message.param,
+					  RemoteIterators.exportObjects);
+		  message.done := TRUE;
+	       ELSE
+		  message.done := FALSE;
+	       END;
+	    END;
+	 ELSIF message IS OpenStreamMsg THEN
+	    WITH message: OpenStreamMsg DO
+	       message.done :=
+		  DummyOps.OpenStream(object, message.name, message.s);
+	    END;
+	 ELSE
+	    message.done := FALSE;
+	 END;
+      END;
+   END Handler;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+      VAR
+	 msgType: Services.Type;
+	 baseType: Services.Type;
+	 remoteObjectsIf: RemoteObjects.Interface;
+
+      PROCEDURE InitPT(typeName, baseTypeName: ARRAY OF CHAR;
+		       create: PersistentObjects.CreateProc;
+		       read: PersistentObjects.ReadProc;
+		       write: PersistentObjects.WriteProc;
+		       VAR type: Services.Type);
+	 VAR
+	    if: PersistentObjects.Interface;
+      BEGIN
+	 NEW(if); if.read := read; if.write := write; if.create := create;
+	 if.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type,
+	    typeName, baseTypeName, if);
+      END InitPT;
+
+   BEGIN (* Init *)
+      Services.CreateType(type, "RemoteOps.Object", "DummyOps.Object");
+
+      PersistentObjects.RegisterType(msgType,
+	 "RemoteOps.Message", "Messages.Message", NIL);
+      InitPT("RemoteOps.NullOpMsg", "RemoteOps.Message",
+             CreateNullOpMsg, ReadNullOpMsg, WriteNullOpMsg,
+             nullOpMsgType);
+      InitPT("RemoteOps.TransferDataMsg", "RemoteOps.Message",
+             CreateTransferDataMsg, ReadTransferDataMsg, WriteTransferDataMsg,
+             transferDataMsgType);
+      InitPT("RemoteOps.GetInfoMsg", "RemoteOps.Message",
+             CreateGetInfoMsg, ReadGetInfoMsg, WriteGetInfoMsg,
+             getInfoMsgType);
+      InitPT("RemoteOps.GetItemsMsg", "RemoteOps.Message",
+             CreateGetItemsMsg, ReadGetItemsMsg, WriteGetItemsMsg,
+             getItemsMsgType);
+      InitPT("RemoteOps.OpenStreamMsg", "RemoteOps.Message",
+             CreateOpenStreamMsg, ReadOpenStreamMsg, WriteOpenStreamMsg,
+             openStreamMsgType);
+
+      NEW(if);
+      if.nullOp := NullOp;
+      if.transferData := TransferData;
+      if.getInfo := GetInfo;
+      if.getItems := GetItems;
+      if.openStream := OpenStream;
+      Services.SeekType("DummyOps.Object", baseType);
+      NEW(remoteObjectsIf);
+      remoteObjectsIf.getParams := NIL;
+      remoteObjectsIf.createProxy := CreateProxy;
+      remoteObjectsIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjectsIf, RemoteObjects.parallel);
+   END Init;
+
+BEGIN
+   Init;
+END RemoteOps.

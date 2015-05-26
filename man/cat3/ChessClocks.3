@@ -1,0 +1,128 @@
+ChessClocks(3)                Ulm's Oberon System               ChessClocks(3)
+
+
+
+[1mNAME[0m
+       ChessClocks - general interface for chess clocks
+
+[1mSYNOPSIS[0m
+       TYPE ChessClock = POINTER TO ChessClockRec;
+       TYPE ChessClockRec = RECORD (Services.ObjectRec) END;
+       TYPE Player = SHORTINT; (* player number, starting from 0 *)
+
+       TYPE StartProc = PROCEDURE (chessclock: ChessClock;
+                                   auth: Shards.Lid) : BOOLEAN;
+       TYPE StopProc = PROCEDURE (chessclock: ChessClock;
+                                  auth: Shards.Lid) : BOOLEAN;
+       TYPE SwitchProc = PROCEDURE (chessclock: ChessClock;
+                                    auth: Shards.Lid; player: Player) : BOOLEAN;
+       TYPE RunningProc = PROCEDURE (chessclock: ChessClock) : BOOLEAN;
+       TYPE CurrentPlayerProc = PROCEDURE (chessclock: ChessClock) : Player;
+       TYPE GetClockProc = PROCEDURE (chessclock: ChessClock; player: Player;
+                                      VAR clock: Clocks.Clock);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                start: StartProc;
+                stop: StopProc;
+                switch: SwitchProc;
+                running: RunningProc;
+                currentPlayer: CurrentPlayerProc;
+                getClock: GetClockProc;
+             END;
+
+       PROCEDURE Init(chessclock: ChessClock; if: Interface;
+                      numberOfPlayers: SHORTINT;
+                      timelimit: Times.Time);
+
+       PROCEDURE Start(chessclock: ChessClock; auth: Shards.Lid) : BOOLEAN;
+       PROCEDURE Stop(chessclock: ChessClock; auth: Shards.Lid) : BOOLEAN;
+       PROCEDURE Switch(chessclock: ChessClock;
+                        auth: Shards.Lid; player: Player) : BOOLEAN;
+
+       PROCEDURE Running(chessclock: ChessClock) : BOOLEAN;
+       PROCEDURE CurrentPlayer(chessclock: ChessClock) : Player;
+       PROCEDURE GetClock(chessclock: ChessClock; player: Player;
+                          VAR clock: Clocks.Clock);
+
+       PROCEDURE NumberOfPlayers(chessclock: ChessClock) : SHORTINT;
+       PROCEDURE GetTimeLimit(chessclock: ChessClock;
+                              VAR timelimit: Times.Time);
+       PROCEDURE TimeLeft(chessclock: ChessClock; player: Player;
+                          VAR time: Times.Time);
+
+
+[1mDESCRIPTION[0m
+       A  chess  clock  is a set of [4mn[24m clocks representing the total times of [4mn[0m
+       players playing a turn-based game.  Initially, all clocks are set to 0.
+       As long the game is neither terminated nor suspended, exactly one clock
+       is running, representing the player whose turn it is.  The chess  clock
+       has to be switched as soon as it is the next players turn.  All players
+       share a common time limit. As soon as the time limit expires for one of
+       the  players,  the  chess  clock can no longer be switched to him.  The
+       remaining players can continue the game until one player is left.
+
+       Those operations that suspend,  restart,  or  switch  the  chess  clock
+       require  an authorization. All other retrieval operations can be freely
+       invoked. This allows a game manager to  keep  control  over  the  chess
+       clock while permitting read-only access to all players.
+
+       Players  and  their  corresponding clocks are enumerated from 0 to [4mn-1[24m.
+       At maximum 128 players are supported.  The number of the current player
+       is  returned  by  [4mCurrentPlayer[24m. Note however, that this value is -1 as
+       long as [4mSwitch[24m has not been called yet or if the chess  clock  is  sus-
+       pended. The number of players [4mn[24m is returned by [4mNumberOfPlayers[24m.
+
+       [4mStart[24m  starts  a newly created or suspended chess clock.  [4mStop[24m suspends
+       the chess clock until [4mStart[24m is  invoked  again.   Both  operations  may
+       return  [1mFALSE  [22min case of authorization failures.  [4mRunning[24m returns [1mTRUE[0m
+       if the chess clock is running.   [4mSwitch[24m  sets  the  current  player  to
+       [4mplayer[24m.  If  the  chess  clock is running, this causes the clock of the
+       previous player to stop and the clock of [4mplayer[24m  to  continue.  If  the
+       chess  clock  has  not  started  yet or is suspended, then the clock of
+       [4mplayer[24m will be started as soon as the chess clock  resumes.  Note  that
+       [4mSwitch[24m  should  be invoked before [4mStart[24m is called for the first time to
+       indicate the beginning player. Otherwise, the first turn is  implicitly
+       assigned to player 0.
+
+       [4mGetClock[24m  returns  the  individual clock of the given player.  [4mTimeLeft[0m
+       returns the time left for that player.  [4mGetTimeLimit[24m returns the  total
+       time which was assigned initially to each of the players.
+
+   [1mImplementation interface[0m
+       [4mInit[24m  associates [4mchessclock[24m with the given interface for the given num-
+       ber of players and fixed time limit which is to be  given  as  relative
+       time measure. All interface procedures must be non-[1mNIL [22mand are expected
+       to meet following specification:
+       [4mstart[24m: [1mPROCEDURE[22m([4mchessclock[24m: [4mChessClock[24m; [4mauth[24m: [4mShards.Lid[24m) : [1mBOOLEAN[22m;
+            Start or resume the chess clock.  Assume  an  implicit  switch  to
+            player  0  if  no  player  has  been  active  yet.  [1mFALSE [22mis to be
+            returned in case of failures.
+       [4mstop[24m: [1mPROCEDURE[22m([4mchessclock[24m: [4mChessClock[24m; [4mauth[24m: [4mShards.Lid[24m) : [1mBOOLEAN[22m;
+            Suspend the chess clock, i.e. stop the  currently  running  clock.
+            [1mFALSE [22mis to be returned in case of failures.
+       [4mswitch[24m:  [1mPROCEDURE[22m([4mchessclock[24m:  [4mChessClock[24m;  [4mauth[24m:  [4mShards.Lid[24m; [4mplayer[24m:
+            [4mPlayer[24m) : [1mBOOLEAN[22m;
+            Define [4mplayer[24m to be the current player.
+       [4mrunning[24m: [1mPROCEDURE[22m([4mchessclock[24m: [4mChessClock[24m) : [1mBOOLEAN[22m;
+            Return [1mTRUE [22mif the chess clock is currently running.
+       [4mcurrentPlayer[24m: [1mPROCEDURE[22m([4mchessclock[24m: [4mChessClock[24m) : [4mPlayer[24m;
+            Return -1 if the chess clock is not running. Otherwise the  player
+            whose clock is currently running, is to be returned.
+       [4mgetClock[24m:  [1mPROCEDURE[22m([4mchessclock[24m: [4mChessClock[24m; [4mplayer[24m: [4mPlayer[24m; [1mVAR [4m[22mclock[24m:
+            [4mClocks.Clock[24m);
+            Return the clock of the given player.
+
+[1mDIAGNOSTICS[0m
+       [4mChessClocks[24m does not generate any error events.
+
+[1mSEE ALSO[0m
+       [4mRemoteChessClocks(3)[24m     ``RemoteObjects''   service    provider    for
+                                ``ChessClocks.ChessClock''
+       [4mStandardChessClocks(3)[24m   standard implementation for chess clocks which
+                                is based upon [4mClocks.system[0m
+
+
+
+Release 0.5               Last change: 23 April 2004            ChessClocks(3)

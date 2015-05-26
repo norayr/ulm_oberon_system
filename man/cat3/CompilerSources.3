@@ -1,0 +1,132 @@
+
+
+
+CompilerSources(3)     Ulm's Oberon System     CompilerSources(3)
+
+
+NNAAMMEE
+       CompilerSources  -  reference  objects  for  program  text
+       sources
+
+SSYYNNOOPPSSIISS
+       CONST definition = 0;
+       CONST module = 1;
+       CONST defmod = 2;
+       TYPE SourceKind = SHORTINT; (* definition .. defmod *)
+
+       TYPE Header = POINTER TO HeaderRec;
+       TYPE HeaderRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             modname: ConstStrings.String;
+             kind: SourceKind;
+             date: Times.Time; (* date of last modification *)
+             srcid: ConstStrings.String; (* sth unique *)
+             args: Args.Arguments; (* for compilation *)
+          END;
+
+       Source = POINTER TO SourceRec;
+       SourceRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             header: Header;
+          END;
+
+       TYPE OpenProc = PROCEDURE (source: Source; VAR s: Streams.Stream) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             open: OpenProc;
+          END;
+
+       PROCEDURE Init(source: Source; if: Interface);
+       PROCEDURE CreateHeader(VAR header: Header;
+                              modname: ConstStrings.String;
+                              kind: SourceKind;
+                              date: Times.Time;
+                              srcid: ConstStrings.String;
+                              args: Args.Arguments);
+
+       PROCEDURE Open(source: Source; VAR s: Streams.Stream) : BOOLEAN;
+       PROCEDURE GetSource(s: Streams.Stream; VAR source: Source);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _C_o_m_p_i_l_e_r_S_o_u_r_c_e_s provides a  storage-independent  interface
+       to  program text sources.  This interface allows compilers
+       to be independent from the choice how  program  texts  are
+       represented  and  stored, be it in a traditional file sys­
+       tem, an object data base, or somewhere across the network.
+
+
+
+Release 0.5         Last change: 28 April 2000                  1
+
+
+
+
+
+CompilerSources(3)     Ulm's Oberon System     CompilerSources(3)
+
+
+       Sources  consist of a byte sequence (accessible as stream)
+       and a header record containing following fields:
+       _m_o_d_n_a_m_e   Module name of the source file.  In  traditional
+                 file  systems  this name is usually derived from
+                 the base name (the part of the file name  before
+                 the dot-separated suffix).
+       _k_i_n_d      Programming  languages  like  Modula-2  and some
+                 variants of  Oberon  have  two  separate  source
+                 files  per  module: one specifying its interface
+                 (_d_e_f_i_n_i_t_i_o_n) and the other one giving its imple­
+                 mentation  (_m_o_d_u_l_e).  Other  languages like Java
+                 have these parts merged  into  one  source  file
+                 (_d_e_f_m_o_d).
+       _d_a_t_e      This  time  stamp  should  carry the date of the
+                 last modification.
+       _s_r_c_i_d     This component  should  provide  an  identifying
+                 string  that  must  be  different  for different
+                 source texts of the same module.   Cryptographic
+                 hash  sums as those provided by _O_n_e_W_a_y_H_a_s_h_e_s_(_3_),
+                 _M_D_5_(_3_), and _M_D_5_N_a_m_e_s_(_3_) are to be preferred.
+       _a_r_g_s      Set of compilation options that apply  for  this
+                 source.   Usually,  _C_o_m_p_i_l_e_r_s_._D_e_f_i_n_e_A_r_g_s is used
+                 to define the set of valid options accepted by a
+                 particular compiler.
+
+       _I_n_i_t  initializes  a source object (that has to be created
+       before) and associates it with _i_f. The _o_p_e_n  procedure  of
+       _i_f  is  expected  to  open a source for reading and should
+       return a stream capable of seek operations (important  for
+       printing  error messages that include source code). Multi­
+       ple independent stream  connections  to  the  same  source
+       object  must  be supported.  _C_r_e_a_t_e_H_e_a_d_e_r creates and ini­
+       tializes a persistent header object.
+
+       _O_p_e_n opens _s_o_u_r_c_e for reading.  Multiple  open  operations
+       are  permitted.  _G_e_t_S_o_u_r_c_e returns the source object asso­
+       ciated with _s, if any.  Note that _G_e_t_S_o_u_r_c_e works even for
+       streams imported by _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_).
+
+DDIIAAGGNNOOSSTTIICCSS
+       _O_p_e_n  is free to return FFAALLSSEE in case of errors and relate
+       its error events to _s_o_u_r_c_e. Note, however, that  _C_o_m_p_i_l_e_r_­
+       _S_o_u_r_c_e_s does not generate any error events on its own.
+
+       _G_e_t_S_o_u_r_c_e  sets _s_o_u_r_c_e to NNIILL if it is not associated with
+       a source.
+
+SSEEEE AALLSSOO
+       _A_r_g_s_(_3_)                general abstraction for arguments
+       _M_D_5_N_a_m_e_s_(_3_)            generation of source ids
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   operations for persistent objects
+
+
+
+
+
+
+Release 0.5         Last change: 28 April 2000                  2
+
+

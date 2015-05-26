@@ -1,0 +1,105 @@
+SysPoll(3)                    Ulm's Oberon System                   SysPoll(3)
+
+
+
+[1mNAME[0m
+       SysPoll - synchronous I/O multiplexing
+
+[1mSYNOPSIS[0m
+       (* bits for events and revents *)
+       CONST pollIn =       1H; (* fd is readable *)
+       CONST pollPri =      2H; (* high priority info at fd *)
+       CONST pollOut =      4H; (* fd is writable (won't block) *)
+       CONST pollRdNorm =  40H; (* normal data is readable *)
+       CONST pollWrNorm = pollOut;
+       CONST pollRdBand =  80H; (* out-of-band data is readable *)
+       CONST pollWrBand = 100H; (* out-of-band data is writable *)
+       CONST pollNorm = pollRdNorm;
+       CONST pollErr =      8H; (* fd has error condition *)
+       CONST pollHup =     10H; (* fd has been hung up on *)
+       CONST pollNval =    20H; (* invalid pollfd entry *)
+
+       (* struct pollfd of Solaris 2, see <sys/poll.h> *)
+       TYPE Flags = SYSTEM.INT16;
+       TYPE Entry = POINTER TO EntryRec;
+       TYPE EntryRec =
+          RECORD
+             (Objects.ObjectRec)
+             fd: SysTypes.File;
+             events: Flags;
+             revents: Flags;
+          END;
+       FdSet = POINTER TO FdSetRec;
+       FdSetRec = RECORD (Objects.ObjectRec) END;
+
+       PROCEDURE ConvertTimeout(timeout: SysTime.TimeVal) : LONGINT;
+
+       PROCEDURE CreateSet(VAR fdset: FdSet);
+       PROCEDURE Incl(fdset: FdSet; entry: Entry);
+       PROCEDURE Card(fdset: FdSet) : INTEGER;
+       PROCEDURE ExamineEntries(fdset: FdSet);
+       PROCEDURE Next(fdset: FdSet; VAR entry: Entry) : BOOLEAN;
+
+       PROCEDURE Poll(fdset: FdSet; timeout: LONGINT;
+                      VAR ready: INTEGER;
+                      errors: RelatedEvents.Object;
+                      retry: BOOLEAN;
+                      VAR interrupted: BOOLEAN) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mSysPoll[24m interfaces the [4mpoll(2)[24m system call.  This interface is signifi-
+       cantly more efficient and more flexible than  the  older  interface  of
+       [4mSysSelect(3)[24m:
+
+       ·      The size of a set depends only on the number of file descriptors
+              that are actually included in the set.
+
+       ·      Newer UNIX variants like Solaris or Linux do no longer provide a
+              native  select  system  call.  On  these systems [4mSysSelect(3)[24m is
+              required to convert the file descriptor set data structures into
+              the new format which consumes considerable time.
+
+       [4mConvertTimeout[24m  allows  to  convert  a  tuple consisting of seconds and
+       micro seconds ([4mSysTime.TimeVal[24m) into milliseconds. This  is  the  scale
+       that is expected for the timeout value of [4mPoll[24m.
+
+       File  descriptor sets for [4mPoll[24m are actually linear lists of tuples con-
+       sisting of a file descriptor, a set of conditions on which [4mPoll[24m  should
+       wait  for to become true (field [4mevents[24m) and a set that is set on return
+       of [4mPoll[24m to those conditions that are  actually  true  (field  [4mrevents[24m).
+       [4mCreateSet[24m  creates  a  new  list  of file descriptors that is initially
+       empty.  [4mIncl[24m adds the given entry to the list.  [4mCard[24m returns the number
+       of  entries  within  [4mfdset[24m.   [4mExamineEntries[24m  and [4mNext[24m allow to iterate
+       through a linear list of entries.
+
+       [4mPoll[24m waits up to [4mtimeout[24m seconds until one  of  the  conditions  within
+       [4mfdset[24m  is  true.  If [4mtimeout[24m is 0, [4mPoll[24m returns immediately. In case of
+       -1, [4mPoll[24m blocks until one of the conditions is true or the  process  is
+       interrupted.   In  the  latter case, [4minterrupted[24m is set to [1mTRUE [22mand the
+       call is automatically repeated if [4mretry[24m is [1mTRUE[22m.  In case of a success-
+       ful return, [4mready[24m is set to the number of file descriptors in [4mfdset[24m for
+       which at least one condition is true.
+
+[1mDIAGNOSTICS[0m
+       In case of errors, [4mPoll[24m returns  [1mFALSE  [22mand  raises  events  of  [4mSysEr-[0m
+       [4mrors(3)[24m.  The [4merrors[24m parameter is passed to [4mSysErrors.Raise[24m.
+
+       The  poll  system call may be interrupted.  Usually (if [4mretry[24m = [1mFALSE[22m),
+       this causes the appropriate error event to be raised (error code [4mSysEr-[0m
+       [4mrors.intr[24m)  and  the  system  call to be aborted.  However, if [4mretry[24m is
+       [1mTRUE[22m, the system call will  be  repeated  until  no  interrupt  occurs.
+       [4minterrupt[24m indicates in both cases whether interrupts occurred or not.
+
+[1mSEE ALSO[0m
+       [4mpoll(2)[24m                 underlying system call
+       [4mSysErrors(3)[24m            error handling
+       [4mSysIO(3)[24m                read and write operations
+       [4mSysSelect(3)[24m            deprecated interface for synchronous I/O multi-
+                               plexing
+       [4mSysSockets(3)[24m           creation and preparation of sockets
+       [4mUnixFileConditions(3)[24m   conditions which base on [4mSysPoll[0m
+
+
+
+Release 0.5               Last change: 25 August 2005               SysPoll(3)

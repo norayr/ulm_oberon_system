@@ -1,0 +1,80 @@
+FTPDataStreams(3)             Ulm's Oberon System            FTPDataStreams(3)
+
+
+
+[1mNAME[0m
+       FTPDataStreams - implementation of FTP data streams
+
+[1mSYNOPSIS[0m
+       PROCEDURE AddHandler(session: FTPSessions.Session;
+                            me, peer: Internet.InetAddress);
+       PROCEDURE SuppressEarlyConnects(session: FTPSessions.Session);
+       PROCEDURE Open(VAR s: Streams.Stream;
+                      session: FTPSessions.Session) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mFTPDataStreams[24m   provides  a  [4mMessages(3)[24m  handler  for  [4mFTPSessions(3)[0m
+       objects that implements the FTP requests [4mFTPCommands.pasv[24m  and  [4mFTPCom-[0m
+       [4mmands.port[24m.
+
+       [4mAddHandler[24m  is  to  be called shortly after [4mFTPSessions.Create[24m for [4mses-[0m
+       [4msion[24m.  The IP address [4mme[24m is used for newly opened ports at  the  server
+       side  (command  [4mFTPCommands.pasv[24m)  and  [4mpeer[24m  is checked against the IP
+       address given by the client side (command [4mFTPCommands.port[24m).
+
+       By default, [4mFTPDataStreams[24m initiates immediately a connection to a port
+       specified  by  the  PORT  command  to  speed up FTP sessions.  Some FTP
+       clients are not prepared for this and [4mSuppressEarlyConnects[24m requests to
+       suppress this technique. But note that this suppression takes automati-
+       cally place on the first failure of a try to  connect  early.  Failures
+       are  usually  survived  by  retrying a connect when the data connect is
+       needed.
+
+       [4mOpen[24m opens a previously established data stream connection for  a  file
+       transfer. [4mFTPDataStreams[24m does not distinguish between uploads and down-
+       loads and provides a bidirectional stream instead.
+
+       [4mFTPDataStreams[24m supports [4mFTPTimerEvents[24m by resetting the timer  in  case
+       of successful connections.
+
+[1mDIAGNOSTICS[0m
+       [4mOpen[24m  returns [1mFALSE [22mif there is no data channel present, or if the con-
+       nection could not be established. Please note that network problems  in
+       connecting  to  a  given port ([4mFTPCommands.port[24m command) may be delayed
+       because all socket operations are done asynchronously.
+
+[1mSECURITY CONSIDERATIONS[0m
+       Out-of-band channels for data transfers, while required by the FTP pro-
+       tocol,  enable a large number of possible attacks.  Despite that relay-
+       ing of FTP data transfers was in mind by the designers of the FTP  pro-
+       tocol,  it  is  rejected by the handler to avoid the utilization of FTP
+       servers for networks attacks on arbitrary third-party network services.
+       Hence [4mFTPCommands.port[24m requests are accepted only if
+
+       ·      the IP address matches that of [4mpeer[24m, and if
+
+       ·      the port number exceeds or is equal to 1024 (to avoid attacks on
+              privileged ports).
+
+       Sniffers that are observing the main connection could try to  open  the
+       ports  that were specified by [4mFTPCommands.port[24m or [4mFTPCommands.pasv[24m com-
+       mands in parallel.  Following insufficient defense is provided for  the
+       [4mFTPCommands.pasv[24m command:
+
+       ·      Incoming  connections for the port opened for a [4mFTPCommands.pasv[0m
+              request are rejected if they do not origin from [4mpeer[24m.
+
+       ·      The data stream is immediately dropped in case of multiple  con-
+              nections even if this happens during a transfer.
+
+       Similar  checks should be applied on the client side in case of [4mFTPCom-[0m
+       [4mmands.port[24m requests.
+
+[1mSEE ALSO[0m
+       [4mFTPUnixFileSystems(3)[24m   handler that supports file transfers on base of
+                               this module.
+
+
+
+Release 0.5                Last change: 10 July 2003         FTPDataStreams(3)

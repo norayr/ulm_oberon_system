@@ -1,0 +1,124 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPTimers.om,v 1.2 2001/05/21 15:50:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPTimers.om,v $
+   Revision 1.2  2001/05/21 15:50:56  borchert
+   move from Jobs to PriorityJobs
+
+   Revision 1.1  2001/05/08 07:36:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPTimers;
+
+   IMPORT Clocks, Conditions, EventConditions, Events, FTPPriorities,
+      FTPSessions, FTPTimerEvents, PriorityJobs, Resources, Tasks,
+      TimeConditions, Times;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (PriorityJobs.JobRec)
+	    session: FTPSessions.Session;
+	    msgCondition: Conditions.Condition;
+	    resCondition: Conditions.Condition;
+	 END;
+
+   PROCEDURE Timer(job: PriorityJobs.Job);
+      VAR
+	 period: Times.Time;
+	 conditions: Conditions.ConditionSet;
+	 timeCondition: Conditions.Condition;
+	 resourceEvent: Resources.Event;
+	 msgEvent: FTPTimerEvents.Event;
+	 transfer: BOOLEAN; reset: BOOLEAN;
+   BEGIN
+      WITH job: Job DO
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, job.msgCondition);
+	 Conditions.Incl(conditions, job.resCondition);
+	 period := NIL; transfer := FALSE; reset := FALSE;
+	 timeCondition := NIL;
+	 LOOP
+	    IF reset OR transfer THEN
+	       IF timeCondition # NIL THEN
+		  Conditions.Excl(conditions, timeCondition);
+	       END;
+	       timeCondition := NIL;
+	    END;
+	    IF reset & ~transfer & (period # NIL) THEN
+	       TimeConditions.Create(timeCondition, Clocks.system, period);
+	       Conditions.Incl(conditions, timeCondition);
+	       reset := FALSE;
+	    END;
+	    Tasks.WaitForOneOf(conditions);
+	    IF timeCondition # NIL THEN
+	       IF Conditions.Test(timeCondition, job.session) THEN
+		  Resources.Notify(job.session, Resources.terminated); EXIT
+	       END;
+	    END;
+	    WHILE EventConditions.TestAndGet(job.resCondition,
+		     resourceEvent) DO
+	       IF resourceEvent.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    END;
+	    WHILE EventConditions.TestAndGet(job.msgCondition, msgEvent) DO
+	       CASE msgEvent.cmd OF
+	       | FTPTimerEvents.setTimeoutCmd:
+		     period := msgEvent.timeout; reset := TRUE;
+	       | FTPTimerEvents.resetCmd:
+		     reset := TRUE;
+	       | FTPTimerEvents.startTransferCmd:
+		     transfer := TRUE;
+	       | FTPTimerEvents.endOfTransferCmd:
+		     transfer := FALSE; reset := TRUE;
+	       END;
+	    END;
+	 END;
+	 EventConditions.Drop(job.msgCondition);
+	 EventConditions.Drop(job.resCondition);
+      END;
+   END Timer;
+
+   (* === exported procedure ============================================== *)
+
+   PROCEDURE Install(session: FTPSessions.Session);
+      VAR
+	 job: Job;
+	 msgEventType: Events.EventType;
+	 msgEventCondition: Conditions.Condition;
+	 resEventType: Events.EventType;
+   BEGIN
+      Events.Define(msgEventType);
+      FTPTimerEvents.GetEventType(session, msgEventType);
+      EventConditions.Create(msgEventCondition, msgEventType);
+      Resources.TakeInterest(session, resEventType);
+
+      NEW(job); job.session := session; job.msgCondition := msgEventCondition;
+      EventConditions.Create(job.resCondition, resEventType);
+      PriorityJobs.Submit(job, session, FTPPriorities.timer, Timer);
+   END Install;
+
+END FTPTimers.

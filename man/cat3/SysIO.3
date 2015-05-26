@@ -1,0 +1,198 @@
+
+
+
+SysIO(3)               Ulm's Oberon System               SysIO(3)
+
+
+NNAAMMEE
+       SysIO - system calls for input and output
+
+SSYYNNOOPPSSIISS
+       (* file control options: arguments of Fcntl and Open *)
+       CONST rdonly = {};
+       CONST wronly = { 31 };
+       CONST rdwr = { 30 };
+       CONST ndelay = { 29 };
+       CONST append = { 28 };
+       CONST creat = { 23 };
+       CONST trunc = { 22 };
+       CONST excl = { 21 };
+
+       (* Whence = (fromStart, fromPos, fromEnd); *)
+       CONST fromStart = 0;
+       CONST fromPos = 1;
+       CONST fromEnd = 2;
+
+       (* file descriptor flags *)
+       CONST closeonexec = { 31 };
+
+       (* Fcntl requests *)
+       CONST dupfd = 0;
+       CONST getfd = 1;
+       CONST setfd = 2;
+       CONST getfl = 3;
+       CONST setfl = 4;
+       CONST getlk = 5;
+       CONST setlk = 6;
+       CONST setlkw = 7;
+
+       TYPE File = SysTypes.File;
+       TYPE Address = SysTypes.Address;
+       TYPE Count = SysTypes.Count;
+       TYPE Protection = INTEGER;
+       TYPE Whence = INTEGER;
+
+       PROCEDURE Open(VAR fd: File;
+                      filename: ARRAY OF CHAR; options: SET;
+                      errors: RelatedEvents.Object;
+                      retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE OpenCreat(VAR fd: File;
+                           filename: ARRAY OF CHAR; options: SET;
+                           protection: Protection;
+                           errors: RelatedEvents.Object;
+                           retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE Close(fd: File;
+                       errors: RelatedEvents.Object;
+                       retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE Read(fd: File; buf: Address; cnt: Count;
+                      errors: RelatedEvents.Object;
+                      retry: BOOLEAN; VAR interrupted: BOOLEAN) : Count;
+       PROCEDURE Write(fd: File; buf: Address; cnt: Count;
+
+
+
+Release 0.5         Last change: 17 March 1992                  1
+
+
+
+
+
+SysIO(3)               Ulm's Oberon System               SysIO(3)
+
+
+                       errors: RelatedEvents.Object;
+                       retry: BOOLEAN; VAR interrupted: BOOLEAN) : Count;
+       PROCEDURE Seek(fd: File; offset: Count; whence: Whence;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Tell(fd: File; VAR offset: Count;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Isatty(fd: File) : BOOLEAN;
+       PROCEDURE Dup(fd: File; VAR newfd: File;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Dup2(fd, newfd: File;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Fcntl(fd: File; request: INTEGER; VAR arg: INTEGER;
+                       errors: RelatedEvents.Object;
+                       retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE FcntlSet(fd: File; request: INTEGER; flags: SET;
+                          errors: RelatedEvents.Object;
+                          retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE FcntlGet(fd: File; request: INTEGER; VAR flags: SET;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Pipe(VAR readfd, writefd: File;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_y_s_I_O interfaces those UNIX system calls which are related
+       to input and output.
+
+       _F_i_l_e represents file descriptors which serve as handle for
+       input  and output on system call level and are small inte­
+       gers.
+
+       The _o_p_e_n_(_2_) system calls has two or three parameters.  The
+       third  parameter  is  needed  in  case of file creation to
+       specify the file protection.  File creation  is  indicated
+       by or-ing _c_r_e_a_t to _o_p_t_i_o_n_s.  _O_p_e_n and _O_p_e_n_C_r_e_a_t open _f_i_l_e_­
+       _n_a_m_e (must be 0X-terminated) under the control of _o_p_t_i_o_n_s:
+       _r_d_o_n_l_y   read-only access
+       _w_r_o_n_l_y   write-only access
+       _r_d_w_r     read and write access
+       _n_d_e_l_a_y   assures immediate return
+       _a_p_p_e_n_d   write  accesses cause implicit positioning to end
+                of file
+       _c_r_e_a_t    file is to be created
+       _t_r_u_n_c    file is to be truncated to zero length
+       _e_x_c_l     assures exclusive creation
+       Options may be given in combination, e.g. _c_r_e_a_t+_e_x_c_l+_r_d_w_r.
+       See _S_y_s_S_t_a_t for protection modes.
+
+       _I_s_a_t_t_y tests _f_d for being associated to a terminal device.
+       This is done by an _i_o_c_t_l_(_2_) system call.  _I_s_a_t_t_y does  not
+       generate any events.
+
+       _D_u_p  and  _D_u_p_2  realize  the equally named system calls of
+       UNIX Edition VII and Berkeley Systems.  They are  replaced
+
+
+
+Release 0.5         Last change: 17 March 1992                  2
+
+
+
+
+
+SysIO(3)               Ulm's Oberon System               SysIO(3)
+
+
+       by  _f_c_n_t_l_(_2_) on UNIX System V systems but are supported by
+       _S_y_s_I_O for portability.  _D_u_p returns a new file  descriptor
+       in _n_e_w_f_d which is a synomym for _f_d (i.e. both point to the
+       same entry of the open file table).  _D_u_p_2 works  like  _D_u_p
+       but  causes  _n_e_w_f_d to be the synonym.  If _n_e_w_f_d was opened
+       it is closed first.
+
+       _F_c_n_t_l implements the equally named system call.   _F_c_n_t_l_S_e_t
+       and  _F_c_n_t_l_G_e_t  are  more  convenient  interfaces to _F_c_n_t_l.
+       Following requests are supported:
+       _d_u_p_f_d    duplicate file descriptor
+       _g_e_t_f_d    get file desc flags (_c_l_o_s_e_o_n_e_x_e_c)
+       _s_e_t_f_d    set file desc flags (_c_l_o_s_e_o_n_e_x_e_c)
+       _g_e_t_f_l    get file flags
+       _s_e_t_f_l    set file flags (_n_d_e_l_a_y, _a_p_p_e_n_d)
+       _g_e_t_l_k    get file lock
+       _s_e_t_l_k    set file lock
+       _s_e_t_l_k_w   set file lock and wait
+
+       _C_l_o_s_e, _R_e_a_d, _W_r_i_t_e,  _S_e_e_k,  _T_e_l_l,  and  _P_i_p_e  realize  the
+       equally  named  system  calls.  Valid values of the _w_h_e_n_c_e
+       parameter of _S_e_e_k are
+       _f_r_o_m_S_t_a_r_t   absolute positioning
+       _f_r_o_m_P_o_s     relative positioning to current position
+       _f_r_o_m_E_n_d     relative positioning to end of file
+
+DDIIAAGGNNOOSSTTIICCSS
+       System call failures lead to events of _S_y_s_E_r_r_o_r_s_(_3_).   The
+       _e_r_r_o_r_s parameter is passed to _S_y_s_E_r_r_o_r_s_._R_a_i_s_e.  All proce­
+       dures return FFAALLSSEE or -1 (_S_y_s_T_y_p_e_s_._C_o_u_n_t) in error case.
+
+       Some of the system calls may be  interrupted.   In  normal
+       case  (_r_e_t_r_y  =  FFAALLSSEE)  this  causes the appropiate error
+       event to be raised (error  code  _S_y_s_E_r_r_o_r_s_._i_n_t_r)  and  the
+       system  call  to be aborted.  If _r_e_t_r_y is TTRRUUEE, the system
+       call will be repeated until no interrupt occured.   _i_n_t_e_r_­
+       _r_u_p_t indicates in both cases whether interrupts occured or
+       not.
+
+SSEEEE AALLSSOO
+       _c_l_o_s_e_(_2_)       _C_l_o_s_e
+       _f_c_n_t_l_(_2_)       _F_c_n_t_l, _F_c_n_t_l_S_e_t, and _F_c_n_t_l_G_e_t
+       _o_p_e_n_(_2_)        _O_p_e_n and _O_p_e_n_C_r_e_a_t
+       _p_i_p_e_(_2_)        _P_i_p_e
+       _r_e_a_d_(_2_)        _R_e_a_d
+       _s_e_e_k_(_2_)        _S_e_e_k
+       _t_e_l_l_(_2_)        _T_e_l_l
+       _w_r_i_t_e_(_2_)       _W_r_i_t_e
+       _S_y_s_E_r_r_o_r_s_(_3_)   handling of failed system calls
+       _S_y_s_S_t_a_t_(_3_)     protection modes
+
+
+
+
+
+
+
+Release 0.5         Last change: 17 March 1992                  3
+
+

@@ -1,0 +1,222 @@
+StandardContainers(3)         Ulm's Oberon System        StandardContainers(3)
+
+
+
+[1mNAME[0m
+       StandardContainers - standard implementation of [4mContainers(3)[0m
+
+[1mSYNOPSIS[0m
+       CONST usecurrent = 0; usestripped = 1; usefree = 2; useothercurrent = 3;
+       CONST useotherstripped = 4; useotherfree = 5; usenew = 6; usedefault = 7;
+       TYPE AllocStrat = SHORTINT; (* usecurrent..usedefault *)
+
+       CONST usestrippedslot = 0; usefreeslot = 1;
+       CONST usenewslot  = 2; usedefaultslot = 3;
+       TYPE SlotStrat = SHORTINT; (* usestrippedslot..usedefaultslot *)
+
+       CONST unsupportedStream = 0;
+       CONST invalidContainer = 1;
+       CONST containerInAutoMode = 2;
+       CONST invalidTransaction = 3;
+       CONST fatalIOError = 4;
+       CONST transStreamOpFailed = 5;
+       CONST persFailure = 6;
+       CONST objectTooLarge = 7;
+       CONST outOfSpace = 8;
+       CONST tooManyObjects = 9;
+       CONST objectIsNIL = 10;
+       CONST noSuchIdent = 11;
+       CONST noAnchorDefined = 12;
+       CONST errors = 13;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec);
+             errcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Open(VAR container: Containers.Container;
+                      data: Streams.Stream;
+                      auto: BOOLEAN;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE SetTries(cont: Containers.Container; tries: SHORTINT);
+       PROCEDURE SetAllocStrat(cont: Containers.Container;
+                               insertpos, mode: AllocStrat);
+       PROCEDURE SetSlotStrat(cont: Containers.Container;
+                              insertpos, mode: SlotStrat);
+
+
+[1mDESCRIPTION[0m
+       [4mStandardContainers[24m  offers  a  standard implementation of [4mContainers(3)[0m
+       which uses transaction streams that  support  [4mObjectTransactions(3)[24m  as
+       persistent storage.
+
+       [4mOpen[24m  opens  or creates (if [4mdata[24m has zero length) a container on top of
+       [4mdata[24m which serves as persistent storage.  The underlying  stream  needs
+       to  be  supported  by  [4mObjectTransactions(3)[24m  and  must  not  have been
+       attached to a transaction yet.  Note that the termination of the under-
+       lying  stream  will  be propagated to the container (see [4mResources(3)[24m).
+       In auto mode, there is only one transaction running from the  beginning
+       up to the invocation of [4mContainers.Close[24m.  Alternatively, the container
+       supports [4mObjectTransactions(3)[24m and all  operations  of  [4mTransactions(3)[0m
+       may   be  applied.   All  container  operations  of  [4mContainers(3)[24m  are
+       permitted, provided the transaction parameter matches  the  transaction
+       [4mcontainer[24m is attached to ([1mNIL [22mis to be given in auto mode).
+
+       [4mStandardContainers[24m  allows  some  tuning  of the allocation strategies.
+       Allocation is done for new objects (tunable by [4mSetAllocStrat[24m)  and  for
+       new  entries  of  the  index  table (tunable by [4mSetSlotStrat[24m).  Each of
+       these strategies consists of a small vector (indexed from 0  to  [4musede-[0m
+       [4mfault[24m,  and  from  0 to [4musedefaultslot[24m, respectively) with values which
+       select one of the possible allocation  variants.   The  last  entry  of
+       these  vectors  is  always [4musedefault[24m (or [4musedefaultslot[24m, respectively)
+       which works as a wildcard of all possible variants.  The other  entries
+       of the vectors are initialized to their associated indices.  By calling
+       [4mSetAllocStrat[24m or [4mSetSlotStrat[24m, it is possible to insert a strategy into
+       the  vector  at  the  given  position, i.e. the former strategy at this
+       index and all following will be shifted towards the end of  the  vector
+       with  the  last  but one strategy entry being lost.  On allocation, the
+       associated variants will be considered exactly in the order as found in
+       the associated vector.  Note that neither [4musedefault[24m nor [4musedefaultslot[0m
+       must be inserted because they will fire anyway as last strategy.
+
+       [4mSetTries[24m sets a tuning parameter which  controls  the  number  of  free
+       lists  which  are considered when allocating an object.  The larger the
+       value of [4mtries[24m, the more [4mStandardContainers[24m is willing to split  larger
+       free  areas  for  small  objects  instead of allocating new areas.  The
+       default value of this parameter is 3.
+
+[1mDIAGNOSTICS[0m
+       All error events which are raised in the context of a container will be
+       forwarded  to  it  (or  to  [4merrors[24m at opening time).  This includes the
+       underlying data stream, an internal in-memory stream,  the  transaction
+       (of  [4mObjectTransactions(3)[24m)  on the data stream, and the transaction on
+       the container itself.  All failures which are seen by  [4mStandardContain-[0m
+       [4mers[24m will result in an error event which is related to the container:
+       [4munsupportedStream[24m     The stream which was passed to [4mOpen[24m does not sup-
+                             port [4mObjectTransactions(3)[24m.  [4mTransStreams(3)[24m, for
+                             example,  offers streams which provide the neces-
+                             sary support.
+       [4minvalidContainer[24m      The container was non-empty and found to be not a
+                             valid  container (at least of the same platform).
+       [4mcontainerInAutoMode[24m   Transaction operations of [4mTransactions(3)[24m are not
+                             valid if the container is in auto mode.
+       [4minvalidTransaction[24m    A  transaction parameter was passed to one of the
+                             [4mContainer(3)[24m operations where  the  container  is
+                             not  attached  to.   If  the container is in auto
+                             mode, any transaction not equal to  [1mNIL  [22mwill  be
+                             considered as invalid.
+       [4mfatalIOError[24m          An operation on the underlying stream failed.  In
+                             this case it is best to abort the transaction.
+       [4mtransStreamOpFailed[24m   A transaction operation on the underlying  stream
+                             failed.    Note   that   transaction  streams  of
+                             [4mTransStreams(3)[24m must not be opened in  auto  mode
+                             to be usable for [4mStandardContainers[24m.
+       [4mpersFailure[24m           Either  [4mPersistentObjects.Write[24m  or [4mPersistentOb-[0m
+                             [4mjects.Read[24m failed -- this may be due to a failure
+                             of  one  of  the associated interface procedures.
+                             On reading, problems may occur if one of the ref-
+                             erenced modules cannot be loaded (see [4mLoader(3)[24m).
+       [4mobjectTooLarge[24m        The given object is architecturally to  large  to
+                             fit  into  a  container  of [4mStandardContainers(3)[0m
+                             (independent on how much space is left).
+       [4moutOfSpace[24m            There is no virtual  space  left  for  the  given
+                             object.   Note that this is not a problem on your
+                             local disk but one of the virtual address  space.
+                             If  your  local  disk fills up, underlying stream
+                             operations will fail on committing and result  in
+                             an abortion of the transaction.
+       [4mtooManyObjects[24m        There  are  no  entries  left in the index table,
+                             i.e. the container has already the maximal number
+                             of objects possible.
+       [4mobjectIsNIL[24m           Objects  passed  to [4mContainers.Insert[24m or [4mContain-[0m
+                             [4mers.Replace[24m must not be [1mNIL[22m.
+       [4mnoSuchIdent[24m           An invalid ident was given to  [4mContainers.Delete[24m,
+                             [4mContainers.Obtain[24m,  [4mContainers.Replace[24m,  [4mContain-[0m
+                             [4mers.Find[24m, or [4mContainers.SetAnchor[24m.
+       [4mnoAnchorDefined[24m       [4mContainers.GetAnchor[24m was called but no anchor was
+                             previously  defined, or the anchor became invalid
+                             due to a delete operation.
+
+       [4mStandardContainers[24m has a large number  of  assertions.   Most  of  them
+       check the internal consistency but some are used to check parameters:
+
+       ·      [4mSetAllocStrat[24m asserts that [4minsertpos[24m and [4mmode[24m have legal values.
+              Note that [4mmode[24m must not be [4musedefault[24m.
+
+       ·      Likewise, [4mSetSlotStrat[24m checks that [4minsertpos[24m and [4mmode[24m have valid
+              values.  Again,  [4mmode[24m must not equal the default strategy [4musede-[0m
+              [4mfaultslot[24m.
+
+[1mEXAMPLE[0m
+       Following procedure shows how to open a container  of  [4mStandardContain-[0m
+       [4mers(3)[24m that bases on [4mTransStreams(3)[24m and [4mUnixFiles(3)[24m:
+
+       PROCEDURE OpenContainer(containerFile: ARRAY OF CHAR;
+                               auto: BOOLEAN;
+                               VAR trans: Transactions.Transaction;
+                               VAR container: Containers.Container;
+                               errors: RelatedEvents.Object) : BOOLEAN;
+          (* open a standard container which is represented
+             by the UNIX file with the name ``containerFile'';
+             in auto mode, ``trans'' will be set to NIL, otherwise
+             an associated transaction will be created;
+             all errors at opening time and in future
+             will be related to ``errors''
+          *)
+          VAR
+             file, ts: Streams.Stream;
+       BEGIN
+          IF ~UnixFiles.Open(file, containerFile,
+                   UnixFiles.rdwr + UnixFiles.condcreate, Streams.nobuf,
+                   errors) OR
+                ~TransStreams.Open(ts, file, TransStreams.standard, errors) OR
+                ~StandardContainers.Open(container, ts, auto, errors) THEN
+             RETURN FALSE
+          END;
+          RelatedEvents.Forward(container, errors);
+          IF auto THEN
+             trans := NIL;
+          ELSE
+             IF ~ObjectTransactions.Create(trans, container, NIL, errors) THEN
+                RETURN FALSE
+             END;
+             RelatedEvents.Forward(trans, errors);
+          END;
+          RETURN TRUE
+       END OpenContainer;
+
+       It  is  later  sufficient to close the container only.  This will cause
+       the transaction (if any) to be released and all underlying  streams  to
+       be closed (because there are no other references on [4mfile[24m and [4mts[24m).  This
+       works  because  there  is  an  implicit  chain   of   dependencies   of
+       [4mResources(3)[24m starting from [4mfile[24m and ending at [4mtrans[24m.
+
+[1mSEE ALSO[0m
+       [4mContainers(3)[24m           general abstraction of object containers
+       [4mObjectTransactions(3)[24m   transactions with one object only (supported by
+                               [4mStandardContainers(3)[24m)
+       [4mTransStreams(3)[24m         stream implementation  which  supports  [4mObject-[0m
+                               [4mTransactions(3)[0m
+
+[1mAUTHOR[0m
+       The  original  implementation  is due to Werner Stanglow, the revisions
+       and this manual page have been contributed by Andreas Borchert.
+
+[1mBUGS[0m
+       Note that the format of the container is not portable across platforms.
+       It  depends  on  byte  ordering and the page size of the memory system.
+       Cross-platform access is still possible, though,  by  setting  up  dis-
+       tributed  systems  ([4mRemoteObjects(3)[24m  for [4mContainers(3)[24m is supported by
+       [4mRemoteContainers(3)[24m).  In this way, a container may be  accessed  by  a
+       process  on the associated platform, converted implicitely by transfer-
+       ring it over the network, and dumped into a new container for a differ-
+       ent platform.
+
+
+
+Release 0.5              Last change: 9 February 2005    StandardContainers(3)

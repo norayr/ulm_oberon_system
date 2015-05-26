@@ -1,0 +1,264 @@
+
+
+
+Scopes(3)              Ulm's Oberon System              Scopes(3)
+
+
+NNAAMMEE
+       Scopes - flat but nestable persistent name spaces
+
+SSYYNNOOPPSSIISS
+       TYPE Identifier = ConstStrings.String;
+       TYPE Object = CompilerObjects.Object;
+       TYPE Location = CompilerObjects.Location;
+
+       TYPE Scope = POINTER TO ScopeRec;
+       TYPE ScopeRec = RECORD (CompilerObjects.ObjectRec) END;
+
+       TYPE OpenProc = PROCEDURE (scope: Scope; VAR innerScope: Scope);
+       TYPE CloseProc = PROCEDURE (scope: Scope);
+       TYPE AddProc = PROCEDURE (scope: Scope; ident: Identifier;
+                                 loc: Location; object: Object);
+       TYPE UseProc = PROCEDURE (scope: Scope; ident: Identifier;
+                                 loc: Location; VAR object: Object);
+       TYPE LookupProc = PROCEDURE (scope: Scope; ident: Identifier;
+                                    VAR object: Object) : BOOLEAN;
+       TYPE LocalLookupProc = PROCEDURE (scope: Scope; ident: Identifier;
+                                         VAR object: Object) : BOOLEAN;
+       TYPE CutProc = PROCEDURE (scope: Scope);
+       TYPE GetIteratorProc = PROCEDURE (scope: Scope; VAR it: Iterators.Iterator);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             open: OpenProc;
+             close: CloseProc;
+             add: AddProc;
+             use: UseProc;
+             lookup: LookupProc;
+             localLookup: LocalLookupProc;
+             cut: CutProc;
+             getIterator: GetIteratorProc;
+          END;
+
+       PROCEDURE Init(scope: Scope; if: Interface);
+
+       PROCEDURE Open(scope: Scope; VAR innerScope: Scope);
+       PROCEDURE Close(scope: Scope);
+       PROCEDURE Cut(scope: Scope);
+
+       PROCEDURE Level(scope: Scope) : INTEGER;
+       PROCEDURE Add(scope: Scope; ident: Identifier;
+                     loc: Location; object: Object);
+       PROCEDURE Use(scope: Scope; ident: Identifier; loc: Location;
+                     VAR object: Object);
+       PROCEDURE Lookup(scope: Scope; ident: Identifier;
+                        VAR object: Object) : BOOLEAN;
+       PROCEDURE LocalLookup(scope: Scope; ident: Identifier;
+                             VAR object: Object) : BOOLEAN;
+       PROCEDURE GetIterator(scope: Scope; VAR it: Iterators.Iterator);
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   1
+
+
+
+
+
+Scopes(3)              Ulm's Oberon System              Scopes(3)
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_c_o_p_e_s   provides  a  general  abstraction  for  flat  but
+       nestable persistent name spaces that are suited  for  com­
+       pilers  of  programming languages.  A standard implementa­
+       tion is given by _S_t_d_S_c_o_p_e_s_(_3_).
+
+       _I_n_i_t initializes _s_c_o_p_e and associates it  with  the  given
+       interface  _i_f.  The  interface  procedures are expected to
+       meet the specifications following:
+       _o_p_e_n: PPRROOCCEEDDUURREE(_s_c_o_p_e: _S_c_o_p_e; VVAARR _i_n_n_e_r_S_c_o_p_e: _S_c_o_p_e);
+            create a nested scope  of  _s_c_o_p_e  and  return  it  in
+            _i_n_n_e_r_S_c_o_p_e.   Nested  scopes  have  the property that
+            identifiers that were  not  found  in  them  will  be
+            looked up in the parent scope.
+       _c_l_o_s_e: PPRROOCCEEDDUURREE(_s_c_o_p_e: _S_c_o_p_e);
+            freeze  _s_c_o_p_e  (i.e. further additions to it must not
+            be accepted), and generate error events if necessary.
+       _a_d_d: PPRROOCCEEDDUURREE(_s_c_o_p_e: _S_c_o_p_e; _i_d_e_n_t: _I_d_e_n_t_i_f_i_e_r; _l_o_c: _L_o_c_a_­
+            _t_i_o_n; _o_b_j_e_c_t: _O_b_j_e_c_t);
+            add _o_b_j_e_c_t under the name  of  _i_d_e_n_t  to  _s_c_o_p_e.  The
+            location _l_o_c, if non-NNIILL, may later be used as refer­
+            ence in case of error messages.
+       _u_s_e: PPRROOCCEEDDUURREE(_s_c_o_p_e: _S_c_o_p_e; _i_d_e_n_t: _I_d_e_n_t_i_f_i_e_r; _l_o_c: _L_o_c_a_­
+            _t_i_o_n; VVAARR _o_b_j_e_c_t: _O_b_j_e_c_t);
+            perform  a  lookup  of  _i_d_e_n_t  in _s_c_o_p_e and mark this
+            identifier as used in this scope if found. Note  that
+            implementations  are  expected  to detect scope over­
+            laps, i.e. identifiers that have been  used  from  an
+            outer  scope  must  not  be  later  added to the same
+            scope. Example:
+
+            PROCEDURE OuterScope;
+               TYPE Outer = INTEGER;
+               PROCEDURE InnerScope;
+                  TYPE Inner = Outer; (* using ``Outer'' in inner scope *)
+                  TYPE Outer = INTEGER; (* redefining ``Outer'' in inner scope *)
+               END InnerScope;
+            END OuterScope;
+
+            _o_b_j_e_c_t must be set to NNIILL if the lookup was not  suc­
+            cessful.
+       _l_o_o_k_u_p:  PPRROOCCEEDDUURREE(_s_c_o_p_e:  _S_c_o_p_e;  _i_d_e_n_t:  _I_d_e_n_t_i_f_i_e_r; VVAARR
+            _o_b_j_e_c_t: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            lookup for _i_d_e_n_t in  _s_c_o_p_e  (and  its  outer  scopes)
+            without  marking  it.  If  successful,  TTRRUUEE is to be
+            returned and the  object  found  to  be  stored  into
+            _o_b_j_e_c_t.
+       _l_o_c_a_l_L_o_o_k_u_p:  PPRROOCCEEDDUURREE(_s_c_o_p_e:  _S_c_o_p_e;  _i_d_e_n_t: _I_d_e_n_t_i_f_i_e_r;
+            VVAARR _o_b_j_e_c_t: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            lookup for _i_d_e_n_t in  _s_c_o_p_e  without  considering  its
+            outer  scopes  and without marking it. If successful,
+            TTRRUUEE is to be returned and the  object  found  to  be
+
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   2
+
+
+
+
+
+Scopes(3)              Ulm's Oberon System              Scopes(3)
+
+
+            stored into _o_b_j_e_c_t.
+       _c_u_t: PPRROOCCEEDDUURREE(_s_c_o_p_e: _S_c_o_p_e);
+            untie  the  association  of _s_c_o_p_e to its outer scope,
+            i.e. lookups will be performed locally only.
+       _g_e_t_I_t_e_r_a_t_o_r:  PPRROOCCEEDDUURREE(_s_c_o_p_e:  _S_c_o_p_e;  VVAARR   _i_t:   _I_t_e_r_a_­
+            _t_o_r_s_._I_t_e_r_a_t_o_r);
+            store  an  iterator  into  _i_t  that allows to iterate
+            through all objects added to _s_c_o_p_e.
+
+       _O_p_e_n creates a scope of the same implementation  as  _s_c_o_p_e
+       that  is  nested into it, i.e. lookups that do not succeed
+       in the current scope will be continued in the outer scope.
+       _C_l_o_s_e freezes and finishes a scope, i.e. further additions
+       of identifiers to _s_c_o_p_e are no longer permitted and  error
+       events  will  be  generated.   _C_u_t unties a scope from its
+       outer scope, i.e. lookups will  be  performed  locally  on
+       _s_c_o_p_e  only.  Note  that  _C_u_t  does not change the nesting
+       level of a scope.
+
+       _L_e_v_e_l returns the nesting level of a scope. Outmost scopes
+       (i.e.  those  initialized by _I_n_i_t) have a nesting level of
+       0.
+
+       _A_d_d inserts _o_b_j_e_c_t (declared at _l_o_c) with name _i_d_e_n_t  into
+       _s_c_o_p_e.  _l_o_c may be NNIILL if not available. An error event is
+       generated immediately or later on _C_l_o_s_e in case of errors.
+
+       _U_s_e looks for _i_d_e_n_t in _s_c_o_p_e (referenced at _l_o_c) and marks
+       it as used. The object, if found, is stored  into  _o_b_j_e_c_t;
+       otherwise,  it is set to NNIILL. _l_o_c may be NNIILL if not avail­
+       able. An error event is generated immediately or later  on
+       _C_l_o_s_e in case of errors.
+
+       _L_o_o_k_u_p  looks  for _i_d_e_n_t in _s_c_o_p_e and its associated outer
+       scopes without marking it and without generating any error
+       events.  If successful, TTRRUUEE is returned and the object is
+       stored into _o_b_j_e_c_t.  _L_o_c_a_l_L_o_o_k_u_p  works  like  _L_o_o_k_u_p  but
+       does not consider the outer scopes of _s_c_o_p_e.
+
+       _G_e_t_I_t_e_r_a_t_o_r returns an iterator in _i_t that allows to iter­
+       ate through all  objects  (not  names!)  added  to  _s_c_o_p_e.
+       _G_e_t_I_t_e_r_a_t_o_r  must  not  be  called  before  _C_l_o_s_e has been
+       called for _s_c_o_p_e.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Implementations of _S_c_o_p_e_s  are  expected  to  raise  error
+       events  (usually those of _C_o_m_p_i_l_e_r_E_r_r_o_r_s_(_3_)) and to relate
+       them to _s_c_o_p_e if
+
+       ·      an identifier is added twice to the same scope,
+
+       ·      an identifier is added that was  used  before  from
+              the outer scope (scope overlap), or if
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   3
+
+
+
+
+
+Scopes(3)              Ulm's Oberon System              Scopes(3)
+
+
+       ·      an identifier is used that was not declared before.
+
+       Implementations are free to  postpone  the  generation  of
+       error  events  until  _C_l_o_s_e is called for a scope to allow
+       for enhanced error reports.
+
+SSEEEE AALLSSOO
+       _C_o_m_p_i_l_e_r_E_r_r_o_r_s_(_3_)      events for compilation errors
+       _C_o_m_p_i_l_e_r_O_b_j_e_c_t_s_(_3_)     base type of compiler objects
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   operations for persistent objects
+       _S_t_d_S_c_o_p_e_s_(_3_)           standard implementation  of  _S_c_o_p_e_s
+                              using hashes and _C_o_m_p_i_l_e_r_E_r_r_o_r_s_(_3_)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   4
+
+

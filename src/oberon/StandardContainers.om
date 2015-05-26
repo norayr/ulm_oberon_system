@@ -1,0 +1,1844 @@
+(* Ulm's Oberon Library
+   Copyright(C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or(at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StandardCon.om,v 1.5 1998/03/24 23:37:39 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: StandardCon.om,v $
+   Revision 1.5  1998/03/24  23:37:39  borchert
+   bug fix: LinearizedStructures.Reset was not called for the internal
+            text buffer
+
+   Revision 1.4  1996/11/28  11:00:28  borchert
+   major rewrite of those parts which are related to the external
+   interfaces and error handling: StandardContainers supports now
+   Containers and ObjectTransactions
+
+   Revision 1.3  1996/11/22  16:11:58  borchert
+   debugging procedures removed
+
+   Revision 1.2  1996/11/22  16:06:57  borchert
+   formatting changed but not yet valid for compilation
+
+   Revision 1.1  1996/11/22  10:37:20  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   original version is due to Werner Stanglow
+   ----------------------------------------------------------------------------
+   open problems:
+   * slots are dependent from byte-sex; therefore these containers
+     will not be portable across platforms with different byte-sex
+     (big-endian vs little-endian)
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StandardContainers;
+
+   IMPORT Containers, Events, LinearizedStructures, Memory, Objects,
+      ObjectTransactions, PersistentObjects, Priorities, RelatedEvents,
+      Resources, Services, Shards, Streams, Strings, SYS := SYSTEM,
+      Texts := LargeTexts, Transactions, Types;
+
+   TYPE
+      Kind = SHORTINT;
+      Ident = Containers.Ident;
+      Count = Streams.Count;
+      Transaction = Transactions.Transaction;
+      Object = Containers.Object;
+
+   CONST
+      setSize = MAX(SET) + 1;
+
+   CONST
+      kilo = 1024;
+      mega = kilo * kilo;
+
+   CONST
+      magic = 123456; (* magic number at the beginning of a container *)
+
+   CONST
+      (* valid storage sizes for single objects range from
+	 2^ldMinSz .. 2^ldMaxSz
+      *)
+      ldMinSz = 4;   (* dual log of minimum object size(16B) *)
+      ldMaxSz = 23;  (* dual log of maximum object size(8MB) *)
+      maxSize = ASH(1, ldMaxSz);  (* maximum object size *)
+      (* therefore the size of an object can be coded
+	 as an integer ranging from 0..noLds-1
+      *)
+      noLds = ldMaxSz - ldMinSz + 1; (* number of different sizes *)
+      ldBits = 5; (* number of bits needed to encode the object size *)
+   TYPE
+      SizeIndex = SHORTINT; (* 0..noLds-1 *)
+
+   TYPE
+      SlotValue = Types.Int32;
+   CONST
+      idxBits = SYS.SIZE(LONGINT) * 8 - 2 - ldBits;
+                     (* no. of bits remaining for indexing *)
+   TYPE
+      Index = Types.Int32;
+
+   CONST
+      ldPageSz = 12; (* dual log of pagesize *)
+      pageSize = ASH(1, ldPageSz);
+
+   TYPE
+      Slot =
+	    (* an entry of the index table with three possible variants:
+	       (1) a reference to a living object
+	           val1: offset > 0
+		   val2: size of the object as SizeIndex
+	       (2) reference to a free area
+	           val1: offset < 0  (free area at |offset|)
+		   val2: SizeIndexAndIndex
+	       (3) unused id
+	           val1: 0
+		   val2: Index (reference to next unused id)
+	    *)
+         RECORD
+            val1: Types.Int32;
+            val2: Types.Int32;
+         END;
+   CONST
+      slotSize = SYS.SIZE(Slot);
+   CONST
+      maxElems = ASH(1, idxBits); (* maximal number of objects *)
+      dataoffset = maxElems * slotSize + pageSize;
+	 (* data storage starts at this stream position *)
+
+   CONST
+      (* for each of the possible sizes a free list is maintained *)
+      noLists = noLds;           (* no of freelists handled *)
+      lastList = noLists - 1;    (* index of last freelist  *)
+
+
+      idxMinSz = 0;
+      idxMaxSz = ldMaxSz - ldMinSz;
+      idxPageSz = ldPageSz - ldMinSz;
+
+   CONST
+      EOL = - 1; (* end of list marker *)
+
+   CONST
+      usecurrent = 0;
+      usestripped = 1;
+      usefree = 2;
+      useothercurrent = 3;
+      useotherstripped = 4;
+      useotherfree = 5;
+      usenew = 6;
+      usedefault = 7;
+   TYPE
+      AllocStrat = SHORTINT; (* usecurrent..usedefault *)
+
+   CONST
+      usestrippedslot = 0;
+      usefreeslot = 1;
+      usenewslot  = 2;
+      usedefaultslot = 3;
+   TYPE
+      SlotStrat = SHORTINT; (* usestrippedslot..usedefaultslot *)
+
+   CONST
+      first = Containers.first;
+      last = Containers.last;
+      this = Containers.this;
+      succ = Containers.succ;
+      pred = Containers.pred;
+   TYPE
+      Dir = SHORTINT; (* first..pred *)
+
+   CONST
+      maxObjectsPerPage = pageSize DIV ASH(1, ldMinSz);
+      setsPerPage = maxObjectsPerPage DIV setSize;
+
+   TYPE
+      SlotSets = ARRAY setsPerPage OF SET;
+      AllocStrats = ARRAY usedefault + 1 OF SHORTINT;
+      SlotStrats = ARRAY usedefaultslot + 1 OF SHORTINT;
+
+   CONST
+      spp = pageSize DIV slotSize;
+      maxPages = (MAX(Streams.Count) - mega * slotSize) DIV pageSize;
+      maxSets = maxPages DIV setSize + 1;
+      maxSlotSets1 = maxElems DIV setSize;
+      maxSlotSets2 = maxPages * pageSize DIV ASH(1, ldMinSz) DIV setSize;
+      one = SYS.VAL(LONGINT, maxSlotSets1 < maxSlotSets2);
+      maxSlotSets = one*maxSlotSets1 + (one + 1) MOD 2 * maxSlotSets2;
+	 (* maxSlotSets = minimum of maxSlotSets1 and maxSlotSets2 *)
+   TYPE
+      OffsetMap = POINTER TO OffsetMapArray;
+      OffsetMapArray = ARRAY maxPages OF LONGINT;
+      IndexMap = POINTER TO IndexMapArray;
+      IndexMapArray = ARRAY maxPages OF SHORTINT;
+      PageMapArray = ARRAY maxSets OF SET;
+      PageMap = POINTER TO PageMapArray;
+      SlotMapArray = ARRAY maxSlotSets OF SET;
+      SlotMap = POINTER TO SlotMapArray;
+      UsableMap = POINTER TO UsableMapArray;
+      UsableMapArray = ARRAY maxSlotSets1 OF SET;
+      Page = POINTER TO ARRAY pageSize DIV slotSize OF Slot;
+
+
+      Head = POINTER TO HeadRec;
+	 (* header page, to be found at the beginning of the stream *)
+      HeadRec =
+         RECORD
+            magic: LONGINT;
+            break: LONGINT;
+	       (* nothing has been allocated beyond this address *)
+            elems: LONGINT; (* number of elements *)
+            allocstrat: AllocStrats;
+            slotstrat: SlotStrats;
+            tries: SHORTINT;
+            offset: ARRAY noLists OF Count;
+            multi: ARRAY noLists OF LONGINT;
+            free: ARRAY noLists OF LONGINT;
+            stripped: ARRAY noLists OF LONGINT;
+            (* slot management *)
+            freeslots: LONGINT;
+            strippedslots: LONGINT;
+            nextslot: LONGINT;
+            anchor: Ident;
+         END;
+
+      Container = POINTER TO ContainerRec;
+      ContainerRec =
+         RECORD
+            (Containers.ContainerRec);
+	    silent: BOOLEAN; (* do not generate error events *)
+            opened: BOOLEAN;
+            auto: BOOLEAN; (* see equally named parameter of Open *)
+	    trans: Transactions.Transaction;
+	       (* set to # NIL if we are running under control
+		  of this transaction
+	       *)
+            corrupted: BOOLEAN;
+            data: Streams.Stream; (* persistent storage of the container *)
+	    datatrans: Transactions.Transaction; (* associated trans *)
+	    auth: Shards.Lid; (* for data on transactions operations *)
+            tmp: Streams.Stream;
+	       (* temporary storage; is necessary because we do
+		  not know the length of the byte sequence of
+		  PersistentObjects.Write in advance
+	       *)
+            no: LONGINT;
+            head: Head;
+         END;
+
+   CONST
+      unsupportedStream = 0; (* stream does not support ObjectTransactions *)
+      invalidContainer = 1; (* no container found on data stream *)
+      containerInAutoMode = 2; (* transaction ops not permitted *)
+      invalidTransaction = 3; (* container not member of given transaction *)
+      fatalIOError = 4; (* I/O error on underlying stream *)
+      transStreamOpFailed = 5; (* transaction op on data stream failed *)
+      persFailure = 6; (* operation of PersistentObjects failed *)
+      objectTooLarge = 7; (* object is too large *)
+      outOfSpace = 8; (* unable to allocate new object *)
+      tooManyObjects = 9; (* too many objects *)
+      objectIsNIL = 10; (* container objects must not be NIL *)
+      noSuchIdent = 11; (* invalid ID was given *)
+      noAnchorDefined = 12; (* no anchor defined yet *)
+      errors = 13;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec);
+            errcode: ErrorCode;
+         END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   CONST
+      headSize = SYS.SIZE(HeadRec);
+
+   VAR
+      allocstrat: AllocStrats;
+      slotstrat: SlotStrats;
+
+   VAR
+      conttype: Services.Type;
+      cif: Containers.Interface;
+
+   (* === error handling ================================================= *)
+
+   PROCEDURE InitErrorHandling();
+   BEGIN
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[unsupportedStream] :=
+	 "data stream does not support transactions";
+      errormsg[invalidContainer] := "no container found on data stream";
+      errormsg[containerInAutoMode] :=
+	 "external transaction operations not permitted";
+      errormsg[invalidTransaction] :=
+	 "container not member of given transaction";
+      errormsg[fatalIOError] := "I/O error on underlying data stream";
+      errormsg[transStreamOpFailed] := "transaction op on data stream failed";
+      errormsg[persFailure] := "unable to dump or load persistent object";
+      errormsg[objectTooLarge] := "object is too large";
+      errormsg[outOfSpace] := "unable to allocate new object";
+      errormsg[tooManyObjects] := "too many objects";
+      errormsg[objectIsNIL] := "container objects must not be NIL";
+      errormsg[noSuchIdent] := "there is no such object ID";
+      errormsg[noAnchorDefined] := "no anchor defined yet";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      IF (object IS Container) & object(Container).silent THEN
+	 RETURN
+      END;
+      NEW(event);
+      event.type := error;
+      event.errcode := errorcode;
+      event.message := errormsg[errorcode];
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE ^ InternalAbort(cont: Container) : BOOLEAN;
+
+   PROCEDURE Fatal(cont: Container);
+      (* to be called in case of fatal I/O errors on the underlying stream *)
+   BEGIN
+      Error(cont, fatalIOError);
+   END Fatal;
+
+   (* === low level container access ===================================== *)
+
+   PROCEDURE InitHead(h: Head);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      h.magic := magic;
+      h.break := dataoffset;
+      h.elems := 0;
+      h.anchor := EOL;
+      h.nextslot := 0;
+      h.freeslots := - 1;
+      h.tries := 3;
+      h.strippedslots := - 1;
+      h.allocstrat := allocstrat;
+      h.slotstrat := slotstrat;
+      i := 0;
+      WHILE i < noLists DO
+         h.free[i] := EOL;
+         INC(i);
+      END;
+      i := 0;
+      WHILE i < noLists DO
+         h.stripped[i] := EOL;
+         h.offset[i] := EOL;
+         h.multi[i] := 0;
+         INC(i);
+      END;
+   END InitHead;
+
+   PROCEDURE Read(cont: Container; pos: Count;
+                  VAR buf: ARRAY OF BYTE) : BOOLEAN;
+   BEGIN
+      IF ~Streams.Seek(cont.data, pos, Streams.fromStart) OR
+	    ~Streams.ReadPart(cont.data, buf, 0, LEN(buf)) THEN
+         Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END Read;
+
+   PROCEDURE Write(cont: Container; pos: Count;
+                   VAR buf: ARRAY OF BYTE) : BOOLEAN;
+   BEGIN
+      IF ~Streams.Seek(cont.data, pos, Streams.fromStart) OR
+	    ~Streams.WritePart(cont.data, buf, 0, LEN(buf)) THEN
+	 Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END Write;
+
+   PROCEDURE PutTmp(cont: Container; obj: Object; VAR size: Count) : BOOLEAN;
+   BEGIN
+      LinearizedStructures.Reset(cont.tmp);
+      IF ~Streams.Seek(cont.tmp, 0, Streams.fromStart) OR
+	    ~PersistentObjects.Write(cont.tmp, obj) OR
+	    ~Streams.Tell(cont.tmp, size) THEN
+	 Error(cont, persFailure); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END PutTmp;
+
+   PROCEDURE PutData(cont: Container; offset, size: Count) : BOOLEAN;
+   BEGIN
+      IF ~Streams.Seek(cont.data, offset, Streams.fromStart) OR
+	    ~Streams.Seek(cont.tmp, 0, Streams.fromStart) OR
+	    ~Streams.Copy(cont.tmp, cont.data, size) THEN
+	 Fatal(cont); RETURN FALSE
+      END;
+      RETURN TRUE
+   END PutData;
+
+   PROCEDURE Ld(val: LONGINT) : SHORTINT;
+      VAR
+	 pow: SHORTINT;
+   BEGIN
+      pow := 0;
+      WHILE ASH(1, pow) < val DO
+         INC(pow);
+      END;
+      RETURN pow
+   END Ld;
+
+   PROCEDURE Sz2Idx(val: LONGINT) : SizeIndex;
+      VAR
+	 pow: SHORTINT;
+   BEGIN
+      IF (val <= 0) OR (val > maxSize) THEN
+         RETURN -1
+      ELSE
+         pow := ldMinSz;
+         WHILE ASH(1, pow) < val DO
+            INC(pow);
+         END;
+         RETURN pow - ldMinSz
+      END;
+   END Sz2Idx;
+
+   PROCEDURE EncodeFreelist(VAR slot: Slot; offset: LONGINT;
+                            pos: SHORTINT; next: LONGINT);
+   BEGIN
+      ASSERT((offset > 0) & (pos >= 0) & (pos <= noLists));
+      slot.val1 := - offset;
+      INC(next);
+      slot.val2 := ASH(next, ldBits) + pos;
+   END EncodeFreelist;
+
+   PROCEDURE DecodeFreelist(VAR slot: Slot; VAR offset: LONGINT;
+                            VAR pos: SHORTINT; VAR next: LONGINT) : BOOLEAN;
+      CONST
+	 div = ASH(1, ldBits);
+   BEGIN
+      IF slot.val1 >= 0 THEN
+         RETURN FALSE
+      ELSE
+         offset := - slot.val1;
+         next := slot.val2 DIV div;
+         pos := SHORT(SHORT(slot.val2 MOD div));
+         DEC(next);
+         RETURN TRUE
+      END;
+   END DecodeFreelist;
+
+   PROCEDURE ReadSlot(cont: Container; id: Ident; VAR slot: Slot) : BOOLEAN;
+   BEGIN
+      IF ~Streams.Seek(cont.data, id*slotSize + pageSize, Streams.fromStart) OR
+	    ~Streams.ReadPart(cont.data, slot, 0, SYS.SIZE(Slot)) THEN
+	 Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END ReadSlot;
+
+   PROCEDURE WriteSlot(cont: Container; id: Ident; VAR slot: Slot) : BOOLEAN;
+   BEGIN
+      IF ~Streams.Seek(cont.data, id*slotSize + pageSize, Streams.fromStart) OR
+	    ~Streams.WritePart(cont.data, slot, 0, SYS.SIZE(Slot)) THEN
+         Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END WriteSlot;
+
+   PROCEDURE WriteUser(cont: Container; id: Ident;
+                       offset: LONGINT; pos: SHORTINT) : BOOLEAN;
+      VAR
+	 slot: Slot;
+   BEGIN
+      ASSERT((id >= 0) & (offset > 0) & (pos >= 0) & (pos <= noLists));
+      slot.val1 := offset;
+      slot.val2 := pos;
+      IF ~Streams.Seek(cont.data, id*slotSize + pageSize, Streams.fromStart) OR
+	    ~Streams.WritePart(cont.data, slot, 0, SYS.SIZE(Slot)) THEN
+	 Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END WriteUser;
+
+   PROCEDURE ReadUser(cont: Container; id: Ident; VAR offset: LONGINT;
+		      VAR pos: SHORTINT) : BOOLEAN;
+      VAR
+	 slot: Slot;
+   BEGIN
+      IF ~Streams.Seek(cont.data, id*slotSize + pageSize, Streams.fromStart) OR
+	    ~Streams.ReadPart(cont.data, slot, 0, SYS.SIZE(Slot)) THEN
+         Fatal(cont); RETURN FALSE
+      END;
+      IF (slot.val1 <= 0) OR (slot.val2 < 0) OR (slot.val2 > noLists) THEN
+	 Error(cont, noSuchIdent);
+	 RETURN FALSE
+      ELSE
+	 offset := slot.val1;
+	 pos := SHORT(SHORT(slot.val2));
+	 RETURN TRUE
+      END;
+   END ReadUser;
+
+   PROCEDURE WriteFree(cont: Container; id: Ident; offset: LONGINT;
+		       pos: SHORTINT; next: LONGINT) : BOOLEAN;
+      VAR
+	 slot: Slot;
+   BEGIN
+      ASSERT((id >= 0) & (offset > 0) & (pos >= 0) & (pos <= noLists));
+      slot.val1 := - offset;
+      INC(next);
+      slot.val2 := ASH(next, ldBits) + pos;
+      IF ~Streams.Seek(cont.data, id*slotSize + pageSize, Streams.fromStart) OR
+	    ~Streams.WritePart(cont.data, slot, 0, SYS.SIZE(Slot)) THEN
+         Fatal(cont); RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END WriteFree;
+
+   PROCEDURE NextFreeSlot(cont: Container; VAR id: Ident) : BOOLEAN;
+      VAR
+	 slot: Slot;
+   BEGIN
+      IF ~Read(cont, id*slotSize + pageSize, slot) OR (slot.val1 # 0) THEN
+         id := -1;
+	 RETURN FALSE
+      ELSE
+         id := slot.val2;
+         RETURN TRUE
+      END;
+   END NextFreeSlot;
+
+   PROCEDURE GetId(cont: Container; VAR id: Ident) : BOOLEAN;
+      VAR
+	 done: BOOLEAN;
+	 try: SHORTINT;
+
+      PROCEDURE GetNew() : BOOLEAN;
+      BEGIN
+         IF cont.head.nextslot < maxElems THEN
+            id := cont.head.nextslot;
+            INC(cont.head.nextslot);
+            RETURN TRUE
+         ELSE
+            RETURN FALSE
+         END;
+      END GetNew;
+
+      PROCEDURE GetStripped() : BOOLEAN;
+      BEGIN
+         IF cont.head.strippedslots # EOL THEN
+            id := cont.head.strippedslots;
+            RETURN NextFreeSlot(cont, cont.head.strippedslots)
+         ELSE
+            RETURN FALSE
+         END;
+      END GetStripped;
+
+      PROCEDURE GetFree() : BOOLEAN;
+      BEGIN
+         IF cont.head.freeslots # EOL THEN
+            id := cont.head.freeslots;
+            RETURN NextFreeSlot(cont, cont.head.freeslots)
+         ELSE
+            RETURN FALSE
+         END;
+      END GetFree;
+
+   BEGIN (* GetId *)
+      done := FALSE;
+      try := 0;
+      WHILE ~done & (try <= usedefaultslot) DO
+         CASE cont.head.slotstrat[try] OF
+         | usefreeslot:
+            done := GetFree();
+         | usestrippedslot:
+            done := GetStripped();
+         | usenewslot :
+            done := GetNew();
+         | usedefaultslot:
+            done := GetNew() OR GetFree() OR GetStripped();
+         END;
+         INC(try);
+      END;
+      RETURN done
+   END GetId;
+
+   PROCEDURE ReserveNew(cont: Container; pos: SHORTINT) : BOOLEAN;
+      VAR
+	 power: SHORTINT;
+   BEGIN
+      IF cont.head.multi[pos] = 0 THEN
+         power := pos + ldMinSz;
+         cont.head.offset[pos] := cont.head.break;
+         IF power <= ldPageSz THEN
+            INC(cont.head.break, pageSize);
+            cont.head.multi[pos] := ASH(1, ldPageSz - power);
+         ELSE
+            INC(cont.head.break, ASH(pageSize, power - ldPageSz));
+            cont.head.multi[pos] := 1;
+         END;
+         RETURN TRUE
+      ELSE
+         RETURN FALSE
+      END;
+   END ReserveNew;
+
+   PROCEDURE UseCurrent(cont: Container;
+                        pos: SHORTINT; VAR offset: LONGINT) : BOOLEAN;
+   BEGIN
+      IF cont.head.multi[pos] > 0 THEN
+         offset := cont.head.offset[pos];
+         DEC(cont.head.multi[pos]);
+         INC(cont.head.offset[pos], ASH(1, pos + ldMinSz));
+         RETURN TRUE
+      ELSE
+         RETURN FALSE
+      END;
+   END UseCurrent;
+
+   PROCEDURE GetFree(cont: Container; pos: SHORTINT;
+                     VAR offset, id: LONGINT) : BOOLEAN;
+      VAR
+	 slot: Slot;
+	 p: SHORTINT;
+	 ok: BOOLEAN;
+   BEGIN
+      IF cont.head.free[pos] # EOL THEN
+         id := cont.head.free[pos];
+         IF ~ReadSlot(cont, id, slot) THEN
+            RETURN FALSE
+         ELSE
+            ok := DecodeFreelist(slot, offset, p, cont.head.free[pos]);
+	    ASSERT(ok & (p = pos));
+            RETURN TRUE
+         END;
+      ELSE
+         RETURN FALSE
+      END;
+   END GetFree;
+
+   PROCEDURE GetStripped(cont: Container; pos: SHORTINT;
+                         VAR offset, id: LONGINT) : BOOLEAN;
+      VAR
+	 slot: Slot;
+	 p: SHORTINT;
+	 ok: BOOLEAN;
+   BEGIN
+      IF cont.head.stripped[pos] # EOL THEN
+         id := cont.head.stripped[pos];
+         IF ~ReadSlot(cont, id, slot) THEN
+            RETURN FALSE
+         ELSE
+            ok := DecodeFreelist(slot, offset, p, cont.head.stripped[pos]);
+	    ASSERT(ok & (p = pos));
+            RETURN TRUE
+         END;
+      ELSE
+         RETURN FALSE
+      END;
+   END GetStripped;
+
+   PROCEDURE Split(cont: Container; offset: LONGINT;
+                   from, for: SHORTINT) : BOOLEAN;
+   BEGIN
+      IF (from <= for) OR (cont.head.multi[for] # 0) THEN
+         RETURN FALSE
+      ELSE
+         cont.head.offset[for] := offset;
+         cont.head.multi[for] := ASH(1, from - for);
+         RETURN TRUE
+      END;
+   END Split;
+
+   PROCEDURE Alloc(cont: Container; size: Count; VAR id: Ident;
+                   VAR offset: Count) : BOOLEAN;
+      VAR
+	 p: SHORTINT;
+
+	 pos: SHORTINT;
+	 limit: SHORTINT;
+	 try: SHORTINT;
+	 done: BOOLEAN;
+   BEGIN
+      id := - 1;
+      pos := Sz2Idx(size);
+      IF pos < 0 THEN
+	 Error(cont, objectTooLarge); RETURN FALSE
+      END;
+      done := FALSE;
+      try := 0;
+      WHILE ~done & (try <= usedefault) DO
+         CASE cont.head.allocstrat[try] OF
+         | usecurrent:
+            done := UseCurrent(cont, pos, offset);
+         | usenew, usedefault:
+            done := UseCurrent(cont, pos, offset)
+                  OR ReserveNew(cont, pos) & UseCurrent(cont, pos, offset);
+         | usefree:
+            done := GetFree(cont, pos, offset, id);
+         | usestripped:
+            done := GetStripped(cont, pos, offset, id);
+         | useotherfree:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := GetFree(cont, p, offset, id)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         | useotherstripped:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := GetStripped(cont, p, offset, id)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         | useothercurrent:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := UseCurrent(cont, p, offset)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         END;
+         INC(try);
+      END;
+      IF ~done THEN
+	 Error(cont, outOfSpace); RETURN FALSE
+      ELSIF (id = - 1) & ~GetId(cont, id) THEN
+	 Error(cont, tooManyObjects); RETURN FALSE
+      ELSIF ~WriteUser(cont, id, offset, pos) THEN
+         RETURN FALSE
+      ELSE
+         RETURN TRUE
+      END;
+   END Alloc;
+
+   PROCEDURE Realloc(cont: Container; size: Count; id: Ident;
+                     VAR offset: Count; oldoffset: LONGINT;
+		     oldpos: SHORTINT) : BOOLEAN;
+      VAR
+	 pos, p: SHORTINT;
+	 freeid: LONGINT;
+	 try: SHORTINT;
+	 done: BOOLEAN;
+	 limit: SHORTINT;
+   BEGIN
+      pos := Sz2Idx(size);
+      IF pos < 0 THEN
+	 Error(cont, objectTooLarge); RETURN FALSE
+      END;
+      IF pos <= oldpos THEN
+         offset := oldoffset;
+         RETURN TRUE
+      END;
+      freeid := EOL;
+      done := FALSE;
+      try := 0;
+      WHILE ~done & (try <= usedefault) DO
+         CASE cont.head.allocstrat[try] OF
+         | usecurrent:
+            done := UseCurrent(cont, pos, offset);
+         | usenew, usedefault:
+            done := UseCurrent(cont, pos, offset)
+                  OR ReserveNew(cont, pos) & UseCurrent(cont, pos, offset);
+         | usefree:
+            done := GetFree(cont, pos, offset, freeid);
+         | usestripped:
+            done := GetStripped(cont, pos, offset, freeid);
+         | useotherfree:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := GetFree(cont, p, offset, freeid)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         | useotherstripped:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := GetStripped(cont, p, offset, freeid)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         | useothercurrent:
+            done := UseCurrent(cont, pos, offset);
+            IF ~done THEN
+               IF pos < idxPageSz THEN
+                  p := idxPageSz;
+               ELSE
+                  p := pos + 1;
+               END;
+               limit := p + cont.head.tries - 1;
+               IF limit > lastList THEN
+                  limit := lastList;
+               END;
+               WHILE ~done & (p <= limit) DO
+                  done := UseCurrent(cont, p, offset)
+                     & Split(cont, offset, p, pos)
+                     & UseCurrent(cont, pos, offset);
+                  INC(p);
+               END;
+            END;
+         END;
+         INC(try);
+      END;
+      IF (freeid = EOL) & ~GetId(cont, freeid) THEN
+	 Error(cont, tooManyObjects); RETURN FALSE
+      ELSIF ~WriteFree(cont, freeid,
+                       oldoffset, oldpos, cont.head.free[oldpos]) THEN
+         RETURN FALSE
+      ELSE
+         cont.head.free[oldpos] := freeid;
+      END;
+      RETURN WriteUser(cont, id, offset, pos)
+   END Realloc;
+
+   (* === reorganization ================================================== *)
+
+   PROCEDURE Strip(cont: Container) : BOOLEAN;
+      VAR
+	 cur: Count;
+	 no: Count;
+	 page: Page;
+	 last: Count;
+	 slot: Count;
+	 lastslot: Count;
+	 any: BOOLEAN;
+
+      PROCEDURE Clear(VAR any: BOOLEAN);
+	 VAR
+	    idx: Count;
+	    pos: SHORTINT;
+	    off: LONGINT;
+	    nxt: LONGINT;
+	    ok: BOOLEAN;
+      BEGIN
+	 any := FALSE;
+	 IF cur = last THEN
+	    idx := no MOD spp;
+	 ELSE
+	    idx := spp - 1;
+	 END;
+	 WHILE idx >= 0 DO
+	    IF (page[idx].val1 <= 0 ) THEN
+	       any := TRUE;
+	       IF page[idx].val1 < 0 THEN
+		  ok := DecodeFreelist(page[idx], off, pos, nxt); ASSERT(ok);
+		  ASSERT((pos >= 0) & (pos <= lastList));
+		  EncodeFreelist(page[idx], off, pos,
+			cont.head.stripped[pos]);
+		  cont.head.stripped[pos] := slot;
+	       ELSE
+		  IF slot = no THEN
+		     DEC(no);
+		     lastslot := EOL;
+		  ELSE
+		     page[idx].val1 := 0;
+		     page[idx].val2 := lastslot;
+		     lastslot := slot;
+		  END;
+	       END;
+	    END;
+	    DEC(slot);
+	    DEC(idx);
+	 END;
+      END Clear;
+
+   BEGIN (* Strip *)
+      NEW(page);
+      no := 0;
+      WHILE no < noLists DO
+	 cont.head.free[no] := EOL;
+	 cont.head.stripped[no] := EOL;
+	 INC(no);
+      END;
+      cont.head.freeslots := EOL;
+      cont.head.strippedslots := EOL;
+      no := (cont.head.nextslot - 1);
+      slot := no;
+      cur := no DIV spp + 1;
+      last := cur;
+      lastslot := EOL;
+      WHILE cur >= 1 DO
+	 IF ~Read(cont, cur*pageSize, page^) THEN
+	    RETURN FALSE
+	 END;
+	 Clear(any);
+	 IF any & ~Write(cont, cur*pageSize, page^) THEN
+	    RETURN FALSE
+	 END;
+	 DEC(cur);
+      END;
+      cont.head.nextslot := no + 1;
+      cont.head.strippedslots := lastslot;
+      RETURN TRUE
+   END Strip;
+
+   PROCEDURE Collect(cont: Container) : BOOLEAN;
+      VAR
+	 no: Count;
+	 pages: LONGINT;
+	 noslots: LONGINT;
+	 pagemap: PageMap;
+	 indexmap: IndexMap;
+	 offsetmap: OffsetMap;
+	 slotmap: SlotMap;
+	 usablemap: UsableMap;
+
+      PROCEDURE Init;
+	 VAR
+	    i: LONGINT;
+	    sets: LONGINT;
+	    slots: LONGINT;
+      BEGIN
+         pages := (cont.head.break - dataoffset) DIV pageSize;
+         sets := pages DIV setSize;
+         IF pages MOD setSize # 0 THEN
+            INC(sets);
+         END;
+         SYS.NEW(pagemap, SYS.SIZE(SET)*sets);
+         i := 0;
+         WHILE i < sets DO
+            pagemap[i] := {};
+            INC(i);
+         END;
+         SYS.NEW(indexmap, SYS.SIZE(SHORTINT)*pages);
+         SYS.NEW(offsetmap, SYS.SIZE(LONGINT)*pages);
+         i := 0;
+         WHILE i < pages DO
+            offsetmap[i] := EOL;
+            indexmap[i] := EOL;
+            INC(i);
+         END;
+         sets := cont.head.nextslot DIV setSize;
+         IF cont.head.nextslot MOD setSize # 0 THEN
+            INC(sets);
+         END;
+         SYS.NEW(usablemap, SYS.SIZE(SET)*sets);
+         i := 0;
+         WHILE i < sets DO
+            usablemap[i] := {};
+            INC(i);
+         END;
+      END Init;
+
+      PROCEDURE MarkPages(idx, no: LONGINT);
+	 VAR
+	    set, bit, i: LONGINT;
+      BEGIN
+         set := idx DIV setSize;
+         bit := idx MOD setSize;
+         i := 0;
+         WHILE i < no DO
+            ASSERT(~(bit IN pagemap[set]));
+            INCL(pagemap[set], bit);
+            INC(bit);
+            IF bit = setSize THEN
+               bit := 0;
+               INC(set);
+            END;
+            INC(i);
+         END;
+      END MarkPages;
+
+      PROCEDURE Scan1() : BOOLEAN;
+	 VAR
+	    page: Page;
+	    last, pno, max, idx, no: LONGINT;
+	    offset , next: LONGINT;
+	    pos: SHORTINT;
+      BEGIN
+         NEW(page);
+         last := cont.head.nextslot DIV spp;
+         IF (cont.head.nextslot) MOD spp # 0 THEN
+            INC(last);
+         END;
+         no := 1;
+         pos := 0;
+         WHILE pos < idxPageSz DO
+            IF cont.head.multi[pos] > 0 THEN
+               pno := (cont.head.offset[pos] - dataoffset) DIV pageSize;
+               ASSERT((indexmap[pno] = EOL) OR (indexmap[pno] = pos));
+               indexmap[pno]:= pos;
+            END;
+            INC(pos);
+         END;
+         max := spp;
+         WHILE no <= last DO
+            IF (no = last) & (cont.head.nextslot MOD spp # 0) THEN
+               max := cont.head.nextslot MOD spp;
+            END;
+            IF ~Read(cont, no*pageSize, page^) THEN
+               RETURN FALSE
+            END;
+            idx := 0;
+            WHILE idx < max DO
+               IF DecodeFreelist(page[idx], offset, pos, next) THEN
+                  pno := (offset - dataoffset) DIV pageSize;
+                  IF pos < idxPageSz THEN
+                     ASSERT((indexmap[pno] =EOL) OR (indexmap[pno] = pos));
+                     indexmap[pno]:= pos;
+                  ELSE
+                     MarkPages(pno, ASH(1, pos - idxPageSz));
+                  END;
+               END;
+               INC(idx)
+            END;
+            INC(no);
+         END;
+         RETURN TRUE
+      END Scan1;
+
+      PROCEDURE Scan2() : BOOLEAN;
+	 VAR
+	    page: Page;
+	    pno, max, idx, no: LONGINT;
+	    offset , next: LONGINT;
+	    slotno: LONGINT;
+	    pos: SHORTINT;
+	    last, set, bit,
+	    bitno: LONGINT;
+      BEGIN
+         NEW(page);
+         slotno := cont.head.nextslot - 1;
+         last := cont.head.nextslot DIV spp;
+         IF (cont.head.nextslot) MOD spp # 0 THEN
+            INC(last);
+         END;
+         no := 1;
+         IF (cont.head.nextslot MOD spp # 0) THEN
+            idx := cont.head.nextslot MOD spp - 1;
+         ELSE
+            idx := spp - 1;
+         END;
+         no := last;
+         WHILE no >= 1 DO
+            IF ~Read(cont, no*pageSize, page^) THEN
+               RETURN FALSE
+            END;
+            WHILE idx >= 0 DO
+               IF (page[idx].val1 <= 0 ) THEN
+                  IF page[idx].val1 < 0 THEN
+                     ASSERT(DecodeFreelist(page[idx], offset, pos, next));
+                     IF pos < idxPageSz THEN
+                        bitno := (offset MOD pageSize) DIV
+                           ASH(1, ldMinSz + pos) +
+                           offsetmap[
+                              (offset - dataoffset) DIV pageSize];
+                        set := bitno DIV setSize;
+                        bit := bitno MOD setSize;
+                        ASSERT(~(bit IN slotmap[set]));
+                        INCL(slotmap[set], bit)
+                     END;
+                  END;
+                  set := slotno DIV setSize;
+                  bit := slotno MOD setSize;
+                  ASSERT(~(bit IN usablemap[set]));
+                  INCL(usablemap[set], bit);
+               END;
+               DEC(idx);
+               DEC(slotno);
+            END;
+            idx := spp - 1;
+            DEC(no);
+         END;
+         no := 0;
+         WHILE no < idxPageSz DO
+            IF cont.head.multi[no] > 0 THEN
+	       bitno := (cont.head.offset[no] MOD pageSize) DIV
+		  ASH(1, ldMinSz + no) +
+		     offsetmap[
+			(cont.head.offset[no] - dataoffset) DIV pageSize];
+	       WHILE cont.head.multi[no] > 0 DO
+		  set := bitno DIV setSize;
+		  bit := bitno MOD setSize;
+		  ASSERT(~(bit IN slotmap[set]));
+		  INCL(slotmap[set], bit);
+		  INC(bitno);
+		  DEC(cont.head.multi[no]);
+	       END;
+            END;
+            INC(no);
+         END;
+         WHILE no < noLists DO
+            IF cont.head.multi[no] > 0 THEN
+	       MarkPages((cont.head.offset[no] - dataoffset) DIV pageSize,
+		  cont.head.multi[no] * ASH(1, pos - idxPageSz));
+	       cont.head.multi[no] := 0;
+            END;
+            INC(no);
+         END;
+         RETURN TRUE
+      END Scan2;
+
+      PROCEDURE Dump() : BOOLEAN;
+	 VAR
+	    nomoreslots: BOOLEAN;
+	    blocks, curid,
+	       id, offset, free, first, last, slots, i,  bitno, no: LONGINT;
+	    pos: SHORTINT;
+	    slot: Slot;
+
+         PROCEDURE Shrink();
+         BEGIN
+            WHILE (cont.head.nextslot > 0) &
+		  (((cont.head.nextslot - 1) MOD setSize) IN
+		   usablemap[(cont.head.nextslot - 1) DIV setSize]) DO
+               DEC(cont.head.nextslot);
+            END;
+         END Shrink;
+
+         PROCEDURE Next(VAR id: LONGINT) : BOOLEAN;
+         BEGIN
+            IF nomoreslots OR (curid + 1 >= cont.head.nextslot) THEN
+               nomoreslots := TRUE;
+               RETURN FALSE
+            ELSE
+               REPEAT
+                  INC(curid);
+               UNTIL (curid >= cont.head.nextslot) OR
+                  (curid MOD setSize IN usablemap[curid DIV setSize]);
+               IF curid >= cont.head.nextslot THEN
+                  RETURN FALSE
+               ELSE
+                  id := curid;
+                  RETURN TRUE
+               END;
+            END;
+         END Next;
+
+      BEGIN (* Dump *)
+         no := 0;
+         Shrink();
+         nomoreslots := FALSE;
+         curid := - 1;
+         WHILE no < pages DO
+            pos := indexmap[no];
+            IF (pos # EOL) & (pos < idxPageSz) THEN
+               slots := pageSize DIV ASH(1, pos + ldMinSz);
+               bitno := offsetmap[no];
+               last := bitno + slots - 1;
+               free := 0;
+               WHILE bitno <= last DO
+                  IF (bitno MOD setSize) IN slotmap[bitno DIV setSize] THEN
+                     INC(free);
+                  END;
+                  INC(bitno);
+               END;
+               IF free = slots THEN
+                  MarkPages(no, 1);
+               ELSE
+                  bitno := offsetmap[no];
+                  WHILE bitno <= last DO
+                     IF (bitno MOD setSize) IN slotmap[bitno DIV setSize] THEN
+                        offset := dataoffset + no*pageSize
+                           + (bitno - offsetmap[no])
+                           * ASH(1, ldMinSz + pos);
+                        IF ~Next(id) THEN
+                           id := cont.head.nextslot;
+                           INC(cont.head.nextslot);
+                        END;
+                        IF ~WriteFree(cont, id, offset, pos,
+			      cont.head.stripped[pos]) THEN
+                           RETURN FALSE
+                        ELSE
+                           cont.head.stripped[pos] := id;
+                        END;
+                     END;
+                     INC(bitno);
+                  END;
+               END;
+            END;
+            INC(no);
+         END;
+         bitno := pages - 1;
+         WHILE (bitno >= 0) &
+	       ((bitno MOD setSize) IN pagemap[bitno DIV setSize]) &
+	       (cont.head.break = dataoffset + (bitno + 1) * pageSize) DO
+            DEC(pages);
+            DEC(cont.head.break, pageSize);
+            DEC(bitno);
+         END;
+         no := 0;
+         WHILE no < pages DO
+            IF (no MOD setSize) IN pagemap[no DIV setSize] THEN
+               free := 0;
+               first := no;
+               offset := dataoffset + first*pageSize;
+               REPEAT
+                  INC(free);
+                  INC(no);
+               UNTIL (no >= pages)
+                  OR ~((no MOD setSize)IN pagemap[no DIV setSize]);
+               pos := idxMaxSz;
+               WHILE (free > 0) DO
+                  blocks := free DIV ASH(1, pos - idxPageSz);
+                  free := free MOD ASH(1, pos - idxPageSz);
+
+                  WHILE blocks > 0 DO
+                     IF ~Next(id) THEN
+                        id := cont.head.nextslot;
+                        INC(cont.head.nextslot);
+                     END;
+                     IF ~WriteFree(cont, id, offset, pos,
+			   cont.head.stripped[pos]) THEN
+                        RETURN FALSE
+                     ELSE
+                        cont.head.stripped[pos] := id;
+                        INC(offset, pageSize * ASH(1, pos - idxPageSz));
+                        DEC(blocks);
+                     END;
+                  END;
+                  DEC(pos);
+               END;
+            END;
+            INC(no);
+         END;
+         WHILE Next(id) DO
+            slot.val1 := 0;
+            slot.val2 := cont.head.strippedslots;
+            IF ~WriteSlot(cont, id, slot) THEN
+               RETURN FALSE
+            ELSE
+               cont.head.strippedslots := id;
+            END;
+         END;
+         RETURN TRUE
+      END Dump;
+
+      PROCEDURE Eval;
+	 VAR
+	    no: LONGINT;
+	    sets: LONGINT;
+      BEGIN
+         no := 0;
+         noslots := 0;
+         WHILE no < pages DO
+            IF indexmap[no] # EOL THEN
+               ASSERT(indexmap[no] < idxPageSz);
+               offsetmap[no] := noslots;
+               INC(noslots, pageSize DIV ASH(1, indexmap[no] + ldMinSz));
+            END;
+            INC(no);
+         END;
+         sets := noslots DIV slotSize;
+         IF noslots MOD slotSize # 0 THEN
+            INC(sets);
+         END;
+         SYS.NEW(slotmap, SYS.SIZE(SET)*sets);
+         no := 0;
+         WHILE no < sets DO
+            slotmap[no] := {};
+            INC(no);
+         END;
+      END Eval;
+
+   BEGIN (* Collect *)
+      Init;
+      cont.head.freeslots := EOL;
+      cont.head.strippedslots := EOL;
+      IF ~Scan1() THEN
+         RETURN FALSE
+      ELSE
+         Eval();
+         IF ~Scan2() THEN
+            RETURN FALSE
+         ELSE
+            no := 0;
+            WHILE no < noLists DO
+               cont.head.free[no] := EOL;
+               cont.head.stripped[no] := EOL;
+               INC(no);
+            END;
+            IF ~Dump() THEN
+               RETURN FALSE
+            ELSE
+               RETURN TRUE
+            END;
+         END;
+      END;
+   END Collect;
+
+   PROCEDURE ValidTransaction(cont: Container;
+                              trans: Transaction) : BOOLEAN;
+   BEGIN
+      IF cont.auto THEN
+	 RETURN trans = NIL
+      ELSE
+	 RETURN cont.trans = trans
+      END;
+   END ValidTransaction;
+
+   PROCEDURE ValidIdent(cont: Container; id: Ident) : BOOLEAN;
+      VAR
+	 offset: Count; pos: SHORTINT;
+   BEGIN
+      IF (id < 0) OR (id >= cont.head.nextslot) OR
+	    (cont.head.elems = 0) THEN
+	 Error(cont, noSuchIdent); RETURN FALSE
+      END;
+      RETURN ReadUser(cont, id, offset, pos)
+   END ValidIdent;
+
+   (* === interface procedures for Containers ========================= *)
+
+   PROCEDURE Insert(cont: Containers.Container; trans: Transaction;
+                    VAR id: LONGINT; obj: Object) : BOOLEAN;
+      VAR
+	 size, offset: Count;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+         ELSIF obj = NIL THEN
+            Error(cont, objectIsNIL);
+            RETURN FALSE
+	 END;
+         IF ~PutTmp(cont, obj, size) OR
+	       ~Alloc(cont, size, id, offset) OR
+	       ~PutData(cont, offset, size) THEN
+            RETURN FALSE
+         ELSE
+            INC(cont.head.elems);
+            RETURN TRUE
+         END;
+      END;
+   END Insert;
+
+   PROCEDURE Obtain(cont: Containers.Container; trans: Transaction;
+                    id: Ident; VAR obj: Object) : BOOLEAN;
+      VAR
+	 offset: LONGINT;
+	 pos: SHORTINT;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+         ELSIF (id < 0) OR (id >= cont.head.nextslot) OR
+	       (cont.head.elems = 0) THEN
+	    Error(cont, noSuchIdent); RETURN FALSE
+         ELSIF ~ReadUser(cont, id, offset, pos) THEN
+            RETURN FALSE
+         ELSIF ~Streams.Seek(cont.data, offset, Streams.fromStart) THEN
+	    Fatal(cont);
+            RETURN FALSE
+         ELSIF ~PersistentObjects.Read(cont.data, obj) THEN
+	    Error(cont, persFailure);
+            RETURN FALSE
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END Obtain;
+
+   PROCEDURE Delete(cont: Containers.Container; trans: Transaction;
+                    id: Ident) : BOOLEAN;
+      VAR
+	 offset: LONGINT;
+	 pos: SHORTINT;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+         ELSIF (id < 0) OR (id >= cont.head.nextslot) OR
+	       (cont.head.elems = 0) THEN
+	    Error(cont, noSuchIdent); RETURN FALSE
+         ELSIF ~ReadUser(cont, id, offset, pos) OR
+	       ~WriteFree(cont, id, offset, pos, cont.head.free[pos]) THEN
+            RETURN FALSE
+         ELSE
+            cont.head.free[pos] := id;
+            DEC(cont.head.elems);
+	    IF cont.head.anchor = id THEN
+	       cont.head.anchor := EOL;
+	    END;
+            RETURN TRUE
+         END;
+      END;
+   END Delete;
+
+   PROCEDURE Replace(cont: Containers.Container; trans: Transaction;
+                     id: Ident; obj: Object) : BOOLEAN;
+      VAR
+	 size: LONGINT;
+	 offset: LONGINT;
+	 oldoffset: LONGINT;
+	 oldpos: SHORTINT;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+         ELSIF obj = NIL THEN
+            Error(cont, objectIsNIL); RETURN FALSE
+         ELSIF (id < 0) OR (id >= cont.head.nextslot) OR
+	       (cont.head.elems = 0) THEN
+	    Error(cont, noSuchIdent); RETURN FALSE
+	 END;
+         RETURN ReadUser(cont, id, oldoffset, oldpos) &
+	        PutTmp(cont, obj, size) &
+	        Realloc(cont, size, id, offset, oldoffset, oldpos) &
+	        PutData(cont, offset, size)
+      END;
+   END Replace;
+
+   PROCEDURE SetAnchor(cont: Containers.Container; trans: Transaction;
+                       id: Ident) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+         ELSIF ~ValidIdent(cont, id) THEN
+	    (* error event already generated *)
+	    RETURN FALSE
+	 ELSE
+            cont.head.anchor := id;
+            RETURN TRUE
+         END;
+      END;
+   END SetAnchor;
+
+   PROCEDURE GetAnchor(cont: Containers.Container; trans: Transaction;
+                       VAR id: Ident) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); id := -1; RETURN FALSE
+         ELSE
+            id := cont.head.anchor;
+	    IF id = EOL THEN
+	       Error(cont, noAnchorDefined); RETURN FALSE
+	    ELSE
+	       RETURN TRUE
+	    END;
+         END;
+      END;
+   END GetAnchor;
+
+   PROCEDURE Elements(cont: Containers.Container; trans: Transaction;
+                      VAR no: LONGINT) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); no := -1; RETURN FALSE
+	 ELSE
+	    no := cont.head.elems;
+	    RETURN TRUE
+	 END;
+      END;
+   END Elements;
+
+   PROCEDURE Find(cont: Containers.Container; trans: Transaction;
+                  dir: Dir; VAR i: Ident) : BOOLEAN;
+      VAR
+	 offset: LONGINT;
+	 inc: SHORTINT;
+	 max: LONGINT;
+	 id: LONGINT;
+
+      PROCEDURE ObtainT(cont: Containers.Container;
+			id: Ident; VAR off: LONGINT) : BOOLEAN;
+	 VAR
+	    pos: SHORTINT;
+      BEGIN
+	 WITH cont: Container DO
+	    IF (id < 0) OR
+		  (id >= cont.head.nextslot) OR (cont.head.elems = 0) THEN
+	       Error(cont, noSuchIdent);
+	       RETURN FALSE
+	    ELSE
+	       RETURN ReadUser(cont, id, off, pos)
+	    END;
+	 END;
+      END ObtainT;
+
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+	 END;
+         id := i;
+         max := cont.head.nextslot - 1;
+         CASE dir OF
+         | this: RETURN ObtainT(cont, id, offset)
+         | first:
+            id := 0;
+            inc := 1;
+         | last:
+            id := max;
+            inc := - 1;
+         | succ :
+            INC(id);
+            inc := 1;
+         | pred:
+            DEC(id);
+            inc := - 1;
+         END;
+	 cont.silent := TRUE; (* suppress error messages *)
+         WHILE (id >= 0) & (id <= max) DO
+            IF ObtainT(cont, id, offset) THEN
+               i := id;
+	       cont.silent := FALSE;
+               RETURN TRUE
+            ELSE
+               INC(id, inc);
+            END;
+         END;
+	 cont.silent := FALSE;
+	 Error(cont, noSuchIdent);
+         RETURN FALSE
+      END;
+   END Find;
+
+   PROCEDURE Reorganize(cont: Containers.Container;
+                        trans: Containers.Transaction) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~ValidTransaction(cont, trans) THEN
+	    Error(cont, invalidTransaction); RETURN FALSE
+	 END;
+	 RETURN Collect(cont) & Strip(cont)
+      END;
+   END Reorganize;
+
+   PROCEDURE ^ InternalCommit(cont: Container) : BOOLEAN;
+
+   PROCEDURE Close(cont: Containers.Container) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+         cont.opened := FALSE;
+         ok := TRUE;
+         IF cont.auto & ~InternalCommit(cont) THEN
+            ok := FALSE;
+         END;
+	 IF ~Transactions.Release(cont.datatrans, cont.auth) & ok THEN
+	    Error(cont, transStreamOpFailed);
+	    ok := FALSE;
+	 END;
+	 Streams.Release(cont.tmp);
+         IF ~Streams.Close(cont.data) THEN
+	    Fatal(cont);
+            ok := FALSE;
+         END;
+         cont.tmp := NIL;
+         cont.data := NIL;
+         RETURN ok
+      END;
+   END Close;
+
+   (* === transactions =================================================== *)
+
+   PROCEDURE InternalBegin(cont: Container) : BOOLEAN;
+      VAR
+	 size: LONGINT;
+   BEGIN
+      IF ~Transactions.Begin(cont.datatrans, cont.auth) THEN
+	 Error(cont, transStreamOpFailed); RETURN FALSE
+      END;
+      IF cont.head = NIL THEN
+	 NEW(cont.head);
+	 IF ~Streams.Seek(cont.data, 0, Streams.fromEnd) OR
+	       ~Streams.Tell(cont.data, size) THEN
+	    Fatal(cont); RETURN FALSE
+	 ELSIF size > 0 THEN
+	    IF ~Read(cont, 0, cont.head^) THEN
+	       Fatal(cont); RETURN FALSE
+	    ELSIF cont.head.magic # magic THEN
+	       Error(cont, invalidContainer); RETURN FALSE
+	    END;
+	 ELSE
+	    InitHead(cont.head);
+	 END;
+      END;
+      RETURN TRUE
+   END InternalBegin;
+
+   PROCEDURE InternalAbort(cont: Container) : BOOLEAN;
+   BEGIN
+      IF ~Transactions.Abort(cont.datatrans, cont.auth) THEN
+	 Error(cont, transStreamOpFailed); RETURN FALSE
+      ELSE
+	 cont.head := NIL;
+	 RETURN TRUE
+      END;
+   END InternalAbort;
+
+   PROCEDURE InternalCommit(cont: Container) : BOOLEAN;
+   BEGIN
+      IF ~Write(cont, 0, cont.head^) THEN
+	 RETURN FALSE
+      ELSIF ~Transactions.Commit(cont.datatrans, cont.auth) THEN
+	 Error(cont, transStreamOpFailed); RETURN FALSE
+      ELSE
+	 RETURN TRUE
+      END;
+   END InternalCommit;
+
+   (* === interface to ObjectTransactions ================================= *)
+
+   PROCEDURE Begin(object: Services.Object;
+                   trans: Transactions.Transaction) : BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 IF object.auto THEN
+	    Error(trans, containerInAutoMode); RETURN FALSE
+	 END;
+	 IF InternalBegin(object) THEN
+	    object.trans := trans;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END Begin;
+
+   PROCEDURE Commit(object: Services.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 object.trans := NIL;
+	 RETURN InternalCommit(object)
+      END;
+   END Commit;
+
+   PROCEDURE Abort(object: Services.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 object.trans := NIL;
+	 RETURN InternalAbort(object)
+      END;
+   END Abort;
+
+   PROCEDURE Release(object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END Release;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 t: SHORTINT;
+	 otif: ObjectTransactions.Interface;
+   BEGIN
+      Services.CreateType(conttype, "StandardContainers.Container",
+         "Containers.Container");
+      NEW(otif);
+      otif.begin := Begin; otif.commit := Commit;
+      otif.abort := Abort; otif.release := Release;
+      ObjectTransactions.Register(conttype, otif);
+      NEW(cif);
+      cif.insert := Insert;
+      cif.delete := Delete;
+      cif.replace:= Replace;
+      cif.obtain := Obtain;
+      cif.elements := Elements;
+      cif.find := Find;
+      cif.reorganize := Reorganize;
+      cif.setAnchor := SetAnchor;
+      cif.getAnchor := GetAnchor;
+      cif.close := Close;
+      t := 0;
+      WHILE t <= usedefault DO
+         allocstrat[t] := t;
+         INC(t);
+      END;
+      t := 0;
+      WHILE t <= usedefaultslot DO
+         slotstrat[t] := t;
+         INC(t);
+      END;
+   END InitModule;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Open(VAR container: Containers.Container;
+                  data: Streams.Stream;
+		  auto: BOOLEAN;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* open the container which bases on the transaction stream
+	 data (which is expected to support ObjectTransactions);
+	 if auto is set, an implicit transaction will be begun at
+	 the beginning and automatically closed on closing
+	 (the trans parameter for the container operations
+	 may be NIL in this case);
+	 otherwise, the container must be attached to a
+	 transaction (of ObjectTransactions) and all operations
+	 are valid only in the context of this transaction
+      *)
+      VAR
+	 cont: Container;
+	 size: LONGINT;
+	 datatrans: Transactions.Transaction;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      container := NIL;
+      IF ~ObjectTransactions.Supported(data) OR
+	    ~ObjectTransactions.Create(datatrans, data, NIL, errors) THEN
+	 Error(errors, unsupportedStream); RETURN FALSE
+      END;
+      NEW(cont);
+      cont.data := data; RelatedEvents.Forward(data, cont);
+      cont.auth := NIL;
+      cont.datatrans := datatrans;
+      RelatedEvents.Forward(datatrans, cont);
+      Texts.Open(cont.tmp); RelatedEvents.Forward(cont.tmp, cont);
+      PersistentObjects.SetMode(cont.tmp, PersistentObjects.fullTypeName +
+	 PersistentObjects.withoutSize + PersistentObjects.withoutHier);
+      PersistentObjects.SetMode(cont.data, PersistentObjects.fullTypeName +
+	 PersistentObjects.withoutSize + PersistentObjects.withoutHier);
+      cont.corrupted := FALSE;
+      cont.opened := TRUE;
+      cont.silent := FALSE;
+      cont.auto := auto;
+      Services.Init(cont, conttype);
+      Containers.Init(cont, cif);
+      IF auto & ~InternalBegin(cont) THEN
+	 RelatedEvents.GetQueue(cont, queue);
+	 RelatedEvents.AppendQueue(errors, queue);
+	 RETURN FALSE
+      END;
+      Resources.DependsOn(cont, cont.data);
+      container := cont;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE SetTries(cont: Containers.Container; tries: SHORTINT);
+   BEGIN
+      WITH cont: Container DO
+	 IF (tries > 0) & (tries <= ldMaxSz - ldPageSz) THEN
+	    cont.head.tries := tries;
+	 END;
+      END;
+   END SetTries;
+
+   PROCEDURE SetAllocStrat(cont: Containers.Container;
+                           insertpos, mode: AllocStrat);
+      VAR
+	 a: SHORTINT;
+   BEGIN
+      WITH cont: Container DO
+	 ASSERT((insertpos >= 0) & (insertpos < usedefault));
+	 ASSERT((mode >= 0) & (mode < usedefault));
+	 a := usedefault - 1;
+	 WHILE a > insertpos DO
+	    cont.head.allocstrat[a] := cont.head.allocstrat[a - 1];
+	    DEC(a);
+	 END;
+	 cont.head.allocstrat[insertpos] := mode;
+      END;
+   END SetAllocStrat;
+
+   PROCEDURE SetSlotStrat(cont: Containers.Container;
+                          insertpos, mode: SlotStrat);
+      VAR
+	 a: SHORTINT;
+   BEGIN
+      WITH cont: Container DO
+	 ASSERT((insertpos >= 0) & (insertpos < usedefaultslot));
+	 ASSERT((mode >= 0) & (mode < usedefaultslot));
+	 a := usedefault - 1;
+	 WHILE a > insertpos DO
+	    cont.head.slotstrat[a] := cont.head.slotstrat[a - 1];
+	    DEC(a);
+	 END;
+	 cont.head.slotstrat[insertpos] := mode;
+      END;
+   END SetSlotStrat;
+
+BEGIN
+   ASSERT(Memory.GetPageSize() = ASH(1, ldPageSz));
+   ASSERT(ASH(1, ldBits) > ldMaxSz);
+   ASSERT(spp * slotSize = pageSize);
+
+   InitModule;
+   InitErrorHandling();
+END StandardContainers.

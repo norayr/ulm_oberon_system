@@ -1,0 +1,357 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Read.om,v 1.3 2004/09/24 14:33:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Read.om,v $
+   Revision 1.3  2004/09/24 14:33:46  borchert
+   - better support of long lineterminators
+   - Field entirely rewritten, several bugs fixed
+   - Line, Ln, and Field return the actual number of characters read
+
+   Revision 1.2  1995/04/04 13:57:58  borchert
+   bug fix: Read.FieldS accidently cut off parts of a field in some
+            cases with intermediate white spaces
+
+   Revision 1.1  1994/02/23  07:46:42  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 6/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Read;
+
+   IMPORT ASCII, Scan, Sets, StreamDisciplines, Streams;
+
+   PROCEDURE LongIntS(s: Streams.Stream; VAR longint: LONGINT);
+   BEGIN
+      Scan.S1(s, "%d", longint);
+   END LongIntS;
+
+   PROCEDURE ShortIntS(s: Streams.Stream; VAR shortint: SHORTINT);
+      VAR long: LONGINT;
+   BEGIN
+      LongIntS(s, long);
+      IF s.count = 1 THEN
+	 IF (long >= MIN(SHORTINT)) & (long <= MAX(SHORTINT)) THEN
+	    shortint := SHORT(SHORT(long));
+	 ELSE
+	    s.count := 0;
+	 END;
+      END;
+   END ShortIntS;
+
+   PROCEDURE IntS(s: Streams.Stream; VAR int: INTEGER);
+      VAR long: LONGINT;
+   BEGIN
+      LongIntS(s, long);
+      IF s.count = 1 THEN
+	 IF (long >= MIN(INTEGER)) & (long <= MAX(INTEGER)) THEN
+	    int := SHORT(long);
+	 ELSE
+	    s.count := 0;
+	 END;
+      END;
+   END IntS;
+
+   PROCEDURE LongRealS(s: Streams.Stream; VAR longreal: LONGREAL);
+   BEGIN
+      Scan.S1(s, "%f", longreal);
+   END LongRealS;
+
+   PROCEDURE RealS(s: Streams.Stream; VAR real: REAL);
+      VAR
+	 longreal: LONGREAL;
+   BEGIN
+      Scan.S1(s, "%f", real);
+   END RealS;
+
+   PROCEDURE CharS(s: Streams.Stream; VAR ch: CHAR);
+   BEGIN
+      IF ~Streams.ReadByte(s, ch) THEN
+	 ch := 0X;
+      END;
+   END CharS;
+
+   PROCEDURE ByteS(s: Streams.Stream; VAR byte: BYTE);
+   BEGIN
+      IF ~Streams.ReadByte(s, byte) THEN
+	 byte := 0X;
+      END;
+   END ByteS;
+
+   PROCEDURE LineS(s: Streams.Stream; VAR line: ARRAY OF CHAR);
+      VAR
+	 index: INTEGER;
+	 ch: CHAR;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 ltindex: INTEGER;
+	 cut: INTEGER; (* # of chars of lineterm actually stored in line *)
+	 added: BOOLEAN;
+	 count: INTEGER; (* number of characters read *)
+   BEGIN
+      StreamDisciplines.GetLineTerm(s, lineterm);
+      index := 0; ltindex := 0; cut := 0; count := 0;
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN
+	    cut := 0;
+	    EXIT
+	 END;
+	 INC(count);
+	 IF index+1 < LEN(line) THEN
+	    line[index] := ch; INC(index); added := TRUE;
+	 ELSE
+	    added := FALSE;
+	 END;
+	 IF ch # lineterm[ltindex] THEN
+	    ltindex := 0; cut := 0;
+	 END;
+	 IF ch = lineterm[ltindex] THEN
+	    IF added THEN
+	       INC(cut);
+	    END;
+	    IF ch = 0X THEN EXIT END;
+	    INC(ltindex);
+	    IF lineterm[ltindex] = 0X THEN EXIT END;
+	 END;
+      END;
+      DEC(index, cut);
+      line[index] := 0X;
+      (* note that we changed the semantics here at 2004-09-24:
+	 we return now the number of characters read
+	 but no longer the number of characters stored into line;
+	 rationale: a zero-count is usually considered as a failure
+	 in particular of those procedures that do not return
+	 a BOOLEAN value representing the success;
+	 in case of empty lines, however, 0 bytes are copied
+	 into line without constituting any error situation
+      *)
+      s.count := count;
+   END LineS;
+
+   PROCEDURE LnS(s: Streams.Stream);
+      (* skip input until next line terminator or end of file *)
+      VAR
+	 ch: CHAR;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 ltindex: INTEGER;
+	 count: INTEGER;
+   BEGIN
+      StreamDisciplines.GetLineTerm(s, lineterm);
+      ltindex := 0; count := 0;
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN EXIT END;
+	 INC(count);
+	 IF ch # lineterm[ltindex] THEN
+	    ltindex := 0;
+	 END;
+	 IF ch = lineterm[ltindex] THEN
+	    IF ch = 0X THEN EXIT END;
+	    INC(ltindex);
+	    IF lineterm[ltindex] = 0X THEN EXIT END;
+	 END;
+      END;
+      s.count := count;
+   END LnS;
+
+   PROCEDURE StringS(s: Streams.Stream; VAR string: ARRAY OF CHAR);
+      VAR
+	 index: INTEGER;
+	 ch: CHAR;
+	 more: BOOLEAN;
+	 skip: BOOLEAN;
+	 whitespace: Sets.CharSet;
+
+   BEGIN
+      StreamDisciplines.GetWhiteSpace(s, whitespace);
+      index := 0; skip := TRUE; more := TRUE;
+      WHILE more & Streams.ReadByte(s, ch) DO
+	 IF Sets.CharIn(whitespace, ch) THEN
+	    more := skip;
+	 ELSIF index+1 < LEN(string) THEN
+	    skip := FALSE;
+	    string[index] := ch; INC(index);
+	 ELSE
+	    more := FALSE;
+	 END;
+      END;
+      IF ~more & (s.eof OR ~Streams.Back(s)) THEN END;
+      string[index] := 0X;
+      s.count := index;
+   END StringS;
+
+   PROCEDURE FieldS(s: Streams.Stream; VAR string: ARRAY OF CHAR) : BOOLEAN;
+      (* records are separated by line terminators and fields are
+	 delimited either by field separators or line terminators;
+	 surrounding white space of fields is to be skipped;
+	 Field does not skip line terminators but returns FALSE
+	 if there are no more fields on that line;
+	 Field returns an empty string for empty fields;
+	 Field returns FALSE on empty lines
+      *)
+      VAR
+	 fieldseps: Sets.CharSet;
+	 whitespace: Sets.CharSet;
+	 lineterm: StreamDisciplines.LineTerminator;
+	 ltindex: INTEGER;  (* of lineterm *)
+	 cut: INTEGER;      (* # of characters to be cut from string *)
+	 count: INTEGER;    (* # of characters read *)
+	 index: INTEGER;    (* of string *)
+	 back: INTEGER;     (* go that many characters back *)
+	 ch: CHAR;          (* last character read *)
+	 wskip: BOOLEAN;    (* OK to skip white space? *)
+	 lastwhite: INTEGER; (* index of last white space char *)
+	 fsseen: BOOLEAN;   (* terminating field separator seen? *)
+   BEGIN
+      StreamDisciplines.GetFieldSepSet(s, fieldseps);
+      StreamDisciplines.GetLineTerm(s, lineterm);
+      StreamDisciplines.GetWhiteSpace(s, whitespace);
+      wskip := TRUE; lastwhite := -1;
+      index := 0; ltindex := 0; cut := 0; back := 0; fsseen := FALSE;
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN
+	    cut := 0; back := 0;
+	    EXIT
+	 END;
+	 INC(count);
+	 IF ch # lineterm[ltindex] THEN
+	    ltindex := 0; cut := 0;
+	 END;
+	 IF ch = lineterm[ltindex] THEN
+	    IF ch = 0X THEN
+	       back := ltindex;
+	       EXIT
+	    END;
+	    INC(ltindex);
+	    IF lineterm[ltindex] = 0X THEN
+	       back := ltindex;
+	       EXIT
+	    END;
+	 END;
+	 IF ~wskip OR ~Sets.CharIn(whitespace, ch) THEN
+	    IF Sets.CharIn(fieldseps, ch) THEN
+	       cut := 0; back := 0; fsseen := TRUE;
+	       IF ltindex > 0 THEN
+		  (* check if we have a line terminator instead of a
+		     field separator
+		  *)
+		  LOOP
+		     IF ~Streams.ReadByte(s, ch) THEN EXIT END;
+		     INC(count); INC(back);
+		     IF ch # lineterm[ltindex] THEN EXIT END;
+		     IF ch = 0X THEN back := ltindex; EXIT END;
+		     INC(ltindex);
+		     IF lineterm[ltindex] = 0X THEN
+			back := ltindex; EXIT
+		     END;
+		  END;
+		  fsseen := back = 0;
+	       END;
+	       EXIT
+	    ELSIF index+1 < LEN(string) THEN
+	       wskip := FALSE;
+	       IF Sets.CharIn(whitespace, ch) THEN
+		  lastwhite := index;
+	       ELSE
+		  lastwhite := -1;
+	       END;
+	       string[index] := ch; INC(index);
+	       IF ltindex > 0 THEN
+		  INC(cut);
+	       END;
+	    ELSIF (index > 0) & ~Sets.CharIn(whitespace, ch) THEN
+	       lastwhite := -1;
+	    END;
+	 END;
+      END;
+      WHILE (back > 0) & Streams.Back(s) DO
+	 DEC(back); DEC(count);
+      END;
+      IF lastwhite >= 0 THEN
+	 index := lastwhite;
+      ELSE
+	 DEC(index, cut);
+      END;
+      string[index] := 0X;
+      s.count := count;
+      RETURN (index > 0) OR fsseen
+   END FieldS;
+
+   PROCEDURE ShortInt(VAR shortint: SHORTINT);
+   BEGIN
+      ShortIntS(Streams.stdin, shortint);
+   END ShortInt;
+
+   PROCEDURE Int(VAR int: INTEGER);
+   BEGIN
+      IntS(Streams.stdin, int);
+   END Int;
+
+   PROCEDURE LongInt(VAR longint: LONGINT);
+   BEGIN
+      LongIntS(Streams.stdin, longint);
+   END LongInt;
+
+   PROCEDURE Real(VAR real: REAL);
+   BEGIN
+      RealS(Streams.stdin, real);
+   END Real;
+
+   PROCEDURE LongReal(VAR longreal: LONGREAL);
+   BEGIN
+      LongRealS(Streams.stdin, longreal);
+   END LongReal;
+
+   PROCEDURE Char(VAR ch: CHAR);
+   BEGIN
+      IF ~Streams.ReadByte(Streams.stdin, ch) THEN
+	 ch := 0X;
+      END;
+   END Char;
+
+   PROCEDURE Byte(VAR byte: BYTE);
+   BEGIN
+      IF ~Streams.ReadByte(Streams.stdin, byte) THEN
+	 byte := 0X;
+      END;
+   END Byte;
+
+   PROCEDURE Line(VAR line: ARRAY OF CHAR);
+   BEGIN
+      LineS(Streams.stdin, line);
+   END Line;
+
+   PROCEDURE Ln;
+   BEGIN
+      LnS(Streams.stdin);
+   END Ln;
+
+   PROCEDURE String(VAR string: ARRAY OF CHAR);
+   BEGIN
+      StringS(Streams.stdin, string);
+   END String;
+
+   PROCEDURE Field(VAR string: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN FieldS(Streams.stdin, string)
+   END Field;
+
+END Read.

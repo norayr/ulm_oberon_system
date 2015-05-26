@@ -1,0 +1,1878 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TransStream.om,v 1.4 1996/11/28 11:02:14 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: TransStream.om,v $
+   Revision 1.4  1996/11/28  11:02:14  borchert
+   support of ObjectTransactions added
+
+   Revision 1.3  1996/11/25  12:08:19  borchert
+   print lines for debugging removed
+
+   Revision 1.2  1996/11/19  17:51:04  borchert
+   - dependency to Memory, SysMemory, and SysIO replaced by
+     UntaggedStorage
+   - major revision of error handling in conformance
+     to the rest of the library
+
+   Revision 1.1  1996/11/19  17:48:38  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   major implementation dependency:
+   to achieve better performance we rely on the page system of
+   the underlying system and we use untagged pointers to areas
+   which are allocated by UntaggedStorage and therefore are not
+   subject to the garbage collector;
+   portability (on cost of efficiency) may be easily restored,
+   however, by removing the special comments for our compiler
+   (* $O- $P- *) and by using NEW instead of UntaggedStorage.New
+   and removing the calls of UntaggedStorage.Dispose;
+   ----------------------------------------------------------------------------
+   Original version by Werner Stanglow, cleaned up by AFB 11/96
+   ----------------------------------------------------------------------------
+   Header comment by Werner Stanglow:
+   Optimizations to be done:
+      - ReuseBuf tends to be extremly expensive, because it searches a list
+	of all buffers
+      - Thus, only clean buffers should be maintained in that list.
+   ----------------------------------------------------------------------------
+*)
+MODULE TransStreams;
+
+   IMPORT Errors, Events, MemOps, ObjectTransactions, Objects, RelatedEvents,
+      Resources, SYS := SYSTEM, Services, Streams, Strings, Transactions,
+      Types, UntaggedStorage, Wr := Write;
+
+   TYPE
+      Count  = Streams.Count;
+      PageNo = Count;
+      Byte   = Types.Byte;
+      Addr = Types.UntracedAddress;
+      State = SHORTINT;
+      Mode = SHORTINT;
+
+   CONST
+      last = 0;
+      prior = 1;
+      current = 2;
+
+      standard = 0;
+      auto = 4;
+      read = 8;
+
+   CONST
+      wordlen = SYS.SIZE(Types.IntAddress);
+
+   CONST
+      pageSize       = 4096;
+      lastPos         = MAX(Streams.Count);   (* 2147483647 *)
+      lastPage        = lastPos DIV pageSize - SYS.VAL  (* 524287 *)
+                        (INTEGER,(lastPos MOD pageSize) # (pageSize -1));
+      maxPages        = lastPage + 1;  (* 524288 *)
+      usablePages      = maxPages - 1; (* 524287 *)
+      lastPageBegin   = lastPage * pageSize;  (* 2147479552 *)
+      lastAdrPos      = lastPageBegin - 1 + pageSize; (* 2147483647 *)
+      setArraySize    = pageSize DIV SYS.SIZE(SET);  (* 1024 *)
+      bitsPerPage     = setArraySize * (MAX(SET) + 1);  (* 32768 *)
+      pagesPerRegion  = pageSize DIV SYS.SIZE(Streams.Count); (* 1024 *)
+      regionSize      = pagesPerRegion + 2;  (* 1026 *)
+      regionsPerArea  = bitsPerPage DIV pagesPerRegion; (* 32 *)
+      areaSize        = 2 + regionSize * regionsPerArea; (* 32834 *)
+      noCompleteAreas = (usablePages-2) DIV areaSize; (* 15 *)
+      noInCompleteAreas = SYS.VAL(INTEGER,    (* 1 *)
+                        ((usablePages-2) MOD areaSize) >=(2+regionSize));
+      noRegionsInLast = noInCompleteAreas *   (* 30 *)
+                     (usablePages-2-noCompleteAreas*areaSize-2)
+                        DIV regionSize;
+      noAreas         = noCompleteAreas + noInCompleteAreas; (* 16 *)
+      noRegions       = noCompleteAreas*regionsPerArea  (* 510 *)
+                        + noInCompleteAreas*noRegionsInLast;
+      noPages         = noRegions * pagesPerRegion;
+      userSize        = noPages * pageSize;
+      infoSize        = 3416;
+
+   TYPE
+      Mark      = LONGINT;
+      Contents  = ARRAY pageSize OF Types.Byte;
+      (* $O- $P- *)
+      PageArray = ARRAY pageSize OF Types.Byte;
+      Page      = POINTER TO PageArray;
+      (* $O= $P= *)
+
+   CONST
+
+      maxbufdef      = 250;
+      totalmaxdef    = 500;
+      hashtabsize    = 256; (* size of bucket table *)
+
+   TYPE
+      Stream          = POINTER TO StreamRec;
+      BufferPool       = POINTER TO BufferPoolRec;
+      Buffer          = POINTER TO BufferRec;
+      RegionMap       = POINTER TO RegionMapArray;
+      PageMap       = POINTER TO PageMapArray;
+      Head          = POINTER TO HeadRec;
+      Protocol       = POINTER TO ProtocolRec;
+
+
+      BucketTable    = ARRAY hashtabsize OF Buffer;
+      PageMapArray   = ARRAY setArraySize OF SET;
+      RegionMapArray = ARRAY pagesPerRegion OF PageNo;
+
+      BufferRec =
+         RECORD
+            pos: Count;  (* virtual file position corresponds to cont[0] *)
+            rpos: Count; (* reading position *)
+            wpos: Count; (* writing position for flush operation *)
+            read: BOOLEAN;
+            wbegin,wend: Count; (* write-region: written since last flush *)
+            addr: Addr;
+            nextf: Buffer; (* only needed for released buffers *)
+            prevh, nexth: Buffer; (* next buffer with same the hash value *)
+            preva, nexta: Buffer; (* sorted list of buffers (access time) *)
+            nextd: Buffer; (* next dirty buffer *);
+         END;
+
+      BufferPoolRec =
+         RECORD
+            maxbuf: INTEGER; (* maximal number of buffers to be used *)
+            nbuf: INTEGER; (* number of buffers in use *)
+            bucket: BucketTable;
+            dirty: Buffer;
+            head, tail: Buffer;
+         END;
+
+      HeadRec   (* stream head *)
+         = RECORD
+            mark0: Mark;
+            magic: LONGINT;
+            free: LONGINT;
+            esize: Count;
+            vsize: Count;      (* virtual size of stream *)
+            roff: ARRAY noRegions OF SHORTINT;  (* 512 *)
+            foff: ARRAY noAreas OF SHORTINT;    (* 16 *)
+            fmem: ARRAY noAreas OF INTEGER;     (* 64 *)
+            fcur: ARRAY noAreas OF INTEGER;     (* 64 *)
+            info: ARRAY infoSize OF BYTE;
+            mark1: Mark;                        (* 24 *)
+             END;
+
+      ProtocolRec =
+         RECORD
+            (HeadRec);
+
+            vpos: Count;
+            fused: PageNo;
+
+            fmap: ARRAY noAreas OF PageMap;
+            fdirty: ARRAY noAreas OF BOOLEAN;
+
+            mmap: ARRAY noAreas OF PageMap;
+            mmem: ARRAY noAreas OF INTEGER;
+
+            rmap: ARRAY noRegions OF RegionMap;
+            rdirty: ARRAY noRegions OF BOOLEAN;
+         END;
+
+
+      StreamRec =
+         RECORD
+            (Streams.StreamRec);
+            lock: BOOLEAN;         (* to prevent nested calls *)
+            bp: BufferPool;      (* of user pages *)
+            base: Streams.Stream;   (* underlying stream *)
+            bpos: Count;            (* seek positon in unerlaying stream*)
+            buf: Buffer;         (* current buffer *)
+            head: ARRAY 2 OF Head;
+            cur: Protocol;
+            status: SHORTINT;
+            cidx: SHORTINT;
+            pidx: SHORTINT;
+            clock: BOOLEAN; (* guard against multiple closes *)
+            termev: Events.EventType;
+            auto: BOOLEAN;
+            ronly: BOOLEAN;
+            prior: BOOLEAN;
+         END;
+
+
+   CONST
+      unused  = -1;
+      magicNo = 32141234;
+
+      recovering  = -2;
+      committing  = -1;
+      initialized = 0;
+      inprogress  = 1;
+      ready       = 2;
+
+   CONST
+      (* errors at opening time *)
+      illegalParam = 0;
+      bufferedStream = 1;
+      badMagic = 2;
+      noLegalState = 3;
+      corruptedFile = 4;
+      cannotAccessFile = 5;
+
+      (* invalid usage *)
+      illegalPos = 6;
+      nestedCall = 7;
+      noPriorState = 8;
+      noTransactionRunning = 9;
+      readOnly = 10;
+      transactionInProgress = 11;
+      alreadyClosed = 12;
+
+      (* troubles with the underlying stream *)
+      cannotAccessSysPages = 13;
+      cannotUpdateSysPages = 14;
+      cannotAccessContents = 15;
+      cannotUpdateContents = 16;
+      recoveringDueToFailure = 17;
+      closeFailed = 18;
+      errorcodes = 19;      (* number of error codes *)
+
+   TYPE
+      ErrorCode = SHORTINT; (* illegalParam..closeFailed *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec);
+            errcode: ErrorCode;
+         END;
+
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   CONST
+      caps = {Streams.addrio, Streams.close, Streams.read,Streams.write,
+               Streams.seek, Streams.tell, Streams.holes, Streams.trunc};
+   VAR
+      if: Streams.Interface;
+      type: Services.Type;
+      freelist: Buffer;
+      totalmax: INTEGER;
+      allocated: INTEGER;
+      rmappos: ARRAY noRegions OF PageNo;
+      fmappos: ARRAY noAreas OF PageNo;
+      interrupted: BOOLEAN;
+
+   PROCEDURE Assign(VAR t: Protocol; s: Head);
+   BEGIN
+      t.mark0  := s.mark0;
+      t.magic   := s.magic;
+      t.mark1  := s.mark1;
+      t.esize := s.esize;
+      t.vsize := s.vsize;
+      t.free := s.free;
+      t.roff := s.roff;
+      t.foff := s.foff;
+      t.fmem := s.fmem;
+      t.info := s.info;
+      t.fcur := s.fcur;
+   END Assign;
+
+   (* Error Handling *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      Wr.LineS(s, "error on transaction stream:");
+      Wr.IndentS(s);
+      Wr.StringS(s, event.message);
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.Ignore(error);
+      errormsg[closeFailed] := "close operation on underlying stream failed";
+      errormsg[noPriorState] := "no prior state to recover" ;
+      errormsg[transactionInProgress] := "transaction in progress";
+      errormsg[noTransactionRunning] := "no transaction running";
+      errormsg[badMagic] := "bad magic number";
+      errormsg[noLegalState] := "no legal state";
+      errormsg[nestedCall] := "nested call on transaction stream";
+      errormsg[illegalPos] := "illegal stream position";
+      errormsg[illegalParam] := "illegal parameter provided";
+      errormsg[bufferedStream] := "base stream is buffered";
+      errormsg[readOnly] := "operation not permitted for read only streams";
+      errormsg[corruptedFile] := "underlying stream is found to be in a corrupted and unrecoverable state";
+      errormsg[cannotAccessFile] := "unable to access underlying stream";
+      errormsg[cannotAccessSysPages] := "system pages are not accessible";
+      errormsg[cannotUpdateSysPages] := "unable to update system pages";
+      errormsg[cannotAccessContents] := "contents pages are not accessible";
+      errormsg[cannotUpdateContents] := "unable to update contents pages";
+      errormsg[recoveringDueToFailure] := "switching to recovery mode due to failures of the underlying stream";
+      errormsg[alreadyClosed] := "transaction stream is already closed";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.errcode := errorcode;
+      event.message := errormsg[errorcode];
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* I/0 procedures for system pages *)
+
+   PROCEDURE GetSysPage(s: Stream; pno: PageNo;
+                        VAR page: ARRAY OF BYTE) : BOOLEAN;
+   VAR
+      pos: Count;
+   BEGIN
+      pos := pno * pageSize;
+      IF (s.bpos # pos) & ~Streams.Seek(s.base,pos,Streams.fromStart) THEN
+	 Error(s, cannotAccessSysPages);
+         RETURN FALSE
+      ELSIF ~Streams.ReadPart(s.base,page,0,LEN(page)) THEN
+	 Error(s, cannotAccessSysPages);
+         RETURN FALSE
+      ELSE
+         s.bpos := pos + LEN(page);
+         RETURN TRUE
+      END;
+   END GetSysPage;
+
+   PROCEDURE PutSysPage(s: Stream; pno: PageNo;
+                        VAR page: ARRAY OF BYTE) : BOOLEAN;
+      VAR
+	 pos: Count;
+   BEGIN
+      pos := pno * pageSize;
+      IF (s.bpos # pos) & ~Streams.Seek(s.base,pos,Streams.fromStart) THEN
+	 Error(s, cannotUpdateSysPages);
+         RETURN FALSE
+      ELSIF ~Streams.WritePart(s.base,page,0,LEN(page)) THEN
+	 Error(s, cannotUpdateSysPages);
+         RETURN FALSE
+      ELSE
+         s.bpos := pos + LEN(page);
+         RETURN TRUE
+      END;
+   END PutSysPage;
+
+   (* calculation positions of system pages *)
+
+   PROCEDURE InitMapPos;
+      VAR
+	 i: PageNo;
+
+      PROCEDURE FreePageMapPos(fno: PageNo) : PageNo;
+      BEGIN
+         RETURN 2 + areaSize *fno;
+      END FreePageMapPos;
+
+      PROCEDURE RegionMapPos(rno: PageNo) : PageNo;
+      BEGIN
+         RETURN 2 + rno *regionSize + (rno DIV regionsPerArea + 1) *2;
+      END RegionMapPos;
+
+   BEGIN (* InitMapPos *)
+      i := 0;
+      WHILE i < noRegions DO
+         rmappos[i] := RegionMapPos(i);
+         INC(i);
+      END;
+      i := 0;
+      WHILE i < noAreas DO
+         fmappos[i] := FreePageMapPos(i);
+         INC(i);
+      END;
+   END InitMapPos;
+
+   PROCEDURE IsSysPage(pno: PageNo) : BOOLEAN;
+      VAR
+	 m: PageNo;
+   BEGIN
+      IF pno <= 1 THEN
+         RETURN TRUE
+      ELSE
+         DEC(pno,2);
+         m := pno MOD areaSize;
+         IF m <= 1 THEN
+            RETURN TRUE
+         ELSE
+            m := (m-2) MOD regionSize;
+            RETURN m <= 1;
+         END;
+      END;
+   END IsSysPage;
+
+   (* handling of region maps *)
+
+   PROCEDURE InitRegionMap(map: RegionMap);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < pagesPerRegion DO
+         map[i] := unused;
+         INC(i);
+      END;
+   END InitRegionMap;
+
+   PROCEDURE SetRegionMap(s: Stream; pos: Streams.Count;
+                          VAR rno,idx: PageNo) : BOOLEAN;
+   BEGIN
+      pos := pos DIV pageSize;
+      rno := pos DIV pagesPerRegion;
+      idx := pos MOD pagesPerRegion;
+      IF s.cur.rmap[rno] = NIL THEN
+         NEW(s.cur.rmap[rno]);
+         IF s.cur.roff[rno] = unused THEN
+            InitRegionMap(s.cur.rmap[rno]);
+            s.cur.rdirty[rno] := TRUE;
+            s.cur.roff[rno] := 0;
+         ELSE
+            s.cur.rdirty[rno] := FALSE;
+            IF ~GetSysPage(s,rmappos[rno] + s.cur.roff[rno],
+	                   s.cur.rmap[rno]^) THEN
+               RETURN FALSE
+            END;
+         END;
+      END;
+      RETURN TRUE
+   END SetRegionMap;
+
+   (* handling of free page maps *)
+
+   PROCEDURE FreePage(cur: Protocol; pno: PageNo);
+      VAR
+	 ano: PageNo; (* area number *)
+	 bit: PageNo; (* bit to set *)
+	 sno: PageNo; (* number of set which contains bit to set*)
+   BEGIN
+      ano := pno DIV bitsPerPage;
+      IF cur.mmap[ano] = NIL THEN
+         NEW(cur.mmap[ano]);
+         sno := 0;
+         WHILE sno < setArraySize DO
+            cur.mmap[ano][sno] := {};
+            INC(sno);
+         END;
+         cur.mmem[ano] := 0;
+      END;
+      bit := pno MOD bitsPerPage;
+      sno := bit DIV (MAX(SET)+1);
+      bit := bit MOD (MAX(SET)+1);
+      ASSERT(~(bit IN cur.mmap[ano][sno]));
+      INCL(cur.mmap[ano][sno],bit);
+      INC(cur.mmem[ano]);
+   END FreePage;
+
+   PROCEDURE FreeRegionEntry(s: Stream; pos: Streams.Count) : BOOLEAN;
+      VAR
+	 rno: PageNo;
+	 idx: PageNo;
+   BEGIN
+      IF ~SetRegionMap(s,pos,rno,idx) THEN
+         RETURN FALSE
+      END;
+      ASSERT(s.cur.roff[rno] # unused);
+      s.cur.rdirty[rno] := TRUE;
+      s.cur.rmap[rno][idx] := unused;
+      FreePage(s.cur,pos DIV pageSize);
+      RETURN TRUE
+   END FreeRegionEntry;
+
+   PROCEDURE FindFreeMap(p: Protocol) : INTEGER;
+      VAR
+	 i: INTEGER;
+	 mi: INTEGER;
+	 m: PageNo;
+   BEGIN
+      m := 0;
+      mi := -1;
+      i := 0;
+      WHILE i < noAreas DO
+         IF (p.foff[i] # unused) & (p.fmem[i] > m) THEN
+            m := p.fmem[i];
+            mi := i;
+         END;
+         INC(i);
+      END;
+      RETURN mi;
+   END FindFreeMap;
+
+   PROCEDURE SetFreePageMap(s: Stream; fno: Count) : BOOLEAN;
+   BEGIN
+      IF (s.cur.fmap[fno] = NIL) & (s.cur.foff[fno] # unused) THEN
+         NEW(s.cur.fmap[fno]);
+         IF ~GetSysPage(s,fmappos[fno] + s.cur.foff[fno],s.cur.fmap[fno]^) THEN
+            RETURN FALSE
+         END;
+         s.cur.fdirty[fno] := FALSE;
+      END;
+      RETURN TRUE
+   END SetFreePageMap;
+
+   PROCEDURE FindFreePage(s: Stream; VAR pno: PageNo) : BOOLEAN;
+
+      PROCEDURE Get() : PageNo;
+	 VAR
+	    i: INTEGER;
+	    ano: LONGINT;
+	    f: PageMap;
+	    sno: INTEGER;
+      BEGIN
+         ano := s.cur.fused;
+         IF ~SetFreePageMap(s,ano) THEN
+            RETURN -1
+         END;
+         f := s.cur.fmap[ano];
+         sno := s.cur.fcur[ano];
+         WHILE f[sno] = {} DO
+            sno := (sno + 1) MOD setArraySize;
+         END;
+         s.cur.fcur[ano] := sno;
+         i := 0;
+         WHILE ~(i IN f[sno]) DO
+            INC(i);
+         END;
+         EXCL(f[sno],i);
+         DEC(s.cur.fmem[ano]);
+         DEC(s.cur.free);
+         IF s.cur.fmem[ano] = 0 THEN
+            s.cur.fused := -1;
+         END;
+         s.cur.fdirty[ano] := TRUE;
+         RETURN ano*bitsPerPage + sno*(MAX(SET) +1) + i;
+      END Get;
+
+      PROCEDURE NewPage() : PageNo;
+      VAR
+         pno: PageNo;
+      BEGIN
+         pno := s.cur.esize + 1;
+         WHILE IsSysPage(pno) DO
+            INC(pno);
+         END;
+         s.cur.esize := pno;
+         RETURN pno;
+      END NewPage;
+
+   BEGIN
+      IF s.cur.free = 0 THEN
+         pno := NewPage();
+      ELSE
+         IF s.cur.fused = -1 THEN
+            s.cur.fused := FindFreeMap(s.cur);
+            ASSERT(s.cur.fused # -1);
+         END;
+         pno := Get();
+      END;
+      RETURN pno # -1;
+   END FindFreePage;
+
+   (* buffer pool management *)
+
+   PROCEDURE New(b: Buffer);
+   BEGIN
+      b.addr := UntaggedStorage.New(pageSize);
+   END New;
+
+   PROCEDURE ClearBuf(b: Buffer);
+   BEGIN
+      b.pos := -1;
+      b.rpos := -1;
+      b.wpos := -1;
+      b.read := FALSE;
+      b.wbegin := pageSize;
+      b.wend := -1;
+      b.nexta := NIL;
+      b.preva := NIL;
+      b.nextd := NIL;
+      b.nexth := NIL;
+      b.prevh := NIL;
+      b.nextf := NIL;
+      (*
+      MemOps.ClearU(b.addr,pageSize);
+      *)
+   END ClearBuf;
+
+   PROCEDURE NewBuf(VAR b: Buffer);
+   BEGIN
+      IF freelist # NIL THEN
+         b := freelist;
+         freelist := freelist.nextf;
+         b.nextf := NIL;
+      ELSE
+         NEW(b);
+         New(b);
+         ClearBuf(b);
+         INC(allocated);
+      END;
+      MemOps.ClearU(b.addr, pageSize);
+   END NewBuf;
+
+   PROCEDURE Free(b: Buffer);
+   BEGIN
+      UntaggedStorage.Dispose(b.addr);
+   END Free;
+
+   PROCEDURE FreeBuf(VAR b: Buffer);
+   BEGIN
+      ClearBuf(b);
+      IF allocated < totalmax THEN
+         b.nextf := freelist;
+         freelist := b;
+      ELSE
+         Free(b);
+         DEC(allocated);
+      END;
+      b := NIL;
+   END FreeBuf;
+
+   PROCEDURE HashVal(pos: Count) : Count;
+   BEGIN
+      RETURN pos DIV pageSize MOD hashtabsize
+   END HashVal;
+
+   PROCEDURE HashBuf(bp: BufferPool; buf: Buffer; pos: Count);
+      VAR
+	 idx: Count;
+   BEGIN
+      buf.pos := pos;
+      idx := HashVal(pos);
+      buf.nexth := bp.bucket[idx];
+      IF buf.nexth # NIL THEN
+         buf.nexth.prevh := buf;
+      END;
+      bp.bucket[idx] := buf;
+   END HashBuf;
+
+   PROCEDURE UnhashBuf(bp: BufferPool; buf: Buffer);
+   BEGIN
+      IF buf.nexth # NIL THEN
+         buf.nexth.prevh := buf.prevh;
+      END;
+      IF buf.prevh # NIL THEN
+         buf.prevh.nexth := buf.nexth;
+      ELSE
+         bp.bucket[HashVal(buf.pos)] := buf.nexth;
+      END;
+   END UnhashBuf;
+
+   PROCEDURE FindBuf(bp: BufferPool; pos: Count; VAR buf: Buffer) : BOOLEAN;
+   BEGIN
+      buf := bp.bucket[HashVal(pos)];
+      WHILE (buf # NIL) & (buf.pos # pos) DO
+         buf := buf.nexth;
+      END;
+      RETURN buf # NIL;
+   END FindBuf;
+
+   PROCEDURE UnlinkBuf(bp: BufferPool; b: Buffer);
+   BEGIN
+      IF b.preva # NIL THEN
+         b.preva.nexta := b.nexta;
+      ELSE (* b is head *)
+         bp.head := b.nexta;
+      END;
+      IF b.nexta # NIL THEN
+         b.nexta.preva := b.preva;
+      ELSE (* b is tail *)
+         bp.tail := b.preva;
+      END;
+      b.nexta := NIL;
+      b.preva := NIL;
+   END UnlinkBuf;
+
+   PROCEDURE ReleaseBuf(bp: BufferPool; b: Buffer);
+      VAR
+	 idx: Count;
+   BEGIN
+      UnlinkBuf(bp,b);
+      UnhashBuf(bp,b);
+      FreeBuf(b);
+      DEC(bp.nbuf);
+   END ReleaseBuf;
+
+   PROCEDURE AppendBuf (bp: BufferPool; b: Buffer);
+   BEGIN
+      IF bp.tail = NIL THEN
+         bp.head := b;
+         bp.tail := b;
+         b.preva := NIL;
+         b.nexta := NIL;
+      ELSE
+         bp.tail.nexta := b;
+         b.preva := bp.tail;
+         b.nexta := NIL;
+         bp.tail := b;
+      END;
+   END AppendBuf;
+
+   PROCEDURE SetBufPos(s: Stream; b: Buffer) : BOOLEAN;
+   VAR
+      rno: PageNo;
+      pno: PageNo;
+      idx: PageNo;
+   BEGIN
+      (* find a free page for writing *)
+      IF ~SetRegionMap(s,b.pos,rno,idx) THEN
+         RETURN FALSE
+      END;
+      IF s.cur.rmap[rno][idx] = unused THEN
+         b.rpos := -1;
+      ELSE
+         b.rpos := s.cur.rmap[rno][idx]*pageSize;
+      END;
+      b.wpos := -1;
+      RETURN TRUE
+   END SetBufPos;
+
+   PROCEDURE ResetBufPos(s: Stream; b: Buffer) : BOOLEAN;
+   VAR
+      rno: PageNo;
+      idx: PageNo;
+   BEGIN
+      IF ~SetRegionMap(s,b.pos,rno,idx) THEN
+         RETURN FALSE
+      END;
+      IF (b.rpos # -1) THEN
+         FreePage(s.cur,b.rpos DIV pageSize);
+      END;
+      s.cur.rmap[rno][idx] := b.wpos DIV pageSize;
+      s.cur.rdirty[rno] := TRUE;
+      b.rpos := b.wpos;
+      b.wpos := -1;
+      RETURN TRUE
+   END ResetBufPos;
+
+   PROCEDURE FillBuf(s: Stream; b: Buffer ) : BOOLEAN ;
+
+   VAR
+      (* $O- $P- *)
+      cont: PageArray;
+      p: Page;
+      (* $O= $P= *)
+      no: Count;
+      sbegin, send: Count;
+   BEGIN
+      ASSERT(~b.read);
+      IF b.rpos = -1 THEN
+         b.read := TRUE;
+         RETURN TRUE
+      END;
+      IF (b.wend >= b.wbegin) THEN
+         sbegin := b.wbegin;
+         send := b.wend;
+         MemOps.CopyU(b.addr+sbegin,SYS.ADR(cont)+sbegin,send-sbegin+1);
+      ELSE
+         send := -1;
+         sbegin := pageSize;
+      END;
+      IF b.pos + pageSize > s.cur.vsize THEN
+         no := s.cur.vsize -b.pos;
+      ELSE
+         no := pageSize;
+      END;
+      IF (s.bpos # b.rpos) THEN
+         IF ~Streams.Seek(s.base,b.rpos,Streams.fromStart) THEN
+            Error(s,cannotAccessContents);
+            RETURN FALSE
+         ELSE
+            s.bpos := b.rpos;
+         END;
+      END;
+      (* $O- $P- *)
+      p := SYS.VAL(Page,b.addr);
+      (* $O= $P= *)
+      IF ~Streams.ReadPart(s.base,p^,0,no) THEN
+	 Error(s,cannotAccessContents);
+         RETURN FALSE
+      ELSE
+         INC(s.bpos,no);
+      END;
+      IF send>= sbegin THEN
+         MemOps.CopyU(SYS.ADR(cont)+sbegin,b.addr+sbegin,send-sbegin+1);
+      END;
+      b.read := TRUE;
+      RETURN TRUE
+   END FillBuf;
+
+   (* flush head of dirty list *)
+   PROCEDURE FlushBuf (s: Stream; b: Buffer ) : BOOLEAN;
+   VAR
+      pno: PageNo;
+      p: Page;
+   BEGIN
+      IF ~FindFreePage(s,pno) THEN
+         RETURN FALSE
+      END;
+      b.wpos := pno*pageSize;
+      IF (~b.read) & ((b.wbegin > 0) OR (b.wend < pageSize-1)) &
+            ~FillBuf(s,b) THEN
+         RETURN FALSE
+      END;
+      IF (s.bpos # b.wpos (*+ b.wbegin*)) THEN
+         IF ~Streams.Seek(s.base,b.wpos(*+b.wbegin*),Streams.fromStart) THEN
+	    Error(s, cannotUpdateContents);
+            RETURN FALSE
+         ELSE
+            s.bpos := b.wpos(*+b.wbegin*);
+         END;
+      END;
+      (* to avoid alignment problems we write even uncomplete pages *)
+
+      p := SYS.VAL(Page, b.addr);
+      IF ~Streams.WritePart(s.base,p^,0,pageSize) THEN
+	 Error(s, cannotUpdateContents);
+         RETURN FALSE
+      ELSE
+         INC(s.bpos,pageSize(*-b.wbegin*));
+         b.wbegin := pageSize;
+         b.wend := -1;
+         RETURN ResetBufPos(s,b)
+      END;
+   END FlushBuf;
+
+   PROCEDURE InitBufPool(bp: BufferPool);
+   VAR
+      index: INTEGER;
+   BEGIN
+      bp.maxbuf := maxbufdef; (* default size *)
+      bp.nbuf := 0; (* currently, no buffers are allocated *)
+      bp.head := NIL;
+      bp.tail := NIL;
+      bp.dirty := NIL;
+      index := 0;
+      WHILE index < hashtabsize DO
+         bp.bucket[index] := NIL;
+         INC(index);
+      END;
+   END InitBufPool;
+
+   PROCEDURE ShrinkBufPool(bp: BufferPool; no: INTEGER);
+   VAR
+      n,b: Buffer;
+   BEGIN
+      b := bp.head;
+      WHILE ((bp.nbuf > no) OR (allocated > totalmax))
+         & (b # NIL ) DO
+         IF b.wend < b.wbegin THEN (* not dirty *)
+            n := b.nexta;
+            ReleaseBuf(bp,b);
+            b := n;
+         ELSE
+            b := b.nexta;
+         END;
+      END;
+   END ShrinkBufPool;
+
+   PROCEDURE ReuseBuf(bp: BufferPool; VAR b: Buffer) : BOOLEAN;
+   BEGIN
+      b := bp.head;
+      WHILE b # NIL DO
+         IF b.wend < b.wbegin THEN (* not dirty*)
+            UnlinkBuf(bp,b);
+            UnhashBuf(bp,b);
+            ClearBuf(b);
+	    MemOps.ClearU(b.addr, pageSize);
+            RETURN TRUE
+         ELSE
+            b := b.nexta;
+         END;
+      END;
+      RETURN FALSE
+   END ReuseBuf;
+
+   PROCEDURE SetBuf(s: Stream; pos: Count) : BOOLEAN;
+   BEGIN
+      pos := pos - pos MOD pageSize;
+      IF (s.buf # NIL) & (s.buf.pos = pos) THEN
+         (*nothing to do *)
+      ELSIF ~FindBuf(s.bp,pos,s.buf) THEN
+         IF (allocated<totalmax) & (s.bp.nbuf<s.bp.maxbuf)
+            OR ~ReuseBuf(s.bp,s.buf)
+         THEN
+            NewBuf(s.buf);
+            INC(s.bp.nbuf);
+         END;
+         HashBuf(s.bp,s.buf,pos);
+         IF ~SetBufPos(s,s.buf) THEN
+            RETURN FALSE
+         END;
+         AppendBuf(s.bp,s.buf);
+      ELSE
+         UnlinkBuf(s.bp,s.buf);
+         AppendBuf(s.bp,s.buf);
+      END;
+      RETURN TRUE
+   END SetBuf;
+
+   (* in any case all buffers are removed from dirty list *)
+   PROCEDURE FlushBufPool(s: Stream) : BOOLEAN;
+   VAR
+      b,n: Buffer;
+      ok: BOOLEAN;
+   BEGIN
+      ok := TRUE;
+      b := s.bp.dirty;
+      s.bp.dirty := NIL;
+      WHILE b # NIL DO
+         n := b.nextd;
+         b.nextd := NIL;
+         IF ~FlushBuf(s,b) THEN
+            ok := FALSE;
+         END;
+         b := n;
+      END;
+      RETURN ok;
+   END FlushBufPool;
+
+   (* Forget any dirty buffers *)
+   PROCEDURE ForgetDirtyBufs(bp: BufferPool);
+   VAR
+      n,b: Buffer;
+   BEGIN
+      b := bp.dirty;
+      WHILE b # NIL DO
+         n := b.nextd;
+         b.nextd := NIL;
+         ReleaseBuf(bp,b);
+         b := n;
+      END;
+      bp.dirty := NIL;
+   END ForgetDirtyBufs;
+
+   PROCEDURE InitProt(p: Protocol);
+   VAR
+      i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < noAreas DO
+         p.fmap[i] := NIL;
+         p.mmap[i] := NIL;
+         p.mmem[i] := 0;
+         p.fdirty[i] := FALSE;
+         INC(i);
+      END;
+      i := 0;
+      WHILE i < noRegions DO
+         p.rmap[i] := NIL;
+         p.rdirty[i] := FALSE;
+         INC(i);
+      END;
+      p.fused := -1;
+   END InitProt;
+
+   PROCEDURE Merge(s: Stream) : BOOLEAN;
+   VAR
+      ano: PageNo;
+      sno: PageNo;
+   BEGIN
+      ano := 0;
+      WHILE ano < noAreas DO
+         IF ~SetFreePageMap(s,ano) THEN
+            RETURN FALSE
+         ELSIF ((s.cur.fmap[ano] = NIL) OR (s.cur.fmem[ano] = 0) )
+            & (s.cur.mmap[ano] # NIL) THEN
+            INC(s.cur.free,s.cur.mmem[ano]);
+            s.cur.fmap[ano] := s.cur.mmap[ano];
+            s.cur.fmem[ano] := s.cur.mmem[ano];
+            s.cur.fdirty[ano] := TRUE;
+         ELSIF s.cur.mmap[ano] # NIL THEN
+            sno := 0;
+            WHILE sno < setArraySize DO
+               ASSERT(s.cur.fmap[ano][sno]*s.cur.mmap[ano][sno] = {});
+               s.cur.fmap[ano][sno] := s.cur.fmap[ano][sno] +
+                  s.cur.mmap[ano][sno];
+               INC(sno);
+            END;
+            INC(s.cur.free,s.cur.mmem[ano]);
+            INC(s.cur.fmem[ano],s.cur.mmem[ano]);
+            s.cur.fdirty[ano] := TRUE;
+         END;
+         s.cur.mmap[ano] := NIL;
+         s.cur.mmem[ano] := 0;
+         INC(ano);
+      END;
+      RETURN TRUE
+   END Merge;
+
+   PROCEDURE Update(s: Stream) : BOOLEAN;
+   VAR
+      i: PageNo;
+      off: SHORTINT;
+   BEGIN
+      i := 0;
+      WHILE i < noRegions DO
+         IF (s.cur.rmap[i] # NIL) & (s.cur.rdirty[i]) THEN
+            off := (s.cur.roff[i] + 1) MOD 2;
+            IF ~PutSysPage(s,rmappos[i]+off,s.cur.rmap[i]^) THEN
+               RETURN FALSE
+            ELSE
+               s.cur.roff[i] := off;
+               s.cur.rdirty[i] := FALSE;
+            END;
+         END;
+         INC(i);
+      END;
+      IF ~Merge(s) THEN
+         RETURN FALSE
+      END;
+      i := 0;
+      WHILE i < noAreas DO
+         IF (s.cur.fmap[i] = NIL) OR (s.cur.fmem[i] = 0) THEN
+            s.cur.fmap[i] := NIL;
+            s.cur.fmem[i] := 0;
+            s.cur.fcur[i] := 0;
+            s.cur.foff[i] := unused;
+         ELSIF s.cur.fdirty[i] THEN
+            off := (s.cur.foff[i] + 1) MOD 2;
+            IF ~PutSysPage(s,fmappos[i]+off,s.cur.fmap[i]^) THEN
+               RETURN FALSE
+            ELSE
+               s.cur.foff[i] := off;
+               s.cur.fdirty[i] := FALSE;
+            END;
+         END;
+         INC(i);
+      END;
+      s.cur.fused := -1;
+      RETURN TRUE
+   END Update;
+
+   (* interface procedures *)
+   PROCEDURE WriteBuf(s: Streams.Stream; source: Streams.Address;
+            cnt: Streams.Count) : Streams.Count;
+   VAR
+      oldpos: Count; (* stream position before write operation *)
+      move: BOOLEAN;
+      begin, end , no: Count;
+
+   BEGIN
+      WITH s: Stream DO
+         oldpos := s.cur.vpos;   (* use old pos of stream *);
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN 0;
+         ELSIF s.status # inprogress THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN 0;
+         END;
+         WHILE (cnt > 0) DO
+            IF ((s.buf = NIL) OR
+		  (s.buf.pos # (s.cur.vpos - s.cur.vpos MOD pageSize))) &
+		  ~SetBuf(s,s.cur.vpos) THEN
+               cnt := 0;
+            ELSE
+               move := s.buf.wbegin > s.buf.wend;
+               begin := s.cur.vpos - s.buf.pos;
+               IF begin + cnt >= pageSize THEN
+                  end := pageSize - 1;
+               ELSE
+                  end := begin + cnt -1;
+               END;
+               no := end - begin + 1;
+               (* beware of write regions with holes *)
+
+               IF ~move
+                  & ~s.buf.read
+                  & ((end + 1 < s.buf.wbegin) OR (begin > s.buf.wend+1))
+                  & ~FillBuf(s,s.buf)
+               THEN
+                  cnt := 0;
+               ELSE
+                  IF (begin < s.buf.wbegin)  THEN
+                     s.buf.wbegin := begin;
+                  END;
+                  IF (end > s.buf.wend) THEN
+                     s.buf.wend := end;
+                  END;
+                  MemOps.CopyU(source,s.buf.addr+begin,no);
+                  INC(source,no);
+                  INC(s.cur.vpos,no);
+                  DEC(cnt,no);
+                  IF move THEN
+                     s.buf.nextd := s.bp.dirty;
+                     s.bp.dirty := s.buf;
+                  END;
+               END;
+            END;
+         END;
+         IF s.cur.vpos > s.cur.vsize THEN
+            s.cur.vsize := s.cur.vpos;
+         END;
+         s.lock := FALSE;
+         RETURN s.cur.vpos-oldpos;
+      END;
+   END WriteBuf;
+
+   PROCEDURE Trunc(s: Streams.Stream; cnt: Streams.Count) : BOOLEAN;
+   VAR
+      size: Count;
+      b: Buffer;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.status # inprogress THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSIF (cnt > s.cur.vsize) OR (cnt > s.cur.vpos) THEN
+            Error(s,illegalPos);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSIF cnt = s.cur.vsize THEN
+            s.lock := FALSE;
+            RETURN TRUE
+         ELSE
+            size := cnt;
+            IF cnt MOD pageSize # 0 THEN
+               IF FindBuf(s.bp,cnt - cnt MOD pageSize,b)
+               & (b.wend >= b.wbegin) & (b.wend > (cnt MOD pageSize -1))
+               THEN
+                  b.wend := cnt MOD pageSize - 1;
+               END;
+               INC(cnt,pageSize - cnt MOD pageSize);
+            END;
+            WHILE cnt < s.cur.vsize DO
+               IF FindBuf(s.bp,cnt,b) THEN
+                  (*
+                  IF (b.rpos # -1) THEN
+                     FreePage(s.cur,b.rpos DIV pageSize);
+                  END;
+                  *)
+                  ReleaseBuf(s.bp,b);
+               END;
+               IF ~FreeRegionEntry(s,cnt) THEN
+                  s.lock := FALSE;
+                  RETURN FALSE
+               END;
+               INC(cnt,pageSize);
+            END;
+            s.lock := FALSE;
+            s.cur.vsize := size;
+            RETURN TRUE
+         END;
+      END;
+   END Trunc;
+
+   PROCEDURE ReadBuf(s: Streams.Stream; dest: Streams.Address;
+      cnt: Streams.Count) : Streams.Count;
+
+   VAR
+      oldpos: Count;
+      begin, end , no: Count;
+
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN 0;
+         ELSIF (s.status # inprogress) & ~s.ronly THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN 0;
+         ELSIF s.cur.vpos >= s.cur.vsize THEN
+            Error(s,illegalPos);
+            s.lock := FALSE;
+            RETURN 0;
+         END;
+         oldpos := s.cur.vpos;
+         IF s.cur.vpos + cnt > s.cur.vsize THEN
+            cnt := s.cur.vsize-s.cur.vpos;
+         END;
+         WHILE (cnt > 0) & SetBuf(s,s.cur.vpos) (*& ReadFromBuf() *)DO
+            begin := s.cur.vpos - s.buf.pos;
+            IF begin + cnt >= pageSize THEN
+               end := pageSize -1;
+            ELSE
+               end := begin + cnt -1;
+            END;
+            IF ~s.buf.read & ((begin < s.buf.wbegin) OR (end > s.buf.wend))
+               & ~FillBuf(s,s.buf) THEN
+               cnt := 0;
+            ELSE
+               no := end - begin + 1;
+               MemOps.CopyU(s.buf.addr+begin,dest,no);
+               INC(dest,no);
+               INC(s.cur.vpos,no);
+               DEC(cnt,no);
+            END;
+         END;
+         s.lock := FALSE;
+         RETURN s.cur.vpos -oldpos;
+      END;
+   END ReadBuf;
+
+   PROCEDURE Write(s: Streams.Stream; b: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN WriteBuf(s,SYS.ADR(b),1) = 1;
+   END Write;
+
+   PROCEDURE Read(s: Streams.Stream; VAR b: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN ReadBuf(s,SYS.ADR(b),1) = 1;
+   END Read;
+
+   PROCEDURE Seek(s: Streams.Stream;
+                  offset: Streams.Count; whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Count;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF (s.status # inprogress) & ~s.ronly THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            CASE whence OF
+	    | Streams.fromStart: newpos := offset;
+	    | Streams.fromPos:   newpos := s.cur.vpos + offset;
+	    | Streams.fromEnd:   newpos := s.cur.vsize + offset;
+            END;
+            IF newpos < 0 THEN
+               Error(s,illegalPos);
+               s.lock := FALSE;
+               RETURN FALSE
+            ELSE
+               s.cur.vpos := newpos;
+               s.lock := FALSE;
+               RETURN TRUE
+            END;
+         END;
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR offset: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF (s.status # inprogress) & ~s.ronly THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            offset := s.cur.vpos;
+            s.lock := FALSE;
+            RETURN TRUE
+         END;
+      END;
+   END Tell;
+
+   PROCEDURE LatestCommit(s: Stream) : BOOLEAN;
+   VAR
+      i: INTEGER;
+      ok: ARRAY 2 OF BOOLEAN;
+      res: LONGINT;
+   BEGIN
+      i := 0;
+      WHILE i <= 1 DO
+         ok [i] := s.head[i].mark0 = s.head[i].mark1;
+         INC(i);
+      END;
+      IF ok[0] & ok[1] THEN
+         res := s.head[0].mark0-s.head[1].mark0;
+         IF res < 0 THEN
+            s.cidx := 1;
+            s.pidx := 0;
+         ELSIF res >0 THEN
+            s.cidx := 0;
+            s.pidx := 1;
+         ELSE
+            s.cidx := -1;
+            s.pidx := -1;
+         END;
+      ELSIF ok[0] THEN
+         s.pidx := -1;
+         s.cidx := 0;
+      ELSIF ok[1] THEN
+         s.pidx := -1;
+         s.cidx := 1;
+      ELSE
+         s.pidx := -1;
+         s.cidx := -1;
+      END;
+      IF s.cidx # - 1 THEN
+         Assign(s.cur,s.head[s.cidx]);
+         s.status := ready;
+      END;
+      s.cur.vpos := 0;
+      RETURN s.cidx # -1;
+   END LatestCommit;
+
+   PROCEDURE Begin (s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.ronly THEN
+            Error(s,readOnly);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSIF s.status = inprogress THEN
+            Error(s,transactionInProgress);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            s.status := inprogress;
+            s.lock := FALSE;
+            RETURN TRUE
+         END;
+      END;
+   END Begin;
+
+   PROCEDURE Commit (s: Streams.Stream) : BOOLEAN;
+      VAR
+	 nidx: SHORTINT;
+	 mark: Mark;
+
+      PROCEDURE Reset;
+      BEGIN
+         WITH s: Stream DO
+            ShrinkBufPool(s.bp,0);
+            InitProt(s.cur);
+            Assign(s.cur,s.head[s.cidx]);
+            s.pidx := -1;
+            s.status := ready;
+         END;
+      END Reset;
+
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.status # inprogress THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN FALSE
+	 END;
+	 s.status := committing;
+	 nidx := (s.cidx + 1) MOD 2;
+	 mark := committing;
+	 IF ~PutSysPage(s,nidx,mark) THEN
+	    s.status := recovering;
+	    Error(s, recoveringDueToFailure);
+	    Reset;
+	    s.lock := FALSE;
+	    RETURN FALSE
+	 ELSIF ~FlushBufPool(s) THEN
+	    s.status := recovering;
+	    Error(s, recoveringDueToFailure);
+	    Reset;
+	    s.lock := FALSE;
+	    RETURN FALSE
+	 ELSIF ~Update(s) THEN
+	    s.status := recovering;
+	    Error(s, recoveringDueToFailure);
+	    Reset;
+	    s.lock := FALSE;
+	    RETURN FALSE
+	 ELSE
+	    INC(s.cur.mark0);
+	    s.cur.mark1 := s.cur.mark0;
+	    s.head[nidx]^ := s.cur^;
+	    IF ~PutSysPage(s,nidx,s.head[nidx]^) THEN
+	       Reset;
+	       s.lock := FALSE;
+	       RETURN FALSE
+	    ELSE
+	       s.status := ready;
+	       ShrinkBufPool(s.bp,s.bp.maxbuf);
+	       s.pidx := s.cidx;
+	       s.cidx := nidx;
+	       s.lock := FALSE;
+	       RETURN TRUE
+	    END;
+	 END;
+      END;
+   END Commit;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.clock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         END;
+	 IF s.auto & (s.status = inprogress) THEN
+	    ok := Commit(s);
+	 ELSE
+	    ok := TRUE;
+	 END;
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         END;
+         ForgetDirtyBufs(s.bp);
+         ShrinkBufPool(s.bp,0);
+         s.head[0] := NIL;
+         s.head[1] := NIL;
+         s.cur := NIL;
+         IF ~Streams.Close(s.base) THEN
+            Error(s, closeFailed);
+            RETURN FALSE
+         ELSE
+            RETURN ok
+         END;
+      END;
+   END Close;
+
+   PROCEDURE ForgetDirtySys(p: Protocol);
+
+   VAR
+      i: PageNo;
+   BEGIN
+      i := 0;
+      WHILE i < noRegions DO
+         IF p.rdirty[i] THEN
+            p.rdirty[i] := FALSE;
+            p.rmap[i] := NIL;
+         END;
+         INC(i);
+      END;
+      i := 0;
+      WHILE i < noAreas DO
+         p.mmap[i] := NIL;
+         p.mmem[i] := 0;
+         IF p.fdirty[i] THEN
+            p.fdirty[i] := FALSE;
+            p.fmap[i] := NIL;
+         END;
+         INC(i);
+      END;
+      p.fused := -1;
+      p.vpos := 0;
+   END ForgetDirtySys;
+
+   PROCEDURE Abort (s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.status # inprogress THEN
+            Error(s,noTransactionRunning);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            ForgetDirtyBufs(s.bp);    (* forget dirty buffers *)
+            ForgetDirtySys(s.cur);    (* forget dirty system pages *);
+            ShrinkBufPool(s.bp,s.bp.maxbuf);
+            Assign(s.cur,s.head[s.cidx]);
+            s.status := ready;
+            s.lock := FALSE;
+            RETURN TRUE
+         END;
+      END;
+   END Abort;
+
+   PROCEDURE Switch(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.status = inprogress THEN
+            Error(s,transactionInProgress);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSIF s.pidx = -1 THEN
+            Error(s,noPriorState);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            ShrinkBufPool(s.bp,0);
+            InitProt(s.cur);
+            Assign(s.cur,s.head[s.pidx]);
+            s.cur.vpos := 0;
+            s.pidx := s.cidx;
+            s.cidx := (s.cidx + 1) MOD 2;
+            s.lock := FALSE;
+            RETURN TRUE
+         END;
+      END;
+   END Switch;
+
+   PROCEDURE Toggle(s: Streams.Stream) : BOOLEAN;
+   VAR
+      nidx: LONGINT;
+      mark: Mark;
+   BEGIN
+      WITH s: Stream DO
+         IF SYS.TAS(s.lock) THEN
+            Error(s,nestedCall);
+            RETURN FALSE
+         ELSIF s.status = inprogress THEN
+            Error(s,transactionInProgress);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSIF s.pidx = -1 THEN
+            Error(s,noPriorState);
+            s.lock := FALSE;
+            RETURN FALSE
+         ELSE
+            s.head[s.pidx].mark0 := s.head[s.cidx].mark0+1;
+            s.head[s.pidx].mark1 := s.head[s.cidx].mark1+1;
+            IF ~PutSysPage(s,s.pidx,s.head[s.pidx]^) THEN
+               s.pidx := -1;
+               s.lock := FALSE;
+               RETURN FALSE
+            ELSE
+               ShrinkBufPool(s.bp,0);
+               InitProt(s.cur);
+               Assign(s.cur,s.head[s.pidx]);
+               s.cur.vpos := 0;
+               s.pidx := s.cidx;
+               s.cidx := (s.cidx + 1) MOD 2;
+               s.lock := FALSE;
+               RETURN TRUE
+            END;
+         END;
+      END;
+   END Toggle;
+
+   (* === interface to ObjectTransactions ============================= *)
+
+   PROCEDURE BeginOT(object: Services.Object;
+                     trans: Transactions.Transaction) : BOOLEAN;
+   BEGIN
+      RETURN Begin(object(Stream))
+   END BeginOT;
+
+   PROCEDURE CommitOT(object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN Commit(object(Stream))
+   END CommitOT;
+
+   PROCEDURE AbortOT(object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN Abort(object(Stream))
+   END AbortOT;
+
+   PROCEDURE ReleaseOT(object: Services.Object) : BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END ReleaseOT;
+
+   (* ================================================================= *)
+
+   PROCEDURE InitIF;
+   BEGIN
+      NEW(if);
+      if.addrread := ReadBuf;
+      if.addrwrite := WriteBuf;
+      if.read := Read;
+      if.write := Write;
+      if.seek := Seek;
+      if.tell := Tell;
+      if.close := Close;
+      if.flush := NIL;
+      if.trunc := Trunc;
+      if.handler := NIL;
+   END InitIF;
+
+   PROCEDURE Setup(new: Stream) : BOOLEAN;
+      VAR
+	 i: INTEGER;
+
+      PROCEDURE Fill(p: Head);
+      VAR
+         i: INTEGER;
+      BEGIN
+         p.mark0 := 0;
+          p.mark1 := 0;;
+         p.magic := magicNo;
+         p.vsize := 0;
+         p.esize := 2;
+         p.free := 0;
+         i := 0;
+         WHILE i < noRegions DO
+            p.roff[i] := unused;
+            INC(i);
+         END;
+         i := 0;
+         WHILE i < noAreas DO
+            p.foff[i] := unused;
+            p.fmem[i] := 0;
+            p.fcur[i] := 0;
+            INC(i);
+         END;
+      END Fill;
+
+   BEGIN
+      Fill(new.head[0]);
+      new.head[1]^ := new.head[0]^;
+      new.head[1].mark0 := -1;
+      new.head[1].mark1 := -1;
+      i := 0;
+      WHILE i <= 1 DO
+         IF ~PutSysPage(new,i,new.head[i]^) THEN
+            RETURN FALSE
+         ELSE
+            INC(i);
+         END;
+      END;
+      RETURN TRUE
+   END Setup;
+
+   PROCEDURE Init(s: Stream) : BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i <= 1 DO
+         IF ~GetSysPage(s,i,s.head[i]^) THEN
+            RETURN FALSE
+         ELSIF s.head[i].magic # magicNo THEN
+            Error(s,badMagic);
+            RETURN FALSE
+         END;
+         INC(i);
+      END;
+      RETURN TRUE
+   END Init;
+
+   PROCEDURE Open(VAR s: Streams.Stream; base: Streams.Stream;
+		  mode: Mode; errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 new: Stream;
+   BEGIN
+      IF Streams.GetBufMode(base) # Streams.nobuf THEN
+         Error(errors,bufferedStream);
+         RETURN FALSE
+      END;
+      NEW(new);
+      NEW(new.head[1]);
+      NEW(new.head[0]);
+      NEW(new.cur);
+      NEW(new.bp);
+      new.lock := FALSE;
+      new.clock := FALSE;
+      RelatedEvents.Forward(new, errors);
+      Services.Init(new, type);
+      Streams.Init(new, if, caps, Streams.nobuf);
+      Events.Define(new.termev);
+      Events.Ignore(new.termev);
+      new.base := base;
+      new.buf := NIL;
+      new.auto := FALSE;
+      new.prior := FALSE;
+      new.ronly := FALSE;
+      CASE mode OF
+      | standard + last:
+      | standard + prior:
+         new.prior := TRUE;
+      | auto + last:
+         new.auto := TRUE;
+      | auto + prior:
+         new.auto := TRUE;
+         new.prior := TRUE;
+      | read + last:
+         new.ronly := TRUE;
+      | read + prior:
+         new.ronly := TRUE;
+         new.prior := TRUE;
+      ELSE
+         Error(s,illegalParam);
+         RETURN FALSE
+      END;
+      InitProt(new.cur);
+      s := NIL;
+      InitBufPool(new.bp);
+      IF ~Streams.Seek(new.base,0,Streams.fromEnd) OR
+	    ~Streams.Tell(new.base,new.bpos) THEN
+	 Error(errors, cannotAccessFile);
+         RETURN FALSE
+      END;
+      IF (new.bpos>0) & ~Init(new) THEN
+	 Error(errors, corruptedFile); RETURN FALSE
+      ELSIF (new.bpos = 0) & ~Setup(new) THEN
+	 Error(errors, corruptedFile); RETURN FALSE
+      ELSIF ~LatestCommit(new) THEN
+         Error(new,noLegalState);
+         RETURN FALSE
+      ELSIF new.prior & ~new.ronly & ~Toggle(new) THEN
+         RETURN FALSE
+      ELSIF new.prior & new.ronly & ~Switch(new) THEN
+         RETURN FALSE
+      ELSIF new.auto & ~Begin(new) THEN
+         RETURN FALSE
+      ELSE
+         RelatedEvents.Reset(new);
+	 RelatedEvents.QueueEvents(new);
+	 RelatedEvents.Forward(base, new);
+	 Resources.DependsOn(new, base);
+         s := new;
+         RETURN TRUE
+      END;
+   END Open;
+
+   PROCEDURE Touch(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN Commit(s) & Begin(s);
+   END Touch;
+
+   PROCEDURE Forget(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN Abort(s) & Begin(s);
+   END Forget;
+
+   PROCEDURE InitModule;
+      VAR
+	 otif: ObjectTransactions.Interface;
+   BEGIN
+      InitErrorHandling;
+      InitMapPos;
+      InitIF;
+
+      Services.CreateType(type, "TransStreams.Stream", "Streams.Stream");
+      NEW(otif); otif.begin := BeginOT; otif.commit := CommitOT;
+      otif.abort := AbortOT; otif.release := ReleaseOT;
+      ObjectTransactions.Register(type, otif);
+
+      freelist := NIL;
+      allocated := 0;
+      totalmax := totalmaxdef;
+   END InitModule;
+
+   PROCEDURE SetPoolSize( s: Streams.Stream; no: INTEGER);
+   BEGIN
+      ASSERT(no >= 0);
+      s(Stream).bp.maxbuf := no;
+   END SetPoolSize;
+
+   PROCEDURE GetPoolSize(s: Streams.Stream; VAR no: INTEGER);
+   BEGIN
+      no := s(Stream).bp.maxbuf;
+   END GetPoolSize;
+
+   PROCEDURE GetEffPoolSize( s: Streams.Stream; VAR no: INTEGER);
+   BEGIN
+      no := s(Stream).bp.nbuf;
+   END GetEffPoolSize;
+
+   PROCEDURE SetNoBufs(no: INTEGER);
+   BEGIN
+      ASSERT(no > 0);
+      totalmax := no;
+   END SetNoBufs;
+
+   PROCEDURE GetNoBufs(VAR no: INTEGER);
+   BEGIN
+      no := totalmax;
+   END GetNoBufs;
+
+   PROCEDURE GetEffNoBufs(VAR no: INTEGER);
+   BEGIN
+      no := allocated;
+   END GetEffNoBufs;
+
+   PROCEDURE SetInfo(s: Streams.Stream; info: ARRAY OF Byte) : BOOLEAN;
+      VAR
+	 n: LONGINT;
+   BEGIN
+      WITH s: Stream DO
+	 IF SYS.TAS(s.lock) THEN
+	    Error(s,nestedCall);
+	    RETURN FALSE
+	 ELSIF s.status # inprogress THEN
+	    Error(s,noTransactionRunning);
+	    s.lock := FALSE;
+	    RETURN FALSE
+	 ELSE
+	    n := LEN(info);
+	    IF n >infoSize THEN
+	       n := infoSize;
+	    END;
+	    MemOps.CopyU(SYS.ADR(info),SYS.ADR(s.cur.info),n);
+	    s.lock := FALSE;
+	    RETURN TRUE
+	 END;
+      END;
+   END SetInfo;
+
+   PROCEDURE Available(s: Streams.Stream; state: State) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 CASE state OF
+	 | current:
+	    RETURN s.status = inprogress
+	 | last :
+	    RETURN s.cidx # -1
+	 | prior:
+	    RETURN s.pidx # -1
+	 END;
+      END;
+   END Available;
+
+   PROCEDURE GetInfo(s: Streams.Stream; state: State;
+                     VAR info: ARRAY OF BYTE) : BOOLEAN;
+      VAR
+	 n: LONGINT;
+   BEGIN
+      WITH s: Stream DO
+	 IF SYS.TAS(s.lock) THEN
+	    Error(s,nestedCall);
+	    RETURN FALSE
+	 ELSIF ~Available(s,state) THEN
+	    s.lock := FALSE;
+	    RETURN FALSE
+	 ELSE
+	    n := LEN(info);
+	    IF n >infoSize THEN
+	       n := infoSize;
+	    END;
+	    CASE state OF
+	    | current:
+	       MemOps.CopyU(SYS.ADR(s.cur.info),SYS.ADR(info),n);
+	    | last:
+	       MemOps.CopyU(SYS.ADR(s.head[s.cidx].info),SYS.ADR(info),n);
+	    | prior:
+	       MemOps.CopyU(SYS.ADR(s.head[s.pidx].info),SYS.ADR(info),n);
+	    END;
+	    s.lock := FALSE;
+	    RETURN TRUE
+	 END;
+      END;
+   END GetInfo;
+
+BEGIN
+   (* this module works for other page sizes as well but possibly
+      less efficient:
+      ASSERT (Memory.GetPageSize() = pageSize);
+   *)
+   ASSERT (SYS.SIZE(HeadRec) = pageSize);
+   InitModule;
+END TransStreams.

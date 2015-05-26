@@ -1,0 +1,237 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TermKeys.om,v 1.1 2004/06/11 12:11:37 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: TermKeys.om,v $
+   Revision 1.1  2004/06/11 12:11:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermKeys; (* Ralf Beck *)
+
+   (* this module provides the interface to read function keys from*)
+   (* a terminal                                                   *)
+
+   IMPORT  Disciplines, Events, NetIO, Objects, PersistentObjects, Priorities,
+           RelatedEvents, Services, Sets, Streams;
+
+   CONST
+      (* functionkeys *)
+      f0 = 0;
+      f1 = 1;
+      f2 = 2;
+      f3 = 3;
+      f4 = 4;
+      f5 = 5;
+      f6 = 6;
+      f7 = 7;
+      f8 = 8;
+      f9 = 9;
+      f10 = 10;
+      f11 = 11;
+      f12 = 12;
+      f13 = 13;
+      f14 = 14;
+      f15 = 15;
+      f16 = 16;
+      f17 = 17;
+      f18 = 18;
+      f19 = 19;
+      f20 = 20;
+
+      cursorup = 21;
+      cursordown = 22;
+      cursorleft = 23;
+      cursorright = 24;
+
+      insert = 25;
+      delete = 26;
+      home = 27;
+      end = 28;
+      previous = 29;
+      next = 30;
+
+      functionkeys = 31;
+
+   TYPE
+      FunctionKeySet = ARRAY functionkeys+1 DIV Sets.setsize OF SET;
+
+      Key = POINTER TO KeyRec;  (* basetype for Keys *)
+      KeyRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+         END;
+
+      SimpleKey = POINTER TO SimpleKeyRec; (* keys that don't belong to   *)
+      SimpleKeyRec =                       (* above functionkeys, that is *)
+         RECORD                            (* chars and functionkeys not  *)
+            (KeyRec)                       (* supported by this module    *)
+            char: CHAR;
+         END;
+
+      FunctionKey = POINTER TO FunctionKeyRec; (* above functionkeys *)
+      FunctionKeyRec =
+         RECORD
+            (KeyRec)
+            code: INTEGER;
+         END;
+
+      ReadProc = PROCEDURE(s: Streams.Stream; VAR key: Key): BOOLEAN; 
+
+      Interface = POINTER TO InterfaceRec; (* interface holds read procedure *)
+      InterfaceRec =
+         RECORD
+            (Objects.ObjectRec)
+            read: ReadProc;
+         END;
+
+      Discipline = POINTER TO DisciplineRec;           (* discipline added to terminal *)
+      DisciplineRec =
+         RECORD
+	    (Disciplines.DisciplineRec)
+	    available: FunctionKeySet;
+   	    if: Interface;
+         END;
+
+   VAR
+      id: Disciplines.Identifier;
+      keyType: Services.Type;                    (* types and interfaces needed *)
+      simpleKeyType: Services.Type;              (* by PersistentObjects        *)
+      functionKeyType: Services.Type;
+      simpleKeyIf: PersistentObjects.Interface;
+      functionKeyIf: PersistentObjects.Interface;
+
+   (* =========== procedures needed by PersistentObjects ================= *)
+
+   PROCEDURE CreateSimpleKey(VAR key: PersistentObjects.Object);
+      VAR
+         myKey: SimpleKey;
+   BEGIN
+      NEW(myKey);
+      PersistentObjects.Init(myKey, simpleKeyType);
+      key := myKey;
+   END CreateSimpleKey;
+
+   PROCEDURE ReadSimpleKey(s: Streams.Stream; object: PersistentObjects.Object) 
+             : BOOLEAN;
+   BEGIN
+      WITH object: SimpleKey DO
+         RETURN NetIO.ReadChar(s, object.char);
+      END;
+   END ReadSimpleKey;
+
+   PROCEDURE WriteSimpleKey(s: Streams.Stream; object: PersistentObjects.Object) 
+             : BOOLEAN;
+   BEGIN
+      WITH object: SimpleKey DO
+         RETURN NetIO.WriteChar(s, object.char);
+      END;
+   END WriteSimpleKey;
+
+   PROCEDURE CreateFunctionKey(VAR key: PersistentObjects.Object);
+      VAR
+         myKey: FunctionKey;
+   BEGIN
+      NEW(myKey);
+      PersistentObjects.Init(myKey, functionKeyType);
+      key := myKey;
+   END CreateFunctionKey;
+ 
+   PROCEDURE ReadFunctionKey(s: Streams.Stream; object: PersistentObjects.Object) 
+             : BOOLEAN;
+   BEGIN
+      WITH object: FunctionKey DO
+         RETURN NetIO.ReadInteger(s, object.code);
+      END;
+   END ReadFunctionKey;
+
+   PROCEDURE WriteFunctionKey(s: Streams.Stream; object: PersistentObjects.Object) 
+             : BOOLEAN;
+   BEGIN
+      WITH object: FunctionKey DO
+         RETURN NetIO.WriteInteger(s, object.code);
+      END;
+   END WriteFunctionKey;
+
+   (* ============ public procedures ======================== *)
+
+   PROCEDURE Init(s: Streams.Stream; available: FunctionKeySet; if: Interface);
+   (* initialize TermKeys discipline           *)
+   (* available: set of available functionkeys *)
+   (* if: Interface                            *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      NEW(disc);
+      disc.id := id;
+      disc.available := available;
+      disc.if := if;
+      Disciplines.Add(s, disc);
+   END Init;
+
+   PROCEDURE Read(s: Streams.Stream; VAR key: Key): BOOLEAN;
+   (* read key from terminal                            *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, id, disc) THEN
+         RETURN disc.if.read(s, key);
+      ELSE
+         RETURN FALSE;
+      END;
+   END Read;
+
+   PROCEDURE Available(s: Streams.Stream; VAR keys: FunctionKeySet);
+   (* returns availabe functionkeys *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, id, disc)  THEN
+         keys := disc.available;
+      ELSE
+	 Sets.InitSet(keys);
+      END;
+   END Available;
+
+BEGIN
+   id := Disciplines.Unique();
+
+   PersistentObjects.RegisterType(keyType, "TermKeys.Key", "", NIL);
+
+   NEW(simpleKeyIf);
+   simpleKeyIf.create := CreateSimpleKey;
+   simpleKeyIf.read := ReadSimpleKey;
+   simpleKeyIf.write := WriteSimpleKey;
+   simpleKeyIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(simpleKeyType, "TermKeys.SimpleKey",
+                                  "TermKeys.Key", simpleKeyIf);
+
+   NEW(functionKeyIf);
+   functionKeyIf.create := CreateFunctionKey;
+   functionKeyIf.read := ReadFunctionKey;
+   functionKeyIf.write := WriteFunctionKey;
+   functionKeyIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(functionKeyType, "TermKeys.FunctionKey",
+                                  "TermKeys.Key", functionKeyIf); 
+
+
+END TermKeys.

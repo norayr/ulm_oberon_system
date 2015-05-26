@@ -1,0 +1,367 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Schedulers.om,v 1.7 2004/09/24 15:16:35 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Schedulers.om,v $
+   Revision 1.7  2004/09/24 15:16:35  borchert
+   bug fix: Tasks.Suspend could lead to an infinite loop
+
+   Revision 1.6  2004/09/09 20:58:55  borchert
+   Tasks.Suspend of a task group member may now lead to
+   the invocation of Tasks.Suspend of the scheduler itself
+   if the task invoking Tasks.Suspend is the only task that is ready
+
+   Revision 1.5  2004/04/05 16:28:52  borchert
+   - bug fix: ConsumeAddTaskEvents must set justWaited to FALSE;
+              otherwise we claim falsely a failure of Tasks.Select
+   - CheckSelection improved
+
+   Revision 1.4  1995/12/29 15:36:06  borchert
+   - bug fix: task groups no longer hang if added tasks are ready only
+   - task groups are no longer required to be empty at the invocation
+     time of StartScheduler
+   - finished task groups are terminated now and StartScheduler asserts
+     that the passed task group is not terminated yet
+
+   Revision 1.3  1995/12/13  16:08:16  borchert
+   various optimizations added which minimize the calls of Conditions.Test
+
+   Revision 1.2  1994/07/04  07:53:02  borchert
+   out-parameter task added to AddTask
+   the task which calls InitGroup is not necessarily the scheduler
+      Tasks.InitGroup has been moved for this reason to StartScheduler
+
+   Revision 1.1  1994/02/23  08:04:31  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Schedulers;
+
+   (* interface for standard schedulers;
+      standard schedulers are able to process conditions
+      and give control to their own scheduler if
+      all tasks are waiting or terminated;
+      standard schedulers require the NIL-scheduler or
+      another standard scheduler as their own scheduler;
+      the remaining open question is the choice of one
+      of the tasks which are ready to continue
+   *)
+
+   IMPORT Conditions, Coroutines, Disciplines, EventConditions, Events,
+      Priorities, RelatedEvents, Resources, SYS := SYSTEM, Tasks;
+
+   TYPE
+      TaskGroup = POINTER TO TaskGroupRec;
+      Interface = POINTER TO InterfaceRec;
+      Task = POINTER TO TaskRec;
+      TaskGroupRec =
+	 RECORD
+	    (Tasks.TaskGroupRec)
+	    (* private componentes *)
+	    scheduled: BOOLEAN;
+	    if: Interface;
+	    ready: Task;
+	    waiting: Task;
+	    addTaskEventType: Events.EventType;
+	       (* is raised if new tasks are added *)
+	 END;
+      TaskRec =
+	 RECORD
+	    (Tasks.TaskRec)
+	    (* private components *)
+	    tg: TaskGroup;
+	    prev, next: Task;
+	    ready: BOOLEAN;
+	    conditionSet: Conditions.ConditionSet;
+	       (* = NIL on suspend and # NIL on waitfor *)
+	    setOfTrueConditions: Conditions.ConditionSet;
+	 END;
+
+   TYPE
+      DispatchProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+      CreateProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+      RemoveProc = PROCEDURE (tg: TaskGroup; task: Task);
+      InterfaceRec =
+	 RECORD
+	    dispatch: DispatchProc;
+	    create: CreateProc;
+	    remove: RemoveProc;
+	 END;
+
+   CONST
+      badTask = 0; (* returned task of Dispatch is not ready or valid *)
+      failureOfWaitFor = 1; (* unexpected return of Tasks.WaitFor *)
+      errorcodes = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[badTask] := "task returned by Dispatch is not ready or valid";
+      errormsg[failureOfWaitFor] :=
+	 "unexpected return of Tasks.WaitFor";
+   END InitErrorHandling;
+
+   PROCEDURE InitGroup(tg: TaskGroup; if: Interface);
+   BEGIN
+      tg.if := if;
+      tg.ready := NIL;
+      tg.waiting := NIL;
+      tg.addTaskEventType := NIL;
+   END InitGroup;
+
+   PROCEDURE InsertTask(VAR headOfList: Task; task: Task);
+   BEGIN
+      task.prev := NIL;
+      task.next := headOfList;
+      IF headOfList # NIL THEN
+	 headOfList.prev := task;
+      END;
+      headOfList := task;
+   END InsertTask;
+
+   PROCEDURE RemoveTask(VAR headOfList: Task; task: Task);
+   BEGIN
+      IF task.prev = NIL THEN
+	 headOfList := task.next;
+      ELSE
+	 task.prev.next := task.next;
+      END;
+      IF task.next # NIL THEN
+	 task.next.prev := task.prev;
+      END;
+   END RemoveTask;
+
+   PROCEDURE AppendList(VAR headOfList: Task; otherlist: Task);
+      VAR
+	 prev, tail: Task;
+   BEGIN
+      IF otherlist # NIL THEN
+	 tail := headOfList; prev := NIL;
+	 WHILE tail # NIL DO
+	    prev := tail; tail := tail.next;
+	 END;
+	 tail := prev;
+	 IF tail = NIL THEN
+	    headOfList := otherlist;
+	 ELSE
+	    tail.next := otherlist;
+	    otherlist.prev := tail;
+	 END;
+      END;
+   END AppendList;
+
+   PROCEDURE Error(tg: TaskGroup; errorcode: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(tg, event);
+   END Error;
+
+   PROCEDURE StartScheduler(tg: TaskGroup);
+      VAR
+	 union: Conditions.ConditionSet;
+	 setOfTrueConditions: Conditions.ConditionSet;
+	 justWaited: BOOLEAN;
+	 taskAdded: Conditions.Condition;
+	 suspendedTask: Tasks.Task; suspendtg: BOOLEAN;
+
+      PROCEDURE UnionOfConditionSets(VAR union: Conditions.ConditionSet);
+	 VAR
+	    task: Task;
+      BEGIN
+	 Conditions.CreateSet(union);
+	 task := tg.waiting;
+	 WHILE task # NIL DO
+	    Conditions.Union(union, task.conditionSet);
+	    task := task.next;
+	 END;
+      END UnionOfConditionSets;
+
+      PROCEDURE CheckSelection(conditionSet: Conditions.ConditionSet);
+	 VAR
+	    condition: Conditions.Condition;
+	    task, nextTask: Task;
+	    readyTasks: Task;
+	    found: BOOLEAN;
+      BEGIN
+	 readyTasks := NIL;
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    found := FALSE;
+	    task := readyTasks;
+	    WHILE (task # NIL) & ~found DO
+	       IF Conditions.In(task.conditionSet, condition) THEN
+		  Conditions.Incl(task.setOfTrueConditions, condition);
+		  found := TRUE;
+	       END;
+	       task := task.next;
+	    END;
+	    task := tg.waiting;
+	    WHILE (task # NIL) & ~found DO
+	       nextTask := task.next;
+	       IF Conditions.In(task.conditionSet, condition) THEN
+		  task.ready := TRUE;
+		  Conditions.Incl(task.setOfTrueConditions, condition);
+		  RemoveTask(tg.waiting, task);
+		  InsertTask(readyTasks, task);
+		  found := TRUE;
+	       END;
+	       task := nextTask;
+	    END;
+	 END;
+	 AppendList(tg.ready, readyTasks);
+      END CheckSelection;
+
+      PROCEDURE Dispatch() : BOOLEAN;
+	 (* return FALSE in case of fatal errors *)
+	 VAR
+	    task: Task;
+	    code: SHORTINT;
+	    conditionSet: Conditions.ConditionSet;
+
+	 PROCEDURE SetupWait;
+	 BEGIN
+	    RemoveTask(tg.ready, task);
+	    task.conditionSet := conditionSet;
+	    Conditions.CreateSet(task.setOfTrueConditions);
+	    task.ready := FALSE;
+	    InsertTask(tg.waiting, task);
+	 END SetupWait;
+
+      BEGIN (* Dispatch *)
+	 tg.if.dispatch(tg, task);
+	 IF task = suspendedTask THEN
+	    (* do not immediately reactivate the suspended task
+	       but give other schedulers also the opportunity
+	       to continue working
+	    *)
+	    suspendtg := TRUE;
+	    RETURN TRUE
+	 END;
+	 suspendedTask := NIL; suspendtg := FALSE;
+	 IF (task.tg = tg) & task.ready THEN
+	    Tasks.Dispatch(tg, task, task.setOfTrueConditions,
+			   code, conditionSet);
+	    CASE code OF
+	    | Tasks.terminate:   RemoveTask(tg.ready, task); task.tg := NIL;
+				 tg.if.remove(tg, task);
+	    | Tasks.suspend:     (* task remains in the list of ready tasks *)
+	                         suspendedTask := task;
+	    | Tasks.waitfor:     SetupWait;
+	    END;
+	 ELSE
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END Dispatch;
+
+      PROCEDURE ConsumeAddTaskEvents;
+	 VAR
+	    event: Events.Event;
+      BEGIN
+	 WHILE EventConditions.TestAndGet(taskAdded, event) DO
+	    justWaited := FALSE;
+	 END;
+      END ConsumeAddTaskEvents;
+
+   BEGIN (* StartScheduler *)
+      ASSERT(~SYS.TAS(tg.scheduled)); (* must not be scheduled twice *)
+      Tasks.InitGroup(tg);
+      justWaited := FALSE;
+      Events.Define(tg.addTaskEventType);
+      EventConditions.Create(taskAdded, tg.addTaskEventType);
+      suspendedTask := NIL;
+      IF tg.ready = NIL THEN
+	 (* don't fall thru if we start with an empty task group
+	    but wait for the first task being added
+	 *)
+	 Tasks.WaitFor(taskAdded); ConsumeAddTaskEvents;
+      END;
+      WHILE (tg.ready # NIL) OR (tg.waiting # NIL) DO
+	 IF tg.ready = NIL THEN
+	    IF justWaited THEN
+	       Error(tg, failureOfWaitFor); RETURN
+	    END;
+	    UnionOfConditionSets(union);
+	    Conditions.Incl(union, taskAdded);
+	    Tasks.Select(union, setOfTrueConditions); justWaited := TRUE;
+	    CheckSelection(setOfTrueConditions);
+	 ELSE
+	    justWaited := FALSE;
+	    IF ~Dispatch() THEN
+	       Error(tg, badTask); RETURN
+	    END;
+	    IF suspendtg THEN
+	       Tasks.Suspend;
+	       suspendtg := FALSE; suspendedTask := NIL;
+	    END;
+	 END;
+	 ConsumeAddTaskEvents;
+      END;
+      EventConditions.Drop(taskAdded);
+      Resources.Notify(tg, Resources.terminated);
+   END StartScheduler;
+
+   PROCEDURE AddTask(tg: TaskGroup; cr: Coroutines.Coroutine;
+		     VAR task: Tasks.Task);
+      VAR
+	 newtask: Task;
+	 event: Events.Event;
+   BEGIN
+      ASSERT(~Resources.Terminated(tg));
+      tg.if.create(tg, newtask);
+      Tasks.Init(newtask, cr, tg); newtask.tg := tg;
+      newtask.ready := TRUE; newtask.conditionSet := NIL;
+      InsertTask(tg.ready, newtask);
+      task := newtask;
+      IF tg.addTaskEventType # NIL THEN
+	 NEW(event); event.type := tg.addTaskEventType;
+	 event.message := "Schedulers.AddTask called";
+	 Events.Raise(event);
+      END;
+   END AddTask;
+
+   PROCEDURE Ready(task: Task) : BOOLEAN;
+   BEGIN
+      RETURN task.ready
+   END Ready;
+
+BEGIN
+   InitErrorHandling;
+END Schedulers.

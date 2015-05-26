@@ -1,0 +1,144 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonStdBu.om,v 1.1 1998/03/28 22:30:33 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonStdBu.om,v $
+   Revision 1.1  1998/03/28 22:30:33  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonStdBuiltIns;
+
+   IMPORT Args, BoolArgs, CompilerObjects, Consts := OberonStdConstants,
+      ConstStrings, Lex := OberonLex, OberonBuiltIns,
+      Procs := OberonStdProcedures, Scopes, Sym := OberonSymbols,
+      Types := OberonBaseTypes;
+
+   PROCEDURE DefArgs(args: Args.Arguments);
+      VAR
+	 flag: BoolArgs.Value;
+   BEGIN
+      Args.Define(args, "stdsize", 0X, BoolArgs.type, "include SIZE");
+      Args.Define(args, "stdbyte", 0X, BoolArgs.type, "include BYTE");
+      BoolArgs.Create(flag, FALSE); Args.SetValue(args, "stdsize", flag);
+      BoolArgs.Create(flag, TRUE); Args.SetValue(args, "stdbyte", flag);
+   END DefArgs;
+
+   PROCEDURE Add(scope: Scopes.Scope; args: Args.Arguments);
+      (* insert all standard constants, types, procedures and functions
+	 into scope in dependence of args
+      *)
+
+      VAR
+	 true, false: Sym.Attribute;
+
+      PROCEDURE Flag(flagname: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    flag: BoolArgs.Value;
+      BEGIN
+	 Args.GetValue(args, flagname, flag);
+	 RETURN (flag # NIL) & flag.bool
+      END Flag;
+
+      PROCEDURE AddType(type: Sym.Type);
+      BEGIN
+	 ASSERT(type.ident # NIL);
+	 OberonBuiltIns.AddIdent(scope, type.ident, args, "std");
+      END AddType;
+
+      PROCEDURE AddIdent(ident: Sym.Ident);
+      BEGIN
+	 OberonBuiltIns.AddIdent(scope, ident, args, "std");
+      END AddIdent;
+
+      PROCEDURE AddConst(name: ARRAY OF CHAR; at: Sym.Attribute);
+	 VAR
+	    ident: Sym.Ident;
+	    cstring: ConstStrings.String;
+	    other: Sym.Ident;
+      BEGIN
+	 ConstStrings.Create(cstring, name);
+	 Sym.CreateConstIdent(ident, cstring, at, NIL);
+	 CompilerObjects.InitBuiltInObject(ident);
+	 ident.type := at.type;
+	 OberonBuiltIns.AddIdent(scope, ident, args, "std");
+      END AddConst;
+
+   BEGIN (* Add *)
+      Consts.CreateBoolConst(true, TRUE); AddConst("TRUE", true);
+      Consts.CreateBoolConst(false, FALSE); AddConst("FALSE", false);
+
+      (* see 6.1, basic types *)
+      AddType(Types.boolean);
+      AddType(Types.char);
+      AddType(Types.set);
+      AddType(Types.shortint);
+      AddType(Types.integer);
+      AddType(Types.longint);
+      AddType(Types.real);
+      AddType(Types.longreal);
+
+      (* see 10.2, function procedures *)
+      AddIdent(Procs.absF);
+      AddIdent(Procs.oddF);
+      AddIdent(Procs.capF);
+      AddIdent(Procs.ashF);
+      AddIdent(Procs.lenF);
+      AddIdent(Procs.maxF);
+      AddIdent(Procs.minF);
+
+      (* see 10.2, type conversion procedures *)
+      AddIdent(Procs.ordF);
+      AddIdent(Procs.chrF);
+      AddIdent(Procs.shortF);
+      AddIdent(Procs.longF);
+      AddIdent(Procs.entierF);
+
+      (* see 10.2, proper procedures *)
+      AddIdent(Procs.assertP);
+      AddIdent(Procs.incP);
+      AddIdent(Procs.decP);
+      AddIdent(Procs.inclP);
+      AddIdent(Procs.exclP);
+      AddIdent(Procs.copyP);
+      AddIdent(Procs.newP);
+      AddIdent(Procs.haltP);
+
+      IF Flag("stdsize") THEN
+	 AddIdent(Procs.sizeF);
+      END;
+      IF Flag("stdbyte") THEN
+	 AddType(Types.byte);
+      END;
+   END Add;
+
+   PROCEDURE Init;
+      VAR
+	 if: OberonBuiltIns.Interface;
+   BEGIN
+      NEW(if); if.add := Add; if.defArgs := DefArgs;
+      OberonBuiltIns.RegisterSet("std", if);
+   END Init;
+
+BEGIN
+   Init;
+END OberonStdBuiltIns.

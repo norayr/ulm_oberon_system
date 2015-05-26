@@ -1,0 +1,261 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH FTPUnixPaths 3 "Last change: 24 April 2001" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+FTPUnixPaths \- path-based pseudo chroot jails
+.SH SYNOPSIS
+.Pg
+TYPE Path = POINTER TO PathRec;
+TYPE PathRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+PROCEDURE CreatePath(VAR path: Path;
+                     root, pathname: ARRAY OF CHAR);
+PROCEDURE CreateDerivedPath(VAR path: Path; oldpath: Path;
+                            pathname: ARRAY OF CHAR);
+PROCEDURE GetRelPath(path: Path; VAR pathname: ARRAY OF CHAR);
+PROCEDURE GetAbsPath(path: Path; VAR pathname: ARRAY OF CHAR);
+PROCEDURE Upward(path: Path);
+PROCEDURE ChangeDir(path: Path; dirname: ARRAY OF CHAR);
+.sp 0.7
+PROCEDURE CheckAndProcessSymLinks(path: Path;
+                                  newfile: BOOLEAN;
+                                  VAR expandedPath: ARRAY OF CHAR;
+                                  errors: RelatedEvents.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I FTPUnixPaths
+offers path name operations that allow to realize pseudo chroot
+jails for FTP server processes that do not run with root privileges
+which would be required for \fIchroot(2)\fP.
+To avoid accesses outside a given
+root directory, care has to be taken regarding uplinks via ``..''
+and of symbolic links that may point outside the chosen file hierarchy.
+.LP
+.I CreatePath
+and
+.I CreateDerivedPath
+create paths that may be later manipulated using \fIUpward\fP and
+\fIChangeDir\fP. Before accessing a file or directory,
+.I CheckAndProcessSymLinks
+is to be used to convert a path into a pathname free of symbolic links and
+uplinks which resides inside the simulated chroot jail.
+.LP
+.I CreatePath
+creates \fIpath\fP out of \fIpathname\fP that is to be taken
+relative to \fIroot\fP, the assumed pseudo root.
+.I CreateDerivedPath
+creates a new path out of \fIoldpath\fP with relative path \fIpathname\fP.
+The new path shares its root with the old path.
+.LP
+.I GetRelPath
+returns the relative uplink-free pathname of \fIpath\fP as string, while
+.I GetAbsPath
+returns the absolute uplink-free pathname including its root.
+Neither \fIGetRelPath\fP nor \fIGetAbsPath\fP check for symlinks.
+.LP
+.I ChangeDir
+appends \fIdirname\fP to \fIpath\fP. References to the
+upward directory (``..'') and to the same directory (``.'') are
+processed as by the constructors
+.I CreateDerivedPath
+and
+.IR CheckAndProcessSymLinks .
+Likewise is the upward link of the pseudo root is interpreted to point to
+the pseudo root itself.
+.I Upward
+is equivalent to
+.I ChangeDir
+with ``..'' as \fIdirname\fP.
+.LP
+.I CheckAndProcessSymLinks
+should be used to extract a path name usable for \fIUnixFiles\fP
+or similar modules before accessing files or directories. It
+checks the entire path for symbolic links and interpretes them
+relative to the pseudo root of \fIpath\fP. The last component
+of \fIpath\fP may be non-existant if \fInewfile\fP is set to \fBTRUE\fP.
+On success, a symlink-free absolute path that points
+inside of the pseudo root is returned in
+\fIexpandedPath\fP. Access errors, if any, are related to \fIerrors\fP.
+.SH DIAGNOSTICS
+.I FTPUnixPaths
+does not generate any error events on its own.
+.SH "SECURITY CONSIDERATIONS"
+Pseudo chroot jails are less safe than chroot jails on base of
+\fIchroot(2)\fP:
+.IP \(bu
+The process is still free to access files and directories outside
+the pseudo root. That means that if an attacker is able to execute
+supplied code inside a FTP server process he or she is not bound to the
+restrictions of \fICheckAndProcessSymLinks\fP.
+.IP \(bu
+In the time frame between the check using \fICheckAndProcessSymLinks\fP
+and the actual access of the path found in \fIexpandedPath\fP,
+symbolic links could be added that would direct the access outside of
+the pseudo chroot jail.
+.LP
+In summary,
+.I FTPUnixPaths
+helps to restrict FTP accesses to a particular directory and below
+(a home directory, for example) while running not with super-user
+privileges. This is an improvement in comparison to FTP servers
+that, if not logged in anonymously, provide unrestricted access to
+the whole file system including shared spaces like \fI/tmp\fP.
+But it is far from offering the security of a chroot jail based
+on \fIchroot(2)\fP.
+.SH "SEE ALSO"
+.Tb FTPUnixFileSystems(3)
+.Tp FTPUnixFileSystems(3)
+FTP command handler that implements file and directory accesses
+on base of this module.
+.Te
+.SH BUGS
+Following limits are silently imposed on all pathnames:
+.IP \(bu
+An entire path that is extracted as string is limited to 8192 bytes.
+This limit applies to pseudo roots as well.
+.IP \(bu
+Path components are limited to 512 bytes.
+.\" ---------------------------------------------------------------------------
+.\" $Id: FTPUnixPaths.3,v 1.1 2001/04/24 10:01:19 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: FTPUnixPaths.3,v $
+.\" Revision 1.1  2001/04/24 10:01:19  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

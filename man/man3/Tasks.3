@@ -1,0 +1,408 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Tasks 3 "Last change: 3 June 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Tasks \- general task management
+.SH SYNOPSIS
+.Pg
+CONST taskGroupMismatch = 0;
+CONST dispatchTerminatedTask = 1;
+CONST wrongScheduler = 2;
+CONST invalidSet = 3;
+CONST errorcodes = 4;
+.sp 0.2
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: SHORTINT;
+   END;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+TYPE Task = POINTER TO TaskRec;
+TYPE TaskRec = RECORD (Disciplines.ObjectRec) END;
+TYPE TaskGroup = POINTER TO TaskGroupRec;
+TYPE TaskGroupRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+(* codes returned by the dispatch procedure *)
+CONST terminate = 0;
+CONST suspend = 1;
+CONST waitfor = 2;
+.sp 0.7
+TYPE CreateProc = PROCEDURE (VAR task: Task; cr: Coroutines.Coroutine);
+.sp 0.7
+PROCEDURE Current() : Task;
+PROCEDURE CurrentGroup() : TaskGroup;
+.sp 0.7
+PROCEDURE InitGroup(tg: TaskGroup);
+PROCEDURE Init(task: Task; cr: Coroutines.Coroutine; tg: TaskGroup);
+PROCEDURE Dispatch(tg: TaskGroup; task: Task;
+                   setOfTrueConditions: Conditions.ConditionSet;
+                   VAR code: SHORTINT;
+                   VAR conditionSet: Conditions.ConditionSet);
+.sp 0.7
+PROCEDURE Suspend;
+PROCEDURE Select(conditionSet: Conditions.ConditionSet;
+                 VAR setOfTrueConditions: Conditions.ConditionSet);
+PROCEDURE WaitForOneOf(conditionSet: Conditions.ConditionSet);
+PROCEDURE WaitFor(condition: Conditions.Condition);
+PROCEDURE Terminate;
+PROCEDURE Disconnect;
+.sp 0.7
+PROCEDURE Create(VAR task: Task; cr: Coroutines.Coroutine);
+PROCEDURE SetupDefaultGroup(create: CreateProc);
+.Pe
+.SH DESCRIPTION
+.I Tasks
+offers synchronisation primitives for tasks
+and is a general interface for task schedulers.
+Each task is represented by a coroutine which is free
+to use and to create other coroutines which do not correspond
+necessarily to a \fITask\fP.
+Tasks are organized in groups
+and each group is controlled by a scheduler.
+The scheduler itself belongs to a task of another group.
+Thus, multiple and concurrent schedulers are possible.
+.SS "Task primitives"
+Tasks are not created by \fITasks\fP directly but
+by one of the running schedulers.
+Because these schedulers are not always known
+or the choice of a scheduler does not matter,
+\fITasks\fP supports a default task group.
+This default task group may be announced by
+\fISetupDefaultGroup\fP (this is currently done
+by \fISysMain(3)\fP).
+\fICreate\fP causes then \fIcr\fP to be passed
+to the \fIcreate\fP interface procedure
+which is expected to create a new task
+for \fIcr\fP which is returned in \fItask\fP.
+All tasks created via \fIcreate\fP should belong
+to one default task group which is a direct
+descendant of the main task group.
+.PP
+Tasks are in one of four states:
+.Tb terminated
+.Tp ready
+Tasks in this state are ready to run.
+Their associated scheduler decides (via \fIDispatch\fP)
+when this task will become active.
+This is the initial state of newly created coroutines.
+.Tp running
+The state of the currently running coroutine.
+This state is only left by one of
+the primitives \fISelect\fP, \fIWaitFor\fP,
+\fIWaitForOneOf\fP, \fISuspend\fP, or \fITerminate\fP.
+.Tp waiting
+Tasks which are waiting for conditions to become \fBTRUE\fP
+are in this state.
+.Tp terminated
+This is the final state which is reached only
+by calling \fITerminate\fP or \fIDisconnect\fP by the coroutine itself.
+.Te
+.PP
+\fISelect\fP, \fIWaitForOneOf\fP, and \fIWaitFor\fP
+cause a state transition from \fIrunning\fP to
+\fIwaiting\fP until one of the given conditions
+becomes \fBTRUE\fP (see \fIConditions(3)\fP).
+Then the state will change from \fIwaiting\fP to \fIready\fP.
+\fISelect\fP returns the set of true conditions
+in \fIsetOfTrueConditions\fP.
+Note that neither \fISelect\fP
+nor \fIWaitForOneOf\fP accept an empty condition set or \fBNIL\fP.
+.PP
+\fISuspend\fP causes a state transition
+from \fIrunning\fP to \fIready\fP.
+.PP
+\fITerminate\fP is the final point of no return of a coroutine.
+Note that the procedure body of a coroutine must
+not return and that coroutines can only terminate
+themselves.
+.PP
+Alternatively, if \fIDisconnect\fP is used instead of \fITerminate\fP,
+the task is still considered terminated but the coroutine may be switched
+to again and/or assigned to a new task.
+.PP
+\fICurrent\fP returns the current task and
+\fICurrentGroup\fP the current task group.
+.SS Schedulers
+The main task group consists only of the main task which represents
+the main coroutine (i.e. \fICoroutines.main\fP).
+The scheduler of the main task group is \fBNIL\fP,
+i.e. \fITerminate\fP causes program termination,
+\fISuspend\fP returns immediately and
+\fISelect\fP, \fIWaitForOneOf\fP and \fIWaitFor\fP
+pass their condition set (condition resp.) to
+\fIConditions.WaitFor\fP.
+.LP
+A scheduler (usually represented by a module)
+consists of three parts:
+.IP \(bu
+initialization (i.e. creation of a new task group),
+.IP \(bu
+setup (at least one task should be placed here
+in the new task group), and
+.IP \(bu
+the start of the scheduler.
+.LP
+Additionally, group members should be allowed to create new members.
+The procedure which represents the scheduler should return
+to the calling procedure if all members are terminated
+but should not terminate itself.
+.LP
+A new task group is to be initialized by \fIInitGroup\fP.
+Note that the allocation of \fItg\fP is to be done in advance
+because most schedulers need an extension of \fITaskGroup\fP.
+The current task becomes the scheduler of the new task group.
+.LP
+\fIInit\fP initializes a new task
+and associates it with a coroutine
+and a task group.
+The coroutine must have been created in advance but from
+the viewpoint of \fITasks\fP
+it does not matter whether the coroutine
+was already running or not.
+\fIInit\fP initializes the \fIerrors\fP component of the task
+and calls \fIRelatedEvents.QueueEvents\fP for it.
+Task related errors errors should be related to the \fIerrors\fP
+component instead to the task itself.
+.LP
+The task which represents the scheduler is free to select
+one of its group members and
+to dispatch it by a call to \fIDispatch\fP.
+\fIDispatch\fP returns \fIcode\fP and,
+if \fIcode\fP equals \fIwaitfor\fP,
+the associated \fIconditionSet\fP:
+.Tb terminate
+.Tp terminate
+requires the task to be removed from the group,
+i.e. the task must not be dispatched again.
+.Tp suspend
+the suspending task gratefully gives control
+to the scheduler in the hope
+to become active again.
+.Tp waitfor
+the suspending task waits for \fIconditionSet\fP.
+.Te
+.LP
+\fITerminate\fP, \fISuspend\fP and \fISelect\fP
+determine the return values of \fIDispatch\fP
+(\fIcode\fP and \fIconditionSet\fP)
+and return to the scheduler of the current task group.
+.SH DIAGNOSTICS
+Some of the possible errors lead to following error events:
+.Tb dispatchTerminatedTask
+.Tp taskGroupMismatch
+an error which is generated by \fIDispatch\fP
+if task and task group do not match.
+.Tp dispatchTerminatedTask
+is generated if \fIDispatch\fP is called for a task which is
+already terminated.
+.Tp wrongScheduler
+is generated if the scheduler
+of the task passed to \fIDispatch\fP is
+not the current task.
+.Tp invalidSet
+is raised if an empty condition set was passed
+to \fISelect\fP or \fIWaitForOneOf\fP.
+.Te
+These events are passed to \fIRelatedEvents(3)\fP
+(and related to the task group)
+which (by default) passes them to \fIEvents(3)\fP
+where they are initially ignored.
+Error events are raised with priority \fIPriorities.liberrors\fP.
+.SH "SEE ALSO"
+.Tb RelatedEvents(3)
+.Tp Conditions(3)
+general interface for conditions
+.Tp Coroutines(3)
+interface to coroutines
+.Tp Events(3)
+event handling and priority system
+.Tp RelatedEvents(3)
+task related events and
+errors which are related to the task group
+.Tp Schedulers(3)
+framework for schedulers
+.Tp SYSTEM(3)
+coroutine primitives \fBSYSTEM.CRSPAWN\fP and \fBSYSTEM.CRSWITCH\fP
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: Tasks.3,v 1.10 2004/06/03 07:53:15 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Tasks.3,v $
+.\" Revision 1.10  2004/06/03 07:53:15  borchert
+.\" Disconnect added (as alternative to Terminate)
+.\"
+.\" Revision 1.9  2003/07/10 09:23:49  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.8  1997/06/20 13:19:16  borchert
+.\" - reference to Events fixed
+.\" - Priority.liberrors -> Priorities.liberrors
+.\"
+.\" Revision 1.7  1996/09/17  07:58:49  borchert
+.\" - task switching events removed
+.\" - Select added
+.\" - default task group added
+.\"
+.\" Revision 1.6  1993/09/03  11:13:31  borchert
+.\" documentation fixed: InitGroup has only one parameter
+.\"
+.\" Revision 1.5  1993/06/13  14:46:02  borchert
+.\" type of switchEvent and taskEvents fixed
+.\" terminationEvent added
+.\"
+.\" Revision 1.4  1992/01/15  07:27:00  borchert
+.\" WaitFor -> WaitForOneOf
+.\" WaitFor added
+.\"
+.\" Revision 1.3  1992/01/07  07:26:25  borchert
+.\" NIL-scheduler allows WaitFor and
+.\" calls Conditions.WaitFor in this case
+.\" Conditions.ConditionSet is now used instead of
+.\" Objects.Object for conditions
+.\"
+.\" Revision 1.2  1992/01/02  10:58:24  borchert
+.\" typo error fixed
+.\"
+.\" Revision 1.1  1991/12/30  12:46:33  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

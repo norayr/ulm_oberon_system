@@ -1,0 +1,227 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NodeConstructors;
+
+   IMPORT ConstStrings, Messages, Names, NetIO, NodeFactories, Paths,
+      PersistentObjects, RelatedEvents, RemoteObjects, Services, Shards,
+      Streams, Write;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    (* in parameters *)
+	    factory: NodeFactories.Factory;
+	    name: Names.Name;
+	    auth: Shards.Lid;
+	    (* out parameters *)
+	    subnode: Names.Node;
+	 END;
+   VAR
+      messageType: Services.Type;
+
+   VAR
+      nodeType: Services.Type;
+      factoryType: Services.Type;
+      authType: Services.Type;
+
+   (* === PersistentObjects if procedures for Message ====================== *)
+
+   PROCEDURE CreateMessage(VAR object: PersistentObjects.Object);
+      VAR
+	 message: Message;
+   BEGIN
+      NEW(message); PersistentObjects.Init(message, messageType);
+      Messages.Init(message);
+      message.factory := NIL; message.name := NIL;
+      message.auth := NIL; message.subnode := NIL;
+      object := message;
+   END CreateMessage;
+
+   PROCEDURE ReadMessage(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 IF object.processed THEN
+	    RETURN ~object.done OR
+	           RemoteObjects.GuardedImport(s, nodeType, object.subnode)
+	 ELSE
+	    RETURN PersistentObjects.GuardedRead(s, factoryType,
+		      object.factory) &
+		   NetIO.ReadConstString(s, object.name) &
+		   PersistentObjects.GuardedReadObjectOrNIL(s, authType,
+		      object.auth)
+	 END;
+      END;
+   END ReadMessage;
+
+   PROCEDURE WriteMessage(s: Streams.Stream;
+                          object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 IF object.processed THEN
+	    RETURN ~object.done OR
+	           RemoteObjects.Export(s, object.subnode)
+	 ELSE
+	    RETURN PersistentObjects.Write(s, object.factory) &
+		   NetIO.WriteConstString(s, object.name) &
+		   PersistentObjects.WriteObjectOrNIL(s, object.auth)
+	 END;
+      END;
+   END WriteMessage;
+
+   (* === message handler ================================================== *)
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+      VAR
+	 subnode: Names.Node;
+   BEGIN
+      WITH object: Names.Node DO
+	 IF message IS Message THEN
+	    WITH message: Message DO
+	       message.processed := TRUE;
+	       RelatedEvents.Save(message.factory);
+	       RelatedEvents.Forward(message.factory, message.errors);
+	       RelatedEvents.Save(object);
+	       RelatedEvents.Forward(object, message.errors);
+	       message.done := NodeFactories.ConstructNode(message.factory,
+		     subnode) &
+		  Names.Insert(object, subnode, message.name, message.auth);
+	       RelatedEvents.Restore(message.factory);
+	       RelatedEvents.Restore(object);
+	       IF message.done THEN
+		  message.subnode := subnode;
+	       END;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   (* === module initialization ============================================ *)
+
+   PROCEDURE InitModule;
+      VAR
+	 pif: PersistentObjects.Interface;
+   BEGIN
+      NEW(pif);
+      pif.create := CreateMessage;
+      pif.read := ReadMessage;
+      pif.write := WriteMessage;
+      PersistentObjects.RegisterType(messageType,
+	 "NodeConstructors.Message", "Messages.Message", pif);
+      Services.SeekType("Names.Node", nodeType); ASSERT(nodeType # NIL);
+      Services.SeekType("NodeFactories.Factory", factoryType);
+      ASSERT(factoryType # NIL);
+      Services.SeekType("Shards.Lid", authType); ASSERT(authType # NIL);
+   END InitModule;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE InstallHandler(node: Names.Node);
+   BEGIN
+      Messages.InstallHandler(node, Handler);
+   END InstallHandler;
+
+   PROCEDURE CreateAndInsert(node: Names.Node;
+			     factory: NodeFactories.Factory;
+                             name: Names.Name;
+			     auth: Shards.Lid;
+			     VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 message: Message;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      CreateMessage(message);
+      message.factory := factory;
+      message.name := name; message.auth := auth;
+      Messages.Send(node, message);
+      RelatedEvents.GetQueue(message.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      IF message.processed & message.done THEN
+	 subnode := message.subnode;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateAndInsert;
+
+   PROCEDURE CreateAndInsertPathN(node: Names.Node;
+                                  path: ARRAY OF CHAR;
+                                  factory: NodeFactories.Factory;
+				  auth: Shards.Lid;
+				  errors: RelatedEvents.Object;
+				  VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 index, start: INTEGER;
+	 cs: Streams.Stream;
+	 dirnode: Names.Node;
+	 ok: BOOLEAN;
+   BEGIN
+      start := 0; index := 0;
+      WHILE (index < LEN(path)) & (path[index] # 0X) DO
+	 IF (index > 0) & (path[index] # Paths.separator) &
+	       (path[index-1] = Paths.separator) THEN
+	    start := index;
+	 END;
+	 INC(index);
+      END;
+      ConstStrings.Init(cs);
+      index := start;
+      WHILE (index < LEN(path)) & (path[index] # 0X) DO
+	 Write.CharS(cs, path[index]);
+	 INC(index);
+      END;
+      ConstStrings.Close(cs, name);
+      IF start > 0 THEN
+	 path[start-1] := 0X;
+      ELSE
+	 path[0] := 0X;
+      END;
+      IF ~Paths.GetNodeN(node, path, auth, errors, dirnode) THEN
+	 RETURN FALSE
+      END;
+      RelatedEvents.Save(dirnode);
+      RelatedEvents.Forward(dirnode, errors);
+      ok := CreateAndInsert(dirnode, factory, name, auth, subnode);
+      RelatedEvents.Restore(dirnode);
+      RETURN ok
+   END CreateAndInsertPathN;
+
+   PROCEDURE CreateAndInsertPath(path: ARRAY OF CHAR;
+                                 factory: NodeFactories.Factory;
+				 auth: Shards.Lid;
+				 errors: RelatedEvents.Object;
+				 VAR subnode: Names.Node) : BOOLEAN;
+   BEGIN
+      RETURN CreateAndInsertPathN(Names.root, path, factory, auth,
+		  errors, subnode)
+   END CreateAndInsertPath;
+
+BEGIN
+   InitModule;
+END NodeConstructors.

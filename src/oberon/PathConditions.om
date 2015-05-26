@@ -1,0 +1,606 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PathConditi.om,v 1.2 2005/09/02 15:26:58 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PathConditi.om,v $
+   Revision 1.2  2005/09/02 15:26:58  borchert
+   - moved from CRSPAWN to Jobs
+   - tasks are now terminated if the process terminates
+
+   Revision 1.1  1995/12/29 11:00:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PathConditions;
+
+   IMPORT ASCII, Conditions, ConstStrings, Disciplines, Errors,
+      EventConditions, Events, Jobs, Names, Paths, Priorities, Process,
+      RelatedEvents, Resources, Shards, StreamDisciplines, Streams, Strings,
+      Tasks;
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    done: BOOLEAN; (* return value of Conditions.Test *)
+	    (* to be returned by GetNode *)
+	    node: Names.Node;
+	    errors: RelatedEvents.Object;
+	 END;
+
+   CONST
+      separator = Paths.separator;
+
+   TYPE
+      Component = POINTER TO ComponentRec;
+      ComponentRec =
+	 RECORD
+	    name: Names.Name;
+	    prev, next: Component;
+	    domain: Names.Node;
+	    memberEventCond: Conditions.Condition; (* member events of domain *)
+	 END;
+      Path = POINTER TO PathRec;
+      PathRec =
+	 RECORD
+	    head, tail: Component;
+	 END;
+
+   TYPE
+      MemberEventConditionDiscipline =
+	 POINTER TO MemberEventConditionDisciplineRec;
+      MemberEventConditionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    comp: Component; (* points to associated path component *)
+	 END;
+   VAR
+      mecdID: Disciplines.Identifier;
+
+   VAR
+      domain: Conditions.Domain;
+
+   CONST
+      noRoot = 0; invalidPath = 1; serverFailure = 2; accessFailed = 3;
+      termination = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    (* private components *)
+	    path: Path;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   TYPE
+      PathCheckerJob = POINTER TO PathCheckerJobRec;
+      PathCheckerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    condition: Condition;
+	    root: Names.Node;
+	    path: Path;
+	    auth: Shards.Lid;
+	 END;
+
+   PROCEDURE WriteErrorEvent(s: Streams.Stream; event: Events.Event);
+
+      VAR
+	 ok: BOOLEAN;
+
+      PROCEDURE WriteString(s: Streams.Stream;
+			    string: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string))
+      END WriteString;
+
+      PROCEDURE WriteLn(s: Streams.Stream) : BOOLEAN;
+	 VAR
+	    lineterm: StreamDisciplines.LineTerminator;
+	    width: INTEGER;
+      BEGIN
+	 StreamDisciplines.GetLineTerm(s, lineterm);
+	 IF ~WriteString(s, lineterm) THEN RETURN FALSE END;
+	 StreamDisciplines.GetIndentationWidth(s, width);
+	 WHILE width > 0 DO
+	    IF ~Streams.WriteByte(s, " ") THEN RETURN FALSE END;
+	    DEC(width);
+	 END;
+	 RETURN TRUE
+      END WriteLn;
+
+      PROCEDURE WriteChar(s: Streams.Stream; ch: CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WriteByte(s, ch)
+      END WriteChar;
+
+      PROCEDURE WritePath(s: Streams.Stream; path: Path) : BOOLEAN;
+	 VAR
+	    component: Component;
+      BEGIN
+	 component := path.head;
+	 IF (Names.root # NIL) & (path.head.domain = Names.root) THEN
+	    IF ~WriteChar(s, separator) THEN RETURN FALSE END;
+	 END;
+	 WHILE component # NIL DO
+	    ConstStrings.Write(s, component.name);
+	    component := component.next;
+	    IF component # NIL THEN
+	       IF ~WriteChar(s, separator) THEN RETURN FALSE END;
+	    END;
+	 END;
+	 RETURN TRUE
+      END WritePath;
+
+   BEGIN (* WriteErrorEvent *)
+      IF event IS ErrorEvent THEN
+	 WITH event: ErrorEvent DO
+	    ok := WriteString(s, "cannot access: ") &
+		  WriteChar(s, ASCII.quote) &
+		  WritePath(s, event.path) &
+		  WriteChar(s, ASCII.quote) &
+		  WriteLn(s) &
+		  WriteString(s, event.message)
+	 END;
+      ELSE
+	 ok := WriteString(s, event.message);
+      END;
+   END WriteErrorEvent;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[noRoot] := "cannot access root";
+      errormsg[invalidPath] := "one of the components is not a directory";
+      errormsg[serverFailure] :=
+	 "appropriate error message of server is missing";
+      errormsg[accessFailed] := "cannot access one of the components";
+      errormsg[termination] := "process terminates";
+      Errors.AssignWriteProcedure(error, WriteErrorEvent);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+		   errorcode: ErrorCode;
+		   path: Path);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.path := path;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE ConvertPath(s: Streams.Stream; VAR path: Path);
+
+      VAR
+	 comp: Names.Name;
+	 head, tail, p: Component;
+
+      PROCEDURE GetComp(path: Streams.Stream; VAR comp: Names.Name) : BOOLEAN;
+	 VAR
+	    first: BOOLEAN;
+	    ch: CHAR;
+	    cs: Streams.Stream;
+	    ok: BOOLEAN;
+
+	 PROCEDURE Finish() : BOOLEAN;
+	 BEGIN
+	    IF first THEN
+	       RETURN FALSE
+	    ELSE
+	       ConstStrings.Close(cs, comp);
+	       RETURN TRUE
+	    END;
+	 END Finish;
+
+      BEGIN (* GetComp *)
+	 first := TRUE;
+	 WHILE Streams.ReadByte(path, ch) DO
+	    IF first THEN
+	       IF ch # separator THEN
+		  ConstStrings.Init(cs);
+		  ok := Streams.WriteByte(cs, ch); ASSERT(ok);
+		  first := FALSE;
+	       END;
+	    ELSIF ch = separator THEN
+	       RETURN Finish()
+	    ELSE
+	       ok := Streams.WriteByte(cs, ch); ASSERT(ok);
+	    END;
+	 END;
+	 RETURN Finish()
+      END GetComp;
+
+   BEGIN (* ConvertPath *)
+      head := NIL; tail := NIL;
+      WHILE GetComp(s, comp) DO
+	 NEW(p);
+	 p.name := comp; p.next := NIL; p.prev := tail;
+	 p.domain := NIL; p.memberEventCond := NIL;
+	 IF head = NIL THEN
+	    head := p;
+	 ELSE
+	    tail.next := p;
+	 END;
+	 tail := p;
+      END;
+      NEW(path);
+      path.head := head; path.tail := tail;
+   END ConvertPath;
+
+   PROCEDURE PathChecker(job: Jobs.Job);
+      VAR
+	 condition: Condition;
+	 auth: Shards.Lid;
+	 comp: Component;
+	 errors: RelatedEvents.Object;
+	 errorCode: Names.ErrorCode;
+
+      PROCEDURE GetErrorCode(VAR errorCode: Names.ErrorCode) : BOOLEAN;
+	 (* return most recent error code of Names in the queue of errors *)
+	 VAR
+	    queue: RelatedEvents.Queue;
+	    found: BOOLEAN;
+      BEGIN
+	 RelatedEvents.GetQueue(errors, queue);
+	 RelatedEvents.AppendQueue(errors, queue);
+	 found := FALSE;
+	 WHILE queue # NIL DO
+	    IF queue.event IS Names.ErrorEvent THEN
+	       errorCode := queue.event(Names.ErrorEvent).errorcode;
+	       found := TRUE;
+	    END;
+	    queue := queue.next;
+	 END;
+	 RETURN found
+      END GetErrorCode;
+
+      PROCEDURE ForwardErrors;
+	 VAR
+	    queue: RelatedEvents.Queue;
+      BEGIN
+	 RelatedEvents.GetQueue(errors, queue);
+	 RelatedEvents.AppendQueue(condition.errors, queue);
+      END ForwardErrors;
+
+      PROCEDURE WalkAlongThePath(path: Path; root: Names.Node;
+				 VAR node: Names.Node) : BOOLEAN;
+	 (* return TRUE if we are done: either on fatal errors
+	    or on success
+	 *)
+	 VAR
+	    comp: Component;
+	    domain: Names.Node;
+	    nextdomain: Names.Node;
+	    ok: BOOLEAN;
+      BEGIN
+	 node := NIL;
+	 comp := path.head; domain := root;
+	 WHILE comp # NIL DO
+	    IF (comp.next # NIL) & (comp.next.domain # NIL) THEN
+	       (* already examined *)
+	       nextdomain := comp.next.domain;
+	       ok := TRUE;
+	    ELSE
+	       IF ~(Names.domainCap IN Names.Capabilities(domain)) THEN
+		  Error(condition.errors, invalidPath, path); RETURN TRUE
+	       END;
+	       comp.domain := domain;
+	       RelatedEvents.Save(domain);
+	       RelatedEvents.Forward(domain, errors);
+	       ok := Names.GetNode(domain, comp.name, auth, nextdomain);
+	       RelatedEvents.Restore(domain);
+	    END;
+	    IF ok THEN
+	       domain := nextdomain;
+	       comp := comp.next;
+	    ELSE
+	       IF ~GetErrorCode(errorCode) THEN
+		  ForwardErrors; Error(condition.errors, serverFailure, path);
+		  RETURN TRUE
+	       END;
+	       IF errorCode # Names.nodeNotFound THEN
+		  ForwardErrors; Error(condition.errors, accessFailed, path);
+		  RETURN TRUE
+	       END;
+	       RETURN FALSE
+	    END;
+	 END;
+	 node := domain;
+	 RETURN TRUE
+      END WalkAlongThePath;
+
+      PROCEDURE WaitFor(path: Path; VAR node: Names.Node);
+	 VAR
+	    termCond, softTermCond: Conditions.Condition;
+	    resourceEventType: Events.EventType;
+	    resourceEventCond: Conditions.Condition;
+	    conditions: Conditions.ConditionSet;
+	    setOfTrueConditions: Conditions.ConditionSet;
+	    trueCondition: Conditions.Condition;
+	    revent: Resources.Event;
+	    mevent: Names.MemberEvent;
+	    comp: Component;
+	    mecd: MemberEventConditionDiscipline;
+	    ok: BOOLEAN;
+
+	 PROCEDURE ExaminePath(comp: Component) : BOOLEAN;
+	    (* return TRUE if done: either fatal error or success *)
+	    VAR
+	       lastcomp: Component;
+	       mecd: MemberEventConditionDiscipline;
+	       memberEventType: Events.EventType;
+	       ok: BOOLEAN;
+	 BEGIN
+	    (* take interest in all member events starting from
+	       the given path component
+	    *)
+	    lastcomp := NIL;
+	    WHILE (comp # NIL) & (comp.domain # NIL) DO
+	       IF comp.memberEventCond = NIL THEN
+		  RelatedEvents.Save(comp.domain);
+		  RelatedEvents.Forward(comp.domain, errors);
+		  ok := Names.TakeInterest(comp.domain, auth, memberEventType);
+		  RelatedEvents.Restore(comp.domain);
+		  IF ok THEN
+		     EventConditions.Create(comp.memberEventCond,
+					    memberEventType);
+		     NEW(mecd); mecd.id := mecdID; mecd.comp := comp;
+		     Disciplines.Add(comp.memberEventCond, mecd);
+		     Conditions.Incl(conditions, comp.memberEventCond);
+		  END;
+	       END;
+	       lastcomp := comp; comp := comp.next;
+	    END;
+	    (* check that we are able to process member events of
+	       the last yet examined path component; otherwise
+	       we are unable to wait for the missing parts to appear
+	    *)
+	    ASSERT(lastcomp # NIL);
+	    IF lastcomp.memberEventCond = NIL THEN
+	       ForwardErrors; Error(condition.errors, accessFailed, path);
+	       RETURN TRUE
+	    END;
+	    (* finally, following raise condition is to be avoided:
+	       just between Names.GetNode and Names.TakeInterest
+	       the missing node could have been appeared
+	    *)
+	    RETURN WalkAlongThePath(path, path.head.domain, node)
+	 END ExaminePath;
+
+	 PROCEDURE CutCurrentPath(comp: Component);
+	    (* one of the intermediate components of our path
+	       we were able to walk thru has vanished --
+	       so we have to cut this component and all
+	       components thereafter
+	    *)
+	 BEGIN
+	    WHILE comp # NIL DO
+	       comp.domain := NIL;
+	       IF comp.memberEventCond # NIL THEN
+		  EventConditions.Drop(comp.memberEventCond);
+		  Conditions.Excl(conditions, comp.memberEventCond);
+		  comp.memberEventCond := NIL;
+	       END;
+	       comp := comp.next;
+	    END;
+	 END CutCurrentPath;
+
+	 PROCEDURE ExtendCurrentPath(comp: Component) : BOOLEAN;
+	    (* return TRUE if done: either fatal error or success *)
+	 BEGIN
+	    IF (comp.next # NIL) & (comp.next.domain # NIL) THEN
+	       (* that's just defensive code and usually not to be expected *)
+	       CutCurrentPath(comp.next);
+	    END;
+	    IF WalkAlongThePath(path, path.head.domain, node) THEN
+	       RETURN TRUE
+	    END;
+	    RETURN (comp.domain # NIL) & ExaminePath(comp)
+	 END ExtendCurrentPath;
+
+	 PROCEDURE Cleanup;
+	    (* drop all event conditions we have created so far *)
+	 BEGIN
+	    CutCurrentPath(path.head);
+	    EventConditions.Drop(resourceEventCond);
+	    EventConditions.Drop(termCond);
+	    EventConditions.Drop(softTermCond);
+	 END Cleanup;
+
+      BEGIN (* WaitFor *)
+	 (* take interest in the life of the root of our path;
+	    we will abort if the root terminates
+	 *)
+	 Resources.TakeInterest(path.head.domain, resourceEventType);
+	 EventConditions.Create(resourceEventCond, resourceEventType);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, resourceEventCond);
+
+	 (* abort waiting in case of a process termination *)
+	 EventConditions.Create(termCond, Process.termination);
+	 Conditions.Incl(conditions, termCond);
+	 EventConditions.Create(softTermCond, Process.softTermination);
+	 Conditions.Incl(conditions, softTermCond);
+
+	 (* take interest in all member events of all domains we
+	    have examined so far; we will fall back if any of
+	    the components vanishes
+	 *)
+	 IF ExaminePath(path.head) THEN
+	    Cleanup; RETURN
+	 END;
+
+	 LOOP
+	    Tasks.Select(conditions, setOfTrueConditions);
+	    Conditions.ExamineConditions(setOfTrueConditions);
+	    WHILE Conditions.GetNextCondition(setOfTrueConditions,
+	                                      trueCondition) DO
+	       IF trueCondition = resourceEventCond THEN
+		  WHILE EventConditions.TestAndGet(resourceEventCond, revent) DO
+		     IF revent.change = Resources.terminated THEN
+			(* the root of the path is terminated *)
+			Error(condition.errors, noRoot, path); EXIT
+		     END;
+		  END;
+	       ELSIF (trueCondition = termCond) OR
+		     (trueCondition = softTermCond) THEN
+		  Error(condition.errors, termination, path); EXIT
+	       ELSE
+		  (* member event for one of our path components *)
+		  ok := Disciplines.Seek(trueCondition, mecdID, mecd);
+		  ASSERT(ok);
+		  comp := mecd.comp;
+		  WHILE EventConditions.TestAndGet(trueCondition, mevent) DO
+		     IF mevent.name = comp.name THEN
+			IF mevent.state = Names.inserted THEN
+			   IF ExtendCurrentPath(comp) THEN
+			      EXIT
+			   END;
+			ELSIF (mevent.state = Names.deleted) &
+			      (comp # path.tail) THEN
+			   CutCurrentPath(comp.next);
+			END;
+		     END;
+		  END;
+	       END;
+	    END;
+	 END;
+	 Cleanup;
+      END WaitFor;
+
+   BEGIN (* PathChecker *)
+      WITH job: PathCheckerJob DO
+	 condition := job.condition; auth := job.auth;
+	 NEW(errors); RelatedEvents.QueueEvents(errors);
+	 IF (job.root = NIL) OR Resources.Terminated(job.root) THEN
+	    Error(condition.errors, noRoot, job.path);
+	 ELSIF job.path.head = NIL THEN (* empty path *)
+	    condition.node := job.root;
+	 ELSIF ~WalkAlongThePath(job.path, job.root, condition.node) THEN
+	    WaitFor(job.path, condition.node);
+	 END;
+	 condition.done := TRUE;
+      END;
+   END PathChecker;
+
+   PROCEDURE TestCondition(domain: Conditions.Domain;
+			   condition: Conditions.Condition;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN condition.done
+      END;
+   END TestCondition;
+
+   PROCEDURE Init;
+      VAR
+	 desc: Conditions.Description;
+	 if: Conditions.Interface;
+   BEGIN
+      NEW(desc); desc.caps := {}; desc.internal := TRUE;
+      NEW(if); if.test := TestCondition;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+      mecdID := Disciplines.Unique();
+   END Init;
+
+   PROCEDURE CreateCondition(VAR cond: Condition; path: Path;
+		             root: Names.Node; auth: Shards.Lid);
+      VAR
+	 condition: Condition;
+	 job: PathCheckerJob;
+   BEGIN
+      (* setup condition *)
+      NEW(condition);
+      condition.done := FALSE;
+      condition.node := NIL;
+      NEW(condition.errors);
+      RelatedEvents.QueueEvents(condition.errors);
+      Conditions.Init(condition, domain);
+
+      (* start associated task *)
+      NEW(job); job.condition := condition;
+      job.root := root; job.path := path; job.auth := auth;
+      Jobs.Submit(job, PathChecker);
+
+      (* return condition *)
+      cond := condition;
+   END CreateCondition;
+
+   PROCEDURE Create(VAR cond: Condition; path: ARRAY OF CHAR;
+		    root: Names.Node; auth: Shards.Lid);
+      VAR
+	 ps: Streams.Stream;
+	 mypath: Path;
+   BEGIN
+      Strings.Open(ps, path);
+      ConvertPath(ps, mypath);
+      Streams.Release(ps);
+      CreateCondition(cond, mypath, root, auth);
+   END Create;
+
+   PROCEDURE CreateCS(VAR cond: Condition; path: ConstStrings.String;
+		      root: Names.Node; auth: Shards.Lid);
+      VAR
+	 ps: Streams.Stream;
+	 mypath: Path;
+   BEGIN
+      ConstStrings.Open(ps, path);
+      ConvertPath(ps, mypath);
+      Streams.Release(ps);
+      CreateCondition(cond, mypath, root, auth);
+   END CreateCS;
+
+   PROCEDURE GetNode(cond: Condition; VAR node: Names.Node;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      IF ~cond.done THEN
+	 Tasks.WaitFor(cond);
+      END;
+      ASSERT(cond.done);
+      IF cond.node # NIL THEN
+	 node := cond.node; RETURN TRUE
+      ELSE
+	 RelatedEvents.GetQueue(cond.errors, queue);
+	 RelatedEvents.AppendQueue(errors, queue);
+	 RETURN FALSE
+      END;
+   END GetNode;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END PathConditions.

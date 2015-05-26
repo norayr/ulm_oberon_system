@@ -1,0 +1,425 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TurtleGraph.om,v 1.3 2005/03/22 20:10:00 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: TurtleGraph.om,v $
+   Revision 1.3  2005/03/22 20:10:00  borchert
+   bug fix: FindCenter delivered wrong results in boundary cases
+
+   Revision 1.2  2005/03/22 19:23:21  borchert
+   set plotter's space according to the size of the plotted area
+
+   Revision 1.1  2004/05/11 09:23:00  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TurtleGraphics;
+
+   IMPORT Math, Plotters, Services, Streams;
+
+   TYPE
+      Coordinate = REAL;
+   TYPE
+      Vector = RECORD x, y: Coordinate END;
+      Point = Vector;
+      Direction = Vector;
+      RotationMatrix = RECORD a11, a12, a21, a22: Coordinate END;
+
+   CONST
+      up = 0;
+      down = 1;
+   TYPE
+      PenMode = SHORTINT;
+
+   TYPE
+      Movement = POINTER TO MovementRec;
+      MovementRec =
+	 RECORD
+	    jump: BOOLEAN;
+	    pos: Point;
+	    dir: Direction;
+	    penmode: PenMode;
+	    next: Movement;
+	 END;
+
+   TYPE
+      Graphic = POINTER TO GraphicRec;
+      GraphicRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    state: Movement; (* stack of states *)
+	    left, right: RotationMatrix;
+	    minx, miny, maxx, maxy: Coordinate;
+	    head, tail: Movement; (* linear list *)
+	    roundCorners: BOOLEAN;
+	    cornerFraction: REAL;
+	    jump: BOOLEAN;
+	 END;
+   VAR
+      graphicType: Services.Type;
+      zero, unit, north: Vector;
+      turn90, turn270: RotationMatrix;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE SetRotationMatrix(VAR rm: RotationMatrix; angle: REAL);
+      VAR
+	 a: REAL;
+   BEGIN
+      IF angle = 90 THEN
+	 rm := turn90;
+      ELSIF angle = 270 THEN
+	 rm := turn270;
+      ELSE
+	 a := angle / 180 * Math.pi;
+	 rm.a11 := Math.Cos(a); rm.a12 := -Math.Sin(a);
+	 rm.a21 := Math.Sin(a); rm.a22 := Math.Cos(a);
+      END;
+   END SetRotationMatrix;
+
+   PROCEDURE Turn(VAR dir: Direction; rot: RotationMatrix);
+      VAR
+	 x, y: Coordinate;
+   BEGIN
+      x := rot.a11 * dir.x + rot.a12 * dir.y;
+      y := rot.a21 * dir.x + rot.a22 * dir.y;
+      dir.x := x; dir.y := y;
+   END Turn;
+
+   PROCEDURE EqualDirection(dir1, dir2: Direction) : BOOLEAN;
+   BEGIN
+      RETURN (dir1.x = dir2.x) & (dir1.y = dir2.y)
+   END EqualDirection;
+
+   PROCEDURE OppositeDirection(dir1, dir2: Direction) : BOOLEAN;
+   BEGIN
+      RETURN (dir1.x = -dir2.x) & (dir1.y = -dir2.y)
+   END OppositeDirection;
+
+   PROCEDURE PositiveTurn(dir1, dir2: Direction) : BOOLEAN;
+      VAR
+	 a1, a2: REAL;
+   BEGIN
+      a1 := Math.Arctan2(dir1.y, dir1.x);
+      a2 := Math.Arctan2(dir2.y, dir2.x);
+      IF a1 > a2 THEN
+	 RETURN a1 - a2 > Math.pi
+      ELSE
+	 RETURN a2 - a1 < Math.pi
+      END;
+   END PositiveTurn;
+
+   PROCEDURE FindCenter(p1, p2: Point; d1, d2: Direction; VAR c: Point);
+      VAR
+	 t: REAL;
+   BEGIN
+      Turn(d1, turn90); Turn(d2, turn90);
+      (* both methods to compute t should yield the same
+	 result except if d1 - d2 yields 0 in one of its
+	 coordinates
+      *)
+      IF ABS(d1.x - d2.x) > ABS(d1.y - d2.y) THEN
+	 t := (p2.x - p1.x) / (d1.x - d2.x);
+      ELSE
+	 t := (p2.y - p1.y) / (d1.y - d2.y);
+      END;
+      c.x := p1.x + d1.x * t;
+      c.y := p1.y + d1.y * t;
+   END FindCenter;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR graphic: Graphic; angle: REAL);
+      VAR
+	 g: Graphic;
+	 a: REAL;
+   BEGIN
+      NEW(g); Services.Init(g, graphicType);
+      SetRotationMatrix(g.left, angle);
+      SetRotationMatrix(g.right, 360 - angle);
+      g.minx := 0; g.miny := 0; g.maxx := 0; g.maxy := 0;
+      g.roundCorners := FALSE;
+      NEW(g.state);
+      g.state.pos := zero;
+      g.state.dir := north;
+      g.state.penmode := down;
+      g.jump := FALSE;
+      graphic := g;
+   END Create;
+
+   PROCEDURE EnableRoundCorners(graphic: Graphic; cornerFraction: REAL);
+   BEGIN
+      graphic.roundCorners := TRUE;
+      ASSERT((cornerFraction > 0) & (cornerFraction < 0.5));
+      graphic.cornerFraction := cornerFraction;
+   END EnableRoundCorners;
+
+   PROCEDURE PenDown(graphic: Graphic);
+   BEGIN
+      graphic.state.penmode := down;
+   END PenDown;
+
+   PROCEDURE PenUp(graphic: Graphic);
+   BEGIN
+      graphic.state.penmode := up;
+   END PenUp;
+
+   PROCEDURE Left(graphic: Graphic);
+   BEGIN
+      Turn(graphic.state.dir, graphic.left);
+   END Left;
+
+   PROCEDURE Right(graphic: Graphic);
+   BEGIN
+      Turn(graphic.state.dir, graphic.right);
+   END Right;
+
+   PROCEDURE LeftBy(graphic: Graphic; angle: REAL);
+      VAR
+	 rm: RotationMatrix;
+   BEGIN
+      SetRotationMatrix(rm, angle);
+      Turn(graphic.state.dir, rm);
+   END LeftBy;
+
+   PROCEDURE RightBy(graphic: Graphic; angle: REAL);
+      VAR
+	 rm: RotationMatrix;
+   BEGIN
+      SetRotationMatrix(rm, 360 - angle);
+      Turn(graphic.state.dir, rm);
+   END RightBy;
+
+   PROCEDURE Save(graphic: Graphic);
+      VAR
+	 state: Movement;
+   BEGIN
+      NEW(state);
+      state.pos := graphic.state.pos;
+      state.dir := graphic.state.dir;
+      state.penmode := graphic.state.penmode;
+      state.next := graphic.state;
+      graphic.state := state;
+      graphic.jump := TRUE;
+   END Save;
+
+   PROCEDURE Restore(graphic: Graphic);
+   BEGIN
+      ASSERT(graphic.state.next # NIL);
+      graphic.state := graphic.state.next;
+      graphic.jump := TRUE;
+   END Restore;
+
+   PROCEDURE Forward(graphic: Graphic);
+      VAR
+	 movement: Movement;
+
+      PROCEDURE CheckMinMax(pos: Coordinate; VAR min, max: Coordinate);
+      BEGIN
+         IF pos < min THEN min := pos END;
+         IF pos > max THEN max := pos END;
+      END CheckMinMax;
+
+   BEGIN (* Forward *)
+      NEW(movement);
+      movement.pos := graphic.state.pos;
+      movement.dir := graphic.state.dir;
+      movement.penmode := graphic.state.penmode;
+      movement.jump := graphic.jump; graphic.jump := FALSE;
+      movement.next := NIL;
+      IF graphic.head = NIL THEN
+	 graphic.head := movement;
+      ELSE
+	 graphic.tail.next := movement;
+      END;
+      graphic.tail := movement;
+      graphic.state.pos.x := graphic.state.pos.x + graphic.state.dir.x;
+      graphic.state.pos.y := graphic.state.pos.y + graphic.state.dir.y;
+      CheckMinMax(graphic.state.pos.x, graphic.minx, graphic.maxx);
+      CheckMinMax(graphic.state.pos.y, graphic.miny, graphic.maxy);
+   END Forward;
+
+   PROCEDURE ApplySymbols(graphic: Graphic; symbols: Streams.Stream);
+      VAR
+	 symbol: CHAR;
+   BEGIN
+      WHILE Streams.ReadByte(symbols, symbol) DO
+	 CASE symbol OF
+	 | "F": PenDown(graphic); Forward(graphic);
+	 | "f": PenUp(graphic); Forward(graphic);
+	 | "+": Left(graphic);
+	 | "-": Right(graphic);
+	 | "[": Save(graphic);
+	 | "]": Restore(graphic);
+	 ELSE
+	    (* ignore unknown symbols *)
+	 END;
+      END;
+   END ApplySymbols;
+
+   PROCEDURE Plot(graphic: Graphic; plotter: Plotters.Plotter);
+      VAR
+         scale: REAL;
+	 xscale, yscale: REAL;
+         i: INTEGER;
+         size: Coordinate;
+	 width: INTEGER;
+	 pxmin, pymin, pxmax, pymax: INTEGER;
+	 xmax, ymax: INTEGER;
+	 roundCorners: BOOLEAN;
+	 x, y, oldx, oldy, nextx, nexty: Coordinate; dir, nextdir: Direction;
+	 movement: Movement;
+	 lastPenMode: PenMode;
+	 (* round corner arc: *)
+	 start, end, center: Point;
+	 cornerFraction: REAL;
+
+      PROCEDURE X(x: REAL) : INTEGER;
+      BEGIN
+         RETURN SHORT(ENTIER((x - graphic.minx) * scale)) + pxmin
+      END X;
+
+      PROCEDURE Y(y: REAL) : INTEGER;
+      BEGIN
+         RETURN SHORT(ENTIER((y - graphic.miny) * scale)) + pymin
+      END Y;
+
+      PROCEDURE SetLineWidth;
+	 VAR
+	    width: INTEGER;
+	    maxwidth: INTEGER;
+      BEGIN
+	 (* apply some heuristics for a broader line width *)
+	 maxwidth := (pxmax - pxmin) DIV 150;
+	 IF roundCorners THEN
+	    width := SHORT(ENTIER(scale * cornerFraction / 7));
+	 ELSE
+	    width := SHORT(ENTIER(scale / 10));
+	 END;
+	 IF width > maxwidth THEN
+	    width := maxwidth;
+	 END;
+	 IF width > 0 THEN
+	    Plotters.SetLineWidth(plotter, width);
+	 END;
+      END SetLineWidth;
+
+   BEGIN (* Plot *)
+      IF graphic.head = NIL THEN
+	 Plotters.Erase(plotter);
+      ELSE
+	 IF graphic.maxx - graphic.minx < 1 THEN
+	    graphic.minx := graphic.minx - 1;
+	    graphic.maxx := graphic.maxx + 1;
+	 END;
+	 IF graphic.maxy - graphic.miny < 1 THEN
+	    graphic.miny := graphic.miny - 1;
+	    graphic.maxy := graphic.maxy + 1;
+	 END;
+	 Plotters.GetMaxSpace(plotter, pxmin, pymin, pxmax, pymax);
+	 IF (Plotters.setspace IN Plotters.GetCapabilities(plotter)) &
+	       (graphic.maxx - graphic.minx <= pxmax - pxmin) &
+	       (graphic.maxy - graphic.miny <= pymax - pymin) THEN
+	    xscale := (pxmax - pxmin) / (graphic.maxx - graphic.minx);
+	    yscale := (pymax - pymin) / (graphic.maxy - graphic.miny);
+	    IF xscale > yscale THEN
+	       scale := yscale;
+	    ELSE
+	       scale := xscale;
+	    END;
+	    xmax := pxmin +
+	       SHORT(ENTIER((graphic.maxx - graphic.minx) * scale));
+	    ymax := pymin +
+	       SHORT(ENTIER((graphic.maxy - graphic.miny) * scale));
+	    IF xmax - pxmin = 0 THEN
+	       INC(xmax);
+	    END;
+	    IF ymax - pxmin = 0 THEN
+	       INC(ymax);
+	    END;
+	    Plotters.SetSpace(plotter, pxmin, pymin, xmax, ymax);
+	 ELSE
+	    size := graphic.maxx - graphic.minx;
+	    IF graphic.maxy - graphic.miny > size THEN
+	       size := graphic.maxy - graphic.miny;
+	    END;
+	    Plotters.GetSpace(plotter, pxmin, pymin, pxmax, pymax);
+	    width := pxmax - pxmin;
+	    IF pymax - pymin < width THEN
+	       width := pymax - pymin;
+	    END;
+	    scale := width / size;
+	 END;
+	 cornerFraction := graphic.cornerFraction;
+	 roundCorners := graphic.roundCorners & (scale >= 1/cornerFraction);
+	 IF Plotters.linewidth IN Plotters.GetCapabilities(plotter) THEN
+	    SetLineWidth;
+	 END;
+	 x := 0; y := 0; lastPenMode := up;
+	 movement := graphic.head;
+	 WHILE movement # NIL DO
+	    dir := movement.dir;
+	    oldx := movement.pos.x; oldy := movement.pos.y;
+	    x := oldx + dir.x; y := oldy + dir.y;
+	    IF movement.penmode = down THEN
+	       IF movement.jump OR (lastPenMode = up) THEN
+		  Plotters.Move(plotter, X(oldx), Y(oldy));
+		  Plotters.Move(plotter, X(oldx), Y(oldy));
+	       END;
+	       IF roundCorners & (movement.next # NIL) &
+		     (movement.next.penmode = down) &
+		     ~movement.next.jump &
+		     ~EqualDirection(dir, movement.next.dir) &
+		     ~OppositeDirection(dir, movement.next.dir) THEN
+		  nextdir := movement.next.dir;
+		  nextx := x + nextdir.x; nexty := y + nextdir.y;
+		  start.x := oldx + (x - oldx) * (1-cornerFraction);
+		  start.y := oldy + (y - oldy) * (1-cornerFraction);
+		  end.x := x + (nextx - x) * cornerFraction;
+		  end.y := y + (nexty - y) * cornerFraction;
+		  FindCenter(start, end, dir, nextdir, center);
+		  Plotters.Cont(plotter, X(start.x), Y(start.y));
+		  IF PositiveTurn(dir, nextdir) THEN
+		     Plotters.Arc(plotter, X(center.x), Y(center.y),
+			X(start.x), Y(start.y), X(end.x), Y(end.y));
+		  ELSE
+		     Plotters.Arc(plotter, X(center.x), Y(center.y),
+			X(end.x), Y(end.y), X(start.x), Y(start.y));
+		  END;
+		  Plotters.Move(plotter, X(end.x), Y(end.y));
+	       ELSE
+		  Plotters.Cont(plotter, X(x), Y(y));
+	       END;
+	    END;
+	    lastPenMode := movement.penmode;
+	    movement := movement.next;
+         END;
+      END;
+   END Plot;
+
+BEGIN
+   Services.CreateType(graphicType, "TurtleGraphics.Graphic", "");
+   zero.x := 0; zero.y := 0; unit.x := 1; unit.y := 1;
+   north.x := 0; north.y := 1;
+   turn90.a11 := 0; turn90.a12 := -1; turn90.a21 := 1; turn90.a22 := 0;
+   turn270.a11 := 0; turn270.a12 := 1; turn270.a21 := -1; turn270.a22 := 0;
+END TurtleGraphics.

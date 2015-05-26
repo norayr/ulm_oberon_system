@@ -1,0 +1,238 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysTime.om,v 1.1 1994/02/23 08:01:27 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysTime.om,v $
+   Revision 1.1  1994/02/23  08:01:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 12/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysTime;
+
+   IMPORT Events, Sys, SYS := SYSTEM, SysErrors,
+      SysProcess, SysSignals, SysTypes;
+
+   CONST
+      itimerreal = 0;
+
+   TYPE
+      Time = SysTypes.Time;
+      TimesRec =
+	 RECORD
+	    utime: Time;	(* CPU time while in user mode *)
+	    stime: Time;	(* CPU time while in system mode *)
+	    cutime: Time;	(* user time of all children *)
+	    cstime: Time;	(* system time of all children *)
+	 END;
+      TimeVal =
+	 RECORD
+	    sec: Time;
+	    usec: Time;
+	 END;
+      TimeZone =
+	 RECORD
+	    minuteswest: INTEGER; (* of Greenwich *)
+	    dsttime: INTEGER; (* type of dst correction to apply *)
+	 END;
+      IntervalTimerRec =
+	 RECORD
+	    interval: TimeVal;
+	    value: TimeVal;
+	 END;
+
+   VAR
+      real: TimeVal;
+      cpu: Time;
+
+   PROCEDURE GetTimeVal(VAR timeval: TimeVal);
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF ~SYS.UNIXCALL(Sys.gettimeofday, d0, d1, SYS.ADR(timeval), 0) THEN
+	 SysErrors.Raise(NIL, d0, Sys.gettimeofday, "");
+	 timeval.sec := 0;
+	 timeval.usec := 0;
+      END;
+   END GetTimeVal;
+
+   PROCEDURE GetTime() : Time;
+      (* returns the value of time in seconds since Jan 1, 1970 *)
+      VAR
+	 tp: TimeVal;
+   BEGIN
+      GetTimeVal(tp);
+      RETURN tp.sec
+   END GetTime;
+
+   PROCEDURE GetUnitsPerSecond() : INTEGER;
+   BEGIN
+      RETURN 100
+   END GetUnitsPerSecond;
+
+   PROCEDURE GetTimeOfDay(VAR time: TimeVal; VAR timezone: TimeZone);
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF ~SYS.UNIXCALL(Sys.gettimeofday, d0, d1,
+		       SYS.ADR(time), SYS.ADR(timezone)) THEN
+	 SysErrors.Raise(NIL, d0, Sys.gettimeofday, "");
+	 time.sec := 0;
+	 time.usec := 0;
+	 timezone.minuteswest := 0;
+	 timezone.dsttime := 0;
+      END;
+   END GetTimeOfDay;
+
+   PROCEDURE GetProcessTimes(VAR times: TimesRec);
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF ~SYS.UNIXCALL(Sys.times, d0, d1, SYS.ADR(times)) THEN
+	 SysErrors.Raise(NIL, d0, Sys.times, "");
+	 times.utime := 0; times.stime := 0;
+	 times.cutime := 0; times.cstime := 0;
+      END;
+   END GetProcessTimes;
+
+   PROCEDURE RealTime(reset: BOOLEAN) : Time;
+      (* return elapsed real time in units elapsed since the
+	 start of the process or since the last call with
+	 argument TRUE
+      *)
+      VAR
+	 result: Time;
+	 buf: TimeVal;
+
+      PROCEDURE DiffInUnits(tval1, tval2: TimeVal) : Time;
+	 VAR
+	    diff: Time;
+      BEGIN
+	 RETURN (tval2.sec - tval1.sec) * GetUnitsPerSecond() +
+		(tval2.usec - tval1.usec) DIV 100 * GetUnitsPerSecond() DIV
+		10000;
+      END DiffInUnits;
+
+   BEGIN
+      GetTimeVal(buf);
+      result := DiffInUnits(real, buf);
+      IF reset THEN
+	 real := buf;
+      END;
+      RETURN result
+   END RealTime;
+
+   PROCEDURE CPUTime(reset: BOOLEAN) : Time;
+      (* return elapsed CPU time in units elapsed since the
+	 start of the process or since the last call with
+	 argument TRUE
+      *)
+      VAR
+	 result: Time;
+	 buf: TimesRec;
+   BEGIN
+      GetProcessTimes(buf);
+      result := buf.utime + buf.stime + buf.cutime + buf.cstime - cpu;
+      IF reset THEN
+	 INC(cpu, result)
+      END;
+      RETURN result
+   END CPUTime;
+
+   PROCEDURE Alarm(seconds: Time);
+      (* cause SysSignals.ALRM to be raised after the number of real time
+	 seconds specified by seconds have elapsed;
+	 seconds = 0 resets the alarm clock
+      *)
+      VAR
+	 d0, d1: INTEGER;
+	 value: IntervalTimerRec;
+   BEGIN
+      value.interval.sec := 0;
+      value.interval.usec := 0;
+      value.value.sec := seconds;
+      value.value.usec := 0;
+      IF ~SYS.UNIXCALL(Sys.setitimer, d0, d1, itimerreal, SYS.ADR(value), NIL) THEN
+	 SysErrors.Raise(NIL, d0, Sys.setitimer, "");
+      END;
+   END Alarm;
+
+   PROCEDURE AlarmTime() : Time;
+      (* return the amount of time remaining in the alarm clock *)
+      VAR
+	 d0, d1: INTEGER;
+	 value: IntervalTimerRec;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getitimer, d0, d1, itimerreal, SYS.ADR(value)) THEN
+	 RETURN value.value.sec
+      ELSE
+	 SysErrors.Raise(NIL, d0, Sys.getitimer, "");
+	 RETURN 0
+      END;
+   END AlarmTime;
+
+   PROCEDURE Sleep(seconds: Time);
+      (* pause(2) the process for the given number of seconds *)
+      VAR
+	 d0, d1: INTEGER;
+	 remaining: Time;
+	 sleep: Time;
+	 raise: BOOLEAN;
+	 event: SysSignals.Event;
+   BEGIN
+      remaining := AlarmTime();
+      IF (remaining > 0) & (remaining < seconds) THEN
+	 sleep := remaining; raise := TRUE;
+      ELSE
+	 sleep := seconds; raise := FALSE;
+      END;
+      WHILE seconds > 0 DO
+	 Events.SaveReaction(SysSignals.ALRM);
+	 Events.Handler(SysSignals.ALRM, Events.NilHandler);
+	 Alarm(sleep);
+	 SysProcess.Pause;
+	 Events.RestoreReaction(SysSignals.ALRM);
+	 IF raise THEN
+	    (* fake SysSignals.ALRM event *)
+	    NEW(event);
+	    event.type := SysSignals.ALRM;
+	    event.message := SysSignals.text[SysSignals.ALRM.signo];
+	    event.signo := SysSignals.ALRM.signo;
+	    event.sigcode := 0;
+	    Events.Raise(event);
+	    raise := FALSE;
+	 END;
+	 DEC(seconds, sleep);
+	 sleep := seconds;
+      END;
+   END Sleep;
+
+   PROCEDURE Init;
+   BEGIN
+      GetTimeVal(real);
+      cpu := 0;
+   END Init;
+
+BEGIN
+   Init;
+END SysTime.

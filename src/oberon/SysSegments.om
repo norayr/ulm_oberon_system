@@ -1,0 +1,87 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysSegments.om,v 1.1 1994/02/23 07:49:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysSegments.om,v $
+   Revision 1.1  1994/02/23 07:49:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/93
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysSegments;
+
+   CONST
+      maxsegments = 32;
+
+   TYPE
+      Address = LONGINT;
+      Size = LONGINT;
+      Mode = SHORTINT; (* <0: growing backward; =0 fixed; >0 growing forward *)
+      Segment =
+	 RECORD
+	    addr: Address;
+	    size: Size;
+	    mode: Mode;
+	 END;
+   VAR
+      segments: ARRAY maxsegments OF Segment;
+      nextslot: INTEGER;
+
+   PROCEDURE PanicExit;
+   BEGIN
+      HALT(255); LOOP END;
+   END PanicExit;
+
+   PROCEDURE Register(addr: Address; size: Size; mode: Mode);
+      (* is called by the runtime startup to register all preallocated areas *)
+   BEGIN
+      IF nextslot = maxsegments THEN
+	 PanicExit;
+      END;
+      segments[nextslot].addr := addr;
+      segments[nextslot].size := size;
+      segments[nextslot].mode := mode;
+      INC(nextslot);
+   END Register;
+
+   PROCEDURE NumberOfSegments() : INTEGER;
+      (* returns the number of registered segments *)
+   BEGIN
+      RETURN nextslot
+   END NumberOfSegments;
+
+   PROCEDURE GetSegment(segmentIndex: INTEGER; VAR segment: Segment);
+      (* return the segmentIndex-th segment;
+	 valid indexes range from 0 to NumberOfSegments() - 1
+      *)
+   BEGIN
+      IF (segmentIndex >= 0) & (segmentIndex < nextslot) THEN
+	 segment := segments[segmentIndex];
+      ELSE
+	 PanicExit;
+      END;
+   END GetSegment;
+
+BEGIN
+   nextslot := 0;
+END SysSegments.

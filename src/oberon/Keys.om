@@ -1,0 +1,243 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Keys.om,v 1.2 2005/04/28 08:40:40 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Keys.om,v $
+   Revision 1.2  2005/04/28 08:40:40  borchert
+   bug fix: Services.GetType replaced by Services.GetSupportedBaseType
+            in Supported
+
+   Revision 1.1  1996/01/04  16:45:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Keys;
+
+   IMPORT Disciplines, PersistentDisciplines, PersistentObjects, Services;
+
+   TYPE
+      Key = POINTER TO KeyRec;
+      Value = POINTER TO ValueRec;
+
+      ExtractProc = PROCEDURE (object: Services.Object;
+			       key: Key; VAR keyval: Value);
+	 (* to be provided by YYYKeyForXXXs;
+	    key is guaranteed to be an extension of YYYKeys.Key;
+	    the returned key value must be an extension of YYYKeys.Value
+	 *)
+      CompareProc = PROCEDURE (key: Key; keyval1, keyval2: Value) : INTEGER;
+	 (* to be provided by YYYKeys;
+	    keyval1 & keyval2 are guaranteed to be extensions of YYYKeys.Value;
+	    return something   < 0   if keyval1 < keyval2
+			       = 0   if keyval1 = keyval2
+			       > 0   if keyval1 > keyval2
+	 *)
+
+      KeyRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    service: Services.Service;
+	 END;
+      ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+   TYPE
+      ServiceTypeDiscipline = POINTER TO ServiceTypeDisciplineRec;
+	 (* discipline identifier depends on the type *)
+      ServiceTypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    extract: ExtractProc;
+	 END;
+      ServiceDiscipline = POINTER TO ServiceDisciplineRec;
+      ServiceDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    type: Services.Type;  (* Services.Type of YYYKeys.Value *)
+	    compare: CompareProc;
+	    stdID: Disciplines.Identifier;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   (* === private procedures =========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      PersistentObjects.RegisterType(type,
+	 "Keys.Key", "PersistentDisciplines.Object", NIL);
+      PersistentObjects.RegisterType(type,
+	 "Keys.Value", "PersistentDisciplines.Object", NIL);
+      sdID := Disciplines.Unique();
+   END InitModule;
+
+   PROCEDURE Identity(object: Services.Object; key: Key; VAR keyval: Value);
+      (* dummy extract procedure for key values *)
+   BEGIN
+      keyval := object(Value);
+   END Identity;
+
+   (* === exported procedures ========================================== *)
+
+   PROCEDURE Init(key: Key; service: Services.Service);
+      (* to be called by YYYKeys for each created extension of Keys.Key;
+	 `service' is the service returned earlier by DefineService
+      *)
+   BEGIN
+      ASSERT(service # NIL);
+      key.service := service;
+   END Init;
+
+   PROCEDURE GetService(key: Key; VAR service: Services.Service);
+   BEGIN
+      ASSERT(key.service # NIL);
+      service := key.service;
+   END GetService;
+
+   PROCEDURE Support(service: Services.Service;
+		     for: Services.Type;
+		     extract: ExtractProc);
+      (* to be called by YYYKeyForXXXs;
+	 `service' is the Services.Service named "YYYKeys";
+	 `for' is the Services.Type of XXXs.XXX,
+      *)
+      VAR
+	 disc: ServiceTypeDiscipline;
+	 sdisc: ServiceDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(service, sdID, sdisc); ASSERT(ok);
+      NEW(disc); disc.id := sdisc.stdID; disc.extract := extract;
+      Disciplines.Add(for, disc);
+      Services.Define(for, service, NIL);
+   END Support;
+
+   PROCEDURE DefineService(name: ARRAY OF CHAR;
+			   type: Services.Type;
+			   compare: CompareProc;
+			   VAR service: Services.Service);
+      (* to be called by YYYKeys during initialization;
+	 `name' should be the name of the module (eg "YYYKeys") and
+	    becomes the name of the associated service;
+	 type is the Services.Type of YYYKeys.Value
+      *)
+      VAR
+	 sdisc: ServiceDiscipline;
+   BEGIN
+      ASSERT((type # NIL) & (compare # NIL));
+      Services.Create(service, name);
+      NEW(sdisc); sdisc.id := sdID;
+      sdisc.type := type;
+      sdisc.compare := compare;
+      sdisc.stdID := Disciplines.Unique();
+      Disciplines.Add(service, sdisc);
+
+      (* support this service for its associated key values *)
+      Support(service, type, Identity);
+   END DefineService;
+
+   PROCEDURE Extract(object: Services.Object; key: Key; VAR keyval: Value);
+      (* extract key value of the given key for `object';
+	 NIL is returned if nobody has defined the associated service
+	    for the Services.Type of `object';
+      *)
+      VAR
+	 stype: Services.Type;
+	 disc: ServiceTypeDiscipline;
+	 sdisc: ServiceDiscipline;
+	 type: Services.Type;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~Services.Installed(object, key.service) &
+	    ~Services.Install(object, key.service) THEN
+	 key := NIL; RETURN
+      END;
+      Services.GetSupportedBaseType(object, key.service, stype);
+      ok := Disciplines.Seek(key.service, sdID, sdisc); ASSERT(ok);
+      ok := Disciplines.Seek(stype, sdisc.stdID, disc); ASSERT(ok);
+      disc.extract(object, key, keyval);
+      Services.GetType(keyval, type);
+      ASSERT(Services.IsExtensionOf(type, sdisc.type));
+   END Extract;
+
+   PROCEDURE Supported(object: Services.Object; key: Key) : BOOLEAN;
+      (* returns TRUE iff object may be compared by use of key *)
+   BEGIN
+      RETURN Services.Supported(object, key.service)
+   END Supported;
+
+   PROCEDURE Compare(key: Key; object1, object2: Services.Object) : INTEGER;
+      (* PRE: Supported(object1, key) & Supported(object2, key);
+	 return something   < 0   if object1 < object2
+			    = 0   if object1 = object2
+			    > 0   if object1 > object2
+      *)
+      VAR
+	 keyval1, keyval2: Value;
+	 sdisc: ServiceDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      IF object1 = object2 THEN RETURN 0 END;
+      Extract(object1, key, keyval1);
+      Extract(object2, key, keyval2);
+      ASSERT((keyval1 # NIL) & (keyval2 # NIL));
+      ok := Disciplines.Seek(key.service, sdID, sdisc); ASSERT(ok);
+      RETURN sdisc.compare(key, keyval1, keyval2)
+   END Compare;
+
+   PROCEDURE Compatible(keyval: Value; key: Key) : BOOLEAN;
+      (* return TRUE iff keyval belongs to the given key *)
+      VAR
+	 sdisc: ServiceDiscipline;
+	 ok: BOOLEAN;
+	 type: Services.Type; (* of keyval *)
+   BEGIN
+      ok := Disciplines.Seek(key.service, sdID, sdisc); ASSERT(ok);
+      Services.GetType(keyval, type); ASSERT(type # NIL);
+      RETURN Services.IsExtensionOf(type, sdisc.type)
+   END Compatible;
+
+   PROCEDURE CompareKeyValues(key: Key; keyval1, keyval2: Value) : INTEGER;
+      (* PRE: both, keyval1 & keyval2, must be extensions of YYYKeys.Value
+	      if key is an extension of YYYKeys.Key
+	 return something   < 0   if keyval1 < keyval2
+			    = 0   if keyval1 = keyval2
+			    > 0   if keyval1 > keyval2
+      *)
+      VAR
+	 sdisc: ServiceDiscipline;
+	 ok: BOOLEAN;
+	 type1, type2: Services.Type; (* types of keyval1 & keyval2 *)
+   BEGIN
+      IF keyval1 = keyval2 THEN RETURN 0 END;
+      ok := Disciplines.Seek(key.service, sdID, sdisc); ASSERT(ok);
+      Services.GetType(keyval1, type1); ASSERT(type1 # NIL);
+      Services.GetType(keyval2, type2); ASSERT(type2 # NIL);
+      ASSERT(Services.IsExtensionOf(type1, sdisc.type));
+      ASSERT(Services.IsExtensionOf(type2, sdisc.type));
+      RETURN sdisc.compare(key, keyval1, keyval2)
+   END CompareKeyValues;
+
+BEGIN
+   InitModule;
+END Keys.

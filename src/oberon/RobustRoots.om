@@ -1,0 +1,263 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RobustRoots.om,v 1.1 2005/04/28 08:08:48 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: RobustRoots.om,v $
+   Revision 1.1  2005/04/28 08:08:48  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RobustRoots;
+
+   IMPORT Clocks, ConstStrings, Disciplines, Events, Names, NamesBootService,
+      Networks, Paths, Process, RelatedEvents, Resources, Shards, Timers,
+      Times;
+
+   TYPE
+      Path = ARRAY 1024 OF CHAR;
+      ImportedRoot = POINTER TO ImportedRootRec;
+      ImportedRootRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    root: Names.Node;
+	    path: Path;
+	    auth: Shards.Lid;
+	    address: Networks.Address;
+	    errors: RelatedEvents.Object;
+	    attempts: INTEGER;
+	    timer: Timers.Timer;
+	    importedNode: Names.Node;
+	    key: Resources.Key;
+	    next: ImportedRoot; (* next import of the same root node *)
+	 END;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    import: ImportedRoot;
+	 END;
+      RootDiscipline = POINTER TO RootDisciplineRec;
+      RootDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    imports: ImportedRoot;
+	 END;
+   VAR
+      rdid: Disciplines.Identifier;
+      timerEventType: Events.EventType; (* for timer events *)
+      terminate: BOOLEAN; (* termination event of Process seen? *)
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE ^Schedule(import: ImportedRoot; immediately: BOOLEAN);
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 rd: RootDiscipline;
+	 import: ImportedRoot;
+   BEGIN
+      WITH event: Resources.Event DO
+	 CASE event.change OF
+	 | Resources.terminated:
+	    IF Disciplines.Seek(event.resource, rdid, rd) THEN
+	       Disciplines.Remove(event.resource, rdid);
+	       import := rd.imports; rd.imports := NIL;
+	       WHILE import # NIL DO
+		  IF Resources.Alive(import) THEN
+		     import.importedNode := NIL; import.key := NIL;
+		     Schedule(import, FALSE);
+		  END;
+		  import := import.next;
+	       END;
+	    END;
+	 | Resources.unreferenced:
+	    Resources.Notify(event.resource, Resources.terminated);
+	 ELSE
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE Try(import: ImportedRoot) : BOOLEAN;
+      VAR
+	 root: Names.Node;
+	 rd: RootDiscipline;
+	 eventType: Events.EventType;
+	 subnode: Names.Node;
+	 nodePresent: BOOLEAN;
+   BEGIN
+      IF terminate THEN RETURN FALSE END;
+      IF ~NamesBootService.Import(import.address, root, import.errors) THEN
+	 RETURN FALSE
+      END;
+      (* check if our root is already in place; in this case we
+	 avoid the insert operation
+      *)
+      nodePresent := Paths.GetNodeN(import.root, import.path, import.auth,
+	    RelatedEvents.null, subnode);
+      IF ~nodePresent OR (subnode # root) THEN
+	 (* if something else runs under the name of our root, remove it *)
+	 IF nodePresent &
+	       ~Paths.DeleteN(import.root, import.path, import.auth,
+		     import.errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~Paths.InsertN(import.root, import.path, root,
+	       import.auth, import.errors) THEN
+	    RETURN FALSE
+	 END;
+      END;
+      IF ~Resources.Alive(root) THEN RETURN FALSE END;
+      import.importedNode := root; Resources.Attach(root, import.key);
+      IF ~Disciplines.Seek(root, rdid, rd) THEN
+	 NEW(rd); rd.id := rdid; rd.imports := NIL;
+	 Disciplines.Add(root, rd);
+      END;
+      import.attempts := 0;
+      import.next := rd.imports; rd.imports := import;
+      Resources.TakeInterest(root, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      RETURN TRUE
+   END Try;
+
+   PROCEDURE Schedule(import: ImportedRoot; immediately: BOOLEAN);
+      VAR
+	 event: Event;
+	 delay: Times.Time;
+	 seconds: INTEGER;
+   BEGIN
+      import.timer := NIL;
+      IF terminate OR Resources.Terminated(import) OR
+	    immediately & Try(import) THEN
+	 RETURN
+      END;
+      INC(import.attempts);
+      NEW(event); event.type := timerEventType;
+      event.message := "RobustRoots timer event";
+      event.import := import;
+      CASE import.attempts OF
+      | 1..3:     seconds := 1;
+      | 4..9:     seconds := 3;
+      | 10..19:   seconds := 10;
+      | 20..29:   seconds := 20;
+      ELSE
+	 seconds := 30;
+      END;
+      Times.CreateAndSet(delay, Times.relative, 0, seconds, 0);
+      Timers.Add(Clocks.system, delay, event, import.timer);
+   END Schedule;
+
+   PROCEDURE HandleTimerEvent(event: Events.Event);
+   BEGIN
+      WITH event: Event DO
+	 Schedule(event.import, TRUE);
+      END;
+   END HandleTimerEvent;
+
+   PROCEDURE ProcessTerminationHandler(event: Events.Event);
+   BEGIN
+      terminate := TRUE;
+   END ProcessTerminationHandler;
+
+   PROCEDURE UnmountHandler(event: Events.Event);
+      VAR
+	 import: ImportedRoot;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    import := event.resource(ImportedRoot);
+	    IF import.timer # NIL THEN
+	       Timers.Remove(import.timer);
+	    END;
+	    IF (import.importedNode # NIL) &
+		  Resources.Alive(import.importedNode) THEN
+	       Resources.Detach(import.importedNode, import.key);
+	       import.importedNode := NIL; import.key := NIL;
+	    END;
+	 END;
+      END;
+   END UnmountHandler;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE TemporaryImportR(address: Networks.Address;
+		              root: Names.Node;
+		              path: ARRAY OF CHAR;
+		              auth: Shards.Lid;
+		              errors: RelatedEvents.Object;
+		              VAR import: ImportedRoot);
+      VAR
+	 iroot: ImportedRoot;
+   BEGIN
+      ASSERT((path # "") & (address # NIL) & (root # NIL));
+      NEW(iroot);
+      iroot.importedNode := NIL;
+      iroot.root := root;
+      COPY(path, iroot.path);
+      iroot.auth := auth;
+      iroot.address := address;
+      iroot.errors := errors;
+      iroot.attempts := 0;
+      iroot.timer := NIL;
+      iroot.next := NIL;
+      Schedule(iroot, TRUE);
+      import := iroot;
+   END TemporaryImportR;
+
+   PROCEDURE TemporaryImport(address: Networks.Address;
+		             path: ARRAY OF CHAR;
+		             auth: Shards.Lid;
+		             errors: RelatedEvents.Object;
+		             VAR import: ImportedRoot);
+   BEGIN
+      TemporaryImportR(address, Names.root, path, auth, errors, import);
+   END TemporaryImport;
+
+   PROCEDURE ImportR(address: Networks.Address;
+                     root: Names.Node;
+		     path: ARRAY OF CHAR;
+		     auth: Shards.Lid;
+		     errors: RelatedEvents.Object);
+      VAR
+	 import: ImportedRoot;
+   BEGIN
+      TemporaryImportR(address, root, path, auth, errors, import);
+   END ImportR;
+
+   PROCEDURE Import(address: Networks.Address;
+                    path: ARRAY OF CHAR;
+		    auth: Shards.Lid;
+		    errors: RelatedEvents.Object);
+      VAR
+	 import: ImportedRoot;
+   BEGIN
+      TemporaryImportR(address, Names.root, path, auth, errors, import);
+   END Import;
+
+BEGIN
+   rdid := Disciplines.Unique();
+   terminate := FALSE;
+   Events.Define(timerEventType);
+   Events.Handler(timerEventType, HandleTimerEvent);
+   Events.Handler(Process.softTermination, ProcessTerminationHandler);
+   Events.Handler(Process.termination, ProcessTerminationHandler);
+   Events.Handler(Process.abort, ProcessTerminationHandler);
+END RobustRoots.

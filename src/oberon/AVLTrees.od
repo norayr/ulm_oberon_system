@@ -1,0 +1,135 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: AVLTrees.od,v 1.2 2004/07/15 13:21:38 lutz Exp $
+   ----------------------------------------------------------------------------
+   $Log: AVLTrees.od,v $
+   Revision 1.2  2004/07/15 13:21:38  lutz
+   procedure MaxHeight removed
+   (renamed to CheckImplementation and commented)
+
+   Revision 1.1  2000/05/25 18:30:27  lutz
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION AVLTrees;
+   (* implements AVLTrees (height-balanced binary trees)  *)
+
+   IMPORT Events, Iterators, Keys, Services;
+
+   CONST
+      ascending = 0;  (* in ascending order *)
+      descending = 1; (* in descending order *)
+   
+   TYPE
+      Order = Iterators.Mode;    (* ascending, descending *)
+
+      AVLTree = POINTER TO AVLTreeRec;
+      AVLTreeRec =
+	 RECORD
+	    (Services.ObjectRec)
+	 END;
+
+   CONST
+      keyUsed = 0;
+      (* there is already an object with this Keys.Value in AVLTree *)
+      noSuchKey = 1;
+      (* an object with this Keys.Value is not in the AVLTree *)
+      wrongKey = 2;
+      (* object does not support the needed type of Keys.Type
+	 OR Keys.Value is not of the needed type              *)
+      errorcodes = 3;
+
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    avlTree: AVLTree;
+	    object: Services.Object;
+	    key: Keys.Value;
+	 END;
+
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE Create(VAR new: AVLTree; key: Keys.Key);
+      (* Creates a new AVLTree; all elements inserted in this tree must
+         suppport the Keys.Key "key", cause the tree is sorted by this
+	 key.
+      *)
+
+   PROCEDURE GetKey(avlTree: AVLTree; VAR key: Keys.Key);
+      (* retrieves the Type of the Key, by which the tree is sorted. *)
+
+   PROCEDURE Add(avlTree: AVLTree; object: Services.Object): BOOLEAN;
+      (* object is inserted in the AVLTree avlTree. If an object with
+         the same key is already in the tree, an ErrorEvent (keyUsed)
+	 is raised.
+      *)
+
+   PROCEDURE Remove(avlTree: AVLTree; keyval: Keys.Value): BOOLEAN;
+      (* the object with the Keys.Value keyval is removed from avlTree.
+         If such an object in not in the tree, an ErrorEvent (noSuchKey)
+	 is raised.
+      *)
+
+   PROCEDURE Get(avlTree: AVLTree; keyval: Keys.Value;
+   		 VAR object: Services.Object): BOOLEAN;
+      (* retrieves the object with Keys.Value keyval from avlTree. If
+         such an object does not exist, an ErrorEvent (noSuchKey) is
+	 raised.
+      *)
+
+   PROCEDURE Card(avlTree: AVLTree): INTEGER;
+      (* returns the number of objects in avlTree *)
+
+   PROCEDURE GetEntries(avlTree: AVLTree; order: Order;
+   	 	        from, to: Keys.Value; VAR it: Iterators.Iterator);
+      (* iterate through all Objects with Keys.Value between from and to;
+         if NIL is given for from respectively to, then iteration starts
+	 at the first object respectively stops at the last object in
+	 avlTree; iteration must not be carried on over change operations
+      *)
+
+   PROCEDURE Exists(avlTree: AVLTree; keyValue: Keys.Value): BOOLEAN;
+      (* is the Keys.Value keyValue already used in the AVLTree avlTree?
+      *)
+
+   (* PROCEDURE CheckImplementation(avlTree: AVLTree): INTEGER;
+         returns HEIGHT(avlTree)
+	 for testing purposes only
+	 checks wheather tree is balanced and internal variables are
+	 correct; aborts with failed assertion if not.
+	 see IMPLEMENTATION File for Definition of function HEIGHT
+	 it must always hold:
+	 CARD(avlTree) >= MINCARD(HEIGHT(avlTree))
+	 MINCARD(HEIGHT(avlTree)) :=
+	    | 0  IFF HEIGHT(avlTree) = 0
+	    | 1   IFF HEIGHT(avlTree) = 1
+	    | 1 + MINCARD(HEIGHT(x) - 1) + MINCARD(HEIGHT(x) - 2)
+	      OTHERWISE
+      *)
+
+END AVLTrees.

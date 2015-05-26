@@ -1,0 +1,291 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixHost.om,v 1.3 2005/04/20 21:00:57 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixHost.om,v $
+   Revision 1.3  2005/04/20 21:00:57  borchert
+   GetFullyQualifiedHostName accepts now a fully qualified
+   hostname returned by uname/hostname if all other attempts
+   fail to find a resolvable hostname
+
+   Revision 1.2  2004/09/10 16:41:43  borchert
+   support of Process.host added
+
+   Revision 1.1  2004/03/11 14:40:28  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixHost;
+
+   IMPORT DNSRecords, DNSResolvers, DNSStdResolvers, IPv4Addresses,
+      IPv6Addresses, Process, RelatedEvents, Strings, SysHost, SysIO,
+      SysSockets, SysUname, UnixEnvironment;
+
+   PROCEDURE CheckIPv4(ipaddr: IPv4Addresses.Address) : BOOLEAN;
+      VAR
+	 socket: SysSockets.Socket;
+	 ok: BOOLEAN;
+	 ignore, interrupted: BOOLEAN;
+	 sockaddr: IPv4Addresses.SysAddress;
+	 saddr: IPv4Addresses.SocketAddress;
+   BEGIN
+      IF ~SysSockets.Create(socket, SysSockets.pfINET,
+                            SysSockets.stream, 0,
+			    RelatedEvents.null) THEN
+	 RETURN FALSE
+      END;
+      saddr.host := ipaddr;
+      saddr.portnum := 0;
+      IPv4Addresses.ConvertToSys(saddr, sockaddr);
+      ok := SysSockets.Bind(socket, sockaddr, RelatedEvents.null);
+      ignore := SysIO.Close(socket, RelatedEvents.null,
+                      (* retry = *) TRUE, interrupted);
+      RETURN ok
+   END CheckIPv4;
+
+   PROCEDURE GetHostnameForIPv4(shortname: ARRAY OF CHAR;
+				VAR hostname: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 hosts: DNSResolvers.HostnameList;
+	 addresses, newaddresses: DNSResolvers.IPv4AddressList;
+   BEGIN
+      IF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+	    shortname, addresses, RelatedEvents.null) THEN
+	 WHILE addresses # NIL DO
+	    IF CheckIPv4(addresses.addr) &
+		  DNSResolvers.GetHostByIPv4Addr(DNSResolvers.std,
+		     addresses.addr, hosts, RelatedEvents.null) THEN
+	       WHILE hosts # NIL DO
+		  IF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+			hosts.hostname, newaddresses, RelatedEvents.null) THEN
+		     WHILE newaddresses # NIL DO
+			IF newaddresses.addr = addresses.addr THEN
+			   COPY(hosts.hostname, hostname); RETURN TRUE
+			END;
+			newaddresses := newaddresses.next;
+		     END;
+		  END;
+		  hosts := hosts.next;
+	       END;
+	    END;
+	    addresses := addresses.next;
+	 END;
+      END;
+      RETURN FALSE
+   END GetHostnameForIPv4;
+
+   PROCEDURE CheckIPv6(ipaddr: IPv6Addresses.Address) : BOOLEAN;
+      VAR
+	 socket: SysSockets.Socket;
+	 ok: BOOLEAN;
+	 ignore, interrupted: BOOLEAN;
+	 sockaddr: IPv6Addresses.SysAddress;
+	 saddr: IPv6Addresses.SocketAddress;
+   BEGIN
+      IF ~SysSockets.Create(socket, SysSockets.pfINET6,
+                            SysSockets.stream, 0,
+			    RelatedEvents.null) THEN
+	 RETURN FALSE
+      END;
+      saddr.host := ipaddr;
+      saddr.portnum := 0;
+      IPv6Addresses.ConvertToSys(saddr, sockaddr);
+      ok := SysSockets.Bind(socket, sockaddr, RelatedEvents.null);
+      ignore := SysIO.Close(socket, RelatedEvents.null,
+                      (* retry = *) TRUE, interrupted);
+      RETURN ok
+   END CheckIPv6;
+
+   PROCEDURE GetHostnameForIPv6(shortname: ARRAY OF CHAR;
+				VAR hostname: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 hosts: DNSResolvers.HostnameList;
+	 addresses, newaddresses: DNSResolvers.IPv6AddressList;
+   BEGIN
+      IF DNSResolvers.GetIPv6AddrByHost(DNSResolvers.std,
+	    shortname, addresses, RelatedEvents.null) THEN
+	 WHILE addresses # NIL DO
+	    IF CheckIPv6(addresses.addr) &
+		  DNSResolvers.GetHostByIPv6Addr(DNSResolvers.std,
+		     addresses.addr, hosts, RelatedEvents.null) THEN
+	       WHILE hosts # NIL DO
+		  IF DNSResolvers.GetIPv6AddrByHost(DNSResolvers.std,
+			hosts.hostname, newaddresses, RelatedEvents.null) THEN
+		     WHILE newaddresses # NIL DO
+			IF newaddresses.addr = addresses.addr THEN
+			   COPY(hosts.hostname, hostname); RETURN TRUE
+			END;
+			newaddresses := newaddresses.next;
+		     END;
+		  END;
+		  hosts := hosts.next;
+	       END;
+	    END;
+	    addresses := addresses.next;
+	 END;
+      END;
+      RETURN FALSE
+   END GetHostnameForIPv6;
+
+   PROCEDURE TestHostname(host, domain: ARRAY OF CHAR;
+			  VAR longname: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 name: DNSRecords.Name;
+	 records: DNSRecords.Record;
+   BEGIN
+      COPY(host, name);
+      IF domain[0] # "." THEN
+	 Strings.Concatenate(name, ".");
+      END;
+      Strings.Concatenate(name, domain);
+      IF DNSResolvers.GetRecords(DNSResolvers.std,
+	       name, DNSRecords.a, (* try suffixes = *) FALSE,
+	       records, RelatedEvents.null) OR
+	    DNSResolvers.GetRecords(DNSResolvers.std,
+	       name, DNSRecords.aaaa, (* try suffixes = *) FALSE,
+	       records, RelatedEvents.null) THEN
+	 COPY(name, longname);
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END TestHostname;
+
+   PROCEDURE GetOriginalHostName(VAR hostname: ARRAY OF CHAR);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      SysUname.GetNodeName(hostname);
+      IF hostname[0] = 0X THEN
+	 SysHost.GetHostName(hostname);
+      END;
+   END GetOriginalHostName;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE GetHostName(VAR hostname: ARRAY OF CHAR);
+      VAR
+	 name: DNSRecords.Name;
+	 i: INTEGER;
+   BEGIN
+      GetOriginalHostName(name);
+      i := 0;
+      LOOP
+	 IF i >= LEN(name) THEN EXIT END;
+	 IF name[i] = 0X THEN EXIT END;
+	 IF name[i] = "." THEN
+	    name[i] := 0X; EXIT
+	 END;
+	 INC(i);
+      END;
+      COPY(name, hostname);
+   END GetHostName;
+
+   PROCEDURE GetFullyQualifiedHostName(VAR name: ARRAY OF CHAR);
+      VAR
+	 host: DNSRecords.Name;
+	 domain: DNSRecords.Name;
+	 i: INTEGER;
+   BEGIN
+      GetHostName(host);
+      IF GetHostnameForIPv4(host, name) THEN RETURN END;
+      IF GetHostnameForIPv6(host, name) THEN RETURN END;
+      IF UnixEnvironment.String("LOCALDOMAIN", domain) &
+	    (domain[0] # 0X) &
+	    TestHostname(host, domain, name) THEN
+	 RETURN
+      END;
+      SysHost.GetDomainName(domain);
+      IF domain[0] # 0X THEN
+	 IF TestHostname(host, domain, name) THEN
+	    RETURN
+	 END;
+	 (* retry with the first part of the domain stripped of;
+	    this can be helpful if the domain is indeed a NIS domain
+	 *)
+	 i := 0;
+	 WHILE (i < LEN(name)) & (domain[i] # 0X) & (domain[i] # ".") DO
+	    INC(i);
+	 END;
+	 IF (i < LEN(name)) & (domain[i] = ".") THEN
+	    Strings.PartCopy(domain, 0, domain, i+1);
+	    IF TestHostname(host, domain, name) THEN
+	       RETURN
+	    END;
+	 END;
+      END;
+      (* take the original host name; this was possibly stripped
+	 by GetHostName
+      *)
+      GetOriginalHostName(name);
+   END GetFullyQualifiedHostName;
+
+   PROCEDURE GetDomainName(VAR domain: ARRAY OF CHAR);
+      VAR
+	 name: DNSRecords.Name;
+	 i: INTEGER;
+   BEGIN
+      GetFullyQualifiedHostName(name);
+      i := 0;
+      LOOP
+	 IF i >= LEN(name) THEN EXIT END;
+	 IF name[i] = 0X THEN EXIT END;
+	 IF name[i] = "." THEN
+	    Strings.PartCopy(domain, 0, name, i+1); RETURN
+	 END;
+	 INC(i);
+      END;
+      domain[0] := 0X;
+   END GetDomainName;
+
+   PROCEDURE GetLocalIPv4Address(VAR ipaddr: IPv4Addresses.Address) : BOOLEAN;
+      VAR
+	 name: DNSRecords.Name;
+	 addresses: DNSResolvers.IPv4AddressList;
+   BEGIN
+      GetFullyQualifiedHostName(name);
+      IF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+	       name, addresses, RelatedEvents.null) &
+	    CheckIPv4(addresses.addr) THEN
+	 ipaddr := addresses.addr;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END GetLocalIPv4Address;
+
+   PROCEDURE GetLocalIPv6Address(VAR ipaddr: IPv6Addresses.Address) : BOOLEAN;
+      VAR
+	 name: DNSRecords.Name;
+	 addresses: DNSResolvers.IPv6AddressList;
+   BEGIN
+      GetFullyQualifiedHostName(name);
+      IF DNSResolvers.GetIPv6AddrByHost(DNSResolvers.std,
+	       name, addresses, RelatedEvents.null) &
+	    CheckIPv6(addresses.addr) THEN
+	 ipaddr := addresses.addr;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END GetLocalIPv6Address;
+
+BEGIN
+   GetHostName(Process.host);
+END UnixHost.

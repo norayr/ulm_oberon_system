@@ -1,0 +1,82 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Loader.od,v 1.2 1996/01/04 16:47:31 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Loader.od,v $
+   Revision 1.2  1996/01/04  16:47:31  borchert
+   support for dynamic loading of service providers added
+
+   Revision 1.1  1994/02/22  20:08:08  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 6/93
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Loader;
+
+   (* load and initialize modules *)
+
+   IMPORT Events, RelatedEvents;
+
+   CONST
+      loadService = 0;
+   TYPE
+      CapabilitySet = SET; (* loadService..loadService *)
+      LoadProc = PROCEDURE (module: ARRAY OF CHAR;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      LoadServiceProc = PROCEDURE (service, for: ARRAY OF CHAR;
+				   errors: RelatedEvents.Object) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    load: LoadProc;
+	    loadService: LoadServiceProc;
+	 END;
+
+   CONST
+      noInterface = 0; (* SetInterface has not been called yet *)
+      moduleNotLoaded = 1; (* interface procedure returned FALSE *)
+      servicesNotSupported = 2; (* no dynamic loading of service providers *)
+      serviceNotLoaded = 3; (* interface procedure returned FALSE *)
+      errorcodes = 4;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	    module: Events.Message; (* module or service name *)
+	    for: Events.Message; (* type name for serviceNotLoaded *)
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE SetInterface(if: Interface; caps: CapabilitySet);
+
+   PROCEDURE Load(module: ARRAY OF CHAR;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE LoadService(service, for: ARRAY OF CHAR;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+
+END Loader.

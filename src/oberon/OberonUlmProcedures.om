@@ -1,0 +1,230 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonUlmPr.om,v 1.1 2001/07/17 06:00:08 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonUlmPr.om,v $
+   Revision 1.1  2001/07/17 06:00:08  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonUlmProcedures;
+
+   (* Ulm's set of built-in procedures *)
+
+   IMPORT BaseTypes := OberonBaseTypes, CompilerErrors, CompilerObjects,
+      ConstantObjects, ConstStrings, NetIO, Services, Streams, Strings,
+      Sym := OberonSymbols, Types := OberonTypes, Write;
+
+   CONST
+      crspawn = 0;         halt = 2;            wclear = 4;    
+      crswitch = 1;        tas = 3;             wmove = 5;     
+      stdprocs = 6;   
+   TYPE
+      StdProc = SHORTINT; (* crspawn .. wmove *)
+
+   TYPE
+      StdProcedure = POINTER TO StdProcedureRec;
+      StdProcedureRec =
+	 RECORD
+	    (Sym.BuiltInProcedureRec)
+	    stdproc: StdProc;
+	 END;
+   VAR
+      stdprocType: Services.Type;
+
+   VAR
+      crspawnP: Sym.Ident;         tasF: Sym.Ident;       
+      crswitchP: Sym.Ident;        wclearP: Sym.Ident;    
+      haltP: Sym.Ident;            wmoveP: Sym.Ident;     
+
+   (* === OberonSymbols if for StdProcedure =============================== *)
+
+   PROCEDURE CheckArgs(builtinproc: Sym.BuiltInProcedure;
+                       args: Sym.Attribute;
+		       VAR restype: Sym.Type);
+      CONST
+	 maxargs = 3;
+      VAR
+	 stdproc: StdProc;
+	 arg: Sym.Attribute;
+	 nofargs: INTEGER;
+	 index: INTEGER;
+	 types: ARRAY maxargs OF Sym.Type;
+	 forms: ARRAY maxargs OF Sym.Form;
+	 at: ARRAY maxargs OF Sym.Attribute;
+	 es: Streams.Stream;
+	 error: BOOLEAN;
+
+      PROCEDURE OpenError(at: Sym.Attribute);
+      BEGIN
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.AtObject1(es, at);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, at[0].loc.src);
+      END CloseError;
+
+      PROCEDURE Error(at: Sym.Attribute; msg: ARRAY OF CHAR);
+      BEGIN
+	 OpenError(at);
+	 Write.StringS(es, msg);
+	 CloseError;
+      END Error;
+
+      PROCEDURE CheckDesignator(at: Sym.Attribute);
+      BEGIN
+	 IF ~(at.mode IN Sym.designatorModes) THEN
+	    Error(at, "designator expected");
+	 END;
+      END CheckDesignator;
+
+      PROCEDURE CheckInteger(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal});
+      END CheckInteger;
+
+      PROCEDURE CheckAddress(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal, Sym.address});
+      END CheckAddress;
+
+      PROCEDURE CheckBoolean(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.boolean});
+      END CheckBoolean;
+
+      PROCEDURE CheckCR(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.coroutine});
+      END CheckCR;
+
+   BEGIN (* CheckArgs *)
+      stdproc := builtinproc(StdProcedure).stdproc;
+      restype := NIL;
+      error := FALSE;
+      nofargs := 0;
+      arg := args;
+      WHILE arg # NIL DO
+	 at[nofargs] := arg;
+	 types[nofargs] := at[nofargs].type;
+	 IF types[nofargs] = NIL THEN
+	    RETURN (* do not check if there are already errors *)
+	 END;
+	 forms[nofargs] := types[nofargs].form;
+	 INC(nofargs); arg := arg.next;
+      END;
+
+      ASSERT((nofargs >= builtinproc.minargs) &
+             (nofargs <= builtinproc.maxargs));
+      ASSERT(nofargs > 0);
+      index := 0;
+      WHILE index < nofargs DO
+	 IF ~(at[index].mode IN Sym.opModes) THEN
+	    Error(at[index], "expression expected");
+	 END;
+	 INC(index);
+      END;
+
+      IF error THEN RETURN END;
+
+      CASE stdproc OF
+      | crspawn:  CheckCR(at[0]); CheckDesignator(at[0]);
+		  IF nofargs > 1 THEN
+		     CheckInteger(at[1]);
+		  END;
+      | crswitch: CheckCR(at[0]);
+      | halt:     CheckInteger(at[0]);
+      | tas:      CheckBoolean(at[0]); CheckDesignator(at[0]);
+                  restype := BaseTypes.boolean;
+      | wclear:   CheckAddress(at[0]); CheckInteger(at[1]);
+      | wmove:    CheckAddress(at[0]); CheckAddress(at[1]);
+                  CheckInteger(at[2]);
+      END;
+   END CheckArgs;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+   BEGIN
+      ConstantObjects.RegisterType(stdprocType,
+	 "OberonUlmProcedures.StdProcedure", "OberonSymbols.BuiltInProcedure");
+   END Init;
+
+   PROCEDURE InitStd;
+
+      PROCEDURE Create(name: ARRAY OF CHAR;
+                       stdproc: StdProc;
+		       minargs, maxargs: INTEGER;
+		       function: BOOLEAN;
+		       VAR ident: Sym.Ident);
+	 VAR
+	    cstring: ConstStrings.String;
+	    stdprocedure: StdProcedure;
+	    qualifiedName: ARRAY 256 OF CHAR;
+      BEGIN
+	 NEW(stdprocedure);
+	 qualifiedName := "OberonUlmProcedures.";
+	 Strings.Concatenate(qualifiedName, name);
+	 ConstantObjects.Init(stdprocedure, stdprocType, qualifiedName);
+	 Sym.InitBuiltInProcedure(stdprocedure, minargs, maxargs, CheckArgs);
+	 ConstStrings.Create(cstring, name);
+	 IF function THEN
+	    Sym.CreateBuiltInFunction(ident, cstring, stdprocedure);
+	 ELSE
+	    Sym.CreateBuiltInProcedure(ident, cstring, stdprocedure);
+	 END;
+	 CompilerObjects.InitBuiltInObject(ident);
+	 stdprocedure.stdproc := stdproc;
+      END Create;
+
+      PROCEDURE CreateFunc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, TRUE, ident);
+      END CreateFunc;
+
+      PROCEDURE CreateProc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, FALSE, ident);
+      END CreateProc;
+
+   BEGIN (* Init *)
+      CreateProc("CRSPAWN", crspawn, 1, 2, crspawnP);
+      CreateProc("CRSWITCH", crswitch, 1, 1, crswitchP);
+      CreateProc("HALT", halt, 1, 1, haltP);
+      CreateFunc("TAS", tas, 1, 1, tasF);
+      CreateProc("WCLEAR", wclear, 2, 2, wclearP);
+      CreateProc("WMOVE", wmove, 3, 3, wmoveP);
+   END InitStd;
+
+BEGIN
+   Init;
+   InitStd;
+END OberonUlmProcedures.

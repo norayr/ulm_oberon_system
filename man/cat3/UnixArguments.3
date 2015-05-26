@@ -1,0 +1,134 @@
+UnixArguments(3)              Ulm's Oberon System             UnixArguments(3)
+
+
+
+[1mNAME[0m
+       UnixArguments - scan command line arguments
+
+[1mSYNOPSIS[0m
+       TYPE Argument = POINTER TO ArgumentRec;
+       TYPE ArgumentRec = RECORD (Streams.StreamRec) END;
+
+       VAR usagecode: INTEGER;
+
+       PROCEDURE Init(infostring: ARRAY OF CHAR);
+       PROCEDURE Usage;
+       PROCEDURE GetFlag(VAR flag: CHAR) : BOOLEAN;
+       PROCEDURE GetOpt(VAR flag: CHAR; VAR plus: BOOLEAN) : BOOLEAN;
+       PROCEDURE Fetch(VAR arg: Streams.Stream);
+       PROCEDURE FetchString(VAR string: ARRAY OF CHAR);
+       PROCEDURE GetArg(VAR string: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE OpenArg(VAR arg: Streams.Stream) : BOOLEAN;
+       PROCEDURE UngetArg;
+       PROCEDURE UngetOpt;
+       PROCEDURE AllArgs;
+       PROCEDURE GetCommandName(VAR name: ARRAY OF CHAR);
+       PROCEDURE GetPathName(VAR path: ARRAY OF CHAR);
+
+
+[1mDESCRIPTION[0m
+       The [4mUnixArguments[24m module supports reading and interpreting command line
+       arguments, according to the following standard:
+
+              [1m-[4m[22mx[24m       Flags are single characters preceded by a [1m-[22m.
+
+              [1m+[4m[22mx[24m       Options, however, can be preceded either by [1m- [22mor [1m+[22m.
+
+              [1m-[4m[22mxy[24m      Flags or options with the same prefix may  be  concate-
+                       nated  to  one  command argument, without repeating the
+                       prefix.
+
+              [1m-[4m[22mx[24m [4mvalue[24m A value follows a flag/option as the rest of  the  com-
+                       mand argument or as the next command argument.  Nothing
+                       can follow a value in the same command argument.
+
+              [1m-        [22mas a command argument is interpreted as a non-flag/non-
+                       option argument.  It should designate standard input or
+                       standard output in place of a file.
+
+              [1m--       [22mas a command argument terminates flag/option processing
+                       but is itself not interpreted as an argument.  Success-
+                       ing command arguments, even when beginning with [1m- [22mor  [1m+[0m
+                       are considered not to contain flags nor options.
+
+       The procedures are used as follows:
+
+       [4mInit[24m  specifies  [4minfostring[24m for [4mUsage[24m and (re)starts the reading cycle,
+       i.e. makes the first command argument the next one to be read.
+
+       [4mUsage[24m prints 'Usage: command infostring' onto [4mStreams.stderr[24m and termi-
+       nates  program  execution  ('command'  stands  here for the actual pro-
+       cesses' name).  [4mUsage[24m passes [4musagecode[24m as parameter to [4mSysProcess.Exit[24m.
+
+       [4mAllArgs[24m calls [4mUsage[24m if any command arguments are not yet read.
+
+       [4mGetFlag[24m and [4mGetOpt[24m read one flag resp. option from the argument list or
+       return [1mFALSE [22mif all of them have been read.  [4mGetOpt[24m sets [4mplus[24m  to  [1mTRUE[0m
+       if the actual option is of the kind [1m+[4m[22mx[24m, otherwise [1mFALSE[22m.
+
+       [4mGetArg[24m  reads one arbitrary argument and [4mOpenArg[24m opens one argument for
+       reading.  Both return [1mFALSE [22mif all arguments have  been  read  already.
+       The stream opened by [4mOpenArg[24m is closed automatically.
+
+       [4mFetchString[24m  reads an argument and [4mFetch[24m opens an argument for reading.
+       If the selected argument (part) is missing [4mUsage[24m is called  implicitly.
+       The stream opened by [4mFetch[24m is closed automatically.
+
+       [4mUngetOpt[24m  and  [4mUngetArg[24m  push  back one flag/option resp.  argument per
+       call to the list of not yet read command arguments.  Note that [4mUngetOpt[0m
+       is  not able to skip command arguments that have been read using [4mGetArg[0m
+       or one of the [4mFetch[24m procedures.
+
+       [4mGetPathName[24m returns the first argument which is by convention the  name
+       of  the  executable.   [4mGetCommandName[24m returns the basename of the first
+       argument (i.e. without leading directory path).
+
+       Streams returned by [4mFetch[24m and [4mOpenArg[24m are of  type  [4mUnixArguments.Argu-[0m
+       [4mment[24m.
+
+[1mEXAMPLE[0m
+       PROCEDURE WorkupArguments;
+          VAR
+             arg: Streams.Stream;
+             flag: CHAR;
+       BEGIN
+          xflag := FALSE;
+          number := 1;
+          string := defaultstring;
+          UnixArguments.Init("[-x] [-s string] [-nnn] [file]...");
+          WHILE UnixArguments.GetFlag(flag) DO
+             CASE flag OF
+             | "x":      xflag := TRUE;
+             | "s":      UnixArguments.FetchString(string);
+             | "0".."9": UnixArguments.UngetOpt;
+                         UnixArguments.Fetch(arg); Read.IntS(arg, number);
+             ELSE
+                UnixArguments.Usage
+             END;
+          END;
+          WHILE UnixArguments.GetArg(filename) DO
+             IF filename = "-" THEN
+                (* process Streams.stdin *)
+             ELSE
+                (* process filename *)
+             END;
+          END;
+       END WorkupArguments;
+
+
+[1mSEE ALSO[0m
+       [4mArgs(3)[24m              more general interface for flags and options
+       [4mRead(3)[24m              formatted input for streams
+       [4mStreams(3)[24m           stream  operations; output of [4mUsage[24m is directed to
+                            [4mStreams.stderr[0m
+       [4mSysArgs(3)[24m           the arguments are read from [4mSysArgs.argv[0m
+       [4mUnixCommandLine(3)[24m   interfaces the UNIX command line on base  of  this
+                            module for [4mArgs(3)[0m
+
+[1mAUTHOR[0m
+       Martin Hasch, University of Ulm
+       revised by Andreas Borchert
+
+
+
+Release 0.5               Last change: 23 August 2005         UnixArguments(3)

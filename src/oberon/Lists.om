@@ -1,0 +1,174 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Lists.om,v 1.2 1994/08/13 19:12:04 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: Lists.om,v $
+   Revision 1.2  1994/08/13  19:12:04  martin
+   Delete procedure added.
+
+   Revision 1.1  1994/02/22  20:08:02  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 9/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Lists;
+
+   IMPORT Objects;
+
+   TYPE
+      List = POINTER TO ListRec;
+      Element = POINTER TO ElementRec;
+      CompareProc = PROCEDURE (e1: Element; e2: Element) : INTEGER;
+	 (* returns < 0 if left parameter < right parameter
+		    = 0 if left parameter = right parameter
+		    > 0 if left parameter > right parameter
+	 *)
+      ListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    sorted: BOOLEAN;
+	    compare: CompareProc;
+	    rider: Element;
+	    head, tail: Element;
+	 END;
+      ElementRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    prev, next: Element;
+	 END;
+
+   PROCEDURE CreateList(VAR list: List);
+   BEGIN
+      NEW(list);
+      list.sorted := FALSE;
+      list.head := NIL;
+      list.tail := NIL;
+      list.rider := NIL;
+   END CreateList;
+
+   PROCEDURE CreateSortedList(VAR list: List; compare: CompareProc);
+   BEGIN
+       NEW(list);
+       list.compare := compare;
+       list.sorted := TRUE;
+       list.head := NIL;
+       list.tail := NIL;
+       list.rider := NIL;
+   END CreateSortedList;
+
+   PROCEDURE Add(list: List; element: Element);
+      VAR
+	 ptr: Element;
+   BEGIN
+      IF list.sorted &
+	    (list.tail # NIL) & (list.compare(element, list.tail) < 0) THEN
+	 ptr := list.head;
+	 WHILE list.compare(element, ptr) > 0 DO
+	    ptr := ptr.next;
+	 END;
+	 element.next := ptr;
+	 element.prev := ptr.prev;
+	 IF ptr.prev = NIL THEN
+	    list.head := element;
+	 ELSE
+	    ptr.prev.next := element;
+	 END;
+	 ptr.prev := element;
+      ELSE
+	 element.prev := list.tail;
+	 element.next := NIL;
+	 IF list.tail = NIL THEN
+	    list.head := element;
+	 ELSE
+	    list.tail.next := element;
+	 END;
+	 list.tail := element;
+      END;
+   END Add;
+
+   PROCEDURE Insert(list: List; element: Element);
+   BEGIN
+      IF list.sorted THEN
+	 Add(list, element);
+      ELSE
+	 element.prev := NIL;
+	 element.next := list.head;
+	 IF list.tail = NIL THEN
+	    list.tail := element;
+	 ELSE
+	    list.head.prev := element;
+	 END;
+	 list.head := element;
+      END;
+   END Insert;
+
+   PROCEDURE Delete(list: List; element: Element);
+   BEGIN
+      IF element.prev = NIL THEN
+	 list.head := element.next;
+      ELSE
+	 element.prev.next := element.next;
+      END;
+      IF element.next = NIL THEN
+	 list.tail := element.prev;
+      ELSE
+	 element.next.prev := element.prev;
+      END;
+      IF list.rider = element THEN
+	 list.rider := NIL;
+      END;
+   END Delete;
+
+   PROCEDURE First(list: List);
+   BEGIN
+      list.rider := list.head;
+   END First;
+
+   PROCEDURE Next(list: List; VAR element: Element) : BOOLEAN;
+   BEGIN
+      IF list.rider = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 element := list.rider;
+	 list.rider := list.rider.next;
+	 RETURN TRUE
+      END;
+   END Next;
+
+   PROCEDURE Last(list: List);
+   BEGIN
+      list.rider := list.tail;
+   END Last;
+
+   PROCEDURE Previous(list: List; VAR element: Element) : BOOLEAN;
+   BEGIN
+      IF list.rider = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 element := list.rider;
+	 list.rider := list.rider.prev;
+	 RETURN TRUE
+      END;
+   END Previous;
+
+END Lists.

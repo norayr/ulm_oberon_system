@@ -1,0 +1,1141 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermWindows;
+
+   IMPORT ASCII, Conditions, Disciplines, EventConditions, Events,
+      LocalSemaphores, Resources, Semaphores, Services, Streams,
+      SYS := SYSTEM, Tasks, TermAttributes, TermColors, Terminals, TermKeys,
+      TermLineGraphics;
+
+   (* significant parts have been derived from the Windows module
+      of Ulm's Modula-2 Library
+   *)
+
+   CONST
+      (* window attributes *)
+      flushalways = 0;
+      flushoninput = 1;
+      echo = 2;
+      scroll = 3;
+      movecursor = 4;
+      funckeys = 5;
+      readcr = 6;
+   TYPE
+      WindowAttribute = SHORTINT; (* flushalways ... *)
+      WindowAtSet = SET; (* OF WindowAttribute *)
+
+   CONST
+      (* constants that are large enough to avoid range faults *)
+      maxlines = 512;
+      maxcols = 65536;
+
+   TYPE
+      Modes =
+	 RECORD
+	    atset: TermAttributes.AttributeSet;
+	    alt: BOOLEAN; (* alternative character set? *)
+	    fgset: BOOLEAN; fgcolor: TermColors.Color;
+	    bgset: BOOLEAN; bgcolor: TermColors.Color;
+	 END;
+      ScreenChar =
+	 RECORD
+	    ch: CHAR;
+	    modes: Modes;
+	 END;
+      ScreenRow = POINTER TO ARRAY maxcols OF ScreenChar;
+      ScreenCont = POINTER TO ARRAY maxlines OF ScreenRow;
+
+   TYPE
+      Device = POINTER TO DeviceRec;
+      Window = POINTER TO WindowRec;
+
+   TYPE
+      GetInputEventTypeProc = PROCEDURE (dev: Device;
+                                         win: Window;
+					 VAR eventType: Events.EventType);
+   TYPE
+      InputEvent = POINTER TO InputEventRec;
+      InputEventRec = RECORD (Events.EventRec) END;
+      FocusEvent = POINTER TO FocusEventRec;
+      FocusEventRec = RECORD (InputEventRec) END;
+      KeyEvent = POINTER TO KeyEventRec;
+      KeyEventRec =
+	 RECORD
+	    (InputEventRec)
+	    key: TermKeys.Key;
+	 END;
+
+   TYPE
+      DeviceRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    t: Streams.Stream; (* associated terminal *)
+	    characteristics: SET;
+	    safecorner: BOOLEAN;
+	    useats: BOOLEAN; (* display attributes supported? *)
+	    usecolors: BOOLEAN; (* colors supported? *)
+	    uselg: BOOLEAN; (* use line graphics *)
+	    lgset: TermLineGraphics.CharSet;
+	    modes: Modes; (* current set of attributes & colors *)
+	    suspended: BOOLEAN; (* SuspendDevice called? *)
+	    lines, (* # of lines and columns *)
+	    columns: INTEGER;
+	    screen: ScreenCont;	(* current screen contents *)
+	    cursorvis: Terminals.Shape; (* cursor appearance *)
+	    x, y: INTEGER; (* current cursor position *)
+	    wmutex: Semaphores.Semaphore;
+	       (* mutual exclusion of write operations *)
+	    getInputEventType: GetInputEventTypeProc;
+	 END;
+
+      WindowRec =
+	 RECORD
+	    (Terminals.StreamRec)
+	    dev: Device;
+	    lines, columns: INTEGER; (* window size *)
+	    startx, starty: INTEGER; (* offset to device or win *)
+	    x, y: INTEGER; (* current position *)
+	    scrollcnt: INTEGER;         (* negative: down *)
+	    winats: WindowAtSet;
+	    modes: Modes; (* current set of attributes & colors *)
+	    subwin: BOOLEAN;
+	    (* if subwin *)
+	    win: Window; (* super-window *)
+	    (* if no subwin *)
+	    screen: ScreenCont;
+	    reading: BOOLEAN; (* read operation active? *)
+	    wmutex: Semaphores.Semaphore;
+	       (* mutual exclusion of write operations *)
+	    inputEventType: Events.EventType;
+	    inputEventCondition: Conditions.Condition;
+	 END;
+
+   CONST
+      scaps = {Streams.read, Streams.write, Streams.handler,
+	 Streams.flush, Streams.close};
+      tcaps = {Terminals.setEcho, Terminals.setCursor, Terminals.scroll,
+	 Terminals.clearScreen};
+   VAR
+      white: ScreenChar; (* just a white char, without attributes *)
+      winType: Services.Type;
+      sif: Streams.Interface;
+      tcif: TermColors.Interface;
+      taif: TermAttributes.Interface;
+      tif: Terminals.Interface;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE InitModes(VAR mode: Modes);
+   BEGIN
+      mode.atset := {};
+      mode.alt := FALSE;
+      mode.fgset := FALSE;
+      mode.bgset := FALSE;
+   END InitModes;
+
+   PROCEDURE AllocateScreen(VAR screen: ScreenCont;
+			    lines, columns: INTEGER);
+      (* allocate a screen of the given size and initialize it *)
+      VAR
+	 line, column: INTEGER;
+   BEGIN
+      ASSERT((lines > 0) & (lines <= maxlines));
+      ASSERT((columns > 0) & (columns < maxcols));
+      NEW(screen);
+      line := 0;
+      WHILE line < lines DO
+	 SYS.NEW(screen[line], columns * SYS.SIZE(ScreenChar));
+	 column := 0;
+	 WHILE column < columns DO
+	    screen[line][column].ch := " ";
+	    InitModes(screen[line][column].modes);
+	    INC(column);
+	 END;
+	 INC(line);
+      END;
+   END AllocateScreen;
+
+   PROCEDURE ResetAtSet(dev: Device);
+   BEGIN
+      IF dev.useats & (dev.modes.atset # {}) THEN
+	 TermAttributes.Set(dev.t, {});
+	 dev.modes.atset := {};
+      END;
+   END ResetAtSet;
+
+   PROCEDURE SetAtSet(dev: Device; ats: TermAttributes.AttributeSet);
+   BEGIN
+      IF dev.useats & (dev.modes.atset # ats) THEN
+	 TermAttributes.Set(dev.t, ats);
+	 dev.modes.atset := ats;
+      END;
+   END SetAtSet;
+
+   PROCEDURE SetPosOfDevice(dev: Device; x, y: INTEGER);
+   BEGIN
+      IF (x # dev.x) OR (y # dev.y) THEN
+	 ResetAtSet(dev);
+	 Terminals.MoveCursor(dev.t,
+	    (* from *) dev.x, dev.y, (* to *) x, y);
+	 dev.x := x; dev.y := y;
+      END;
+   END SetPosOfDevice;
+
+   PROCEDURE ResetColorsOfDevice(dev: Device);
+   BEGIN
+      IF dev.usecolors & (dev.modes.fgset OR dev.modes.bgset) THEN
+	 TermColors.Reset(dev.t);
+	 dev.modes.fgset := FALSE; dev.modes.bgset := FALSE;
+      END;
+   END ResetColorsOfDevice;
+
+   PROCEDURE SetForegroundOfDevice(dev: Device; color: TermColors.Color);
+   BEGIN
+      IF dev.usecolors & (~dev.modes.fgset OR (dev.modes.fgcolor # color)) THEN
+	 TermColors.SetForeground(dev.t, color);
+	 dev.modes.fgcolor := color; dev.modes.fgset := TRUE;
+      END;
+   END SetForegroundOfDevice;
+
+   PROCEDURE SetBackgroundOfDevice(dev: Device; color: TermColors.Color);
+   BEGIN
+      IF dev.usecolors & (~dev.modes.bgset OR (dev.modes.bgcolor # color)) THEN
+	 TermColors.SetBackground(dev.t, color);
+	 dev.modes.bgcolor := color; dev.modes.bgset := TRUE;
+      END;
+   END SetBackgroundOfDevice;
+
+   PROCEDURE SetCharSetOfDevice(dev: Device; alt: BOOLEAN);
+   BEGIN
+      IF dev.uselg & (dev.modes.alt # alt) THEN
+	 IF alt THEN
+	    TermLineGraphics.SwitchCharSet(dev.t, TermLineGraphics.graphics);
+	 ELSE
+	    TermLineGraphics.SwitchCharSet(dev.t, TermLineGraphics.standard);
+	 END;
+	 dev.modes.alt := alt;
+      END;
+   END SetCharSetOfDevice;
+
+   PROCEDURE SetModes(dev: Device; modes: Modes);
+   BEGIN
+      SetAtSet(dev, modes.atset);
+      SetCharSetOfDevice(dev, modes.alt);
+      IF modes.fgset & modes.bgset THEN
+	 SetForegroundOfDevice(dev, modes.fgcolor);
+	 SetBackgroundOfDevice(dev, modes.bgcolor);
+      ELSIF ~modes.fgset & ~modes.bgset THEN
+	 ResetColorsOfDevice(dev);
+      ELSIF modes.fgset THEN
+	 ResetColorsOfDevice(dev);
+	 SetForegroundOfDevice(dev, modes.fgcolor);
+      ELSE
+	 (* modes.bgset = TRUE *)
+	 ResetColorsOfDevice(dev);
+	 SetBackgroundOfDevice(dev, modes.bgcolor);
+      END;
+   END SetModes;
+
+   PROCEDURE SetCursorShape(dev: Device; shape: Terminals.Shape);
+   BEGIN
+      IF (shape # dev.cursorvis) &
+	    (Terminals.setAppearance IN Terminals.Capabilities(dev.t)) THEN
+	 Terminals.CursorAppearance(dev.t, shape);
+	 dev.cursorvis := shape;
+      END;
+   END SetCursorShape;
+
+   PROCEDURE EqualChars(VAR char1, char2: ScreenChar) : BOOLEAN;
+   BEGIN
+      IF (char1.ch # char2.ch) OR
+	    (char1.modes.atset # char2.modes.atset) OR
+	     (char1.modes.fgset # char2.modes.fgset) OR
+	     (char1.modes.bgset # char2.modes.bgset) OR
+	     (char1.modes.alt # char2.modes.alt) THEN
+	 RETURN FALSE
+      END;
+      IF char1.modes.fgset & (char1.modes.fgcolor # char2.modes.bgcolor) THEN
+	 RETURN FALSE
+      END;
+      IF char1.modes.bgset & (char1.modes.bgcolor # char2.modes.bgcolor) THEN
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END EqualChars;
+
+   PROCEDURE ^SetCharSet(s: Streams.Stream;
+                         charset: TermLineGraphics.CharacterSet);
+
+   PROCEDURE CreateWindow(VAR win: Window; dev: Device; lines, cols: INTEGER);
+      (* common part of CreateTopWindow and CreateNewWindow *)
+      VAR
+	 tstatus: Terminals.Status;
+   BEGIN
+      ASSERT((lines > 0) & (cols > 0));
+      NEW(win);
+      Services.Init(win, winType);
+      Streams.Init(win, sif, scaps, Streams.nobuf);
+      tstatus.lines := lines; tstatus.columns := cols;
+      tstatus.scrtop := 0; tstatus.scrbottom := lines-1;
+      tstatus.echo := Terminals.off; tstatus.mode := Terminals.raw;
+      tstatus.characteristics := {Terminals.autorightmargin,
+         Terminals.safelastcolumn};
+      tstatus.scrollDirections := {Terminals.forward, Terminals.reverse};
+      tstatus.cursorShape := Terminals.visible;
+      Terminals.Init(win, tstatus, tcaps * Terminals.Capabilities(dev.t), tif);
+      IF dev.useats THEN
+	 TermAttributes.Init(win, TermAttributes.Available(dev.t), taif);
+      END;
+      IF dev.usecolors THEN
+	 TermColors.Init(win, tcif);
+      END;
+      IF dev.uselg THEN
+	 TermLineGraphics.Init(win, dev.lgset, SetCharSet);
+      END;
+      win.dev := dev;
+      win.lines := lines; win.columns := cols;
+      win.startx := 0; win.starty := 0;
+      win.x := 0; win.y := 0;
+      win.winats := {};
+      InitModes(win.modes);
+      win.scrollcnt := 0;
+      win.subwin := FALSE;
+      win.reading := FALSE;
+      AllocateScreen(win.screen, lines, cols);
+      IF dev # NIL THEN
+	 Resources.DependsOn(win, dev);
+      END;
+      LocalSemaphores.Create(win.wmutex);
+      win.inputEventType := NIL;
+      win.inputEventCondition := NIL;
+   END CreateWindow;
+
+   PROCEDURE GetTopWin(VAR win: Window; VAR sx, sy: INTEGER);
+   BEGIN
+      sx := 0; sy := 0;
+      WHILE win.subwin DO
+	 INC(sx, win.startx); INC(sy, win.starty);
+	 win := win.win;
+      END;
+   END GetTopWin;
+
+   PROCEDURE ^Flush(win: Window);
+
+   PROCEDURE Touch(win: Window);
+   BEGIN
+      IF flushalways IN win.winats THEN
+	 Flush(win);
+      END;
+   END Touch;
+
+   PROCEDURE CheckPos(VAR x, y: INTEGER; lines, cols: INTEGER);
+   BEGIN
+      ASSERT((x >= 0) & (y >= 0));
+      IF y >= cols THEN y := 0; INC(x); END;
+      IF x >= lines THEN x := lines-1 END;
+   END CheckPos;
+
+   PROCEDURE ^Scroll(win: Window; count: INTEGER);
+
+   PROCEDURE ScrollScreenCont(s: ScreenCont; count: INTEGER;
+			      sx, sy, lns, cols: INTEGER);
+      (* scroll contents of `s':
+	 count > 0: scroll forward
+	 count < 0: scroll backward (down)
+	 scroll region:
+	 sx, sy: upper left corner
+	 lns, cols: # of lines and columns
+	 scroll region must fit into `s' !!
+      *)
+      VAR
+	 x: INTEGER;
+	 cnt: INTEGER; (* ABS(count) *)
+
+      PROCEDURE ClearLines(from, to: INTEGER);
+	 VAR
+	    x, y: INTEGER;
+      BEGIN
+	 x := from;
+	 WHILE x <= to DO
+	    y := sy;
+	    WHILE y < sy + cols DO
+	       s[x][y] := white;
+	       INC(y);
+	    END;
+	    INC(x);
+	 END;
+      END ClearLines;
+
+      PROCEDURE CopyLine(dest, source: INTEGER);
+	 VAR
+	    y: INTEGER;
+      BEGIN
+	 y := sy;
+	 WHILE y < sy + cols DO
+	    s[dest][y] := s[source][y];
+	    INC(y);
+	 END;
+      END CopyLine;
+
+   BEGIN (* ScrollScreenCont *)
+      cnt := ABS(count);
+      IF count < 0 THEN
+	 x := sx + lns - 1;
+	 WHILE x >= sx + cnt DO
+	    CopyLine(x, x - cnt);
+	    DEC(x);
+	 END;
+	 ClearLines(sx, sx+cnt-1);
+      ELSE
+	 IF lns > cnt THEN
+	    x := sx;
+	    WHILE x < sx + lns - cnt DO
+	       CopyLine(x, x+cnt);
+	       INC(x);
+	    END;
+	 END;
+	 ClearLines(sx+lns-cnt, sx+lns-1);
+      END;
+   END ScrollScreenCont;
+
+   PROCEDURE WindowWrite(win: Window; ch: CHAR);
+      VAR
+	 savedModes: Modes;
+
+      PROCEDURE SetChar(VAR char: ScreenChar);
+      BEGIN
+	 char.ch := ch;
+	 char.modes := win.modes;
+      END SetChar;
+
+   BEGIN (* WindowWrite *)
+      Semaphores.P(win.wmutex);
+      CASE ch OF
+      | 0X: RETURN (* do nothing *)
+      | ASCII.nl:
+            IF win.x < win.lines-1 THEN
+	       INC(win.x); win.y := 0;
+	    ELSIF scroll IN win.winats THEN
+	       Scroll(win, 1); win.y := 0;
+	    END;
+      | ASCII.cr:
+            win.y := 0;
+      | ASCII.bs, ASCII.del:
+            IF win.y > 0 THEN
+	       DEC(win.y);
+	    ELSIF win.x > 0 THEN
+	       DEC(win.x); win.y := win.columns - 1;
+	    END;
+      ELSE
+	 IF ch < " " THEN Semaphores.V(win.wmutex); RETURN END;
+	 IF win.subwin THEN
+	    win.win.x := win.x + win.startx;
+	    win.win.y := win.y + win.starty;
+	    savedModes := win.win.modes;
+	    win.win.modes := win.modes;
+	    WindowWrite(win.win, ch);
+	    win.win.modes := savedModes;
+	 ELSE
+	    SetChar(win.screen[win.x][win.y]);
+	 END;
+	 IF win.y + 1 < win.columns THEN
+	    INC(win.y);
+	 ELSIF win.x + 1 < win.lines THEN
+	    INC(win.x); win.y := 0;
+	 ELSIF scroll IN win.winats THEN
+	    win.y := 0; Scroll(win, 1); win.x := win.lines-1;
+	 END;
+      END;
+      Semaphores.V(win.wmutex);
+   END WindowWrite;
+
+   PROCEDURE ^SetPos(win: Window; line, column: INTEGER);
+   PROCEDURE ^GetAttributes(win: Window; VAR atset: WindowAtSet);
+   PROCEDURE ^SetAttributes(win: Window; atset: WindowAtSet);
+   PROCEDURE ^Clear(win: Window);
+   PROCEDURE ^GetInputEventType(win: Window; VAR eventType: Events.EventType);
+
+   PROCEDURE WindowReadKeyOrChar(win: Window;
+                                 VAR key: TermKeys.Key;
+				 VAR ch: CHAR) : BOOLEAN;
+      VAR
+	 atset: WindowAtSet;
+	 ok: BOOLEAN;
+	 eventType: Events.EventType;
+	 event: Events.Event;
+   BEGIN (* WindowRead *)
+      IF win.inputEventCondition = NIL THEN
+	 GetInputEventType(win, eventType);
+	 IF eventType # NIL THEN
+	    EventConditions.Create(win.inputEventCondition, eventType);
+	 END;
+      END;
+      key := NIL;
+      LOOP
+	 IF flushoninput IN win.winats THEN
+	    win.reading := TRUE;
+	    Flush(win);
+	    win.reading := FALSE;
+	 END;
+
+	 IF win.inputEventCondition = NIL THEN
+	    IF funckeys IN win.winats THEN
+	       IF ~TermKeys.Read(win.dev.t, key) THEN RETURN FALSE END;
+	    ELSE
+	       IF ~Streams.ReadByte(win.dev.t, ch) THEN RETURN FALSE END;
+	    END;
+	    EXIT
+	 ELSE
+	    Tasks.WaitFor(win.inputEventCondition);
+	    IF EventConditions.TestAndGet(win.inputEventCondition,
+		     event) THEN
+	       IF event IS KeyEvent THEN
+		  key := event(KeyEvent).key;
+		  EXIT
+	       END;
+	    END;
+	 END;
+      END;
+      IF key # NIL THEN
+	 IF key IS TermKeys.SimpleKey THEN
+	    ch := key(TermKeys.SimpleKey).char;
+	 ELSE
+	    ch := 0X;
+	 END;
+      END;
+      IF (ch = ASCII.cr) & ~(readcr IN win.winats) THEN
+	 ch := ASCII.nl;
+      END;
+      IF (echo IN win.winats) & (ch # 0X) THEN
+	 win.modes.alt := FALSE;
+	 WindowWrite(win, ch);
+      END;
+      RETURN TRUE
+   END WindowReadKeyOrChar;
+
+   (* === Streams interface for windows =================================== *)
+
+   PROCEDURE ReadByteFromWin(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+      VAR
+	 key: TermKeys.Key;
+	 ch: CHAR;
+	 ok: BOOLEAN;
+	 winats: WindowAtSet;
+   BEGIN
+      WITH s: Window DO
+	 winats := s.winats; EXCL(s.winats, funckeys);
+	 ok := WindowReadKeyOrChar(s, key, ch);
+	 s.winats := winats;
+	 IF ~ok THEN RETURN FALSE END;
+	 byte := ch;
+	 RETURN TRUE
+      END;
+   END ReadByteFromWin;
+
+   PROCEDURE WriteByteToWin(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+   BEGIN
+      WITH s: Window DO
+	 WindowWrite(s, CHR(byte));
+	 IF ~(flushalways IN s.winats) THEN
+	    RETURN TRUE
+	 END;
+	 Flush(s);
+	 RETURN TRUE
+      END;
+   END WriteByteToWin;
+
+   PROCEDURE WinHandler(s: Streams.Stream; VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Window DO
+	 Streams.Send(s.dev.t, msg);
+      END;
+   END WinHandler;
+
+   PROCEDURE FlushWin(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: Window DO
+	 Flush(s);
+	 RETURN TRUE
+      END;
+   END FlushWin;
+
+   PROCEDURE CloseWin(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 modes: Modes;
+   BEGIN
+      WITH s: Window DO
+	 Flush(s);
+	 InitModes(modes);
+	 SetModes(s.dev, modes);
+	 Streams.Touch(s.dev.t);
+	 IF s.inputEventCondition # NIL THEN
+	    EventConditions.Drop(s.inputEventCondition);
+	 END;
+	 RETURN TRUE
+      END;
+   END CloseWin;
+
+   (* === interface procedures for TermColors ============================= *)
+
+   PROCEDURE SetColorPair(s: Streams.Stream;
+                          foreground, background: TermColors.Color);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.fgcolor := foreground; s.modes.fgset := TRUE;
+	 s.modes.bgcolor := background; s.modes.bgset := TRUE;
+      END;
+   END SetColorPair;
+
+   PROCEDURE SetForeground(s: Streams.Stream;
+                           foreground: TermColors.Color);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.fgcolor := foreground; s.modes.fgset := TRUE;
+      END;
+   END SetForeground;
+
+   PROCEDURE SetBackground(s: Streams.Stream;
+                           background: TermColors.Color);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.bgcolor := background; s.modes.bgset := TRUE;
+      END;
+   END SetBackground;
+
+   PROCEDURE ResetColors(s: Streams.Stream);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.fgset := FALSE;
+	 s.modes.bgset := FALSE;
+      END;
+   END ResetColors;
+
+   (* === interface procedures for TermAttributes ========================= *)
+
+   PROCEDURE SetTermAttributes(s: Streams.Stream;
+                               atset: TermAttributes.AttributeSet);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.atset := TermAttributes.Available(s.dev.t) * atset;
+      END;
+   END SetTermAttributes;
+
+   (* === interface procedure for TermLineGraphics ======================== *)
+
+   PROCEDURE SetCharSet(s: Streams.Stream;
+                        charset: TermLineGraphics.CharacterSet);
+   BEGIN
+      WITH s: Window DO
+	 s.modes.alt := charset = TermLineGraphics.graphics;
+      END;
+   END SetCharSet;
+
+   (* === interface procedures for Terminals ============================== *)
+
+   PROCEDURE TerminalSetEcho(s: Streams.Stream; mode: Terminals.EchoMode);
+   BEGIN
+      WITH s: Window DO
+	 CASE mode OF
+	 | Terminals.on:
+	       INCL(s.winats, echo);
+	 | Terminals.off:
+	       EXCL(s.winats, echo);
+	 END;
+      END;
+   END TerminalSetEcho;
+
+   PROCEDURE TerminalSetCursor(s: Streams.Stream; line, column: INTEGER);
+   BEGIN
+      WITH s: Window DO
+	 SetPos(s, line, column);
+      END;
+   END TerminalSetCursor;
+
+   PROCEDURE TerminalScroll(s: Streams.Stream; dir: Terminals.Direction);
+   BEGIN
+      WITH s: Window DO
+	 CASE dir OF
+	 | Terminals.forward:
+	       Scroll(s, 1);
+	 | Terminals.reverse:
+	       Scroll(s, -1);
+	 END;
+      END;
+   END TerminalScroll;
+
+   PROCEDURE TerminalClear(s: Streams.Stream);
+   BEGIN
+      WITH s: Window DO
+	 Clear(s);
+      END;
+   END TerminalClear;
+
+   (* === module initialization =========================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      white.ch := " "; InitModes(white.modes);
+      NEW(sif);
+      sif.read := ReadByteFromWin;
+      sif.write := WriteByteToWin;
+      sif.handler := WinHandler;
+      sif.flush := FlushWin;
+      sif.close := CloseWin;
+      NEW(tcif);
+      tcif.set := SetColorPair;
+      tcif.setForeground := SetForeground;
+      tcif.setBackground := SetBackground;
+      tcif.reset := ResetColors;
+      Services.CreateType(winType, "TermWindows.Window", "Terminals.Stream");
+      NEW(taif);
+      taif.set := SetTermAttributes;
+      NEW(tif);
+      tif.setEcho := TerminalSetEcho;
+      tif.setCursor := TerminalSetCursor;
+      tif.scroll := TerminalScroll;
+      tif.clearScreen := TerminalClear;
+   END InitModule;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE CreateDevice(VAR dev: Device;
+                          terminal: Streams.Stream) : BOOLEAN;
+      CONST
+	 mincaps = {Terminals.setEcho, Terminals.setTermMode,
+	    Terminals.setCursor, Terminals.clearScreen};
+      VAR
+	 caps: Terminals.CapabilitySet;
+	 device: Device;
+	 status: Terminals.Status;
+   BEGIN
+      caps := Terminals.Capabilities(terminal);
+      IF caps * mincaps # mincaps THEN RETURN FALSE END;
+      NEW(device);
+      device.t := terminal;
+      device.useats := TermAttributes.Available(terminal) # {};
+      device.usecolors := TermColors.Supported(terminal);
+      device.uselg := TermLineGraphics.Supported(terminal);
+      IF device.uselg THEN
+	 TermLineGraphics.GetGraphicalCharacterSet(terminal, device.lgset);
+      END;
+      InitModes(device.modes);
+      device.modes.atset := TermAttributes.Current(terminal);
+      device.suspended := FALSE;
+      Terminals.GetStatus(terminal, status);
+      device.lines := status.lines;
+      device.columns := status.columns;
+      AllocateScreen(device.screen, device.lines, device.columns);
+      device.cursorvis := status.cursorShape;
+      device.x := 0; device.y := 0;
+      device.characteristics := status.characteristics;
+      device.safecorner := Terminals.safelastcolumn IN device.characteristics;
+      LocalSemaphores.Create(device.wmutex);
+      device.getInputEventType := NIL;
+      Terminals.ClearScreen(terminal);
+      Terminals.Echo(terminal, Terminals.off);
+      Terminals.SetTermMode(terminal, Terminals.raw);
+      Resources.DependsOn(device, terminal);
+      dev := device;
+      RETURN TRUE
+   END CreateDevice;
+
+   PROCEDURE EnableEventHandling(dev: Device;
+                                 getInputEventType: GetInputEventTypeProc;
+				 VAR in: Streams.Stream);
+   BEGIN
+      ASSERT(dev.getInputEventType = NIL);
+      dev.getInputEventType := getInputEventType;
+      in := dev.t;
+   END EnableEventHandling;
+
+   PROCEDURE RedrawDevice(dev: Device);
+      VAR
+	 oldx, oldy: INTEGER;
+	 lastx, lasty: INTEGER;
+	 line, col: INTEGER;
+	 char: ScreenChar;
+   BEGIN
+      IF dev.suspended THEN RETURN END;
+      Semaphores.P(dev.wmutex);
+      oldx := dev.x; oldy := dev.y;
+      Terminals.SetScrollRegion(dev.t, 0, dev.lines-1);
+      IF dev.useats THEN
+	 TermAttributes.Set(dev.t, {});
+	 dev.modes.atset := {};
+      END;
+      IF dev.usecolors THEN
+	 TermColors.Reset(dev.t);
+	 dev.modes.fgset := FALSE; dev.modes.bgset := FALSE;
+      END;
+      IF dev.uselg THEN
+	 TermLineGraphics.SwitchCharSet(dev.t, TermLineGraphics.standard);
+	 dev.modes.alt := FALSE;
+      END;
+      Terminals.ClearScreen(dev.t);
+
+      line := 0;
+      WHILE line < dev.lines DO
+	 Terminals.SetCursor(dev.t, line, 0); lastx := line; lasty := 0;
+	 col := 0;
+	 WHILE col < dev.columns DO
+	    IF dev.safecorner OR
+		  (line # dev.lines-1) OR (col # dev.columns-1) THEN
+	       char := dev.screen[line][col];
+	       IF (char.ch # " ") OR (char.modes.atset # {}) OR
+		     char.modes.fgset OR char.modes.bgset THEN
+		  IF (lastx # line) OR (lasty # col) THEN
+		     ResetAtSet(dev); ResetColorsOfDevice(dev);
+		     Terminals.MoveCursor(dev.t, lastx, lasty, line, col);
+		  END;
+		  SetModes(dev, char.modes);
+		  IF ~Streams.WriteByte(dev.t, char.ch) THEN RETURN END;
+		  lasty := col + 1;
+	       END;
+	    END;
+	    INC(col);
+	 END;
+	 INC(line);
+      END;
+
+      ResetAtSet(dev);
+      Terminals.SetCursor(dev.t, oldx, oldy);
+      Terminals.CursorAppearance(dev.t, dev.cursorvis);
+      Streams.Touch(dev.t);
+      Semaphores.V(dev.wmutex);
+   END RedrawDevice;
+
+   PROCEDURE SuspendDevice(dev: Device);
+   BEGIN
+      IF dev.suspended THEN RETURN END;
+      Semaphores.P(dev.wmutex);
+      dev.suspended := TRUE;
+      IF dev.useats THEN
+	 TermAttributes.Set(dev.t, {});
+      END;
+      IF dev.uselg THEN
+	 TermLineGraphics.SwitchCharSet(dev.t, TermLineGraphics.standard);
+      END;
+      Terminals.MoveCursor(dev.t, (* from *) dev.x, dev.y,
+                           (* to *) dev.lines-1, 0);
+      IF dev.cursorvis # Terminals.visible THEN
+	 Terminals.CursorAppearance(dev.t, Terminals.visible);
+      END;
+      Terminals.SetScrollRegion(dev.t, 0, dev.lines-1);
+      Streams.Touch(dev.t);
+      Terminals.SetTermMode(dev.t, Terminals.cooked);
+      Terminals.Echo(dev.t, Terminals.on);
+      Semaphores.V(dev.wmutex);
+   END SuspendDevice;
+
+   PROCEDURE RestoreDevice(dev: Device);
+   BEGIN
+      IF ~dev.suspended THEN RETURN END;
+      Semaphores.P(dev.wmutex);
+      Terminals.SetTermMode(dev.t, Terminals.raw);
+      Terminals.Echo(dev.t, Terminals.off);
+      dev.suspended := FALSE;
+      Semaphores.V(dev.wmutex);
+      RedrawDevice(dev);
+   END RestoreDevice;
+
+   PROCEDURE GetDeviceChar(dev: Device; line, column: INTEGER) : CHAR;
+   BEGIN
+      IF (line >= 0) & (line < dev.lines) &
+	    (column >= 0) & (column < dev.columns) THEN
+	 RETURN dev.screen[line][column].ch
+      ELSE
+	 RETURN 0X
+      END;
+   END GetDeviceChar;
+
+   PROCEDURE CreateTopWindow(VAR win: Window; dev: Device);
+   BEGIN
+      CreateWindow(win, dev, dev.lines, dev.columns);
+   END CreateTopWindow;
+
+   PROCEDURE CreateNewWindow(VAR win: Window; newwinof: Window;
+                             sx, sy, lns, cols: INTEGER);
+      VAR
+	 offx, offy: INTEGER;
+	 topwin: Window;
+   BEGIN
+      ASSERT((sx >= 0) & (sy >= 0) & (lns > 0) & (cols > 0));
+      ASSERT((sx + lns <= newwinof.lines) &
+             (sy + cols <= newwinof.columns));
+      topwin := newwinof;
+      GetTopWin(topwin, offx, offy);
+      CreateWindow(win, topwin.dev, lns, cols);
+      win.startx := sx + offx + topwin.startx;
+      win.starty := sy + offy + topwin.starty;
+      win.winats := newwinof.winats;
+   END CreateNewWindow;
+
+   PROCEDURE CreateSubWindow(VAR win: Window; subwinof: Window;
+                             sx, sy, lns, cols: INTEGER);
+   BEGIN
+      ASSERT((sx >= 0) & (sy >= 0) & (lns > 0) & (cols > 0));
+      ASSERT((sx + lns <= subwinof.lines) &
+             (sy + cols <= subwinof.columns));
+      CreateWindow(win, subwinof.dev, lns, cols);
+      win.subwin := TRUE; win.win := subwinof;
+      win.startx := sx; win.starty := sy;
+      win.winats := subwinof.winats;
+      Resources.DependsOn(win, subwinof);
+   END CreateSubWindow;
+
+   PROCEDURE GetInputEventType(win: Window; VAR eventType: Events.EventType);
+   BEGIN
+      IF win.inputEventType = NIL THEN
+	 IF win.dev.getInputEventType # NIL THEN
+	    win.dev.getInputEventType(win.dev, win, win.inputEventType);
+	 END;
+      END;
+      eventType := win.inputEventType;
+   END GetInputEventType;
+
+   PROCEDURE GetSize(win: Window; VAR lines, columns: INTEGER);
+   BEGIN
+      lines := win.lines;
+      columns := win.columns;
+   END GetSize;
+
+   PROCEDURE GetRelativePos(win: Window; VAR line, column: INTEGER);
+   BEGIN
+      line := win.startx;
+      column := win.starty;
+   END GetRelativePos;
+
+   PROCEDURE GetSupWin(win: Window; VAR supwin: Window);
+   BEGIN
+      IF win.subwin THEN
+	 supwin := win.win;
+      ELSE
+	 supwin := NIL;
+      END;
+   END GetSupWin;
+
+   PROCEDURE IsSubWin(win: Window): BOOLEAN;
+   BEGIN
+      RETURN win.subwin
+   END IsSubWin;
+
+   PROCEDURE GetPos(win: Window; VAR line, column: INTEGER);
+   BEGIN
+      line := win.x; column := win.y;
+   END GetPos;
+
+   PROCEDURE SetPos(win: Window; line, column: INTEGER);
+   BEGIN
+      CheckPos(line, column, win.lines, win.columns);
+      win.x := line; win.y := column;
+      Touch(win);
+   END SetPos;
+
+   PROCEDURE GotoLastLine(win: Window);
+   BEGIN
+      win.x := win.lines-1; win.y := 0;
+   END GotoLastLine;
+
+   PROCEDURE Clear(win: Window);
+      VAR
+	 line, col: INTEGER;
+   BEGIN
+      line := 0;
+      WHILE line < win.lines DO
+	 SetPos(win, line, 0);
+	 col := 0;
+	 WHILE col < win.columns DO
+	    WindowWrite(win, " ");
+	    INC(col);
+	 END;
+	 INC(line);
+      END;
+      SetPos(win, 0, 0);
+      win.scrollcnt := 0;
+      Touch(win);
+   END Clear;
+
+   PROCEDURE Scroll(win: Window; count: INTEGER);
+      (* scroll `win'
+	 ABS(count) = # of lines to be scrolled
+	 count > 0: scroll forward (up)
+	 count < 0: scroll backward (down)
+      *)
+      VAR
+	 sx, sy: INTEGER;
+	 topwin: Window;
+   BEGIN
+      IF count # 0 THEN
+	 topwin := win; GetTopWin(topwin, sx, sy);
+	 ScrollScreenCont(topwin.screen, count, sx, sy,
+			  win.lines, win.columns);
+	 INC(win.scrollcnt, count);
+	 IF ABS(win.scrollcnt) >= win.lines THEN
+	    win.scrollcnt := 0;
+	 END;
+	 Touch(win);
+      END;
+   END Scroll;
+
+   PROCEDURE GetChar(win: Window; line, column: INTEGER) : CHAR;
+   BEGIN
+      IF (line < 0) OR (column < 0) OR
+	    (line >= win.lines) OR (column >= win.columns) THEN
+	 RETURN 0X
+      ELSIF win.subwin THEN
+	 RETURN GetChar(win.win, win.startx+line, win.starty+column)
+      ELSE
+	 RETURN win.screen[line][column].ch
+      END;
+   END GetChar;
+
+   PROCEDURE Flush(win: Window);
+      VAR
+	 dev: Device;
+	 topwin: Window;
+	 sx, sy: INTEGER;
+	 l, c: INTEGER;
+	 char: ScreenChar;
+	 dx, dy: INTEGER;
+
+      PROCEDURE Write(char: ScreenChar);
+      BEGIN
+	 dev.screen[dev.x][dev.y] := char;
+	 IF dev.safecorner OR
+	       (dev.x # dev.lines-1) OR (dev.y # dev.columns-1) THEN
+	    SetModes(dev, char.modes);
+	    IF ~Streams.WriteByte(dev.t, char.ch) THEN RETURN END;
+	    IF dev.y+1 < dev.columns THEN
+	       INC(dev.y);
+	    ELSIF dev.x+1 < dev.lines THEN
+	       dev.y := 0; INC(dev.x);
+	       Terminals.SetCursor(dev.t, dev.x, dev.y);
+	    END;
+	 END;
+      END Write;
+
+      PROCEDURE ScrollDevice(dev: Device; count: INTEGER;
+			     sx, sy: INTEGER;
+			     lns, cols: INTEGER) : BOOLEAN;
+	 (* returns TRUE if scrolling is supported by hardware
+	    else no scrolling is done
+	 *)
+	 VAR
+	    cnt: INTEGER;
+	    dir: Terminals.Direction;
+      BEGIN
+	 IF (sy # 0) OR (cols # dev.columns) THEN RETURN FALSE END;
+	 IF ~(Terminals.scroll IN Terminals.Capabilities(dev.t)) THEN
+	    RETURN FALSE
+	 END;
+	 Terminals.SetScrollRegion(dev.t, sx, sx + lns);
+	 IF count < 0 THEN
+	    dir := Terminals.reverse;
+	 ELSE
+	    dir := Terminals.forward;
+	 END;
+	 cnt := ABS(count);
+	 WHILE cnt > 0 DO
+	    Terminals.Scroll(dev.t, dir);
+	    DEC(cnt);
+	 END;
+	 Terminals.SetCursor(dev.t, dev.x, dev.y);
+	 (* update device *)
+	 ScrollScreenCont(dev.screen, count, sx, sy, lns, cols);
+	 RETURN TRUE
+      END ScrollDevice;
+
+   BEGIN (* Flush *)
+      topwin := win; GetTopWin(topwin, sx, sy); dev := topwin.dev;
+      IF dev.suspended THEN RETURN END;
+      Semaphores.P(win.wmutex);
+      IF topwin # win THEN
+	 Semaphores.P(topwin.wmutex);
+      END;
+      Semaphores.P(dev.wmutex);
+      Terminals.SetCursor(dev.t, dev.x, dev.y); (* salami *)
+      IF win.scrollcnt # 0 THEN
+	 IF ScrollDevice(dev, win.scrollcnt,
+		         win.startx+sx, win.starty+sy,
+			 win.lines, win.columns) THEN
+	    (* nothing to be done *)
+	 END;
+	 win.scrollcnt := 0;
+      END;
+      l := 0;
+      WHILE l < win.lines DO
+	 c := 0;
+	 WHILE c < win.columns DO
+	    char := topwin.screen[sx + l][sy + c];
+	    dx := sx + topwin.startx + l;
+	    dy := sy + topwin.starty + c;
+	    IF ~EqualChars(char, dev.screen[dx][dy]) THEN
+	       SetPosOfDevice(dev, dx, dy);
+	       Write(char);
+	    END;
+	    INC(c);
+	 END;
+	 INC(l);
+      END;
+      IF win.reading OR (movecursor IN win.winats) THEN
+	 SetPosOfDevice(dev, sx + topwin.startx + win.x,
+	                     sy + topwin.starty + win.y);
+	 SetCursorShape(dev, Terminals.visible);
+      ELSE
+	 SetCursorShape(dev, Terminals.invisible);
+      END;
+      Streams.Touch(dev.t);
+      Semaphores.V(dev.wmutex);
+      IF topwin # win THEN
+	 Semaphores.V(topwin.wmutex);
+      END;
+      Semaphores.V(win.wmutex);
+   END Flush;
+
+   PROCEDURE ReadKey(win: Window; VAR key: TermKeys.Key);
+      VAR
+	 ch: CHAR; k: TermKeys.Key;
+   BEGIN
+      IF WindowReadKeyOrChar(win, k, ch) THEN
+	 key := k;
+      ELSE
+	 key := NIL;
+      END;
+   END ReadKey;
+
+   PROCEDURE GetAttributes(win: Window; VAR atset: WindowAtSet);
+   BEGIN
+      atset := win.winats;
+   END GetAttributes;
+
+   PROCEDURE SetAttributes(win: Window; atset: WindowAtSet);
+   BEGIN
+      win.winats := atset;
+   END SetAttributes;
+
+BEGIN
+   InitModule;
+END TermWindows.

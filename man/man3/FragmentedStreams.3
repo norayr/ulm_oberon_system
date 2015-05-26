@@ -1,0 +1,455 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH FragmentedStreams 3 "Last change: 23 April 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+FragmentedStreams \- fragmented in-memory streams
+.SH SYNOPSIS
+.Pg
+TYPE Stream = POINTER TO StreamRec;
+TYPE StreamRec = RECORD (Streams.StreamRec) END;
+TYPE Label = POINTER TO LabelRec;
+TYPE LabelRec = RECORD (Disciplines.ObjectRec) END;
+.sp 0.7
+CONST cannotReadUnfixedObject = 0;
+CONST cannotWriteUnfixedObject = 1;
+CONST invalidPosition = 2;
+CONST errors = 3;
+TYPE ErrorCode = SHORTINT;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: ErrorCode;
+   END;
+VAR errormsg: ARRAY errors OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE Create(VAR s: Stream);
+PROCEDURE Open(VAR s: Stream; base: Streams.Stream);
+.sp 0.7
+PROCEDURE CreateLabel(VAR label: Label);
+PROCEDURE AttachLabel(s: Stream; label: Label);
+PROCEDURE Attached(label: Label) : BOOLEAN;
+PROCEDURE IncludeObject(s: Stream; object: Disciplines.Object;
+                        minsize, maxsize: Streams.Count);
+PROCEDURE Distance(label1, label2: Label;
+                   VAR mindist, maxdist: Streams.Count);
+PROCEDURE Difference(label1, label2: Label;
+                     VAR mindiff, maxdiff: Streams.Count);
+PROCEDURE ObjectDistance(object: Disciplines.Object; label: Label;
+                         VAR mindist, maxdist: Streams.Count);
+PROCEDURE ObjectDifference(object: Disciplines.Object; label: Label;
+                           VAR mindiff, maxdiff: Streams.Count);
+PROCEDURE GetSizeRange(object: Disciplines.Object;
+                       VAR minsize, maxsize: Streams.Count);
+PROCEDURE SizeFixed(object: Disciplines.Object) : BOOLEAN;
+PROCEDURE ReduceObjectSizeRange(object: Disciplines.Object;
+                                minsize, maxsize: Streams.Count);
+PROCEDURE SetObjectSize(object: Disciplines.Object; size: Streams.Count);
+PROCEDURE FixObject(object: Disciplines.Object);
+PROCEDURE Length(s: Stream; VAR minlen, maxlen: Streams.Count);
+PROCEDURE GetUnfixedObjects(s: Stream; VAR it: Iterators.Iterator);
+PROCEDURE NumberOfUnfixedObjects(s: Stream) : INTEGER;
+PROCEDURE GetObjectsWithUnknownSize(s: Stream; VAR it: Iterators.Iterator);
+PROCEDURE NumberOfObjectsWithUnknownSize(s: Stream) : INTEGER;
+.Pe
+.SH DESCRIPTION
+.I FragmentedStreams
+works like \fITexts(3)\fP
+but supports the inclusion of fragments whose size and contents
+is determined later. This is particularly useful in the context
+of machine code generation where the code size of relative jumps
+depends on the distance between jump instruction and destination
+address.
+.SS "Principles of Operation"
+.I Create
+creates (like \fITexts.Open\fP) an in-memory stream that is
+opened for reading and writing and supports seek operations.
+While normal stream writing operations may be used to insert
+byte sequences of fixed size, \fIIncludeObject\fP allows to
+include fragments of a not yet known size between
+\fIminsize\fP and \fImaxsize\fP bytes. Later, the size ranges
+of these objects may be reduced by \fIReduceObjectSizeRange\fP
+or finally fixed by \fIFixObject\fP. Fragments of zero length
+are permitted.
+.LP
+While \fICreate\fP uses a stream of \fITexts(3)\fP internally,
+\fIOpen\fP may be used to specify another base stream that
+must behave like a newly created stream of \fITexts(3)\fP.
+This means in particular that the base stream is not
+expected to fail on valid operations.
+.LP
+As long as a fragmented stream contains objects of unknown size,
+some differences in comparison to ordinary in-memory streams
+have to be considered:
+.IP \(bu
+Stream positions are not fixed until all included fragments of varying
+size are fixed. That means that a sequence of \fIStreams.GetPos\fP,
+\fIStreams.Write\fP, and \fIStreams.SetPos\fP using the position
+returned formerly by \fIStreams.GetPos\fP is not guaranteed to return
+to the former position if included objects have been fixed or reduced
+in their size range meanwhile. Labels may be used instead.
+.IP \(bu
+Included objects of unknown size behave like holes and cannot
+be read or written until they are fixed. Their size depends
+dynamically on the minimal size specified so far.
+.SS "Labels"
+Labels allow to remember stream positions in a way that is
+not threatened by included fragments that change their size.
+.I CreateLabel
+creates a new label that is not yet attached to a stream position.
+Later, labels may be attached once but only once to the current
+position of a stream using \fIAttachLabel\fP.
+.I Attached
+allows to test whether \fIAttachLabel\fP has been invoked already
+for \fIlabel\fP.
+.LP
+Distances between labels and/or objects may be queried using
+\fIDistance\fP and \fIObjectDistance\fP. Both return the
+minimal and maximal distance between two locations.
+\fIDifference\fP and \fIObjectDifference\fP work similar but
+return negative values if the second object or label precedes the first.
+.SS "Examining and Fixing Objects"
+.I Length
+returns the current minimal and maximal length of \fIs\fP.
+.I GetUnfixedObjects
+allows to iterate through all still unfixed objects passed formerly
+to \fIIncludeObject\fP.
+.I NumberOfUnfixedObjects
+returns the remaining number of unfixed objects.
+.LP
+.I ReduceObjectSizeRange
+and
+.I SetObjectSize
+reduce or finally determine the size range of an object included
+formerly by \fIIncludeObject\fP.
+The call of
+.I ReduceObjectSizeRange
+with an interval of zero length is equivalent to
+.IR SetObjectSize .
+Setting the size of an object to zero length is allowed.
+Reducing or finally setting the size of an object does
+not turn the fragment's status to fixed (even in case
+of zero length objects).
+.LP
+.I GetSizeRange
+returns the current size range of \fIobject\fP.
+.I SizeFixed
+returns \fBTRUE\fP if the size range is of zero length.
+.LP
+.I GetObjectsWithUnknownSize
+allows to iterate through all objects whose size has
+not been fixed by know.
+.I NumberOfObjectsWithUnknownSize
+return the number of these objects.
+.LP
+.I FixObject
+sets the stream position to the current place of \fIobject\fP
+where the representation of \fIobject\fP is to be written
+immediately thereafter (if the object length is positive).
+Note that the size of \fIobject\fP must have been defined
+earlier using \fIReduceObjectSizeRange\fP (by giving
+a zero length interval) or \fISetObjectSize\fP.
+Fixed objects must no longer be passed to any of the
+procedures above and they are no longer returned by
+\fIGetUnfixedObjects\fP.
+.SS "Application"
+Generation of machine code with relative address references that
+need later to be fixed works in four phases:
+.IP \(bu
+Phase 1: Create a fragmented stream and write generated code to it.
+In case of instructions of beforehand unknown size objects have to be
+created and included that reference the destination address by
+a label.
+.IP \(bu
+Phase 2: Determine the size of all objects:
+.Pg
+WHILE FragmentedStreams.NumberOfObjectsWithUnknownSize() > 0 DO
+   FragmentedStreams.GetObjectsWithUnknownSize(s, it);
+   anyObjectsChanged := FALSE;
+   WHILE Iterators.Get(it, object) DO
+      (* assumption: object.label is the label of the destination address *)
+      FragmentedStreams.ObjectDistance(object, object.label,
+         mindist, maxdist);
+      IF (* mindist and maxdist define a range that finally
+            resolves the size of object *) THEN
+         size := (* final size *);
+         FragmentedStreams.SetObjectSize(object, size);
+         anyObjectsChanged := TRUE;
+      ELSIF (* mindist and maxdist define a reduced range for object *) THEN
+         minsize := (* new lower limit >= old lower limit *);
+         maxsize := (* new upper limit <= old upper limit *);
+         FragmentedStreams.ReduceObjectSizeRange(object, minsize, maxsize);
+         anyObjectsChanged := TRUE;
+      END;
+   END;
+   IF ~anyObjectsChanged THEN
+      (* we have to pick one of the objects and to take the longest
+         variant
+      *)
+      FragmentedStreams.GetObjectsWithUnknownSize(s, it);
+      ok := Iterators.Get(it, object); ASSERT(ok);
+      FragmentedStreams.ObjectDistance(object, object.label,
+                                       mindist, maxdist);
+      size := (* size in dependence of maxdist *);
+      FragmentedStreams.SetObjectSize(object, size);
+   END;
+END;
+.Pe
+.IP \(bu
+Phase 3: Fix all objects:
+.Pg
+FragmentedStreams.GetUnfixedObjects(s, it);
+WHILE Iterators.Get(it, object) DO
+   (* retrieve distance to destination if necessary *)
+   FragmentedStreams.ObjectDistance(object, object.label,
+      mindist, maxdist);
+   ASSERT(mindist = maxdist);
+   FragmentedStreams.GetSizeRange(object, minsize, maxsize);
+   ASSERT(minsize = maxsize);
+   size := minsize;
+   FragmentedStreams.FixObject(object);
+   (* write size bytes to s representing object *)
+END;
+.Pe
+.IP \(bu
+Phase 4: Copy in-memory stream to output stream:
+.Pg
+Streams.SetPos(s, 0); ok := Streams.Copy(s, out, -1);
+.Pe
+Or, alternatively, convert it into a persistent text:
+.Pg
+PersistentTexts.Create(ptext, s);
+.Pe
+But note that in the latter case the close operation of
+\fIs\fP must be postponed until \fIptext\fP is written
+using \fIPersistentObjects.Write\fP to its final storage.
+.SH DIAGNOSTICS
+By default, error events for fragmented streams are being queued
+(see \fIRelatedEvents(3)\fP).
+Beside error events generated by \fIStreams(3)\fP and the
+underlying base stream, following error codes
+may be generated by \fIFragmentedStreams\fP:
+.Tb cannotWriteUnfixedObject
+.Tp cannotReadUnfixedObject
+Unfixed objects cannot be read until \fIFixObject\fP is called for them.
+.Tp cannotWriteUnfixedObject
+Likewise, \fIFragmentedStreams\fP does not support write operations
+that would affect not unfixed objects.
+.Tp invalidPosition
+Negative stream positions or positions beyond the minimal length
+returned by \fILength\fP are not supported.
+.Te
+.LP
+A large number of preconditions is checked by assertions:
+.IP \(bu
+\fIAttachLabel\fP must not be called more than once for a label.
+.IP \(bu
+\fIIncludeObject\fP expects \fIminsize\fP and \fImaxsize\fP
+to be non-negative, and \fIminsize\fP to be less or equal to \fImaxsize\fP.
+.IP \(bu
+\fIIncludeObject\fP requires the current stream position to be at
+the end of the stream, i.e. objects can only be appended to a stream.
+.IP \(bu
+\fIDistance\fP and \fIDifference\fP require
+both labels to be attached to the same stream.
+.IP \(bu
+\fIObjectDistance\fP and \fIObjectDifference\fP expect 
+fIlabel\fP to be attached to the
+stream \fIobject\fP is included.
+.IP \(bu
+\fIReduceObjectSizeRange\fP and \fIFixObject\fP require size
+specifications to be in between the former limits.
+.LP
+Some assertions check that the base stream does not fail on
+valid operations.
+.LP
+Read and write operations are clipped by unfixed objects. Operations
+like \fIStreams.Read\fP and \fIStreams.Write\fP return \fBFALSE\fP
+in these cases but \fIs.count\fP could be positive.
+.SH "SEE ALSO"
+.Tb PersistentTexts(3)
+.Tp LargeTexts(3)
+alternative base stream
+.Tp PersistentTexts(3)
+persistent texts
+.Tp RelatedEvents(3)
+error handling
+.Tp Streams(3)
+general stream operations
+.Tp Texts(3)
+default implementation of underlying in-memory stream
+.Te
+.SH BUGS
+Objects must not be included in more than one fragmented stream.
+.LP
+If the base stream does not permit holes (as \fITexts.Text\fP does)
+fixed objects must be written entirely before attempting to perform
+other write operations. Violations may cause assertions to fail on
+later write operations.
+.\" ---------------------------------------------------------------------------
+.\" $Id: FragmentedStreams.3,v 1.7 2004/04/23 18:15:32 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: FragmentedStreams.3,v $
+.\" Revision 1.7  2004/04/23 18:15:32  borchert
+.\" typos fixed
+.\"
+.\" Revision 1.6  2003/07/10 09:07:46  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.5  2000/10/26 20:02:30  borchert
+.\" bug fix: LabelRec should be an extension of Disciplines.ObjectRec
+.\"          (instead of Disciplines.DisciplineRec)
+.\"
+.\" Revision 1.4  2000/10/18  06:29:24  borchert
+.\" Difference and ObjectDifference added
+.\"
+.\" Revision 1.3  2000/09/15  12:26:22  borchert
+.\" - determination of object size separated from object fixing
+.\" - application example adapted
+.\" - reference to PersistentTexts added
+.\"
+.\" Revision 1.2  2000/04/28  07:31:28  borchert
+.\" clarifications regarding zero length fragments and zero length intervals
+.\" added
+.\"
+.\" Revision 1.1  2000/04/26  15:23:49  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

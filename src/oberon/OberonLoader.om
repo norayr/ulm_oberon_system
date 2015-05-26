@@ -1,0 +1,424 @@
+(* Ulm's Oberon Compiler
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Oberon Compiler.
+
+   Ulm's Oberon Compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Oberon Compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonLoade.om,v 1.2 2005/02/05 18:21:21 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: OberonLoade.om,v $
+   Revision 1.2  2005/02/05 18:21:21  borchert
+   - language parameter removed
+   - support of multiple output files added
+   - support of multiple base directories added
+   - intensity parameter added
+   - monitor parameter added
+
+   Revision 1.1  2004/09/06 07:47:13  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonLoader;
+
+   IMPORT Architectures, Args := UnixArguments, CachedNames, CDB,
+      CDBNodeProxies, CompilerDatabases, CompilerErrors, CompilerKeys,
+      CompilerLogs, CompilerObjects, Compilers, Conclusions, ConstStrings,
+      Errors, I386OberonBuiltIns, Iterators, Lex := OberonLex, Listers,
+      ModularizedStructures, Names, OberonBuiltIns, OberonCompiler,
+      OberonI386, OberonParser, OberonSPARCv8, OberonSymbols,
+      OberonUlmProcedures, OberonWrite, ObjectLoader, Paths,
+      PersistentObjects, PersistentTexts, Print, PrivateShards, Process,
+      Read, RelatedEvents, RemoteCDBNames, RemoteIterators, RemoteNames,
+      Services, Shards, Sources := CompilerSources, Storage, Streams,
+      Strings, SysMonitor, TerminalLister, Terminals, TranslucentNames,
+      UniqueNames, UnixEnvironment, UnixFiles, UnixNames, UnixOberonBuiltIns,
+      UnixTerminals, Write;
+
+   VAR
+      intensity: INTEGER;
+      errors: RelatedEvents.Object;
+      module: OberonSymbols.Ident;
+      outputfilename: ARRAY 512 OF CHAR;
+      output: Streams.Stream;
+
+      db: CompilerDatabases.Database;
+      authfile, basedir: ARRAY 512 OF CHAR;
+      firstbd: BOOLEAN;
+      modname: ConstStrings.String;
+      moduleName: ARRAY 512 OF CHAR;
+      type: CompilerObjects.ObjectType;
+      auth: Shards.Lid;
+      log: CompilerLogs.Log;
+
+      arch: Architectures.Architecture;
+      context: Compilers.Context;
+      header: CompilerObjects.Header;
+      text: PersistentTexts.Text;
+
+      lidType: Services.Type;
+      retcode: Process.ExitCode;
+
+      printTree: BOOLEAN;
+      nameCache: BOOLEAN;
+      monitor: BOOLEAN;
+
+      (* for the generation of multiple output files *)
+      outkeys: CompilerKeys.Set;
+      outpattern: ARRAY 512 OF CHAR;
+      ok: BOOLEAN;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE CreateCache(VAR basedir: ARRAY OF CHAR);
+      VAR
+	 orig, cache: Names.Node;
+	 name: ConstStrings.String;
+   BEGIN
+      IF ~Paths.GetNode(basedir, auth, errors, orig) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      CachedNames.Create(cache, orig, NIL, NIL);
+      RelatedEvents.Forward(Names.root, errors);
+      IF ~UniqueNames.Insert(Names.root, cache, auth, name) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      ConstStrings.Extract(basedir, name);
+   END CreateCache;
+
+   PROCEDURE CreateTranslucentDir(VAR basedir: ARRAY OF CHAR;
+                                  wdir: ARRAY OF CHAR);
+      VAR
+	 rnode, wnode, tnode: Names.Node;
+	 name: ConstStrings.String;
+   BEGIN
+      IF ~Paths.GetNode(basedir, auth, errors, rnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF ~Paths.GetNode(wdir, auth, errors, wnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      TranslucentNames.Create(tnode, rnode, wnode, auth, auth, NIL,
+	 TranslucentNames.unsorted);
+      RelatedEvents.Forward(Names.root, errors);
+      IF ~UniqueNames.Insert(Names.root, tnode, auth, name) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      ConstStrings.Extract(basedir, name);
+   END CreateTranslucentDir;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+	 archstring: ConstStrings.String;
+	 as: Streams.Stream;
+	 level: INTEGER;
+	 nextbd: ARRAY 512 OF CHAR;
+
+      PROCEDURE PrintSupportedArchitectures;
+	 VAR
+	    it: Iterators.Iterator;
+	    arch: Architectures.Architecture;
+	    first: BOOLEAN;
+	    string: ConstStrings.String;
+      BEGIN
+	 first := TRUE;
+	 Compilers.GetSupportedArchitectures(OberonCompiler.compiler, it);
+	 WHILE Iterators.Get(it, arch) DO
+	    IF first THEN
+	       Write.StringS(Streams.stderr, "supported architectures are: ");
+	       first := FALSE;
+	    ELSE
+	       Write.StringS(Streams.stderr, ", ");
+	    END;
+	    Architectures.GetString(arch, string);
+	    ConstStrings.Write(Streams.stderr, string);
+	 END;
+	 IF first THEN
+	    Write.LineS(Streams.stderr, "no architectures are supported");
+	 ELSE
+	    Write.LnS(Streams.stderr);
+	 END;
+      END PrintSupportedArchitectures;
+
+   BEGIN (* ProcessArguments *)
+      IF ~UnixEnvironment.String("CDB_BASEDIR", basedir) THEN
+	 basedir := "pub/cdb/oberon";
+      END;
+      firstbd := TRUE;
+      outputfilename[0] := 0X;
+      type := CompilerObjects.public;
+      arch := NIL;
+      nameCache := FALSE;
+      monitor := FALSE;
+      intensity := 8;
+      context.cachemode := CompilerObjects.cachePublic +
+         {CompilerObjects.private * CompilerObjects.archDependent};
+      Args.Init("[-a auth] [-A arch] {-b basedir} [-c|C] [-D|-M] [-i intensity] [-l loglevel] [-m] [-N] [-o output] {modname}");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a": Args.FetchString(filename); CreateLid(auth, filename);
+	 | "A": Args.FetchString(filename);
+	        ConstStrings.Create(archstring, filename);
+		Architectures.GetArch(archstring, arch);
+		IF arch = NIL THEN
+		   Write.StringS(Streams.stderr, "invalid architecture spec: ");
+		   Write.LineS(Streams.stderr, filename);
+		   Process.Exit(Process.indicateFailure);
+		END;
+		IF ~Compilers.Supported(OberonCompiler.compiler, arch) THEN
+		   Write.StringS(Streams.stderr, "unsupported architecture: ");
+		   Write.LineS(Streams.stderr, filename);
+		   PrintSupportedArchitectures;
+		   Process.Exit(Process.indicateFailure);
+		END;
+	 | "b": IF firstbd THEN
+	           Args.FetchString(basedir);
+		   firstbd := FALSE;
+	        ELSE
+	           Args.FetchString(nextbd);
+		   CreateTranslucentDir(basedir, nextbd);
+		END;
+	 | "c": context.cachemode := CompilerObjects.cacheAll;
+	 | "C": context.cachemode := {};
+	 | "D": type := CompilerObjects.public;
+	 | "i": IF ~Args.OpenArg(as) THEN Args.Usage END;
+	        Read.IntS(as, intensity);
+	 | "l": IF ~Args.OpenArg(as) THEN Args.Usage END;
+	        Read.IntS(as, level);
+	        CompilerLogs.Create(log, Streams.stdout);
+		CompilerLogs.SetLogLevel(log, level);
+	 | "m": monitor := TRUE;
+	 | "M": type := CompilerObjects.private;
+	 | "N": nameCache := TRUE;
+	 | "o": Args.FetchString(outputfilename);
+	 | "O": Args.FetchString(outpattern);
+	        CompilerKeys.CreateSet(outkeys);
+	 | "t": printTree := TRUE;
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      IF (auth = NIL) & UnixEnvironment.String("CDB_AUTH", filename) THEN
+	 CreateLid(auth, filename);
+      END;
+   END ProcessArguments;
+
+   PROCEDURE GenerateOutput(header: CompilerObjects.Header;
+                            text: PersistentTexts.Text) : BOOLEAN;
+      
+      VAR
+	 filename: ARRAY 512 OF CHAR;
+	 dummyKey: CompilerKeys.Key;
+
+      PROCEDURE GenOutputFileNameFromPattern(VAR filename: ARRAY OF CHAR);
+	 VAR
+	    i, pi: INTEGER;
+	    ch: CHAR;
+	    s: Streams.Stream;
+	    arch: ConstStrings.String;
+
+	 PROCEDURE NextCh;
+	 BEGIN
+	    IF pi >= LEN(outpattern) THEN
+	       ch := 0X;
+	    ELSE
+	       ch := outpattern[pi]; INC(pi);
+	    END;
+	 END NextCh;
+
+      BEGIN (* GenOutputFileNameFromPattern *)
+	 i := 0; pi := 0; NextCh;
+	 filename[0] := 0X; Strings.Open(s, filename);
+	 WHILE ch # 0X DO
+	    IF ch = "%" THEN
+	       NextCh;
+	       CASE ch OF
+	       | "a":
+		     IF header.arch = NIL THEN
+			Write.StringS(s, "gen");
+		     ELSE
+			Architectures.GetString(header.arch, arch);
+			ConstStrings.Write(s, arch);
+		     END;
+	       | "c":
+		     IF header.arch = NIL THEN
+			Write.StringS(s, "gen");
+		     ELSE
+			ConstStrings.Write(s, header.arch.class);
+		     END;
+	       | "m":
+		     ConstStrings.Write(s, header.modname);
+	       | "t":
+		     CASE header.type OF
+		     | CompilerObjects.public:
+			   Write.StringS(s, "def");
+		     | CompilerObjects.private:
+			   Write.StringS(s, "mod");
+		     END;
+	       | "%", 0X:
+		     Write.CharS(s, "%");
+	       ELSE
+		  Write.CharS(s, "%");
+		  Write.CharS(s, ch);
+	       END;
+	    ELSE
+	       Write.CharS(s, ch);
+	    END;
+	    NextCh;
+	 END;
+      END GenOutputFileNameFromPattern;
+
+      PROCEDURE Store(filename: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    output: Streams.Stream;
+      BEGIN
+	 IF ~UnixFiles.Open(output, filename,
+	                    UnixFiles.write + UnixFiles.create,
+			    Streams.onebuf, errors) THEN
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Forward(output, errors);
+	 IF ~PersistentObjects.Write(output, header) OR
+	       ~PersistentObjects.Write(output, text) THEN
+	    RETURN FALSE
+	 END;
+	 Streams.Release(output);
+	 RETURN TRUE
+      END Store;
+
+      PROCEDURE LoadAllDependencies() : BOOLEAN;
+	 VAR
+	    key: CompilerKeys.Key;
+	    it: Iterators.Iterator;
+	    dummyKey: CompilerKeys.Key;
+	    h: CompilerObjects.Header;
+	    t: PersistentTexts.Text;
+      BEGIN
+	 CompilerKeys.GetKeys(header.dependencies, it);
+	 WHILE Iterators.Get(it, key) DO
+	    IF ~CompilerKeys.Lookup(outkeys, key.modname, dummyKey) THEN
+	       IF ~ObjectLoader.LoadText(OberonCompiler.compiler, context,
+			key.modname, type, arch, h, t, errors) OR
+		     ~GenerateOutput(h, t) THEN
+		  RETURN FALSE
+	       END;
+	    END;
+	 END;
+	 RETURN TRUE
+      END LoadAllDependencies;
+
+   BEGIN (* GenerateOutput *)
+      IF outkeys # NIL THEN
+         IF ~CompilerKeys.Lookup(outkeys, header.modname, dummyKey) THEN
+	    CompilerKeys.Incl(outkeys, header.key);
+	    GenOutputFileNameFromPattern(filename);
+	    RETURN Store(filename) & LoadAllDependencies()
+	 END;
+      ELSIF outputfilename # "" THEN
+	 RETURN Store(outputfilename)
+      END;
+      RETURN TRUE
+   END GenerateOutput;
+
+BEGIN
+   printTree := FALSE;
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+   NEW(context);
+   outkeys := NIL; outpattern := "";
+
+   ProcessArguments;
+
+   intensity := Storage.Intensity(intensity);
+   IF monitor THEN
+      SysMonitor.Start;
+   END;
+
+   IF nameCache THEN
+      CreateCache(basedir);
+   END;
+   IF ~CDB.Open(context.db, basedir, auth, errors) THEN
+      Conclusions.Conclude(errors, Errors.fatal, basedir);
+   END;
+   RelatedEvents.Forward(context.db, errors);
+
+   CompilerKeys.CreateSet(context.keys);
+   ModularizedStructures.CreateTable(context.tab);
+   CompilerObjects.CreateModuleTable(context.mtab);
+   context.log := log;
+
+   ok := TRUE;
+   WHILE ok & Args.GetArg(moduleName) DO
+      ConstStrings.Create(modname, moduleName);
+      IF printTree THEN
+	 IF ObjectLoader.LoadObject(OberonCompiler.compiler,
+	       context, modname, type, arch, header, module, errors) THEN
+	    OberonWrite.Ident(Streams.stdout, module);
+	 ELSE
+	    ok := FALSE;
+	 END;
+      ELSE
+	 IF ObjectLoader.LoadText(OberonCompiler.compiler, context, modname,
+	                          type, arch, header, text, errors) THEN
+	    ok := GenerateOutput(header, text);
+	 ELSE
+	    ok := FALSE;
+	 END;
+      END;
+   END;
+
+   IF ok THEN
+      retcode := Process.indicateSuccess;
+   ELSE
+      IF (Terminals.console # NIL) &
+	    TerminalLister.Init(Terminals.console) THEN
+	 Listers.GenListing(Terminals.console, errors);
+      ELSE
+	 Listers.GenListing(Streams.stderr, errors);
+      END;
+      IF RelatedEvents.EventsPending(errors) THEN
+	 Conclusions.Conclude(errors, Errors.error, "");
+      END;
+      retcode := Process.indicateFailure;
+   END;
+
+   IF Terminals.console # NIL THEN
+      Streams.Release(Terminals.console);
+   END;
+   IF monitor THEN
+      SysMonitor.Stop(Streams.stderr);
+   END;
+   Process.TerminateSoftly;
+   Process.Exit(retcode);
+END OberonLoader.

@@ -1,0 +1,146 @@
+(* Adi's FTP Daemon
+   Copyright (C) 2000-2001 by Andreas Borchert
+   ----------------------------------------------------------------------------
+   Adi's FTP Daemon is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Adi's FTP Daemon is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPUp.om,v 1.1 2001/07/28 18:42:46 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: FTPUp.om,v $
+   Revision 1.1  2001/07/28 18:42:46  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPUp;
+
+   IMPORT Args := UnixArguments, Conclusions, Errors, Events, FTPAuthReader,
+      FTPEngine, FTPSessions, FTPTimerEvents, FTPTimers, Process, Read,
+      RelatedEvents, Resources, Streams, SysArgs, SysIO, Times, UnixArgLists,
+      UnixFiles, UnixPipes, Write;
+
+   VAR
+      resEventType: Events.EventType;
+      errors: RelatedEvents.Object;
+      session: FTPSessions.Session;
+      pathname: ARRAY 512 OF CHAR;
+      argv: SysArgs.Arguments;
+      timeout: Times.Time;
+      acceptAnonymous: BOOLEAN;
+
+   PROCEDURE AuthHandler(session: FTPSessions.Session;
+			 VAR message: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 name: ARRAY 32 OF CHAR;
+   BEGIN
+      IF ~acceptAnonymous THEN
+	 FTPAuthReader.GetUserName(session, name);
+	 IF (name = "anonymous") OR (name = "ftp") THEN
+	    COPY("Anonymous logins are not supported.", message);
+	    RETURN FALSE
+	 END;
+      END;
+      session.finished := TRUE; (* login only *)
+      COPY("Thank you for login and password. Check is postponed.", message);
+      RETURN TRUE
+   END AuthHandler;
+
+   PROCEDURE FetchArguments;
+      VAR
+	 list: Streams.Stream;
+	 string: ARRAY 512 OF CHAR;
+	 arg: Streams.Stream;
+	 seconds: INTEGER;
+	 flag: CHAR;
+   BEGIN
+      Times.CreateAndSet(timeout, Times.relative, 0, 60, 0);
+      Args.Init("[-a] [-t timeout] command");
+      acceptAnonymous := TRUE;
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a":   acceptAnonymous := FALSE;
+	 | "t":   Args.Fetch(arg); Read.IntS(arg, seconds);
+		  IF seconds > 0 THEN
+		     Times.CreateAndSet(timeout, Times.relative, 0, seconds, 0);
+		  ELSE
+		     timeout := NIL;
+		  END;
+	 ELSE     Args.Usage;
+	 END;
+      END;
+      Args.FetchString(pathname);
+      UnixArgLists.Open(list); Write.StringS(list, pathname);
+      WHILE Args.GetArg(string) DO
+	 UnixArgLists.Next(list); Write.StringS(list, string);
+      END;
+      UnixArgLists.Close(list, argv);
+   END FetchArguments;
+
+   PROCEDURE DoAuthorization;
+   BEGIN
+      FTPSessions.Create(session); session.authorized := FALSE;
+      RelatedEvents.Forward(session, errors);
+      IF timeout # NIL THEN
+	 FTPTimers.Install(session);
+	 FTPTimerEvents.SetTimeout(session, timeout);
+      END;
+      FTPAuthReader.AddHandler(session, AuthHandler);
+      FTPEngine.Run(0, session, Streams.stderr);
+      IF ~FTPAuthReader.Authorized(session) THEN
+	 IF RelatedEvents.EventsPending(errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+	 Process.Exit(Process.indicateFailure);
+      END;
+   END DoAuthorization;
+
+   PROCEDURE DoSession;
+      VAR
+	 pipe: Streams.Stream;
+	 readfd, writefd: SysIO.File;
+	 string: ARRAY 32 OF CHAR;
+   BEGIN
+      IF ~SysIO.Pipe(readfd, writefd, errors) OR
+	    ~UnixPipes.Spawn(pipe, readfd, writefd, 3,
+			     pathname, argv, UnixPipes.write, Streams.onebuf,
+			     errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "pipe opening");
+      END;
+      RelatedEvents.Forward(pipe, errors);
+      FTPAuthReader.GetUserName(session, string);
+      Write.StringS(pipe, string); Write.CharS(pipe, 0X);
+      FTPAuthReader.GetPassword(session, string);
+      Write.StringS(pipe, string); Write.CharS(pipe, 0X);
+      IF ~Streams.Close(pipe) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "pipeline");
+      END;
+   END DoSession;
+
+   PROCEDURE CloseHandler(event: Events.Event);
+   BEGIN
+      Write.LineS(Streams.stderr, "stdin has been closed!");
+   END CloseHandler;
+
+BEGIN
+   Resources.TakeInterest(Streams.stdin, resEventType);
+   Events.Handler(resEventType, CloseHandler);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   FetchArguments;
+   DoAuthorization;
+   DoSession;
+   Process.Exit(Process.indicateSuccess);
+END FTPUp.

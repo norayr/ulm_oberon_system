@@ -1,0 +1,632 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RobustObjec.om,v 1.5 2005/04/20 21:10:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RobustObjec.om,v $
+   Revision 1.5  2005/04/20 21:10:36  borchert
+   the Recoverer task is now terminated
+    - in case of a Process.softTermination event or
+    - if the to be recovered proxy object is terminated
+
+   Revision 1.4  2004/09/03 09:35:46  borchert
+   bug fix: RETURN TRUE was missing in WriteName
+
+   Revision 1.3  1996/11/14  07:55:26  borchert
+   LongLivingObjects renamed to RobustObjects
+
+   Revision 1.2  1996/11/13  17:23:03  borchert
+   bug fix: there was a raise condition for Recover where a proxy
+            was already dead in our local process not yet terminated
+            at the name server which caused PathConditions to return
+            immediately but PathConditions.GetNode to fail. Recover
+            is now more tolerant but still expects the proxy at the
+            name server to die in a limited time.
+
+   Revision 1.1  1996/01/02  13:02:59  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RobustObjects;
+
+   IMPORT ASCII, Clocks, Conditions, ConstStrings, Disciplines, Errors,
+      EventConditions, Events, Messages, Names, NetIO, PathConditions, Paths,
+      PersistentObjects, Priorities, Process, RelatedEvents, RemoteObjects,
+      Resources, Services, Shards, StreamDisciplines, Streams, Strings,
+      Tasks, TimeConditions, Times;
+
+   (*     importing side      -/     \-         exporting side
+                             -/       \-
+            proxy  O---------------------------O  original object
+                           -/           \-     |  connected via NodeDiscipline
+        tmp proxy  O---------------------------O  original node,
+          of node   \    -/               \-  /   understands import msgs
+      _______________\___/                 \_/___________________________
+                      \                     /
+             imported  \                   /
+          ______________\_________________/__________________________
+         /               \               /                           \
+        /          from   \             /       name server           \
+       /             here  \           /                               \
+      /                     <---------O  proxy of node                  \
+				      |
+				      O  domain
+
+      - Export creates a node and installs it at the nameserver
+      - Import imports the node via the nameserver and sends an
+	import message (with reimport = FALSE) to the original node
+	which returns the original object directly to the importing side;
+	the proxy of the node is then no longer used on the importing side;
+	a discipline (ProxyDiscipline) with all necessary informations
+	for recovery is attached to the proxy
+      - in case of recovery this discipline is used to wait at the
+	nameserver for the re-appearance of the proxy node under
+	the same path; then it is imported and a import message
+	(now with reimport = TRUE) is sent to the re-established
+	original object; to have all parameters for RemoteObjects.ReImport
+	at hand another dummy node is created and passed along
+	with this message which just points to the old proxy object
+   *)
+
+   TYPE
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+	 (* attached on the exporting side to the official node of Names;
+	    on the importing side this serves as pointer to the proxy object
+	 *)
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    object: Services.Object;
+	 END;
+   VAR
+      ndID: Disciplines.Identifier;
+
+   TYPE
+      ProxyDiscipline = POINTER TO ProxyDisciplineRec;
+	 (* attached on the importing side at the proxy object of
+	    the original object (not the node); this discipline
+	    contains all informations which are necessary to
+	    re-import that object
+	 *)
+      ProxyDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    refobject: Names.Node;
+	       (* points via NodeDiscipline back to proxy object *)
+	    path: ConstStrings.String; (* from where to re-import *)
+	    root: Names.Node; (* the path is to be taken relatively to this *)
+	    auth: Shards.Lid;
+	 END;
+   VAR
+      pdID: Disciplines.Identifier;
+
+   VAR
+      nodeType: Services.Type; (* type of Names.Node *)
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      ImportMessage = POINTER TO ImportMessageRec;
+      ImportMessageRec =
+         RECORD
+            (MessageRec)
+            reimport: BOOLEAN; (* INOUT via Boolean *)
+            refnode: Names.Node; (* INOUT via REF *)
+            object: Services.Object; (* OUT via REF *)
+	       (* the original object which is to be imported
+		  in dependence of reimport and refnode
+	       *)
+         END;
+
+   VAR
+      importMessageType: Services.Type;
+
+   (* === error handling ================================================== *)
+
+   CONST
+      typeGuardFailure = 0;
+      notARobustObject = 1;
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    (* private components for WriteError *)
+	    path: ConstStrings.String;
+	    expected, found: Services.Type;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+      PROCEDURE WriteString(s: Streams.Stream;
+			    string: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string))
+      END WriteString;
+
+      PROCEDURE WriteLn(s: Streams.Stream) : BOOLEAN;
+	 VAR
+	    lineterm: StreamDisciplines.LineTerminator;
+	    width: INTEGER;
+      BEGIN
+	 StreamDisciplines.GetLineTerm(s, lineterm);
+	 IF ~WriteString(s, lineterm) THEN RETURN FALSE END;
+	 StreamDisciplines.GetIndentationWidth(s, width);
+	 WHILE width > 0 DO
+	    IF ~Streams.WriteByte(s, " ") THEN RETURN FALSE END;
+	    DEC(width);
+	 END;
+	 RETURN TRUE
+      END WriteLn;
+
+      PROCEDURE WriteType(s: Streams.Stream;
+			  type: Services.Type) : BOOLEAN;
+	 VAR
+	    name: ARRAY 128 OF CHAR;
+      BEGIN
+	 Services.GetTypeName(type, name);
+	 RETURN Streams.WriteByte(s, ASCII.quote) &
+	        WriteString(s, name) &
+		Streams.WriteByte(s, ASCII.quote)
+      END WriteType;
+
+      PROCEDURE WriteName(s: Streams.Stream;
+			  name: ConstStrings.String) : BOOLEAN;
+      BEGIN
+	 IF ~Streams.WriteByte(s, ASCII.quote) THEN RETURN FALSE END;
+	 ConstStrings.Write(s, name);
+	 IF ~Streams.WriteByte(s, ASCII.quote) THEN RETURN FALSE END;
+	 RETURN TRUE
+      END WriteName;
+
+   BEGIN (* WriteError *)
+      WITH event: ErrorEvent DO
+	 IF ~WriteName(s, event.path) OR
+	       ~WriteString(s, ": ") OR
+	       ~WriteString(s, event.message) THEN
+	    RETURN
+	 END;
+	 IF event.errorcode = typeGuardFailure THEN
+	    IF WriteString(s, ":") &
+		  WriteLn(s) &
+		  WriteString(s, "expected ") &
+		  WriteString(s, "extension of ") &
+		  WriteType(s, event.expected) &
+		  WriteString(s, " but got ") &
+		  WriteType(s, event.found) THEN
+	    END;
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE GuardFailure(errors: RelatedEvents.Object;
+			  path: ARRAY OF CHAR;
+			  expected, found: Services.Type);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.errorcode := typeGuardFailure;
+      event.message := errormsg[event.errorcode];
+      ConstStrings.Create(event.path, path);
+      event.expected := expected; event.found := found;
+      RelatedEvents.Raise(errors, event);
+   END GuardFailure;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+		   path: ARRAY OF CHAR;
+		   errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.errorcode := errorcode;
+      event.message := errormsg[errorcode];
+      ConstStrings.Create(event.path, path);
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[typeGuardFailure] := "imported object is of unexpected type";
+      errormsg[notARobustObject] := "is not a robust object";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   (* === RemoteObjects if procs and message handling ===================== *)
+
+   PROCEDURE CreateImportMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ImportMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, importMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateImportMessage;
+
+   PROCEDURE WriteImportMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ImportMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteBoolean(s, msg.reimport) &
+                   RemoteObjects.Export(s, msg.refnode) &
+                   RemoteObjects.Export(s, msg.object)
+         ELSE
+            RETURN NetIO.WriteBoolean(s, msg.reimport) &
+                   RemoteObjects.Export(s, msg.refnode)
+         END;
+      END;
+   END WriteImportMessage;
+
+   PROCEDURE ReadImportMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 nd: NodeDiscipline;
+   BEGIN
+      WITH msg: ImportMessage DO
+         IF msg.processed THEN
+            IF ~NetIO.ReadBoolean(s, msg.reimport) OR
+                   ~RemoteObjects.GuardedImport(s, nodeType, msg.refnode) THEN
+	       RETURN FALSE
+	    END;
+	    IF msg.reimport THEN
+	       ok := Disciplines.Seek(msg.refnode, ndID, nd); ASSERT(ok);
+	       IF RemoteObjects.ReImport(s, nd.object) THEN
+		  msg.object := nd.object; RETURN TRUE
+	       ELSE
+		  msg.object := NIL; RETURN FALSE
+	       END;
+	    ELSE
+	       RETURN RemoteObjects.Import(s, msg.object)
+	    END;
+         ELSE
+            RETURN NetIO.ReadBoolean(s, msg.reimport) &
+                   RemoteObjects.Import(s, msg.refnode)
+         END;
+      END;
+   END ReadImportMessage;
+
+   PROCEDURE MessageHandler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+	 ok: BOOLEAN;
+	 nd: NodeDiscipline;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Names.Node DO
+         msg.processed := TRUE;
+         IF msg IS ImportMessage THEN
+            WITH msg: ImportMessage DO
+	       ok := Disciplines.Seek(object, ndID, nd); ASSERT(ok);
+	       msg.object := nd.object;
+               msg.done := TRUE;
+            END;
+         END;
+      END;
+   END MessageHandler;
+
+   PROCEDURE SendImportMsg(node: Names.Node; reimport: BOOLEAN;
+                           refnode: Names.Node; (* only if reimport TRUE *)
+                           VAR object: Services.Object;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR msg: ImportMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateImportMessage(msg);
+      msg.reimport := reimport;
+      msg.refnode := refnode;
+      Messages.Send(node, msg);
+      object := msg.object;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN msg.done
+   END SendImportMsg;
+
+   PROCEDURE DropTemporaryNode(node: Names.Node);
+      VAR
+	 key: Resources.Key;
+   BEGIN
+      Resources.Attach(node, key);
+      Resources.Detach(node, key);
+   END DropTemporaryNode;
+
+   PROCEDURE Delay(seconds: INTEGER);
+      VAR
+	 time: Times.Time;
+	 condition: Conditions.Condition;
+   BEGIN
+      Times.CreateAndSet(time, Times.relative, 0, seconds, 0);
+      TimeConditions.Create(condition, Clocks.system, time);
+      Tasks.WaitFor(condition);
+   END Delay;
+
+   PROCEDURE Recover(object: Services.Object;
+		     errorCode: RemoteObjects.ErrorCode);
+      (* has either to terminate or to successfully(!) re-import
+	 the given object;
+	 this procedure may block the current task for longer
+	 time periods and is also free to try re-imports many times
+      *)
+      CONST
+	 tries = 5;
+      VAR
+	 pd: ProxyDiscipline;
+	 ok: BOOLEAN;
+	 condition: PathConditions.Condition;
+	 softtermcond: Conditions.Condition;
+	 termcond: Conditions.Condition;
+	 resEventType: Events.EventType;
+	 conditions, selected: Conditions.ConditionSet;
+	 event: Events.Event;
+	 resevent: Resources.Event;
+	 node: Names.Node;
+	 proxy: Services.Object;
+	 try: INTEGER;
+	 delay: INTEGER;
+   BEGIN
+      ok := Disciplines.Seek(object, pdID, pd); ASSERT(ok);
+      Conditions.CreateSet(conditions);
+      EventConditions.Create(softtermcond, Process.softTermination);
+      Conditions.Incl(conditions, softtermcond);
+      Resources.TakeInterest(object, resEventType);
+      EventConditions.Create(termcond, resEventType);
+      Conditions.Incl(conditions, termcond);
+      (* note that there may be temporary failures at the
+	 early beginning if the name server was yet unable
+	 to process the termination event; in this case
+	 the path condition would become true immediately
+	 but accesses would fail because the object is dead
+      *)
+      try := 0; delay := 2;
+      LOOP
+	 INC(try);
+	 PathConditions.CreateCS(condition, pd.path, pd.root, pd.auth);
+	 Conditions.Incl(conditions, condition);
+	 Tasks.Select(conditions, selected);
+	 IF Conditions.In(selected, softtermcond) &
+	       EventConditions.TestAndGet(softtermcond, event) THEN
+	    EXIT
+	 END;
+	 IF Conditions.In(selected, termcond) &
+	       EventConditions.TestAndGet(termcond, resevent) &
+	       (resevent.change = Resources.terminated) THEN
+	    EXIT
+	 END;
+	 IF Conditions.In(selected, condition) &
+	       PathConditions.GetNode(condition, node, object) THEN
+	    IF SendImportMsg(node, (* reimport = *) TRUE, pd.refobject,
+			     proxy, object) & (proxy = object) THEN
+	       EXIT
+	    END;
+	    DropTemporaryNode(node);
+	 END;
+	 IF try >= tries THEN
+	    Resources.Notify(object, Resources.terminated); (* give up *)
+	    RETURN
+	 END;
+	 Delay(delay); delay := delay * 2;
+	 Conditions.Excl(conditions, condition);
+      END;
+      DropTemporaryNode(node);
+   END Recover;
+
+   (* === initialization stuff ============================================ *)
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE Init;
+      VAR
+         msgtype: Services.Type;
+   BEGIN
+      ndID := Disciplines.Unique();
+      pdID := Disciplines.Unique();
+      Services.SeekType("Names.Node", nodeType); ASSERT(nodeType # NIL);
+      PersistentObjects.RegisterType(msgtype,
+         "RobustObjects.Message", "Messages.Message", NIL);
+      InitPO(importMessageType,
+	     "RobustObjects.ImportMessage", "RobustObjects.Message",
+             CreateImportMessage, ReadImportMessage, WriteImportMessage);
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE ExportR(object: Services.Object;
+		     status: Names.Status;
+		     root: Names.Node;
+		     path: ARRAY OF CHAR;
+		     auth: Shards.Lid;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+
+      VAR
+	 (* returned by WaitForDirAndExtractName *)
+	 domain: Names.Node;
+	 name: Names.Name;
+
+	 node: Names.Node;
+	 nd: NodeDiscipline;
+	 ok: BOOLEAN;
+
+      PROCEDURE WaitForDirAndExtractName(path: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    index, baseIndex: INTEGER;
+	    previousSeparator, lastSeparator: INTEGER;
+	    somethingseen: BOOLEAN;
+	    condition: PathConditions.Condition;
+	    cs: Streams.Stream;
+	    ok: BOOLEAN;
+      BEGIN
+	 index := 0; lastSeparator := -1; previousSeparator := -1;
+	 WHILE (index < LEN(path)) & (path[index] # 0X) DO
+	    IF (lastSeparator # index - 1) &
+		  (path[index] = Paths.separator) THEN
+	       previousSeparator := lastSeparator; lastSeparator := index;
+	       somethingseen := FALSE;
+	    ELSIF ~somethingseen THEN
+	       baseIndex := index;
+	       somethingseen := TRUE;
+	    END;
+	    INC(index);
+	 END;
+	 IF ~somethingseen THEN
+	    lastSeparator := previousSeparator;
+	 END;
+	 IF lastSeparator > 0 THEN
+	    path[lastSeparator] := 0X;
+	 END;
+	 PathConditions.Create(condition, path, root, auth);
+	 IF PathConditions.GetNode(condition, domain, errors) THEN
+	    ConstStrings.Init(cs);
+	    index := baseIndex;
+	    WHILE (index < LEN(path)) & (path[index] # 0X) &
+		  (path[index] # Paths.separator) DO
+	       ok := Streams.WriteByte(cs, path[index]); ASSERT(ok);
+	       INC(index);
+	    END;
+	    ConstStrings.Close(cs, name);
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END WaitForDirAndExtractName;
+
+   BEGIN (* ExportR *)
+      IF ~WaitForDirAndExtractName(path) THEN
+	 RETURN FALSE
+      END;
+      Names.CreateNode(node, status, {Names.accessCap, Names.statusCap});
+      NEW(nd); nd.id := ndID; nd.object := object;
+      Disciplines.Add(node, nd);
+      Messages.InstallHandler(node, MessageHandler);
+      RelatedEvents.Save(domain);
+      RelatedEvents.Forward(domain, errors);
+      ok := Names.Insert(domain, node, name, auth);
+      RelatedEvents.Restore(domain);
+      RETURN ok
+   END ExportR;
+
+   PROCEDURE Export(object: Services.Object; status: Names.Status;
+		    path: ARRAY OF CHAR; auth: Shards.Lid;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN ExportR(object, status, Names.root, path, auth, errors)
+   END Export;
+
+   PROCEDURE ImportR(VAR object: Services.Object;
+		     root: Names.Node;
+		     path: ARRAY OF CHAR;
+		     auth: Shards.Lid;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: Names.Node;
+	 condition: PathConditions.Condition;
+	 nd: NodeDiscipline;
+	 refobject: Names.Node;
+	    (* just sth which can be easily ex- and imported;
+	       we don't need any Names functionality here
+	    *)
+	 pd: ProxyDiscipline;
+	 proxy: Services.Object;
+   BEGIN
+      PathConditions.Create(condition, path, root, auth);
+      IF ~PathConditions.GetNode(condition, node, errors) THEN
+	 RETURN FALSE
+      END;
+      IF ~SendImportMsg(node, (* reimport = *) FALSE, NIL, proxy, errors) THEN
+	 DropTemporaryNode(node);
+	 Error(errors, path, notARobustObject);
+	 RETURN FALSE
+      END;
+      DropTemporaryNode(node);
+      RelatedEvents.QueueEvents(proxy);
+
+      Names.CreateNode(refobject, NIL, {});
+      NEW(nd); nd.id := ndID; nd.object := proxy;
+      Disciplines.Add(refobject, nd);
+      Resources.DependsOn(refobject, proxy);
+
+      NEW(pd); pd.id := pdID; pd.refobject := refobject;
+      ConstStrings.Create(pd.path, path);
+      pd.auth := auth; pd.root := root;
+      Disciplines.Add(proxy, pd);
+      RemoteObjects.InstallRecoverHandler(proxy, Recover);
+      object := proxy;
+      RETURN TRUE
+   END ImportR;
+
+   PROCEDURE Import(VAR object: Services.Object; path: ARRAY OF CHAR;
+		    auth: Shards.Lid; errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN ImportR(object, Names.root, path, auth, errors)
+   END Import;
+
+   PROCEDURE GuardedImportR(VAR object: Services.Object; guard: Services.Type;
+			    root: Names.Node; path: ARRAY OF CHAR;
+		            auth: Shards.Lid;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 proxy: Services.Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~ImportR(proxy, root, path, auth, errors) THEN
+	 RETURN FALSE
+      END;
+      Services.GetType(proxy, type);
+      IF Services.IsExtensionOf(type, guard) THEN
+	 object := proxy;
+	 RETURN TRUE
+      END;
+      GuardFailure(errors, path, guard, type);
+      RETURN FALSE
+   END GuardedImportR;
+
+   PROCEDURE GuardedImport(VAR object: Services.Object; guard: Services.Type;
+			   path: ARRAY OF CHAR; auth: Shards.Lid;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN GuardedImportR(object, guard, Names.root, path, auth, errors)
+   END GuardedImport;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END RobustObjects.

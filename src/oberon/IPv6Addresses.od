@@ -1,0 +1,91 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv6Address.od,v 1.3 2006/08/11 15:05:07 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv6Address.od,v $
+   Revision 1.3  2006/08/11 15:05:07  borchert
+   IsAnyAddr & SetAnyAddr added
+
+   Revision 1.2  2004/04/02 18:42:00  borchert
+   SocketAddress is now a record and not a pointer
+
+   Revision 1.1  2004/03/04 14:26:10  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION IPv6Addresses;
+
+   IMPORT Events, IPv4Addresses, Objects, Streams;
+
+   CONST
+      nbytes = 16;
+   TYPE
+      Address = ARRAY nbytes OF CHAR;
+      PortNumber = IPv4Addresses.PortNumber;
+      SocketAddress =
+	 RECORD
+	    (Objects.ObjectRec)
+	    host: Address;
+	    portnum: PortNumber;
+	 END;
+
+   CONST
+      addrlen = 32; (* size of struct sockaddr_in6 in <sys/socket.h> *)
+   TYPE
+      SysAddress = ARRAY addrlen OF BYTE;
+
+   CONST
+      invalidInputChar = 0;
+      multipleDoubleColons = 1;
+      unexpectedEOF = 2;
+      valueOutOfRange = 3;
+      tripleColon = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* invalidInputChar... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    pos: Streams.Count;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE GetPort(address: SocketAddress) : INTEGER;
+   PROCEDURE SetPort(VAR address: SocketAddress; portnum: INTEGER);
+      (* takes care of conversions from and to network order *)
+   PROCEDURE IsAnyAddr(address: Address) : BOOLEAN;
+      (* is address.host equivalent to IN6ADDR_ANY? *)
+   PROCEDURE SetAnyAddr(VAR address: Address);
+      (* set address.host to IN6ADDR_ANY *)
+
+   PROCEDURE ConvertToSys(address: SocketAddress; VAR sysaddr: SysAddress);
+   PROCEDURE ConvertFromSys(sysaddr: SysAddress; VAR address: SocketAddress);
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR ipaddr: Address) : BOOLEAN;
+   PROCEDURE WriteText(s: Streams.Stream; ipaddr: Address);
+   PROCEDURE CreateAddress(VAR ipaddr: Address; text: ARRAY OF CHAR);
+
+END IPv6Addresses.

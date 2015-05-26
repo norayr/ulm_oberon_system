@@ -1,0 +1,125 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UniqueNames.om,v 1.2 1997/04/02 07:42:47 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UniqueNames.om,v $
+   Revision 1.2  1997/04/02  07:42:47  borchert
+   imported module Random has been renamed to RandomGenerators
+
+   Revision 1.1  1995/12/22  15:13:38  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UniqueNames;
+
+   IMPORT ConstStrings, Names, Random := RandomGenerators, RelatedEvents,
+      Shards;
+
+   CONST
+      length = 7;
+      maxRetries = 1024;		(* should be << 52 ^ length *)
+
+   TYPE
+      String = ARRAY length+1 OF CHAR;
+
+   PROCEDURE InventName(VAR string: String);
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := 0;
+      REPEAT
+	 string[index] := CHR(Random.Val(ORD("a"), ORD("z")));
+	 INC(index);
+      UNTIL index = length;
+      string[length] := 0X;
+   END InventName;
+
+   PROCEDURE ModifyName(VAR string: String);
+      VAR
+	 index,
+	 value,
+	 newvalue: INTEGER;
+	 ch: CHAR;
+   BEGIN
+      value := 0;
+      index := 0;
+      REPEAT
+	 ch := string[index];
+	 value := value * 2;
+	 IF ch = CAP(ch) THEN
+	    INC(value);
+	 END;
+	 INC(index);
+      UNTIL index = length;
+      newvalue := value+1;
+      REPEAT
+	 DEC(index);
+	 IF ODD(value) THEN
+	    IF ~ODD(newvalue) THEN
+	       string[index] := CHR( ORD(string[index])+(ORD("a")-ORD("A")) );
+	    END;
+	 ELSE
+	    IF ODD(newvalue) THEN
+	       string[index] := CAP(string[index]);
+	    END;
+	 END;
+	 value := value DIV 2; newvalue := newvalue DIV 2;
+      UNTIL index = 0;
+      IF newvalue # 0 THEN
+	 InventName(string);
+      END;
+   END ModifyName;
+
+   PROCEDURE Insert(node, subnode: Names.Node; auth: Shards.Lid;
+			VAR name: Names.Name): BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+	 string: String;
+	 retries: LONGINT;
+   BEGIN
+      RelatedEvents.Save(node);
+      RelatedEvents.QueueEvents(node);
+      InventName(string);
+      retries := 0;
+      LOOP
+	 ConstStrings.Create(name, string);
+	 IF Names.Insert(node, subnode, name, auth) THEN
+	    RelatedEvents.Restore(node);
+	    RETURN TRUE
+	 END;
+	 RelatedEvents.GetQueue(node, queue);
+	 IF (retries = maxRetries) OR (queue = NIL) OR (queue.next # NIL) OR
+	       ~(queue.event IS Names.ErrorEvent) OR
+	       (queue.event(Names.ErrorEvent).errorcode #
+	       Names.nameExists) THEN
+	    RelatedEvents.Restore(node);
+	    RelatedEvents.AppendQueue(node, queue);
+	    RETURN FALSE
+	 END;
+	 INC(retries);
+	 ModifyName(string);
+      END;
+   END Insert;
+
+END UniqueNames.

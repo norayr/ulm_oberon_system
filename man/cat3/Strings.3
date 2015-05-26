@@ -1,0 +1,121 @@
+Strings(3)                    Ulm's Oberon System                   Strings(3)
+
+
+
+[1mNAME[0m
+       Strings - string operations
+
+[1mSYNOPSIS[0m
+       (* error codes for streams *)
+       CONST endOfStringReached = 0;   (* write failure: end of string reached *)
+       CONST outOfRange = 1;           (* seek failure: position out of range *)
+       CONST badParameter = 2;         (* illegal parameter value (eg whence) *)
+       CONST posOutside = 3;           (* trunc failure: position beyond trunc pos *)
+       CONST errorcodes = 4;
+       TYPE ErrorCode = SHORTINT;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Streams.Stream;
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE StreamRec = RECORD (Streams.StreamRec) END;
+
+       PROCEDURE Write(stream: Streams.Stream; string: ARRAY OF CHAR);
+       PROCEDURE WritePart(stream: Streams.Stream; string: ARRAY OF CHAR;
+                           sourceIndex: LONGINT);
+       PROCEDURE Read(VAR string: ARRAY OF CHAR; stream: Streams.Stream);
+       PROCEDURE ReadPart(VAR string: ARRAY OF CHAR; destIndex: LONGINT;
+                          stream: Streams.Stream);
+       PROCEDURE Copy(VAR destination: ARRAY OF CHAR; source: ARRAY OF CHAR);
+       PROCEDURE PartCopy(VAR destination: ARRAY OF CHAR; destIndex: LONGINT;
+                          source: ARRAY OF CHAR; sourceIndex: LONGINT);
+       PROCEDURE Len(string: ARRAY OF CHAR) : LONGINT;
+       PROCEDURE Concatenate(VAR destination: ARRAY OF CHAR;
+                             source: ARRAY OF CHAR);
+       PROCEDURE Open(VAR stream: Streams.Stream; VAR string: ARRAY OF CHAR);
+
+
+[1mDESCRIPTION[0m
+       The procedures of [4mStrings[24m follow these conventions:
+
+       ·      the  first  parameter  designates the destination and the second
+              the source (despite to the [1mCOPY [22mstandard function).
+
+       ·      resulting strings are guaranteed to be 0X-terminated.
+
+       ·      streams are expected to work like streams  of  type  [4mTexts.Text[24m,
+              i.e. they must be capable of [4mSeek[24m and [4mTrunc[24m.
+
+       ·      streams are left at position 0.
+
+       [4mWrite[24m  seeks  to  position 0 of [4mstream[24m, truncates it to zero length and
+       copies [4mstring[24m to [4mstream[24m.  [4mWritePart[24m works like  [4mWrite[24m  but  [4msourceIndex[0m
+       defines the starting offset of [4mstring[24m.
+
+       [4mRead[24m  copies the contents of [4mstream[24m from position 0 until end of stream
+       to [4mstring[24m.  [4mReadPart[24m takes [4mdestIndex[24m as starting index of [4mstring[24m.
+
+       [4mCopy[24m copies [4msource[24m to [4mdestination[24m.   [4mPartCopy[24m  copies  [4msource[sourceIn-[0m
+       [4mdex..][24m  to [4mdestination[destIndex..][24m.  [4mLen[24m returns the number of charac-
+       ters of [4mstring[24m (without terminating 0X).  [4mConcatenate[24m appends [4msource[24m to
+       [4mdestination[24m  and is thus equivalent to [4mPartCopy[24m([4mdestination[24m, [4mLen[24m([4mdesti-[0m
+       [4mnation[24m), [4msource[24m, 0);
+
+       [4mOpen[24m opens an array of characters as stream for unbuffered reading  and
+       writing.   [4mSeek[24m, [4mTell[24m, and [4mTrunc[24m are permitted.  The string argument is
+       expected to be initialized and 0X-terminated.  The  lowest  index  with
+       [4mstring[24m[index] = 0X determines the length of the stream.  The stream may
+       be extended by positioning to the end of the stream and writing to  it.
+       The  maximal  length of the stream is given by [1mLEN[22m([4mstring[24m) - 1.  String
+       streams may be shortened by use of [4mTrunc[24m.  Because no  buffering  takes
+       place  results of write operations are immediately seen in the underly-
+       ing string.  The terminating 0X is not seen on the stream side and must
+       not  be  written to the stream.  Modifications of the underlying string
+       must be followed by [4mStreams.Touch[24m to see  the  changes  on  the  stream
+       side.
+
+[1mEXAMPLE[0m
+       Formatted I/O to strings:
+
+       PROCEDURE TimeString(hour, minute, second: INTEGER;
+                            VAR time: ARRAY OF CHAR);
+          VAR stream: Streams.Stream;
+       BEGIN
+          Strings.Open(stream, time);
+          Write.IntS(stream, hour, 2); Write.CharS(stream, ":");
+          Write.IntS(stream, minute, 2); Write.CharS(stream, ":");
+          Write.IntS(stream, second, 2);
+          Streams.Release(stream);
+       END TimeString;
+
+
+[1mDIAGNOSTICS[0m
+       Errors  during  the access of streams of type [4mStream[24m are converted into
+       events of [4mRelatedEvents[24m.  By default, these events are being queued.
+
+       Error events which are generated by [4mStrings[24m are of type [4merror[24m and  con-
+       tain one of the error codes following:
+       [4mendOfStringReached[24m   A  write  operation  failed because the end of the
+                            underlying character array was reached.
+       [4moutOfRange[24m           [4mSeek[24m was requested to position  outside  the  cur-
+                            rently valid range (0 to the string length).
+       [4mbadParameter[24m         A illegal parameter value was given, e.g. an unde-
+                            fined value for [4mwhence[24m.
+       [4mposOutside[24m           A trunc operation failed because the current posi-
+                            tion would be invalidated by the trunc position.
+
+       By default, events of type [4merror[24m are ignored.
+
+[1mSEE ALSO[0m
+       [4mStreams(3)[24m   stream operations
+       [4mTexts(3)[24m     in-memory streams
+
+
+
+Release 0.5                Last change: 10 July 2003                Strings(3)

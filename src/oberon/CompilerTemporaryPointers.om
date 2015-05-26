@@ -1,0 +1,112 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerTem.om,v 1.2 2004/09/10 05:56:31 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerTem.om,v $
+   Revision 1.2  2004/09/10 05:56:31  borchert
+   Write removed from import list; formatting fixed
+
+   Revision 1.1  2004/09/06 19:08:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerTemporaryPointers; (* Christian Ehrhardt *)
+
+   IMPORT Disciplines, FragmentedStreams, Regs := CompilerRegisters, Streams;
+
+   TYPE
+      Ptr = POINTER TO PtrRec;
+      PtrRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    start, end: FragmentedStreams.Label;
+	    mode: Regs.Mode;
+	    offset: Streams.Count;
+	    next: Ptr;
+	 END;
+
+   TYPE
+      PtrDisc = POINTER TO PtrDiscRec;
+      PtrDiscRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    ptr: Ptr;
+	    committed: BOOLEAN;
+	 END;
+   VAR
+      ptrdiscid: Disciplines.Identifier;
+
+   PROCEDURE Open (obj : Disciplines.Object; start : FragmentedStreams.Label;
+                   offset : Streams.Count; mode : Regs.Mode);
+      VAR
+         disc: PtrDisc;
+   BEGIN
+      Disciplines.Remove(obj, ptrdiscid);
+      NEW(disc);
+      disc.id := ptrdiscid;
+      disc.committed := FALSE;
+      NEW(disc.ptr);
+      disc.ptr.start := start;
+      disc.ptr.offset := offset;
+      disc.ptr.mode := mode;
+      disc.ptr.end := NIL;
+      disc.ptr.next := NIL;
+      Disciplines.Add(obj, disc);
+   END Open;
+
+   PROCEDURE Commit (obj : Disciplines.Object);
+      VAR
+	 disc : PtrDisc;
+   BEGIN
+      IF Disciplines.Seek (obj, ptrdiscid, disc) THEN
+	 disc.committed := TRUE;
+      END;
+   END Commit;
+
+   PROCEDURE Close (obj : Disciplines.Object;
+                    end : FragmentedStreams.Label) : Ptr;
+      VAR
+         ok: BOOLEAN;
+	 disc: PtrDisc;
+	 ret: Ptr;
+   BEGIN
+      ok := Disciplines.Seek (obj, ptrdiscid, disc);
+      IF ~ok THEN
+         RETURN NIL
+      END;
+      Disciplines.Remove(obj, ptrdiscid);
+      IF end = NIL THEN
+         RETURN NIL
+      END;
+      IF ~disc.committed THEN
+         RETURN NIL
+      END;
+      ret := disc.ptr;
+      disc.ptr := NIL;
+      ASSERT((ret # NIL) & (ret.start # NIL) & (ret.end = NIL));
+      ret.end := end;
+      RETURN ret
+   END Close;
+
+BEGIN
+   ptrdiscid := Disciplines.Unique();
+END CompilerTemporaryPointers.

@@ -1,0 +1,1701 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StdCDBNames.om,v 1.3 2004/09/10 21:24:01 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: StdCDBNames.om,v $
+   Revision 1.3  2004/09/10 21:24:01  borchert
+   bug fixes in WriteError
+
+   Revision 1.2  2004/09/10 17:36:02  borchert
+   improved error messages
+
+   Revision 1.1  2000/04/02 10:12:29  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StdCDBNames;
+
+   IMPORT Architectures, AVLTrees, CDBNames, Clocks, CompilerKeys,
+      CompilerObjects, ConstStrings, Containers, Dates, Disciplines, Errors,
+      Events, Iterators, Jobs, Keys, LocalSemaphores, Names, NetIO,
+      ObjectTransactions, Operations, Paths, PersistentDisciplines,
+      PersistentEvents, PersistentObjects, PersistentTexts, Print,
+      Priorities, RelatedEvents, Resources, Semaphores, Services, Shards,
+      SortedBags, SortedIterators, Sources := CompilerSources, Streams,
+      Strings, Times, Transactions, UniqueNames, Write;
+
+   CONST
+      nil = -1; (* Containers.Ident *)
+
+   TYPE
+      Entry = POINTER TO EntryRec;
+      Anchor = POINTER TO AnchorRec;
+      AnchorRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    head, tail: Containers.Ident;
+	    (* non-persistent components *)
+	    phead, ptail: Entry;
+	 END;
+   VAR
+      anchorType: Services.Type;
+
+   TYPE
+      EntryRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    modname: ConstStrings.String;
+	    unique: ConstStrings.String; (* final name component *)
+	    date: Times.Time; (* date of creation *)
+	    this, text: Containers.Ident;
+	    prev, next: Containers.Ident;
+	    (* non-persistent components *)
+	    pprev, pnext: Entry; (* in-memory pointers *)
+	 END;
+   VAR
+      entryType: Services.Type;
+
+   TYPE
+      ObjectEntry = POINTER TO ObjectEntryRec;
+      ObjectEntryRec =
+	 RECORD
+	    (EntryRec)
+	    header: CompilerObjects.Header;
+	 END;
+   VAR
+      objectEntryType: Services.Type;
+
+   TYPE
+      SourceEntry = POINTER TO SourceEntryRec;
+      SourceEntryRec =
+	 RECORD
+	    (EntryRec)
+	    header: Sources.Header;
+	 END;
+   VAR
+      sourceEntryType: Services.Type;
+
+   TYPE
+      NameKeyValue = POINTER TO NameKeyValueRec;
+      NameKeyValueRec =
+	 RECORD
+	    (Keys.ValueRec)
+	    name: ConstStrings.String;
+	 END;
+   VAR
+      nameKeyValueType: Services.Type;
+
+   TYPE
+      NameKey = POINTER TO NameKeyRec;
+      NameKeyRec = RECORD (Keys.KeyRec) END;
+   VAR
+      nameKeyType: Services.Type;
+      byName: NameKey;
+
+   TYPE
+      DateKeyValue = POINTER TO DateKeyValueRec;
+      DateKeyValueRec =
+	 RECORD
+	    (Keys.ValueRec)
+	    date: Times.Time;
+	 END;
+   VAR
+      dateKeyValueType: Services.Type;
+
+   TYPE
+      DateKey = POINTER TO DateKeyRec;
+      DateKeyRec = RECORD (Keys.KeyRec) END;
+   VAR
+      dateKeyType: Services.Type;
+      byDate: DateKey;
+
+   TYPE
+      DirNode = POINTER TO DirNodeRec;
+      Node = POINTER TO NodeRec;
+      NodeRec =
+	 RECORD
+	    (CDBNames.NodeRec)
+	    container: Containers.Container;
+	    name: ConstStrings.String;
+	    read, write: Shards.Pot;
+	    up: DirNode;
+	    mutex: Semaphores.Semaphore;
+	 END;
+   VAR
+      nodeType: Services.Type;
+      nodeIF: CDBNames.Interface;
+
+   CONST
+      dirNodeCaps = {Names.accessCap, Names.domainCap};
+   TYPE
+      DirNodeRec =
+	 RECORD
+	    (NodeRec)
+	    entries: AVLTrees.AVLTree; (* access by name *)
+	    sortedEntries: SortedBags.Bag; (* entries in preferred order *)
+	    key: Keys.Key; (* key of sorted entries *)
+	    order: AVLTrees.Order; (* preferred order *)
+	    eventType: Events.EventType;
+	    touched: BOOLEAN;
+	    srciddir: BOOLEAN;
+	       (* directory with entries that are named by srcids and
+		  that therefore must return its members in dependence
+		  of the timestamps of the associated sources
+		  (sortedEntries is ignored in this case)
+	       *)
+	    date: Times.Time; (* date of creation *)
+	    (* the key value is set only if the directory is named after it *)
+	    keyvalue: CompilerKeys.Value;
+	    (* the following components are used by the root only *)
+	    rootmutex: Semaphores.Semaphore;
+	       (* to be used *for very short times only* on modifying
+	          one of the following components
+	       *)
+	    uniqueNS: Names.Node;
+	    sources: AVLTrees.AVLTree; (* all sources *)
+	    anchor: Anchor;
+	    anchorID: Containers.Ident;
+	 END;
+   VAR
+      dirNodeType: Services.Type;
+      dirNodeIF: Names.Interface;
+
+   CONST
+      entryNodeCaps = {Names.accessCap, Names.destroyCap};
+   TYPE
+      EntryNode = POINTER TO EntryNodeRec;
+      EntryNodeRec =
+	 RECORD
+	    (NodeRec)
+	    entry: Entry;
+	 END;
+   VAR
+      entryNodeType: Services.Type;
+      entryNodeIF: Names.Interface;
+
+   VAR
+      objHeaderType: Services.Type; (* that of CompilerObjects.Header *)
+      srcHeaderType: Services.Type; (* that of Sources.Header *)
+      timeType: Services.Type; (* that of Times.Time *)
+
+   TYPE
+      ContainerDiscipline = POINTER TO ContainerDisciplineRec;
+      ContainerDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    mutex: Semaphores.Semaphore;
+	 END;
+   VAR
+      cdID: Disciplines.Identifier;
+
+   TYPE
+      NotificationJob = POINTER TO NotificationJobRec;
+      NotificationJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    event: Events.Event;
+	 END;
+
+   VAR
+      defString: ConstStrings.String; (* "def" *)
+      modString: ConstStrings.String; (* "mod" *)
+      srcString: ConstStrings.String; (* "src" *)
+      genString: ConstStrings.String; (* "gen" *)
+      objString: ConstStrings.String; (* "obj" *)
+
+   VAR
+      empty: PersistentDisciplines.Object; (* empty dummy object *)
+
+   CONST
+      invalidAccess = 0;
+      authFailed = 1;
+      noSuchNode = 2;
+      existsAlready = 3;
+      insertNotSupported = 4;
+      deleteNotSupported = 5;
+      cannotLoadDatabase = 6;
+      insertFailed = 7;
+      notALeafNode = 8;
+      notAnObject = 9;
+      notASource = 10;
+      updateFailed = 11;
+      beginTransactionFailed = 12;
+      commitTransactionFailed = 13;
+      inconsistentDatabase = 14;
+      errors = 15;
+   TYPE
+      ErrorCode = SHORTINT; (* noAccessOfLeafNodes ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    object: RelatedEvents.Object;
+	    code: ErrorCode;
+	    name: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE ^ CDBGetRoot(node: CDBNames.Node; VAR root: CDBNames.Node);
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+      VAR
+	 node: Node;
+
+      PROCEDURE WritePath(node: Node);
+      BEGIN
+	 IF (node.up # NIL) & (node.up.name # NIL) THEN
+	    WritePath(node.up);
+	    Write.StringS(s, Paths.separator);
+	 END;
+	 ConstStrings.Write(s, node.name);
+      END WritePath;
+
+   BEGIN (* WriteError *)
+      WITH event: ErrorEvent DO
+	 IF (event.object # NIL) & (event.object IS Node) THEN
+	    node := event.object(Node);
+	    IF node.up = NIL THEN
+	       Write.StringS(s, "CDB root node");
+	    ELSE
+	       ASSERT(node.name # NIL);
+	       Write.StringS(s, "CDB node ");
+	       WritePath(node);
+	    END;
+	    Write.StringS(s, ": ");
+	 END;
+	 IF event.name # NIL THEN
+	    ConstStrings.Write(s, event.name);
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, errormsg[event.code]);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[invalidAccess] :=
+	 "invalid access of CDB leaf node";
+      errormsg[authFailed] := "CDB authorization failed";
+      errormsg[noSuchNode] := "no such node in CDB";
+      errormsg[existsAlready] := "node exists already in CDB";
+      errormsg[insertNotSupported] := "insert operation not supported in CDB";
+      errormsg[deleteNotSupported] := "delete operation not supported in CDB";
+      errormsg[cannotLoadDatabase] := "unable to load CDB";
+      errormsg[insertFailed] := "unable to insert object into CDB";
+      errormsg[notALeafNode] := "is not a leaf node";
+      errormsg[notAnObject] := "is not an object (but a source)";
+      errormsg[notASource] := "is not a source (but an object)";
+      errormsg[updateFailed] := "unable to update object in CDB";
+      errormsg[beginTransactionFailed] := "unable to start CDB transaction";
+      errormsg[commitTransactionFailed] := "unable to commit CDB transaction";
+      errormsg[inconsistentDatabase] := "inconsistencies in CDB found";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; code: ErrorCode;
+                   name: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.object := object;
+      event.code := code;
+      event.name := name;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* === PersistentObjects if of Anchor =================================== *)
+
+   PROCEDURE CreateAnchor(VAR object: PersistentObjects.Object);
+      VAR
+	 anchor: Anchor;
+   BEGIN
+      NEW(anchor);
+      PersistentObjects.Init(anchor, anchorType);
+      object := anchor;
+   END CreateAnchor;
+
+   PROCEDURE ReadAnchor(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Anchor DO
+	 RETURN NetIO.ReadLongInt(s, object.head) &
+	        NetIO.ReadLongInt(s, object.tail)
+      END;
+   END ReadAnchor;
+
+   PROCEDURE WriteAnchor(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Anchor DO
+	 RETURN NetIO.WriteLongInt(s, object.head) &
+	        NetIO.WriteLongInt(s, object.tail)
+      END;
+   END WriteAnchor;
+
+   (* === PersistentObjects if of Entry ==================================== *)
+
+   PROCEDURE CreateEntry(VAR object: PersistentObjects.Object);
+      VAR
+	 entry: Entry;
+   BEGIN
+      NEW(entry);
+      PersistentObjects.Init(entry, entryType);
+      object := entry;
+   END CreateEntry;
+
+   PROCEDURE ReadEntry(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Entry DO
+	 RETURN NetIO.ReadConstString(s, object.modname) &
+	        NetIO.ReadConstString(s, object.unique) &
+		PersistentObjects.GuardedRead(s, timeType, object.date) &
+		NetIO.ReadLongInt(s, object.this) &
+		NetIO.ReadLongInt(s, object.text) &
+		NetIO.ReadLongInt(s, object.prev) &
+		NetIO.ReadLongInt(s, object.next)
+      END;
+   END ReadEntry;
+
+   PROCEDURE WriteEntry(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Entry DO
+	 RETURN NetIO.WriteConstString(s, object.modname) &
+	        NetIO.WriteConstString(s, object.unique) &
+		PersistentObjects.Write(s, object.date) &
+		NetIO.WriteLongInt(s, object.this) &
+		NetIO.WriteLongInt(s, object.text) &
+		NetIO.WriteLongInt(s, object.prev) &
+		NetIO.WriteLongInt(s, object.next)
+      END;
+   END WriteEntry;
+
+   (* === PersistentObjects if of ObjectEntry ============================== *)
+
+   PROCEDURE CreateObjectEntry(VAR object: PersistentObjects.Object);
+      VAR
+	 entry: ObjectEntry;
+   BEGIN
+      NEW(entry); PersistentObjects.Init(entry, objectEntryType);
+      object := entry;
+   END CreateObjectEntry;
+
+   PROCEDURE ReadObjectEntry(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ObjectEntry DO
+	 RETURN PersistentObjects.GuardedRead(s, objHeaderType, object.header)
+      END;
+   END ReadObjectEntry;
+
+   PROCEDURE WriteObjectEntry(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ObjectEntry DO
+	 RETURN PersistentObjects.Write(s, object.header)
+      END;
+   END WriteObjectEntry;
+
+   (* === PersistentSources if of SourceEntry ============================== *)
+
+   PROCEDURE CreateSourceEntry(VAR object: PersistentObjects.Object);
+      VAR
+	 entry: SourceEntry;
+   BEGIN
+      NEW(entry); PersistentObjects.Init(entry, sourceEntryType);
+      object := entry;
+   END CreateSourceEntry;
+
+   PROCEDURE ReadSourceEntry(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: SourceEntry DO
+	 RETURN PersistentObjects.GuardedRead(s, srcHeaderType, object.header)
+      END;
+   END ReadSourceEntry;
+
+   PROCEDURE WriteSourceEntry(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: SourceEntry DO
+	 RETURN PersistentObjects.Write(s, object.header)
+      END;
+   END WriteSourceEntry;
+
+   (* === PersistentObjects if for NameKeyValue ============================ *)
+
+   PROCEDURE CreateNameKeyValue(VAR object: PersistentObjects.Object);
+      VAR
+	 keyvalue: NameKeyValue;
+   BEGIN
+      NEW(keyvalue); PersistentObjects.Init(keyvalue, nameKeyValueType);
+      object := keyvalue;
+   END CreateNameKeyValue;
+
+   PROCEDURE ReadNameKeyValue(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NameKeyValue DO
+	 RETURN NetIO.ReadConstString(s, object.name)
+      END;
+   END ReadNameKeyValue;
+
+   PROCEDURE WriteNameKeyValue(s: Streams.Stream;
+                               object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NameKeyValue DO
+	 RETURN NetIO.WriteConstString(s, object.name)
+      END;
+   END WriteNameKeyValue;
+
+   (* === PersistentObjects if for DateKeyValue ============================ *)
+
+   PROCEDURE CreateDateKeyValue(VAR object: PersistentObjects.Object);
+      VAR
+	 keyvalue: DateKeyValue;
+   BEGIN
+      NEW(keyvalue); PersistentObjects.Init(keyvalue, dateKeyValueType);
+      object := keyvalue;
+   END CreateDateKeyValue;
+
+   PROCEDURE ReadDateKeyValue(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: DateKeyValue DO
+	 RETURN PersistentObjects.GuardedRead(s, timeType, object.date)
+      END;
+   END ReadDateKeyValue;
+
+   PROCEDURE WriteDateKeyValue(s: Streams.Stream;
+                               object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: DateKeyValue DO
+	 RETURN PersistentObjects.Write(s, object.date)
+      END;
+   END WriteDateKeyValue;
+
+   (* === PersistentObjects if for NameKey ================================= *)
+
+   PROCEDURE CreateNameKey(VAR object: PersistentObjects.Object);
+      VAR
+	 key: NameKey;
+   BEGIN
+      NEW(key); PersistentObjects.Init(key, nameKeyType);
+      object := key;
+   END CreateNameKey;
+
+   (* === PersistentObjects if for DateKey ================================= *)
+
+   PROCEDURE CreateDateKey(VAR object: PersistentObjects.Object);
+      VAR
+	 key: DateKey;
+   BEGIN
+      NEW(key); PersistentObjects.Init(key, dateKeyType);
+      object := key;
+   END CreateDateKey;
+
+   (* === Keys if procedures for NameKey and Node ========================== *)
+
+   PROCEDURE CompareNameKeyValues(key: Keys.Key;
+                                  keyval1, keyval2: Keys.Value) : INTEGER;
+   BEGIN
+      WITH keyval1: NameKeyValue DO WITH keyval2: NameKeyValue DO
+	 RETURN ConstStrings.Compare(keyval1.name, keyval2.name)
+      END END;
+   END CompareNameKeyValues;
+
+   PROCEDURE ExtractNameKey(object: Services.Object;
+                            key: Keys.Key;
+			    VAR keyval: Keys.Value);
+      VAR
+	 value: NameKeyValue;
+   BEGIN
+      WITH object: Node DO
+	 CreateNameKeyValue(value); value.name := object.name;
+	 keyval := value;
+      END;
+   END ExtractNameKey;
+
+   (* === Keys if procedures for DateKey and EntryNode ===================== *)
+
+   PROCEDURE CompareDateKeyValues(key: Keys.Key;
+                                  keyval1, keyval2: Keys.Value) : INTEGER;
+   BEGIN
+      WITH keyval1: DateKeyValue DO WITH keyval2: DateKeyValue DO
+	 RETURN Operations.Compare(keyval1.date, keyval2.date)
+      END END;
+   END CompareDateKeyValues;
+
+   PROCEDURE ExtractDateKey(object: Services.Object;
+                            key: Keys.Key;
+			    VAR keyval: Keys.Value);
+      VAR
+	 value: DateKeyValue;
+	 namekeyval: NameKeyValue;
+	 source: EntryNode;
+	 root: DirNode;
+   BEGIN
+      CreateDateKeyValue(value);
+      IF object IS EntryNode THEN
+	 WITH object: EntryNode DO
+	    value.date := object.entry.date;
+	 END;
+      ELSE
+	 WITH object: DirNode DO
+	    IF object.keyvalue # NIL THEN
+	       value.date := object.keyvalue.time;
+	    ELSE
+	       (* note that this key variant is *dynamic* because
+		  we depend on the timestamp of the source which
+		  may be changed any time; therefore this may be used
+		  for sorting but not for keeping it sorted
+	       *)
+	       CDBGetRoot(object, root);
+	       CreateNameKeyValue(namekeyval); namekeyval.name := object.name;
+	       IF AVLTrees.Get(root.sources, namekeyval, source) THEN
+		  value.date := source.entry.date;
+	       ELSE
+		  value.date := object.date;
+	       END;
+	    END;
+	 END;
+      END;
+      keyval := value;
+   END ExtractDateKey;
+
+   (* === private operations on containers ================================= *)
+
+   PROCEDURE BeginTransaction(container: Containers.Container;
+                              VAR trans: Transactions.Transaction) : BOOLEAN;
+      VAR
+	 pot: Shards.Pot;
+	 disc: ContainerDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~Disciplines.Seek(container, cdID, disc) THEN
+	 NEW(disc); disc.id := cdID; LocalSemaphores.Create(disc.mutex);
+	 Disciplines.Add(container, disc);
+      END;
+      Shards.CreateSimplePot(pot, (* permissive = *) TRUE);
+      Semaphores.P(disc.mutex);
+      IF ~ObjectTransactions.Create(trans, container, pot, container) THEN
+	 Semaphores.V(disc.mutex);
+	 Error(container, beginTransactionFailed, NIL);
+	 RETURN FALSE
+      END;
+      Disciplines.Add(trans, disc);
+      RelatedEvents.Forward(trans, container);
+      IF Transactions.Begin(trans, NIL) THEN
+	 RETURN TRUE
+      ELSE
+	 Semaphores.V(disc.mutex);
+	 Resources.Notify(trans, Resources.terminated);
+	 Error(container, beginTransactionFailed, NIL);
+	 RETURN FALSE
+      END;
+   END BeginTransaction;
+
+   PROCEDURE CommitTransaction(trans: Transactions.Transaction) : BOOLEAN;
+      VAR
+	 disc: ContainerDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(trans, cdID, disc); ASSERT(ok);
+      ok := Transactions.Commit(trans, NIL);
+      Semaphores.V(disc.mutex);
+      IF ~ok THEN
+	 Error(trans, commitTransactionFailed, NIL);
+      END;
+      Resources.Notify(trans, Resources.terminated);
+      RETURN ok
+   END CommitTransaction;
+
+   PROCEDURE AbortTransaction(trans: Transactions.Transaction);
+      VAR
+	 disc: ContainerDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(trans, cdID, disc); ASSERT(ok);
+      ok := Transactions.Abort(trans, NIL);
+      Semaphores.V(disc.mutex);
+      Resources.Notify(trans, Resources.terminated);
+   END AbortTransaction;
+
+   PROCEDURE RaiseEvent(job: Jobs.Job);
+   BEGIN
+      WITH job: NotificationJob DO
+	 Events.Raise(job.event);
+      END;
+   END RaiseEvent;
+
+   PROCEDURE Notify(eventType: Events.EventType;
+		    state: Names.State;
+                    name: Names.Name; node: Names.Node);
+      (* dispatch all notifications into background to
+         avoid deadlocks
+      *)
+      VAR
+	 event: Names.MemberEvent;
+	 job: NotificationJob;
+   BEGIN
+      NEW(event);
+      event.type := eventType;
+      CASE state OF
+      | Names.inserted: event.message := "node inserted in CDB";
+      | Names.deleted:  event.message := "node deleted in CDB";
+      END;
+      event.state := state;
+      event.name := name;
+      event.node := node;
+      NEW(job); job.event := event;
+      Jobs.Submit(job, RaiseEvent);
+   END Notify;
+
+   PROCEDURE RemoveSubNode(dirnode: DirNode; subnode: Node);
+      VAR
+	 keyval: NameKeyValue;
+	 ok: BOOLEAN;
+	 event: Names.MemberEvent;
+   BEGIN
+      IF Resources.Terminated(dirnode) THEN RETURN END;
+      Semaphores.P(dirnode.mutex);
+      dirnode.touched := TRUE;
+      CreateNameKeyValue(keyval); keyval.name := subnode.name;
+      ok := AVLTrees.Remove(dirnode.entries, keyval); ASSERT(ok);
+      SortedBags.Remove(dirnode.sortedEntries, subnode);
+      IF dirnode.eventType # NIL THEN
+	 Notify(dirnode.eventType, Names.deleted, subnode.name, subnode);
+      END;
+      IF (dirnode.up # NIL) & (AVLTrees.Card(dirnode.entries) = 0) THEN
+	 RemoveSubNode(dirnode.up, dirnode);
+      END;
+      Semaphores.V(dirnode.mutex);
+      Resources.Notify(subnode, Resources.terminated);
+   END RemoveSubNode;
+
+   PROCEDURE ZapEntry(node: EntryNode) : BOOLEAN;
+      VAR
+	 cont: Containers.Container;
+	 trans: Transactions.Transaction;
+	 dir: DirNode;
+	 entry, prev, next: Entry;
+	 root: DirNode;
+	 anchorUpdated: BOOLEAN;
+	 anchor: Anchor;
+	 anchorID: Containers.Ident;
+	 srcentry: SourceEntry;
+	 keyval: NameKeyValue;
+	 ok: BOOLEAN;
+   BEGIN
+      CDBGetRoot(node, root);
+      cont := root.container; anchor := root.anchor; anchorID := root.anchorID;
+      entry := node.entry;
+      RelatedEvents.Save(cont);
+      RelatedEvents.Forward(cont, node);
+      IF ~BeginTransaction(cont, trans) THEN
+	 RelatedEvents.Restore(cont);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(trans, node);
+      prev := entry.pprev; next := entry.pnext;
+      anchorUpdated := FALSE;
+      IF entry.prev = nil THEN
+	 ASSERT(entry.pprev = NIL);
+	 anchor.head := entry.next;
+	 anchor.phead := entry.pnext;
+	 anchorUpdated := TRUE;
+      ELSE
+	 prev.next := entry.next;
+	 prev.pnext := entry.pnext;
+      END;
+      IF entry.next = nil THEN
+	 ASSERT(entry.pnext = NIL);
+	 anchor.tail := entry.prev;
+	 anchor.ptail := entry.pprev;
+	 anchorUpdated := TRUE;
+      ELSE
+	 next.prev := entry.prev;
+	 next.pprev := entry.pprev;
+      END;
+      IF (prev # NIL) &
+	    ~Containers.Replace(cont, trans, prev.this, prev) OR
+	 (next # NIL) &
+	    ~Containers.Replace(cont, trans, next.this, next) OR
+	 anchorUpdated &
+	    ~Containers.Replace(cont, trans, anchorID, anchor) OR
+	 ~Containers.Delete(cont, trans, entry.this) OR
+	    ~Containers.Delete(cont, trans, entry.text) OR
+	    ~CommitTransaction(trans) THEN
+	 RelatedEvents.Restore(cont);
+	 RETURN FALSE
+      END;
+      IF node.up # NIL THEN
+	 RemoveSubNode(node.up, node);
+      END;
+      IF node.entry IS SourceEntry THEN
+	 srcentry := node.entry(SourceEntry);
+	 CreateNameKeyValue(keyval); keyval.name := srcentry.header.srcid;
+	 Semaphores.P(root.rootmutex);
+	 ok := AVLTrees.Remove(root.sources, keyval); ASSERT(ok);
+	 Semaphores.V(root.rootmutex);
+      END;
+      Resources.Notify(node, Resources.terminated);
+      RelatedEvents.Restore(cont);
+      RETURN TRUE
+   END ZapEntry;
+
+   (* === Names if procedures for DirNode ================================== *)
+
+   PROCEDURE CheckAuth(node: Node; lid: Shards.Lid; pot: Shards.Pot) : BOOLEAN;
+   BEGIN
+      IF Shards.Fits(pot, lid) THEN
+	 RETURN TRUE
+      ELSE
+	 Error(node, authFailed, node.name);
+	 RETURN FALSE
+      END;
+   END CheckAuth;
+
+   PROCEDURE AccessDirNode(node: Names.Node; mode: Names.AccessMode;
+                           auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 CASE mode OF
+	 | Names.read,
+	   Names.search:   RETURN Shards.Fits(node.read, auth)
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END AccessDirNode;
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator;
+                            node: Iterators.Reference; mode: Iterators.Mode);
+      VAR
+	 treeIt: Iterators.Iterator;
+	 ok: BOOLEAN;
+	 subnode: Node;
+   BEGIN
+      WITH node: DirNode DO
+	 Semaphores.P(node.mutex);
+	 node.touched := FALSE;
+	 SortedBags.GetEntries(node.sortedEntries, node.order,
+	                       NIL, NIL, treeIt);
+	 Semaphores.V(node.mutex);
+	 IF node.srciddir THEN
+	    (* sort it by the time stamps of the associated src ids *)
+	    SortedIterators.Create(treeIt, treeIt, byDate, node.order);
+	 END;
+	 REPEAT
+	    Semaphores.P(node.mutex);
+	    ok := ~node.touched & Iterators.Get(treeIt, subnode);
+	    Semaphores.V(node.mutex);
+	    IF ok THEN
+	       Iterators.Yield(it, subnode.name);
+	    END;
+	 UNTIL ~ok;
+      END;
+   END IterateMembers;
+
+   PROCEDURE GetMembersOfDirNode(node: Names.Node; auth: Shards.Lid;
+                                 VAR members: Names.Lister) : BOOLEAN;
+   BEGIN
+      WITH node: DirNode DO
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    members := NIL;
+	    RETURN FALSE
+	 END;
+	 Iterators.CreateQuickIterator(members, IterateMembers, node, 0);
+	 RETURN TRUE
+      END;
+   END GetMembersOfDirNode;
+
+   PROCEDURE TakeInterestInDirNode(node: Names.Node; auth: Shards.Lid;
+                                   VAR eventType: Events.EventType) : BOOLEAN;
+   BEGIN
+      WITH node: DirNode DO
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    eventType := NIL;
+	    RETURN FALSE
+	 END;
+	 Semaphores.P(node.mutex);
+	 IF node.eventType = NIL THEN
+	    Events.Define(node.eventType);
+	    Events.SetPriority(node.eventType, Priorities.message);
+	    Events.Ignore(node.eventType);
+	    Names.InitMemberEventType(node.eventType);
+	 END;
+	 Semaphores.V(node.mutex);
+	 eventType := node.eventType;
+	 RETURN TRUE
+      END;
+   END TakeInterestInDirNode;
+
+   PROCEDURE GetNodeOfDirNode(node: Names.Node; name: Names.Name;
+                              auth: Shards.Lid;
+			      VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 keyval: NameKeyValue;
+	 object: Node;
+   BEGIN
+      WITH node: DirNode DO
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    subnode := NIL;
+	    RETURN FALSE
+	 END;
+	 Semaphores.P(node.mutex);
+	 CreateNameKeyValue(keyval); keyval.name := name;
+	 IF AVLTrees.Get(node.entries, keyval, object) THEN
+	    ASSERT(object # NIL);
+	    subnode := object;
+	    Semaphores.V(node.mutex);
+	    RETURN TRUE
+	 ELSE
+	    Semaphores.V(node.mutex);
+	    Error(node, noSuchNode, name);
+	    subnode := NIL;
+	    RETURN FALSE
+	 END;
+      END;
+   END GetNodeOfDirNode;
+
+   PROCEDURE InsertIntoDirNode(node, subnode: Names.Node; name: Names.Name;
+                               auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 keyval: NameKeyValue;
+   BEGIN
+      WITH node: DirNode DO
+	 IF ~CheckAuth(node, auth, node.write) THEN
+	    RETURN FALSE
+	 END;
+	 CreateNameKeyValue(keyval); keyval.name := name;
+	 Semaphores.P(node.mutex);
+	 IF AVLTrees.Exists(node.entries, keyval) THEN
+	    Semaphores.V(node.mutex);
+	    Error(node, existsAlready, name);
+	    RETURN FALSE
+	 END;
+	 Semaphores.V(node.mutex);
+	 Error(node, insertNotSupported, name);
+	 RETURN FALSE
+      END;
+   END InsertIntoDirNode;
+
+   PROCEDURE DeleteFromDirNode(node: Names.Node; name: Names.Name;
+                               auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 keyval: NameKeyValue;
+   BEGIN
+      WITH node: DirNode DO
+	 IF ~CheckAuth(node, auth, node.write) THEN
+	    RETURN FALSE
+	 END;
+	 CreateNameKeyValue(keyval); keyval.name := name;
+	 Semaphores.P(node.mutex);
+	 IF ~AVLTrees.Exists(node.entries, keyval) THEN
+	    Semaphores.V(node.mutex);
+	    Error(node, existsAlready, name);
+	    RETURN FALSE
+	 END;
+	 Semaphores.V(node.mutex);
+	 Error(node, deleteNotSupported, name);
+	 RETURN FALSE
+      END;
+   END DeleteFromDirNode;
+
+   (* === Names if procedures for EntryNode ================================ *)
+
+   PROCEDURE AccessEntryNode(node: Names.Node; mode: Names.AccessMode;
+                             auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: EntryNode DO
+	 IF mode = Names.destroy THEN
+	    RETURN Shards.Fits(node.write, auth)
+	 END;
+	 RETURN FALSE
+      END;
+   END AccessEntryNode;
+
+   PROCEDURE DestroyEntryNode(node: Names.Node; auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH node: EntryNode DO
+	 IF ~CheckAuth(node, auth, node.write) THEN
+	    RETURN FALSE
+	 END;
+	 Semaphores.P(node.mutex);
+	 ok := ZapEntry(node);
+	 Semaphores.V(node.mutex);
+	 RETURN ok
+      END;
+   END DestroyEntryNode;
+
+   (* === name space construction ========================================== *)
+
+   PROCEDURE CreateDir(VAR dirnode: DirNode; cont: Containers.Container;
+                       root: BOOLEAN; key: Keys.Key);
+   BEGIN
+      NEW(dirnode); Services.Init(dirnode, dirNodeType);
+      RelatedEvents.QueueEvents(dirnode);
+      Names.InitNode(dirnode, dirNodeIF, dirNodeCaps);
+      CDBNames.Init(dirnode, nodeIF, (* root = *) FALSE);
+      LocalSemaphores.Create(dirnode.mutex);
+      AVLTrees.Create(dirnode.entries, byName);
+      RelatedEvents.Forward(dirnode.entries, dirnode);
+      Resources.DependsOn(dirnode.entries, dirnode);
+      SortedBags.Create(dirnode.sortedEntries, key);
+      IF key = byName THEN
+	 dirnode.order := AVLTrees.ascending;
+      ELSE
+	 (* key = byDate *)
+	 dirnode.order := AVLTrees.descending; (* latest first *)
+      END;
+      dirnode.container := cont;
+      dirnode.eventType := NIL;
+      dirnode.key := key;
+      dirnode.touched := FALSE;
+      Clocks.GetTime(Clocks.system, dirnode.date);
+   END CreateDir;
+
+   PROCEDURE AddUnique(root: DirNode; unique: ConstStrings.String);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(root.rootmutex);
+      ok := Names.Insert(root.uniqueNS, root, unique, NIL); ASSERT(ok);
+      Semaphores.V(root.rootmutex);
+   END AddUnique;
+
+   PROCEDURE SetUnique(root: DirNode; VAR name: ConstStrings.String);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(root.rootmutex);
+      ok := UniqueNames.Insert(root.uniqueNS, root, NIL, name); ASSERT(ok);
+      Semaphores.V(root.rootmutex);
+   END SetUnique;
+
+   PROCEDURE CreateEntryNode(VAR node: EntryNode;
+			     root: DirNode;
+                             cont: Containers.Container;
+			     entry: Entry);
+      VAR
+	 rkey: Resources.Key;
+   BEGIN
+      NEW(node); Services.Init(node, entryNodeType);
+      RelatedEvents.QueueEvents(node);
+      Names.InitNode(node, entryNodeIF, entryNodeCaps);
+      CDBNames.Init(node, nodeIF, (* root = *) FALSE);
+      LocalSemaphores.Create(node.mutex);
+      node.container := cont;
+      node.entry := entry;
+      node.name := node.entry.unique;
+      (* assure that the node does not die because of becoming unreferenced *)
+      Resources.Attach(node, rkey);
+   END CreateEntryNode;
+
+   PROCEDURE GetDir(dirnode: DirNode; name: ConstStrings.String;
+		    key: Keys.Key; keyvalue: CompilerKeys.Value;
+		    VAR subdir: DirNode);
+      VAR
+	 ok: BOOLEAN;
+	 keyval: NameKeyValue;
+   BEGIN
+      Semaphores.P(dirnode.mutex);
+      CreateNameKeyValue(keyval); keyval.name := name;
+      IF AVLTrees.Exists(dirnode.entries, keyval) THEN
+	 ok := AVLTrees.Get(dirnode.entries, keyval, subdir); ASSERT(ok);
+	 Semaphores.V(dirnode.mutex);
+	 RETURN
+      END;
+      CreateDir(subdir, dirnode.container, (* root = *) FALSE, key);
+      subdir.name := name;
+      subdir.read := dirnode.read;
+      subdir.write := dirnode.write;
+      subdir.up := dirnode;
+      subdir.keyvalue := keyvalue;
+      subdir.srciddir := FALSE;
+      ok := AVLTrees.Add(dirnode.entries, subdir); ASSERT(ok);
+      SortedBags.Add(dirnode.sortedEntries, subdir);
+      dirnode.touched := TRUE;
+      IF dirnode.eventType # NIL THEN
+	 Notify(dirnode.eventType, Names.inserted, name, subdir);
+      END;
+      RelatedEvents.Forward(subdir, dirnode);
+      Resources.DependsOn(subdir, dirnode);
+      Semaphores.V(dirnode.mutex);
+   END GetDir;
+
+   PROCEDURE AddNode(dirnode: DirNode; node: EntryNode);
+      VAR
+	 ok: BOOLEAN;
+	 keyval: NameKeyValue;
+   BEGIN
+      Semaphores.P(dirnode.mutex);
+      CreateNameKeyValue(keyval); keyval.name := node.name;
+      ok := AVLTrees.Add(dirnode.entries, node); ASSERT(ok);
+      SortedBags.Add(dirnode.sortedEntries, node);
+      dirnode.touched := TRUE;
+      IF dirnode.eventType # NIL THEN
+	 Notify(dirnode.eventType, Names.inserted, node.name, node);
+      END;
+      RelatedEvents.Forward(node, dirnode);
+      Resources.DependsOn(node, dirnode);
+      Semaphores.V(dirnode.mutex);
+   END AddNode;
+
+   PROCEDURE CreateRoot(VAR root: DirNode;
+                        cont: Containers.Container;
+			read, write: Shards.Pot);
+   BEGIN
+      CreateDir(root, cont, (* root = *) TRUE, byName);
+      root.name := NIL;
+      root.read := read;
+      root.write := write;
+      root.up := NIL;
+      LocalSemaphores.Create(root.rootmutex);
+      CDBNames.Init(root, nodeIF, (* root = *) TRUE);
+      Names.CreateNode(root.uniqueNS, NIL, Names.strictCaps);
+      RelatedEvents.Reset(root.uniqueNS);
+      RelatedEvents.Forward(root.uniqueNS, RelatedEvents.null);
+      AVLTrees.Create(root.sources, byName);
+      Resources.DependsOn(root, cont);
+   END CreateRoot;
+
+   PROCEDURE AddObject(root: DirNode; entry: ObjectEntry;
+                       VAR newnode: Node);
+      VAR
+	 subdir: DirNode;
+	 archstring: ConstStrings.String;
+	 genkeyString: ConstStrings.String;
+	 archkeyString: ConstStrings.String;
+	 node: EntryNode;
+	 key: CompilerKeys.Key;
+   BEGIN
+      GetDir(root, entry.modname, byName, NIL, subdir);
+      GetDir(subdir, objString, byDate, NIL, subdir);
+      key := entry.header.key;
+      CompilerKeys.ValueToString(key.genkey, genkeyString);
+      GetDir(subdir, genkeyString, byName, key.genkey, subdir);
+      IF entry.header.arch = NIL THEN
+	 GetDir(subdir, genString, byName, NIL, subdir);
+      ELSE
+	 Architectures.GetString(entry.header.arch, archstring);
+	 GetDir(subdir, archstring, byDate, NIL, subdir);
+	 CompilerKeys.ValueToString(key.archkey, archkeyString);
+	 GetDir(subdir, archkeyString, byName, key.archkey, subdir);
+      END;
+      CASE entry.header.type OF
+      | CompilerObjects.private: GetDir(subdir, modString, byName, NIL, subdir);
+      | CompilerObjects.public:  GetDir(subdir, defString, byName, NIL, subdir);
+      END;
+      subdir.order := AVLTrees.descending; subdir.srciddir := TRUE;
+      GetDir(subdir, entry.header.srcid, byDate, NIL, subdir);
+      CreateEntryNode(node, root, root.container, entry);
+      node.read := root.read; node.write := root.write;
+      node.up := subdir;
+      AddNode(subdir, node);
+      newnode := node;
+   END AddObject;
+
+   PROCEDURE AddSource(root: DirNode; entry: SourceEntry;
+                       VAR newnode: Node);
+      VAR
+	 subdir: DirNode;
+	 node: EntryNode;
+	 ok: BOOLEAN;
+   BEGIN
+      GetDir(root, entry.modname, byName, NIL, subdir);
+      GetDir(subdir, srcString, byName, NIL, subdir);
+      CASE entry.header.kind OF
+      | Sources.definition: GetDir(subdir, defString, byDate, NIL, subdir);
+      | Sources.module,
+        Sources.defmod:     GetDir(subdir, modString, byDate, NIL, subdir);
+      END;
+      CreateEntryNode(node, root, root.container, entry);
+      node.read := root.read; node.write := root.write;
+      node.up := subdir;
+      AddNode(subdir, node);
+      Semaphores.P(root.rootmutex);
+      ok := AVLTrees.Add(root.sources, node); ASSERT(ok);
+      Semaphores.V(root.rootmutex);
+      newnode := node;
+   END AddSource;
+
+   PROCEDURE LoadDatabase(root: DirNode) : BOOLEAN;
+      VAR
+	 cont: Containers.Container;
+	 disc: ContainerDiscipline;
+	 trans: Transactions.Transaction;
+	 anchorID: Containers.Ident;
+	 object: PersistentDisciplines.Object;
+	 anchor: Anchor;
+	 entry, last: Entry;
+	 lastID: Containers.Ident;
+	 next: Containers.Ident;
+	 newnode: Node; (* ignored *)
+   BEGIN
+      cont := root.container;
+      IF ~BeginTransaction(cont, trans) THEN
+	 RETURN FALSE
+      END;
+      RelatedEvents.Save(cont);
+      RelatedEvents.Forward(cont, RelatedEvents.null);
+      IF ~Containers.GetAnchor(cont, trans, anchorID) THEN
+	 (* looks like a new data base *)
+	 RelatedEvents.Restore(cont);
+	 CreateAnchor(anchor);
+	 anchor.head := nil; anchor.tail := nil;
+	 anchor.phead := NIL; anchor.ptail := NIL;
+	 IF ~Containers.Insert(cont, trans, anchorID, anchor) OR
+	       ~Containers.SetAnchor(cont, trans, anchorID) THEN
+	    AbortTransaction(trans); RETURN FALSE
+	 END;
+	 root.anchor := anchor; root.anchorID := anchorID;
+	 RETURN CommitTransaction(trans)
+      END;
+      RelatedEvents.Restore(cont);
+      IF ~Containers.Obtain(cont, trans, anchorID, object) OR
+	    ~(object IS Anchor) THEN
+	 AbortTransaction(trans); RETURN FALSE
+      END;
+      anchor := object(Anchor);
+      next := anchor.head;
+      last := NIL; lastID := nil;
+      WHILE next # nil DO
+	 IF ~Containers.Obtain(cont, trans, next, entry) THEN
+	    AbortTransaction(trans); RETURN FALSE
+	 END;
+	 IF (entry.prev # lastID) OR (entry.this # next) THEN
+	    AbortTransaction(trans);
+	    Error(trans, inconsistentDatabase, NIL);
+	    RETURN FALSE
+	 END;
+	 entry.pprev := last; entry.pnext := NIL;
+	 IF last = NIL THEN
+	    anchor.phead := entry;
+	 ELSE
+	    last.pnext := entry;
+	 END;
+	 AddUnique(root, entry.unique);
+	 IF entry IS ObjectEntry THEN
+	    AddObject(root, entry(ObjectEntry), newnode);
+	 ELSE
+	    AddSource(root, entry(SourceEntry), newnode);
+	 END;
+	 lastID := next; next := entry.next; last := entry;
+      END;
+      anchor.ptail := last;
+      root.anchor := anchor; root.anchorID := anchorID;
+      RETURN CommitTransaction(trans)
+   END LoadDatabase;
+
+   PROCEDURE DebugDatabase(root: DirNode; s: Streams.Stream) : BOOLEAN;
+      (* lots of debugging output in case of problems *)
+      VAR
+	 cont: Containers.Container;
+	 disc: ContainerDiscipline;
+	 trans: Transactions.Transaction;
+	 anchorID: Containers.Ident;
+	 object: PersistentDisciplines.Object;
+	 anchor: Anchor;
+	 entry: Entry;
+	 last, next: Containers.Ident;
+	 newnode: Node; (* ignored *)
+   BEGIN
+      cont := root.container;
+      IF ~BeginTransaction(cont, trans) THEN
+	 RETURN FALSE
+      END;
+      Print.S(s, "checking CDB database...\n");
+      IF ~Containers.GetAnchor(cont, trans, anchorID) THEN
+	 (* looks like a new data base *)
+	 Print.S(s, "no anchor found, aborting\n");
+	 RETURN CommitTransaction(trans)
+      END;
+      Print.S1(s, "anchor id = %d\n", anchorID);
+      IF Containers.Obtain(cont, trans, anchorID, object) &
+	    (object IS Anchor) THEN
+	 anchor := object(Anchor);
+	 Print.S(s, "walking through list of entries...\n");
+	 next := anchor.head; last := nil;
+	 LOOP
+	    IF next = nil THEN EXIT END;
+	    Print.S1(s, "next = %d\n", next);
+	    IF ~Containers.Obtain(cont, trans, next, entry) THEN
+	       Print.S(s, "unable to retrieve entry, aborting walk\n");
+	       EXIT
+	    END;
+	    IF entry IS ObjectEntry THEN
+	       Print.S(s, "object entry found\n");
+	    ELSE
+	       Print.S(s, "source entry found\n");
+	    END;
+	    IF entry.prev # last THEN
+	       Print.S1(s, "bogus back reference: %d\n", entry.prev);
+	    END;
+	    last := next; next := entry.next;
+	 END;
+	 Print.S(s, "walk finished\n");
+      ELSE
+	 Print.S(s, "unable to retrieve anchor object\n");
+      END;
+      IF Containers.Find(cont, trans, Containers.first, next) THEN
+	 Print.S(s, "examining all objects in data base...\n");
+	 LOOP
+	    Print.S1(s, "found an object with id = %d\n", next);
+	    IF Containers.Obtain(cont, trans, next, object) THEN
+	       IF object IS Anchor THEN
+		  Print.S1(s, "anchor found with id = %d\n", next);
+	       ELSIF object IS Entry THEN
+		  WITH object: Entry DO
+		     Print.S(s, "entry for module ");
+		     ConstStrings.Write(s, object.modname);
+		     Print.S(s, "found:\n");
+		     Print.S4(s, "this = %d, text = %d, prev = %d, next = %d\n",
+			object.this, object.text, object.prev, object.next);
+		  END;
+	       ELSIF object IS PersistentTexts.Text THEN
+		  Print.S(s, "text entry\n");
+	       ELSE
+		  Print.S(s, "bogus object!\n");
+	       END;
+	    ELSE
+	       Print.S(s, "but I am unable to retrieve it\n");
+	    END;
+	    IF ~Containers.Find(cont, trans, Containers.succ, next) THEN
+	       EXIT
+	    END;
+	 END;
+	 Print.S(s, "end of object list\n");
+      ELSE
+	 Print.S(s, "no objects in database");
+      END;
+      RETURN CommitTransaction(trans)
+   END DebugDatabase;
+
+   (* === CDBNames if for Node ============================================= *)
+
+   PROCEDURE InsertEntry(root: DirNode;
+                         entry: Entry; text: PersistentTexts.Text) : BOOLEAN;
+      VAR
+	 cont: Containers.Container;
+	 trans: Transactions.Transaction;
+	 this: Containers.Ident;
+	 head: Entry;
+	 textID: Containers.Ident;
+	 s: Streams.Stream;
+	 anchor: Anchor;
+	 anchorID: Containers.Ident;
+   BEGIN
+      cont := root.container; anchor := root.anchor; anchorID := root.anchorID;
+      IF ~BeginTransaction(cont, trans) THEN RETURN FALSE END;
+      IF ~Containers.Insert(cont, trans, textID, text) THEN
+	 AbortTransaction(trans); RETURN FALSE
+      END;
+      head := anchor.phead;
+      entry.this := nil;
+      entry.text := textID;
+      entry.prev := nil; entry.next := anchor.head;
+      entry.pprev := NIL; entry.pnext := head;
+      (* get new container id, we do this most efficiently by
+         storing an empty object
+      *)
+      IF ~Containers.Insert(cont, trans, this, empty) THEN
+	 AbortTransaction(trans); RETURN FALSE
+      END;
+      entry.this := this;
+      IF head # NIL THEN
+	 head.prev := this;
+	 head.pprev := entry;
+      END;
+      anchor.head := this;
+      anchor.phead := entry;
+      IF ~Containers.Replace(cont, trans, this, entry) OR
+            ~Containers.Replace(cont, trans, anchorID, anchor) OR
+	    (head # NIL) &
+	       ~Containers.Replace(cont, trans, head.this, head) THEN
+	 AbortTransaction(trans); RETURN FALSE
+      END;
+      RETURN CommitTransaction(trans)
+   END InsertEntry;
+
+   PROCEDURE UpdateHeader(cont: Containers.Container; entry: Entry) : BOOLEAN;
+      (* update entry but not the associated text *)
+      VAR
+	 trans: Transactions.Transaction;
+   BEGIN
+      IF ~BeginTransaction(cont, trans) THEN RETURN FALSE END;
+      IF ~Containers.Replace(cont, trans, entry.this, entry) THEN
+	 AbortTransaction(trans); RETURN FALSE
+      END;
+      RETURN CommitTransaction(trans)
+   END UpdateHeader;
+
+   PROCEDURE CDBAddObject(root: CDBNames.Node; header: CompilerObjects.Header;
+                          text: PersistentTexts.Text;
+		          auth: Shards.Lid;
+			  VAR node: CDBNames.Node) : BOOLEAN;
+      VAR
+	 entry: ObjectEntry;
+	 newnode: Node;
+   BEGIN
+      WITH root: DirNode DO
+	 node := NIL; (* defaults *)
+	 IF ~CheckAuth(root, auth, root.write) THEN
+	    RETURN FALSE
+	 END;
+	 CreateObjectEntry(entry);
+	 entry.modname := header.modname;
+	 entry.header := header;
+	 SetUnique(root, entry.unique);
+	 Clocks.GetTime(Clocks.system, entry.date);
+	 IF ~InsertEntry(root, entry, text) THEN
+	    Error(root, insertFailed, header.modname);
+	    RETURN FALSE
+	 END;
+	 AddObject(root, entry, newnode);
+	 node := newnode;
+	 RETURN TRUE
+      END;
+   END CDBAddObject;
+
+   PROCEDURE CDBAddSource(root: CDBNames.Node;
+		          header: Sources.Header;
+			  text: PersistentTexts.Text;
+		          auth: Shards.Lid;
+			  VAR node: CDBNames.Node) : BOOLEAN;
+      VAR
+	 entry: SourceEntry;
+	 keyval: NameKeyValue;
+	 newnode: Node;
+	 oldnode: EntryNode;
+	 ok: BOOLEAN;
+	 oldheader: Sources.Header;
+	 olddate: Times.Time;
+   BEGIN
+      WITH root: DirNode DO
+	 node := NIL; (* defaults *)
+	 IF ~CheckAuth(root, auth, root.write) THEN
+	    RETURN FALSE
+	 END;
+
+	 (* check whether this source has been submitted already;
+	    i.e. whether the srcid is known
+	 *)
+	 CreateNameKeyValue(keyval); keyval.name := header.srcid;
+	 Semaphores.P(root.rootmutex);
+	 IF AVLTrees.Exists(root.sources, keyval) THEN
+	    ok := AVLTrees.Get(root.sources, keyval, oldnode); ASSERT(ok);
+	    Semaphores.V(root.rootmutex);
+	    entry := oldnode.entry(SourceEntry);
+	    IF ConstStrings.Compare(entry.header.modname,
+	                            header.modname) # 0 THEN
+	       Error(root, updateFailed, header.modname);
+	       RETURN FALSE
+	    END;
+	    oldheader := entry.header; olddate := entry.date;
+	    SortedBags.Remove(oldnode.up.sortedEntries, oldnode);
+	    entry.header := header; (* update header *)
+	    entry.date := header.date;
+	    IF ~UpdateHeader(root.container, entry) THEN
+	       Error(root, updateFailed, header.modname);
+	       (* undo change *)
+	       entry.header := oldheader;
+	       entry.date := olddate;
+	       SortedBags.Add(oldnode.up.sortedEntries, oldnode);
+	       RETURN FALSE
+	    END;
+	    SortedBags.Add(oldnode.up.sortedEntries, oldnode);
+	    RETURN TRUE
+	 END;
+	 Semaphores.V(root.rootmutex);
+
+	 CreateSourceEntry(entry);
+	 entry.header := header;
+	 entry.modname := header.modname;
+	 entry.unique := header.srcid;
+	 entry.date := header.date;
+	 IF ~InsertEntry(root, entry, text) THEN
+	    Error(root, insertFailed, header.modname);
+	    RETURN FALSE
+	 END;
+	 AddSource(root, entry, newnode);
+	 node := newnode;
+	 RETURN TRUE
+      END;
+   END CDBAddSource;
+
+   PROCEDURE CDBGetObjectHeader(node: CDBNames.Node; auth: Shards.Lid;
+                                VAR header: CompilerObjects.Header) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~(node IS EntryNode) THEN
+	    Error(node, notALeafNode, node.name);
+	    RETURN FALSE
+	 END;
+	 WITH node: EntryNode DO
+	    IF node.entry IS ObjectEntry THEN
+	       header := node.entry(ObjectEntry).header;
+	       RETURN TRUE
+	    ELSE
+	       Error(node, notAnObject, node.name);
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+   END CDBGetObjectHeader;
+
+   PROCEDURE CDBGetSourceHeader(node: CDBNames.Node; auth: Shards.Lid;
+                                VAR header: Sources.Header) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~(node IS EntryNode) THEN
+	    Error(node, notALeafNode, node.name);
+	    RETURN FALSE
+	 END;
+	 WITH node: EntryNode DO
+	    IF node.entry IS SourceEntry THEN
+	       header := node.entry(SourceEntry).header;
+	       RETURN TRUE
+	    ELSE
+	       Error(node, notASource, node.name);
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+   END CDBGetSourceHeader;
+
+   PROCEDURE CDBGetText(node: CDBNames.Node; auth: Shards.Lid;
+                        VAR text: PersistentTexts.Text) : BOOLEAN;
+      VAR
+	 textID: Containers.Ident;
+	 trans: Transactions.Transaction;
+	 cont: Containers.Container;
+   BEGIN
+      WITH node: Node DO
+	 text := NIL;
+	 IF ~CheckAuth(node, auth, node.read) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~(node IS EntryNode) THEN
+	    Error(node, notALeafNode, node.name);
+	    RETURN FALSE
+	 END;
+	 textID := node(EntryNode).entry.text;
+	 cont := node.container;
+	 IF ~BeginTransaction(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~Containers.Obtain(cont, trans, textID, text) THEN
+	    AbortTransaction(trans); RETURN FALSE
+	 END;
+	 IF ~CommitTransaction(trans) THEN END; (* doesn't matter *)
+	 RETURN TRUE
+      END;
+   END CDBGetText;
+
+   PROCEDURE CDBGetPath(node: CDBNames.Node; VAR path: ARRAY OF CHAR);
+      (* return relative path from root *)
+      VAR
+	 s: Streams.Stream;
+
+      PROCEDURE GetPath(dirnode: DirNode);
+      BEGIN
+	 IF (dirnode # NIL) & (dirnode.name # NIL) THEN
+	    GetPath(dirnode.up);
+	    ConstStrings.Write(s, dirnode.name);
+	    Write.CharS(s, Paths.separator);
+	 END;
+      END GetPath;
+
+   BEGIN
+      path[0] := 0X;
+      Strings.Open(s, path);
+      WITH node: Node DO
+	 IF node.name # NIL THEN (* we return an empty path for root *)
+	    GetPath(node.up);
+	    ConstStrings.Write(s, node.name);
+	 END;
+      END;
+      Streams.Release(s);
+   END CDBGetPath;
+
+   PROCEDURE CDBGetRoot(node: CDBNames.Node; VAR root: CDBNames.Node);
+      (* return associated root node *)
+      VAR
+	 dirnode: DirNode;
+   BEGIN
+      dirnode := node(Node).up;
+      IF dirnode = NIL THEN
+	 root := node;
+      ELSE
+	 WHILE dirnode.up # NIL DO
+	    dirnode := dirnode.up;
+	 END;
+	 root := dirnode;
+      END;
+   END CDBGetRoot;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+
+      VAR
+	 service: Services.Service;
+
+      PROCEDURE InitPO(VAR type: Services.Type;
+		       name, baseName: ARRAY OF CHAR;
+		       create: PersistentObjects.CreateProc;
+		       read: PersistentObjects.ReadProc;
+		       write: PersistentObjects.WriteProc);
+	 VAR if: PersistentObjects.Interface;
+      BEGIN
+	 NEW(if);
+	 if.create := create; if.read := read; if.write := write;
+	 if.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, baseName, if);
+      END InitPO;
+
+   BEGIN (* Init *)
+      InitErrorHandling;
+      cdID := Disciplines.Unique();
+      Services.CreateType(nodeType, "StdCDBNames.Node", "CDBNames.Node");
+      Services.CreateType(dirNodeType,
+	 "StdCDBNames.DirNode", "StdCDBNames.Node");
+      Services.CreateType(entryNodeType,
+	 "StdCDBNames.EntryNode", "StdCDBNames.Node");
+      InitPO(anchorType, "StdCDBNames.Anchor", "PersistentDisciplines.Object",
+         CreateAnchor, ReadAnchor, WriteAnchor);
+      InitPO(entryType, "StdCDBNames.Entry", "PersistentDisciplines.Object",
+         CreateEntry, ReadEntry, WriteEntry);
+      InitPO(objectEntryType, "StdCDBNames.ObjectEntry",
+         "StdCDBNames.Entry",
+         CreateObjectEntry, ReadObjectEntry, WriteObjectEntry);
+      InitPO(sourceEntryType, "StdCDBNames.SourceEntry",
+         "StdCDBNames.Entry",
+         CreateSourceEntry, ReadSourceEntry, WriteSourceEntry);
+      InitPO(nameKeyValueType, "StdCDBNames.NameKeyValue", "Keys.Value",
+         CreateNameKeyValue, ReadNameKeyValue, WriteNameKeyValue);
+      InitPO(nameKeyType, "StdCDBNames.NameKey", "Keys.Key",
+	 CreateNameKey, NIL, NIL);
+      InitPO(dateKeyValueType, "StdCDBNames.DateKeyValue", "Keys.Value",
+         CreateDateKeyValue, ReadDateKeyValue, WriteDateKeyValue);
+      InitPO(dateKeyType, "StdCDBNames.DateKey", "Keys.Key",
+	 CreateDateKey, NIL, NIL);
+
+      Keys.DefineService("StdCDBNames.NameKey",
+	 nameKeyValueType, CompareNameKeyValues, service);
+      CreateNameKey(byName);
+      Keys.Init(byName, service);
+      Keys.Support(service, nodeType, ExtractNameKey);
+
+      Keys.DefineService("StdCDBNames.DateKey",
+	 dateKeyValueType, CompareDateKeyValues, service);
+      CreateDateKey(byDate);
+      Keys.Init(byDate, service);
+      Keys.Support(service, nodeType, ExtractDateKey);
+
+      Services.SeekType("CompilerObjects.Header", objHeaderType);
+      ASSERT(objHeaderType # NIL);
+      Services.SeekType("CompilerSources.Header", srcHeaderType);
+      ASSERT(srcHeaderType # NIL);
+      Services.SeekType("Times.Time", timeType);
+      ASSERT(timeType # NIL);
+
+      NEW(entryNodeIF); entryNodeIF.access := AccessEntryNode;
+      entryNodeIF.destroy := DestroyEntryNode;
+      NEW(dirNodeIF); dirNodeIF.access := AccessDirNode;
+      dirNodeIF.getMembers := GetMembersOfDirNode;
+      dirNodeIF.takeInterest := TakeInterestInDirNode;
+      dirNodeIF.getNode := GetNodeOfDirNode;
+      dirNodeIF.insert := InsertIntoDirNode;
+      dirNodeIF.delete := DeleteFromDirNode;
+
+      NEW(nodeIF);
+      nodeIF.addObject := CDBAddObject;
+      nodeIF.addSource := CDBAddSource;
+      nodeIF.getObjectHeader := CDBGetObjectHeader;
+      nodeIF.getSourceHeader := CDBGetSourceHeader;
+      nodeIF.getText := CDBGetText;
+      nodeIF.getPath := CDBGetPath;
+      nodeIF.getRoot := CDBGetRoot;
+
+      ConstStrings.Create(defString, "def");
+      ConstStrings.Create(modString, "mod");
+      ConstStrings.Create(srcString, "src");
+      ConstStrings.Create(genString, "gen");
+      ConstStrings.Create(objString, "obj");
+
+      PersistentDisciplines.CreateObject(empty);
+   END Init;
+
+   (* === exported constructor ============================================= *)
+
+   PROCEDURE Create(VAR root: CDBNames.Node; container: Containers.Container;
+		    read, write: Shards.Pot;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 newroot: DirNode;
+   BEGIN
+      RelatedEvents.Save(container);
+      RelatedEvents.Forward(container, errors);
+      CreateRoot(newroot, container, read, write);
+      RelatedEvents.Save(newroot);
+      RelatedEvents.Forward(newroot, errors);
+      ok := LoadDatabase(newroot);
+      RelatedEvents.Restore(container);
+      RelatedEvents.Restore(newroot);
+      RelatedEvents.Forward(container, root);
+      IF ok THEN
+	 root := newroot;
+	 RETURN TRUE
+      ELSE
+	 root := NIL;
+	 Error(errors, cannotLoadDatabase, NIL);
+	 IF ~DebugDatabase(newroot, Streams.stderr) THEN END;
+	 RETURN FALSE
+      END;
+   END Create;
+
+BEGIN
+   Init;
+END StdCDBNames.

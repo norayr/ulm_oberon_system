@@ -1,0 +1,255 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: LocalSemaph.om,v 1.4 1997/07/11 09:37:32 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: LocalSemaph.om,v $
+   Revision 1.4  1997/07/11  09:37:32  borchert
+   bug fix: increment of semval was forgotten in Drop
+
+   Revision 1.3  1997/07/09  14:00:50  borchert
+   adapted to changed interface of Semaphores:
+   - Drop added
+   - only conditions which gotcha FALSE are being queued
+
+   Revision 1.2  1995/01/20  12:38:14  borchert
+   P interface procedure added
+
+   Revision 1.1  1994/02/23  08:03:48  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/93
+   ----------------------------------------------------------------------------
+*)
+
+MODULE LocalSemaphores;
+
+   IMPORT Conditions, Events, Priorities, RelatedEvents, Semaphores, Tasks;
+
+   (* this version is safe for coroutines and asynchronous interrupts
+      but not for concurrent processes which share one address space:
+      LocalSemaphores uses Events.AssertPriority/ExitPriority to
+      protect against asynchronous events
+
+      creating a condition is like calling a nonblocking P operation,
+      i.e. a condition knows always wether we have got the resource
+      or not;
+      to achieve fairness, we have a FIFO queue for each semaphore;
+      if V gets called, we notify immediately the next waiting condition
+   *)
+
+   TYPE
+      Semaphore = POINTER TO SemaphoreRec;
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    sema: Semaphore; (* referenced semaphore *)
+	    gotcha: BOOLEAN; (* do we have got the resource? *)
+	    dropped: BOOLEAN;
+	    prev, next: Condition; (* FIFO of conditions *)
+	       (* note that all conditions in the queue have gotcha FALSE *)
+	 END;
+   VAR
+      condDomain: Conditions.Domain;
+
+   TYPE
+      SemaphoreRec =
+	 RECORD
+	    (Semaphores.SemaphoreRec)
+	    semval: INTEGER;
+	       (* >0: number of free resources
+		  <0: absolute value gives the number of waiting conditions
+	       *)
+	    head, tail: Condition;
+	       (* FIFO queue of waiting conditions *)
+	 END;
+   VAR
+      if: Semaphores.Interface;
+
+   PROCEDURE CreateN(VAR sema: Semaphores.Semaphore;
+		     numberOfResources: INTEGER);
+      VAR
+	 newsema: Semaphore;
+   BEGIN
+      ASSERT(numberOfResources >= 1);
+      NEW(newsema);
+      newsema.semval := numberOfResources;
+      newsema.head := NIL; newsema.tail := NIL;
+      Semaphores.Init(newsema, if);
+      sema := newsema;
+   END CreateN;
+
+   PROCEDURE Create(VAR sema: Semaphores.Semaphore);
+   BEGIN
+      CreateN(sema, 1);
+   END Create;
+
+   (* ======= private procedures ====================================== *)
+
+   PROCEDURE Remove(sema: Semaphore; cond: Condition);
+   BEGIN
+      (* remove cond out of the list *)
+      IF cond.prev = NIL THEN
+	 sema.head := cond.next;
+      ELSE
+	 cond.prev.next := cond.next;
+      END;
+      IF cond.next = NIL THEN
+	 sema.tail := cond.prev;
+      ELSE
+	 cond.next.prev := cond.prev;
+      END;
+   END Remove;
+
+   PROCEDURE InternalV(sema: Semaphores.Semaphore);
+      VAR
+	 task: Tasks.Task;
+	 cond: Condition;
+   BEGIN
+      WITH sema: Semaphore DO
+	 INC(sema.semval);
+	 cond := sema.head;
+	 IF cond # NIL THEN
+	    Remove(sema, cond);
+	    cond.gotcha := TRUE;
+	 END;
+      END;
+   END InternalV;
+
+   (* ======= interface to Semaphores ================================= *)
+
+   PROCEDURE GetCondition(sema: Semaphores.Semaphore;
+			  VAR condition: Conditions.Condition);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      WITH sema: Semaphore DO
+	 Events.AssertPriority(Priorities.interrupts);
+	    NEW(newcond);
+	    newcond.sema := sema;
+	    DEC(sema.semval);
+	    newcond.gotcha := sema.semval >= 0;
+	    newcond.dropped := FALSE;
+	    IF ~newcond.gotcha THEN
+	       (* queue it if we have not claimed the resource yet *)
+	       IF sema.tail = NIL THEN
+		  sema.head := newcond;
+	       ELSE
+		  sema.tail.next := newcond;
+	       END;
+	       newcond.prev := sema.tail;
+	       newcond.next := NIL;
+	       sema.tail := newcond;
+	    END;
+	    Conditions.Init(newcond, condDomain);
+	    condition := newcond;
+	 Events.ExitPriority;
+      END;
+   END GetCondition;
+
+   PROCEDURE P(sema: Semaphores.Semaphore);
+      VAR
+	 cond: Conditions.Condition;
+   BEGIN
+      WITH sema: Semaphore DO
+	 Events.AssertPriority(Priorities.interrupts);
+	 IF sema.semval <= 0 THEN
+	    Events.ExitPriority;
+	    GetCondition(sema, cond);
+	    Tasks.WaitFor(cond);
+	 ELSE
+	    DEC(sema.semval);
+	    Events.ExitPriority;
+	 END;
+      END;
+   END P;
+
+   PROCEDURE V(sema: Semaphores.Semaphore);
+      VAR
+	 task: Tasks.Task;
+	 cond: Condition;
+   BEGIN
+      WITH sema: Semaphore DO
+	 Events.AssertPriority(Priorities.interrupts);
+	 InternalV(sema);
+	 Events.ExitPriority;
+      END;
+   END V;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+   BEGIN
+      WITH condition: Condition DO
+	 Events.AssertPriority(Priorities.interrupts);
+	    IF condition.gotcha THEN
+	       InternalV(condition.sema);
+	    ELSE
+	       Remove(condition.sema, condition);
+	       INC(condition.sema.semval);
+	       condition.dropped := TRUE;
+	    END;
+	 Events.ExitPriority;
+      END;
+   END Drop;
+
+   PROCEDURE Status(sema: Semaphores.Semaphore) : INTEGER;
+   BEGIN
+      RETURN sema(Semaphore).semval
+   END Status;
+
+   (* ======= interface to Conditions ================================= *)
+
+   PROCEDURE TestCondition(domain: Conditions.Domain;
+			   condition: Conditions.Condition;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 returnValue: BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN condition.gotcha OR condition.dropped
+      END;
+   END TestCondition;
+
+   PROCEDURE Init;
+      VAR
+	 condIF: Conditions.Interface;
+	 condDescription: Conditions.Description;
+   BEGIN
+      (* init interface to Semaphores *)
+      NEW(if);
+      if.p := P;
+      if.v := V;
+      if.getcondition := GetCondition;
+      if.drop := Drop;
+      if.status := Status;
+
+      (* init interface to Conditions *)
+      NEW(condDescription);
+      condDescription.caps := {};
+      condDescription.internal := TRUE;
+      NEW(condIF);
+      condIF.test := TestCondition;
+      NEW(condDomain);
+      Conditions.InitDomain(condDomain, condIF, condDescription);
+   END Init;
+
+BEGIN
+   Init;
+END LocalSemaphores.

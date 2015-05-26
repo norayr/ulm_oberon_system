@@ -1,0 +1,447 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Networks.om,v 1.3 1995/01/16 21:43:09 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Networks.om,v $
+   Revision 1.3  1995/01/16  21:43:09  borchert
+   - open condition and CreateSomeSocket added
+   - fixes due to changed if of PersistentObjects
+
+   Revision 1.2  1994/07/04  07:55:58  borchert
+   AcceptCondition renamed to CreateAcceptCondition
+
+   Revision 1.1  1994/02/23  08:03:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/94
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Networks;
+
+   (* general abstraction for bidirectional network connections *)
+
+   IMPORT Conditions, ConstStrings, Disciplines, Errors, Events,
+      Iterators, Loader, NetIO, Objects, PersistentDisciplines,
+      PersistentObjects, Priorities, RelatedEvents, Services,
+      Streams, Strings;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      Network = POINTER TO NetworkRec;
+      NetworkRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    name: ConstStrings.String;
+	    if: Interface;
+	    hnext: Network; (* next network with same hash value *)
+	 END;
+
+      Address = POINTER TO AddressRec;
+      AddressRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    network: Network;
+	 END;
+
+      Socket = POINTER TO SocketRec;
+      SocketRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    address: Address;
+	 END;
+
+   TYPE
+      OpenProc = PROCEDURE (VAR s: Streams.Stream; address: Address;
+			    bufmode: Streams.BufMode;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      CreateOpenConditionProc = PROCEDURE(VAR condition: Conditions.Condition;
+					  address: Address);
+      TestAndOpenProc = PROCEDURE (VAR s: Streams.Stream;
+				   condition: Conditions.Condition;
+				   bufmode: Streams.BufMode;
+				   errors: RelatedEvents.Object) : BOOLEAN;
+      CreateSomeSocketProc = PROCEDURE (VAR socket: Socket;
+					VAR address: Address;
+					errors: RelatedEvents.Object) : BOOLEAN;
+      ListenProc = PROCEDURE (VAR socket: Socket; address: Address;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+      ReleaseProc = PROCEDURE (socket: Socket);
+      AcceptProc = PROCEDURE (socket: Socket; VAR s: Streams.Stream;
+			      bufmode: Streams.BufMode) : BOOLEAN;
+      AcceptConditionProc = PROCEDURE (VAR condition: Conditions.Condition;
+				       socket: Socket);
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    open: OpenProc;
+	    createOpenCondition: CreateOpenConditionProc;
+	    testAndOpen: TestAndOpenProc;
+	    createSomeSocket: CreateSomeSocketProc;
+	    listen: ListenProc;
+	    release: ReleaseProc;
+	    accept: AcceptProc;
+	    acceptCondition: AcceptConditionProc;
+	 END;
+
+   CONST
+      unknownNetwork = 0;
+      corruptedInput = 1;
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    (* private components *)
+	    moretext: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* ==== private data structures ======================================= *)
+
+   VAR
+      networkType: Services.Type;
+      addressType: Services.Type;
+
+   CONST
+      hashtabsize = 113;
+   TYPE
+      BucketTable = ARRAY hashtabsize OF Network;
+   VAR
+      bucket: BucketTable;
+
+   (* ==== private procedures ============================================ *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode;
+		   moretext: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      ConstStrings.Create(event.moretext, moretext);
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+      PROCEDURE WriteString(s: Streams.Stream;
+			    string: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string))
+      END WriteString;
+
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.moretext # NIL THEN
+	    ConstStrings.Write(s, event.moretext);
+	    IF WriteString(s, ": ") & WriteString(s, event.message) THEN
+	    END;
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE SeekNetwork(name: ConstStrings.String;
+			 VAR network: Network;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 module: ARRAY 512 OF CHAR;
+
+      PROCEDURE Seek(name: ConstStrings.String;
+		     VAR network: Network) : BOOLEAN;
+	 VAR
+	    index: LONGINT;
+      BEGIN
+	 index := name.hashval MOD hashtabsize;
+	 network := bucket[index];
+	 WHILE (network # NIL) & (network.name # name) DO
+	    network := network.hnext;
+	 END;
+	 RETURN network # NIL
+      END Seek;
+
+   BEGIN
+      IF Seek(name, network) THEN
+	 RETURN TRUE
+      ELSE
+	 ConstStrings.Extract(module, name);
+	 IF Loader.Load(module, errors) & Seek(name, network) THEN
+	    RETURN TRUE
+	 END;
+	 Error(errors, unknownNetwork, module);
+	 RETURN FALSE
+      END;
+   END SeekNetwork;
+
+   PROCEDURE IterateNetworks(it: Iterators.Iterator;
+			     ref: Iterators.Reference;
+			     mode: Iterators.Mode);
+      VAR
+	 index: INTEGER;
+	 ptr: Network;
+   BEGIN
+      index := 0;
+      WHILE index < hashtabsize DO
+	 ptr := bucket[index];
+	 WHILE ptr # NIL DO
+	    Iterators.Yield(it, ptr);
+	    ptr := ptr.hnext;
+	 END;
+	 INC(index);
+      END;
+   END IterateNetworks;
+
+   (* ==== interface procedures for Network ============================== *)
+
+   PROCEDURE NetworkWrite(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+
+      PROCEDURE WriteConstString(s: Streams.Stream;
+				 string: ConstStrings.String) : BOOLEAN;
+	 VAR
+	    buf: ARRAY 512 OF CHAR;
+      BEGIN
+	 ConstStrings.Extract(buf, string);
+	 RETURN NetIO.WriteString(s, buf)
+      END WriteConstString;
+
+   BEGIN
+      WITH object: Network DO
+	 RETURN WriteConstString(s, object.name)
+      END;
+   END NetworkWrite;
+
+   PROCEDURE NetworkRead(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+
+      VAR
+	 name: ConstStrings.String;
+	 network: Network;
+
+      PROCEDURE ReadConstString(s: Streams.Stream;
+				VAR string: ConstStrings.String) : BOOLEAN;
+	 VAR
+	    buf: ARRAY 512 OF CHAR;
+      BEGIN
+	 IF NetIO.ReadString(s, buf) THEN
+	    ConstStrings.Create(string, buf);
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END ReadConstString;
+
+   BEGIN
+      WITH object: Network DO
+	 IF ReadConstString(s, name) THEN
+	    IF SeekNetwork(name, network, s) THEN
+	       object.name := network.name;
+	       object.if := network.if;
+	       object.hnext := NIL;
+	       RETURN TRUE
+	    ELSE
+	       (* error event has been generated by SeekNetwork *)
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    Error(s, corruptedInput, "reading Networks.Network");
+	    RETURN FALSE
+	 END;
+      END;
+   END NetworkRead;
+
+   PROCEDURE NetworkCreate(VAR object: PersistentObjects.Object);
+      VAR
+	 network: Network;
+   BEGIN
+      NEW(network);
+      PersistentObjects.Init(network, networkType);
+      object := network;
+   END NetworkCreate;
+
+   (* ==== interface procedures for Address ============================== *)
+
+   PROCEDURE AddressWrite(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Address DO
+	 RETURN PersistentObjects.Write(s, object.network)
+      END;
+   END AddressWrite;
+
+   PROCEDURE AddressRead(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Address DO
+	 RETURN PersistentObjects.Read(s, object.network)
+      END;
+   END AddressRead;
+
+   PROCEDURE AddressCreate(VAR object: PersistentObjects.Object);
+      VAR
+	 address: Address;
+   BEGIN
+      NEW(address);
+      PersistentObjects.Init(address, addressType);
+      object := address;
+   END AddressCreate;
+
+   (* ==== init procedures =============================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.read := NetworkRead; if.write := NetworkWrite;
+      if.create := NetworkCreate; if.createAndRead := NIL;
+      PersistentObjects.RegisterType(networkType,
+			"Networks.Network", "PersistentDisciplines.Object", if);
+      NEW(if);
+      if.read := AddressRead; if.write := AddressWrite;
+      if.create := AddressCreate; if.createAndRead := NIL;
+      PersistentObjects.RegisterType(addressType,
+			"Networks.Address", "PersistentDisciplines.Object", if);
+   END Init;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      errormsg[unknownNetwork] := "unknown network";
+      errormsg[corruptedInput] := "corrupted input";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   (* ==== exported procedures =========================================== *)
+
+   PROCEDURE Register(VAR network: Network;
+		      name: ARRAY OF CHAR; if: Interface);
+      VAR
+	 index: LONGINT;
+   BEGIN
+      NEW(network);
+      network.if := if;
+      ConstStrings.Create(network.name, name);
+      PersistentObjects.Init(network, networkType);
+
+      (* enter network into hash table *)
+      index := network.name.hashval MOD hashtabsize;
+      network.hnext := bucket[index];
+      bucket[index] := network;
+   END Register;
+
+   PROCEDURE GetNetwork(name: ARRAY OF CHAR; VAR network: Network;
+			VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 csname: ConstStrings.String;
+   BEGIN
+      ConstStrings.Create(csname, name);
+      RETURN SeekNetwork(csname, network, errors)
+   END GetNetwork;
+
+   PROCEDURE GetName(network: Network; VAR name: ARRAY OF CHAR);
+   BEGIN
+      ConstStrings.Extract(name, network.name);
+   END GetName;
+
+   PROCEDURE GetNetworks(VAR iterator: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(iterator, IterateNetworks, NIL, 0);
+   END GetNetworks;
+
+   PROCEDURE Open(VAR s: Streams.Stream;
+		  address: Address;
+		  bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN address.network.if.open(s, address, bufmode, errors)
+   END Open;
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 address: Address);
+   BEGIN
+      address.network.if.createOpenCondition(condition, address)
+   END CreateOpenCondition;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 address: Address;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN address.network.if.testAndOpen(s, condition, bufmode, errors)
+   END TestAndOpen;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Socket;
+			      network: Network;
+			      VAR address: Address;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF network.if.createSomeSocket(socket, address, errors) THEN
+	 socket.address := address;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateSomeSocket;
+
+   PROCEDURE Listen(VAR socket: Socket; address: Address;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF address.network.if.listen(socket, address, errors) THEN
+	 socket.address := address;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Listen;
+
+   PROCEDURE Release(socket: Socket);
+   BEGIN
+      socket.address.network.if.release(socket);
+   END Release;
+
+   PROCEDURE Accept(socket: Socket;
+		    VAR s: Streams.Stream;
+		    bufmode: Streams.BufMode) : BOOLEAN;
+   BEGIN
+      RETURN socket.address.network.if.accept(socket, s, bufmode)
+   END Accept;
+
+   PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+			           socket: Socket);
+   BEGIN
+      socket.address.network.if.acceptCondition(condition, socket);
+   END CreateAcceptCondition;
+
+BEGIN
+   Init;
+   InitErrorHandling;
+END Networks.

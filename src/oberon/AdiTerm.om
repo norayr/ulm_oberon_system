@@ -1,0 +1,464 @@
+MODULE AdiTerm;
+
+   IMPORT AdiTermColors, Args := UnixArguments, ASCII, Clocks, Conclusions,
+      Conditions, Coroutines, Dates, Errors, EventConditions, Events,
+      InetResolver, IPv4Addresses, IPv4TCPSockets, LocalSemaphores, Print,
+      Process, Read, RelatedEvents, Semaphores, StreamConditions,
+      StreamDisciplines, Streams, Strings, SYSTEM, Tasks, TermAttributes,
+      TermColors, Terminals, TermKeys, Times, TLG := TermLineGraphics,
+      UnixTerminals, Write;
+
+   CONST
+      msglen = 512;
+      maxBufferLength = 64;
+      portnum = 4711;
+      defaultHostname = "adi.mathematik.uni-ulm.de";
+
+   VAR
+      hostname: ARRAY 512 OF CHAR;
+
+   TYPE
+      Line = ARRAY msglen OF CHAR;
+
+      Lineptr = POINTER TO LineRec;
+      LineRec =
+	 RECORD
+	    time: Times.Time;
+	    line: Line;
+	    previous: Lineptr;
+	    next: Lineptr;
+         END;
+
+   VAR
+      s: Streams.Stream;
+      errors: RelatedEvents.Object;
+      address: IPv4TCPSockets.SocketAddress;
+      condset: Conditions.ConditionSet;
+      terminate: Conditions.Condition;
+      readconsolecond: Conditions.Condition;
+      readadicond: Conditions.Condition;
+      windowchangedcond: Conditions.Condition;
+      interruptcond: Conditions.Condition;
+      event: Events.Event;
+      lineterm: StreamDisciplines.LineTerminator;
+      status: Terminals.Status;
+      caps: Terminals.CapabilitySet;
+      linebuffer: ARRAY maxBufferLength OF Line;
+      inputline: Line;
+      inputlineindex: INTEGER;
+      maxinputlinelength: INTEGER;
+      newline, bufferstart, bufferend: Lineptr;
+      buffercount: INTEGER;
+      scrlen: INTEGER;
+      flag: CHAR;
+      tflag: BOOLEAN;
+
+   PROCEDURE DrawTitle(): BOOLEAN;
+      VAR
+	 string: ARRAY 80 OF CHAR;
+	 startcolumn: INTEGER;
+	 count: INTEGER;
+	 titlelen: INTEGER;
+   BEGIN
+      IF (status.lines < 6) OR (status.columns < Strings.Len(string)+2) THEN
+	 RETURN FALSE
+      END;
+      string := "Adis Daemon";
+      IF hostname # defaultHostname THEN
+	 Strings.Concatenate(string, " on ");
+	 hostname[0] := CAP(hostname[0]);
+	 Strings.Concatenate(string, hostname);
+      END;
+      titlelen := SHORT(Strings.Len(string)); INC(titlelen);
+      startcolumn := (status.columns - titlelen) DIV 2;
+      IF startcolumn > 0 THEN
+         TLG.Box(Terminals.console, 0, 0, 3, status.columns);
+         Terminals.SetCursor(Terminals.console, 1, 1);
+	 count := 1;
+	 WHILE count < startcolumn DO
+	    Write.CharS(Terminals.console, " ");
+	    INC(count);
+         END;
+         IF TermAttributes.standout IN 
+	    TermAttributes.Available(Terminals.console) THEN
+            TermAttributes.Set(Terminals.console, {TermAttributes.standout});
+         END;
+         Write.StringS(Terminals.console, string);
+         TermAttributes.Set(Terminals.console, {});
+	 WHILE count < status.columns-titlelen DO
+	    Write.CharS(Terminals.console, " ");
+	    INC(count);
+         END;
+      END;
+      RETURN TRUE
+   END DrawTitle;
+
+   PROCEDURE ClearInputLine;
+      VAR
+	 count: INTEGER;
+   BEGIN
+      TLG.HLine(Terminals.console, status.lines-2, 0, status.columns);
+      Terminals.SetCursor(Terminals.console, status.lines-1, 0);
+      count := 0;
+      WHILE count < maxinputlinelength DO
+	 Write.CharS(Terminals.console, " ");
+	 INC(count);
+      END;
+      Terminals.SetCursor(Terminals.console, status.lines-1, 0);
+   END ClearInputLine;
+
+   PROCEDURE RedrawInputLine;
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := inputlineindex - (inputlineindex MOD maxinputlinelength);
+      ClearInputLine;
+      WHILE index < inputlineindex DO
+	 Write.CharS(Terminals.console, inputline[index]);
+	 INC(index);
+      END;
+   END RedrawInputLine;
+
+   PROCEDURE InitScreen;
+      VAR
+	 scrtop: INTEGER;
+   BEGIN
+      Terminals.GetStatus(Terminals.console, status);
+      IF status.lines < 3 THEN
+	 Process.Terminate;
+      END;
+      IF Terminals.clearScreen IN caps THEN
+         Terminals.ClearScreen(Terminals.console);
+      END; 
+      IF Terminals.safelastcolumn IN status.characteristics THEN
+	 maxinputlinelength := status.columns;
+      ELSE
+	 maxinputlinelength := status.columns-1;
+      END;
+      IF DrawTitle() THEN
+	 scrtop := 3;
+      ELSE
+	 scrtop := 0;
+      END;
+      IF Terminals.setScrollRegion IN caps THEN
+	 Terminals.SetScrollRegion(Terminals.console,
+				   scrtop,
+				   status.lines-3);
+      END;
+      scrlen := status.lines-2 - scrtop;
+      ClearInputLine;
+      Streams.Touch(Terminals.console);
+   END InitScreen;
+
+   PROCEDURE Output(line: Lineptr);
+      VAR
+	 lastColors, colors: AdiTermColors.ColorSetting;
+	 tinfo: Dates.InfoRec;
+	 buf: Line;
+	 index: INTEGER; (* buf index *)
+	 column: INTEGER;
+
+      PROCEDURE SetColors(colors: AdiTermColors.ColorSetting);
+      BEGIN
+	 IF colors.reset THEN
+	    TermColors.Reset(Terminals.console);
+	 ELSIF colors.changefg & colors.changebg THEN
+	    TermColors.Set(Terminals.console,
+	       colors.fgcolor, colors.bgcolor);
+	 ELSIF colors.changefg THEN
+	    TermColors.SetForeground(Terminals.console,
+	       colors.fgcolor);
+	 ELSIF colors.changebg THEN
+	    TermColors.SetBackground(Terminals.console,
+	       colors.bgcolor);
+	 END;
+      END SetColors;
+
+   BEGIN (* Output *)
+      buf := line.line;
+      IF TermColors.Supported(Terminals.console) THEN
+	 AdiTermColors.Process(buf, colors);
+      ELSE
+	 colors := NIL;
+      END;
+      Terminals.SetCursor(Terminals.console, status.lines-3, 0);
+      Write.CharS(Terminals.console, ASCII.nl);
+      column := 0;
+      IF tflag & (status.columns > 12) THEN
+	 Dates.Get(line.time, tinfo);
+	 Print.S2(Terminals.console, "%02d:%02d", tinfo.hour, tinfo.minute);
+	 TLG.Draw(Terminals.console, TLG.verticalLine);
+	 column := 6;
+      END;
+      lastColors := NIL;
+      index := 0;
+      WHILE (index < LEN(buf)) & (buf[index] # 0X) DO
+	 IF (colors # NIL) & (colors.index = index) THEN
+	    SetColors(colors);
+	    lastColors := colors; colors := colors.next;
+	 END;
+         Write.CharS(Terminals.console, buf[index]);
+	 INC(index); INC(column);
+	 IF (column MOD status.columns = 0) & (buf[index] # 0X) THEN
+            Terminals.SetCursor(Terminals.console, status.lines-3, 0);
+	    Write.CharS(Terminals.console, ASCII.nl);
+            IF ~(Terminals.setScrollRegion IN caps) THEN
+	       Terminals.SetCursor(Terminals.console, status.lines-2, 0);
+            END;
+	    IF tflag THEN
+	       TermColors.Reset(Terminals.console);
+	       Write.StringS(Terminals.console, "     ");
+	       TLG.Draw(Terminals.console, TLG.verticalLine);
+	       INC(column, 6);
+	       IF lastColors # NIL THEN
+		  SetColors(lastColors);
+	       END;
+	    END;
+         END;
+      END;
+      IF TermColors.Supported(Terminals.console) THEN
+	 TermColors.Reset(Terminals.console);
+      END;
+      WHILE column MOD status.columns # 0 DO
+	 INC(column);
+	 Write.CharS(Terminals.console, " ");
+      END;
+   END Output;
+
+   PROCEDURE RedrawOutput;
+      VAR
+	 line: Lineptr;
+   BEGIN
+      line := bufferstart;
+      WHILE line # NIL DO
+	 Output(line);
+	 IF ~(Terminals.setScrollRegion IN caps) THEN
+	    Write.CharS(Terminals.console, ASCII.nl);
+         END;
+	 line := line.next;
+      END;
+   END RedrawOutput;
+
+   PROCEDURE ResizeScreen;
+   BEGIN
+      InitScreen;
+      RedrawOutput;
+      IF DrawTitle() THEN END;
+      RedrawInputLine;
+      Streams.Touch(Terminals.console);
+   END ResizeScreen;
+
+   PROCEDURE Quit;
+      VAR
+	 status: Terminals.Status;
+   BEGIN
+      Terminals.GetStatus(Terminals.console, status);
+      Terminals.SetTermMode(Terminals.console, Terminals.cooked);
+      Terminals.Echo(Terminals.console, Terminals.on);
+      Terminals.SetScrollRegion(Terminals.console, 0, status.lines-1);
+      Process.Terminate;
+   END Quit;
+
+   PROCEDURE Backspace;
+      VAR
+	 index: INTEGER;
+   BEGIN
+      IF inputlineindex > 0 THEN
+         DEC(inputlineindex);
+         IF (inputlineindex > 0) &
+	       (inputlineindex MOD maxinputlinelength = 0) THEN
+	    ClearInputLine;
+	    index := inputlineindex - maxinputlinelength;
+	    WHILE index < inputlineindex DO
+	       Write.CharS(Terminals.console, inputline[index]);
+	       INC(index);
+            END;
+         ELSE
+	    Write.CharS(Terminals.console, ASCII.bs);
+	    Write.CharS(Terminals.console, " ");
+	    Write.CharS(Terminals.console, ASCII.bs);
+         END;
+	 Streams.Touch(Terminals.console);
+      END;
+   END Backspace;
+
+   PROCEDURE Scroll;
+   BEGIN
+      Terminals.GetStatus(Terminals.console, status);
+      Terminals.SetCursor(Terminals.console, status.scrbottom, 0);
+      Write.CharS(Terminals.console, ASCII.nl);
+      (* Terminals.Scroll(Terminals.console, Terminals.forward); *)
+      RedrawInputLine;
+      Streams.Touch(Terminals.console);
+   END Scroll;
+
+   PROCEDURE ProcessFunctionKey(key: TermKeys.Key);
+   BEGIN
+      WITH key: TermKeys.FunctionKey DO
+	 CASE key.code OF
+         | TermKeys.f1: Write.LineS(s, "quit");
+	 | TermKeys.f2: Write.LineS(s, "who");
+	 | TermKeys.f3: Write.LineS(s, "glueck");
+	 | TermKeys.f4: Write.LineS(s, "help");
+	 | TermKeys.cursorup: Scroll;
+	 | TermKeys.cursordown: Scroll;
+	 | TermKeys.cursorleft: Scroll;
+	 | TermKeys.cursorright: Scroll;
+	 | TermKeys.delete: Backspace;
+	 ELSE
+	 END;
+      END;
+   END ProcessFunctionKey;
+
+   PROCEDURE ReadNextChar;
+      VAR
+	 key: TermKeys.Key;
+   BEGIN
+      IF ~TermKeys.Read(Terminals.console, key) THEN
+	 Conclusions.Conclude(Terminals.console, Errors.fatal, "");
+      END;
+      IF key IS TermKeys.FunctionKey THEN
+	 ProcessFunctionKey(key);
+      ELSE
+	 WITH key: TermKeys.SimpleKey DO
+	    CASE key.char OF
+	    | ASCII.nl, ASCII.cr, ASCII.eot:
+		inputline[inputlineindex] := 0X;
+		Write.LineS(s, inputline);
+		ClearInputLine;
+		inputlineindex := 0;
+	    | ASCII.bel: inputline[inputlineindex] := key.char;
+	    | ASCII.bs, ASCII.del: Backspace;
+	    | ASCII.CtrlL: AdiTermColors.LoadDefaultConfig;
+	                   ResizeScreen; (* misuse this for redrawing screen *)
+	    | ASCII.CtrlT: tflag := ~tflag; ResizeScreen;
+	    | ASCII.CtrlU: inputlineindex := 0;
+			   inputline[inputlineindex] := 0X;
+			   ClearInputLine;
+			   Streams.Touch(Terminals.console);
+            ELSE
+	       IF ((key.char >= " ") & (key.char <= "~")) THEN
+		  inputline[inputlineindex] := key.char;
+                  INC(inputlineindex);
+		  Write.CharS(Terminals.console, key.char);
+		  Streams.Touch(Terminals.console);
+                  IF inputlineindex MOD maxinputlinelength  = 0 THEN
+		     ClearInputLine;
+                  END;
+               END;
+            END;
+         END;
+      END;
+   END ReadNextChar;
+
+BEGIN     
+   tflag := FALSE;
+   Args.Init("[-t] [hostname]");
+   WHILE Args.GetFlag(flag) DO
+      CASE flag OF
+      | "t":   tflag := TRUE;
+      ELSE
+	 Args.Usage
+      END;
+   END;
+   IF ~Args.GetArg(hostname) THEN
+      hostname := defaultHostname;
+   END;
+   Args.AllArgs;
+
+   IF Terminals.console = NIL THEN
+      Write.StringS(Streams.stderr, "No terminal type defined; ");
+      Write.LineS(Streams.stderr,
+	 "please check the TERM environment variable!");
+      Process.Terminate;
+   END;
+
+   NEW(errors);
+   RelatedEvents.QueueEvents(errors);
+
+   IF InetResolver.AddrByHost(hostname, address, errors) THEN
+      caps := Terminals.Capabilities(Terminals.console);
+      bufferstart := NIL; bufferend := NIL; buffercount := 0;
+      inputlineindex := 0;
+
+      Events.RemoveHandlers(Terminals.interrupt);
+      Events.Handler(Terminals.interrupt, Events.NilHandler);
+
+      IPv4Addresses.SetPort(address, portnum);
+      IF ~IPv4TCPSockets.Open(s, address, Streams.linebuf, errors) THEN
+         Conclusions.Conclude(errors, Errors.error, hostname);
+         Process.Terminate;
+      END;
+      lineterm[0] := ASCII.cr; lineterm[1] := ASCII.nl; lineterm[2] := 0X;
+      StreamDisciplines.SetLineTerm(s, lineterm);
+
+      Terminals.SetTermMode(Terminals.console, Terminals.raw);
+      Terminals.Echo(Terminals.console, Terminals.off);
+      InitScreen;
+
+      EventConditions.Create(terminate, Process.termination);
+      StreamConditions.Create(readconsolecond, Terminals.console,
+			      StreamConditions.read);
+      StreamConditions.Create(readadicond, s,
+			      StreamConditions.read);
+      EventConditions.Create(windowchangedcond, Terminals.windowchanged);
+      EventConditions.Create(interruptcond, Terminals.interrupt);
+      Conditions.CreateSet(condset);
+      Conditions.Incl(condset, readconsolecond);
+      Conditions.Incl(condset, readadicond);
+      Conditions.Incl(condset, terminate);
+      Conditions.Incl(condset, windowchangedcond);
+      Conditions.Incl(condset, interruptcond);
+      LOOP
+	 Tasks.WaitForOneOf(condset);
+	 IF EventConditions.TestAndGet(windowchangedcond, event) THEN
+	    ResizeScreen;
+         END;
+	 IF EventConditions.TestAndGet(interruptcond, event) THEN
+	    Write.LineS(s, "quit");
+	    Process.Terminate;
+         END;
+	 IF EventConditions.TestAndGet(terminate, event) THEN
+	    Write.LineS(s, "quit");
+	    Process.Terminate;
+         END;
+         IF Conditions.Test(readconsolecond, errors) THEN
+	    ReadNextChar;
+         END;
+         IF Conditions.Test(readadicond, errors) THEN
+	    IF s.eof OR (s.errors > 0) THEN
+	       Quit;
+            END;
+	    NEW(newline);
+	    Clocks.GetTime(Clocks.system, newline.time);
+	    Read.LineS(s, newline.line);
+	    newline.previous := bufferend;
+	    newline.next := NIL;
+	    IF bufferend # NIL THEN
+	       bufferend.next := newline;
+            END;
+	    bufferend := newline;
+	    Output(newline);
+	    IF bufferstart = NIL THEN
+	       bufferstart := bufferend;
+            END;
+	    IF buffercount < maxBufferLength THEN
+	       INC(buffercount);
+            ELSE
+	       bufferstart := bufferstart.next;
+	       bufferstart.previous := NIL;
+            END;
+            Terminals.SetCursor(Terminals.console, status.lines-1, 0);
+            IF ~(Terminals.setScrollRegion IN caps) THEN
+	       Write.CharS(Terminals.console, ASCII.nl);
+            END;
+            IF DrawTitle() THEN END;
+            RedrawInputLine;
+            Streams.Touch(Terminals.console);
+         END;
+      END;
+   ELSE
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END; 
+   Streams.Release(Terminals.console);
+END AdiTerm.

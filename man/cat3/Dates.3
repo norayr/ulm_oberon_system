@@ -1,0 +1,264 @@
+
+
+
+DUaltme'ss(3O)beron System:   9 May 1994 Release 0.4 Ulm's OberonDaStyesst(e3m)
+
+
+NNAAMMEE
+       Dates - date and time conversions
+
+SSYYNNOOPPSSIISS
+       CONST january = 1;   april = 4;     july = 7;      october = 10;
+       CONST february = 2;  may = 5;       august = 8;    november = 11;
+       CONST march = 3;     june = 6;      september = 9; december = 12;
+
+       CONST sunday = 0;    tuesday = 2;   thursday = 4;  saturday = 6;
+       CONST monday = 1;    wednesday = 3; friday = 5;
+
+       CONST absolute = Scales.absolute;   relative = Scales.relative;
+
+       TYPE Date = POINTER TO DateRec;
+       TYPE DateRec = RECORD (Times.TimeRec) END;
+
+       TYPE Value = POINTER TO ValueRec;
+       TYPE ValueRec =
+          RECORD
+             (Objects.ObjectRec)
+             days:  Scales.Value;
+             hours: SHORTINT;            (* 0..23 *)
+             minutes: SHORTINT;          (* 0..59 *)
+             seconds: SHORTINT;          (* 0..59 *)
+             msecs: INTEGER;             (* 0..999 *)
+          END;
+
+       TYPE Info = POINTER TO InfoRec;
+       TYPE InfoRec =
+          RECORD
+             (Objects.ObjectRec)
+             year: Scales.Value;
+             month: SHORTINT;            (* january..december *)
+             day: SHORTINT;              (* 1..31 *)
+             weekday: SHORTINT;          (* sunday..saturday *)
+             hour: SHORTINT;             (* 0..23 *)
+             minute: SHORTINT;           (* 0..59 *)
+             second: SHORTINT;           (* 0..59 *)
+             msec: INTEGER;              (* 0..999 *)
+          END;
+
+       TYPE LongInfo = POINTER TO LongInfoRec;
+       TYPE LongInfoRec =
+          RECORD
+             (InfoRec)
+             yearday: INTEGER;           (* 1..366 *)
+             week: SHORTINT;             (* 1..53, week begins on Sunday *)
+             mweek: SHORTINT;            (* 1..53, week begins on Monday *)
+             leapyear: BOOLEAN;
+             daysInMonth: SHORTINT;      (* usu. 28..31, length of month *)
+             daysInYear: INTEGER;        (* usu. 365..366, length of year *)
+             tzInfo: Timezones.GlimpseRec;
+          END;
+
+
+
+
+Release 0.5         Last change: 2 August 1995                  1
+
+
+
+
+
+DUaltme'ss(3O)beron System:   9 May 1994 Release 0.4 Ulm's OberonDaStyesst(e3m)
+
+
+       VAR scale: Scales.Scale;
+
+       CONST invalidTime = 0;
+       CONST invalidDate = 1;
+       CONST bogusValue = 2;
+       CONST timeOutOfRange = 3;
+       CONST errorcodes = 4;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Create(VAR time: Times.Time; type: SHORTINT);
+
+       PROCEDURE CreateYMD(VAR time: Times.Time; year, month, day: Scales.Value);
+
+       PROCEDURE SetValue(time: Times.Time; value: ValueRec);
+       PROCEDURE GetValue(time: Times.Time; VAR value: ValueRec);
+
+       PROCEDURE Set(time: Times.Time; info: InfoRec);
+       PROCEDURE SetT(time: Times.Time; tz: Timezones.Timezone; info: InfoRec);
+       PROCEDURE SetO(time: Times.Time; off: Timezones.Offset; info: InfoRec);
+
+       PROCEDURE Get(time: Times.Time; VAR info: InfoRec);
+       PROCEDURE GetT(time: Times.Time; tz: Timezones.Timezone; VAR info: InfoRec);
+       PROCEDURE GetO(time: Times.Time; off: Timezones.Offset; VAR info: InfoRec);
+
+       PROCEDURE GetLong(time: Times.Time; VAR info: LongInfoRec);
+       PROCEDURE GetLongT(time: Times.Time; tz: Timezones.Timezone; VAR info: LongInfoRec);
+
+       PROCEDURE Valid(year, month, day: Scales.Value) : BOOLEAN;
+
+       PROCEDURE Weekday(year, month, day: Scales.Value) : SHORTINT;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _D_a_t_e_s  implements  a  time scale _s_c_a_l_e that belongs to the
+       _T_i_m_e_s_._f_a_m_i_l_y family and allows particular  efficiency  for
+       the  date and time conversions it also offers.  The module
+       can handle  all  kinds  of  time  measures  compatible  to
+       _T_i_m_e_s_._T_i_m_e_.   Therefore, type _D_a_t_e is made visible only so
+       that it can be used in type tests.
+
+       The time scale this module is based upon consists of  only
+       two  units:  days (``days'') and milliseconds (``msecs'').
+       For convenience, milliseconds  are  unfolded  into  hours,
+       minutes,  seconds and remaining msecs.  Legal values cover
+       at least one million years in either direction.   Absolute
+       values  are  considered  to  be  relative  to Jan 1, 1970,
+
+
+
+Release 0.5         Last change: 2 August 1995                  2
+
+
+
+
+
+DUaltme'ss(3O)beron System:   9 May 1994 Release 0.4 Ulm's OberonDaStyesst(e3m)
+
+
+       0:00:00 GMT (universal time).   Thus,  values  are  always
+       independent  of  locations, daylight corrections etc.  The
+       conversions from a time to a calendar  date  and  time  of
+       day,  and  vice  versa, however, do take care of all these
+       things.
+
+       The implemented calendar is the Gregorian calendar,  which
+       replaced  Julius Caesar's calendar in October 1582.  Dates
+       before the Gregorian calendar reformation, no  matter  how
+       far in the past, are considered Julian dates (for the sake
+       of astronomers).  The fact that some countries switched to
+       Gregorian   calendar  much  later  than  in  1582  is  not
+       reflected (for the sake of simplicity).
+
+       _C_r_e_a_t_e creates a new  instance  of  _t_i_m_e_,  where  _t_y_p_e  is
+       either  _a_b_s_o_l_u_t_e  or _r_e_l_a_t_i_v_e_, and initializes it to zero.
+       Of course, the data type of _t_i_m_e will be _D_a_t_e_.
+
+       _C_r_e_a_t_e_Y_M_D creates  an  absolute  time  representing  year,
+       month, day, 12:00:00 GMT.
+
+       _S_e_t_V_a_l_u_e  sets _t_i_m_e to _v_a_l_u_e_.  Values with negative compo­
+       nents (besides _v_a_l_u_e_._d_a_y_s) are normalized first.  _G_e_t_V_a_l_u_e
+       obtains a time value.
+
+       _S_e_t_,  _S_e_t_T  and  _S_e_t_O set _t_i_m_e to the date and time of day
+       given in _i_n_f_o_, ignoring _i_n_f_o_._w_e_e_k_d_a_y.   While  _S_e_t  deter­
+       mines  the  time  zone and daylight saving time correction
+       according to _T_i_m_e_z_o_n_e_s_._l_o_c_a_l_, _S_e_t_T does this according  to
+       the given time zone _t_z_, whereas _S_e_t_O uses an explicit off­
+       set _o_f_f in respect to universal time instead.
+
+       _G_e_t_, _G_e_t_T and _G_e_t_O translate  _t_i_m_e  to  _i_n_f_o  using  _T_i_m_e_­
+       _z_o_n_e_s_._l_o_c_a_l_, _t_z or _o_f_f respectively.  _G_e_t_L_o_n_g and _G_e_t_L_o_n_g_T
+       do essentially the same, but fill in the additional fields
+       of   _L_o_n_g_I_n_f_o_R_e_c_,   too.   In  particular,  _i_n_f_o_._w_e_e_k  and
+       _i_n_f_o_._m_w_e_e_k are week numbers within the year, starting with
+       the  first  week containing at least four days of January;
+       where weeks are considered to begin on Sunday  resp.  Mon­
+       day.
+
+       _V_a_l_i_d  returns  TTRRUUEE if _y_e_a_r_, _m_o_n_t_h and _d_a_y form a correct
+       date of the implemented calendar, otherwise FFAALLSSEE..
+
+       _W_e_e_k_d_a_y returns the weekday of the given date.
+
+DDIIAAGGNNOOSSTTIICCSS
+       All conversion procedures raise an _e_r_r_o_r  event  which  is
+       passed   to  _E_v_e_n_t_s  if  they  encounter  illegal  values.
+       Returned, resp. modified, values are always guaranteed  to
+       be valid anyway.
+
+       Error events carry in _e_r_r_o_r_c_o_d_e an error code which can be
+       one of the following:
+
+
+
+Release 0.5         Last change: 2 August 1995                  3
+
+
+
+
+
+DUaltme'ss(3O)beron System:   9 May 1994 Release 0.4 Ulm's OberonDaStyesst(e3m)
+
+
+       _i_n_v_a_l_i_d_T_i_m_e      An _i_n_f_o parameter  represented  no  valid
+                        date and time.
+       _i_n_v_a_l_i_d_D_a_t_e      A  _y_e_a_r_/_m_o_n_t_h_/_d_a_y parameter triple repre­
+                        sented no valid date.
+       _b_o_g_u_s_V_a_l_u_e       An inconsistent date value was  detected.
+                        This  can also happen as a consequence of
+                        _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._R_e_a_d.
+       _t_i_m_e_O_u_t_O_f_R_a_n_g_e   A time was outside the range that can  be
+                        represented as a _D_a_t_e value.
+
+SSEEEE AALLSSOO
+       _T_i_m_e_s_(_3_)               reference  scale  for time measure­
+                              ment systems
+       _T_i_m_e_I_O_(_3_)              formatted input and output of times
+                              and dates
+       _T_i_m_e_z_o_n_e_s_(_3_)           abstraction for time zones
+       _U_n_i_x_T_i_m_e_z_o_n_e_s_(_3_)       implementation  of time zones known
+                              to the system
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   abstraction for persistent objects
+       _E_v_e_n_t_s_(_3_)              event handling for error events
+
+AAUUTTHHOORR
+       Martin Hasch, University of Ulm
+       credits to Markus Schauler, University of  Ulm,  for  some
+       work on the subject
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 2 August 1995                  4
+
+

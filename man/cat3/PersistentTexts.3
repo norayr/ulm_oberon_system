@@ -1,0 +1,98 @@
+PersistentTexts(3)            Ulm's Oberon System           PersistentTexts(3)
+
+
+
+[1mNAME[0m
+       PersistentTexts - persistent objects representing texts
+
+[1mSYNOPSIS[0m
+       TYPE Text = POINTER TO TextRec;
+       TYPE TextRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+       PROCEDURE Create(VAR text: Text; s: Streams.Stream) : BOOLEAN;
+
+       PROCEDURE Open(VAR s: Streams.Stream; text: Text;
+                      VAR errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mPersistentTexts[24m allows texts streams of arbitrary size to be handled as
+       persistent  objects.  Streams  are  expected  to  work  like  those  of
+       [4mTexts(3)[24m, [4mLargeTexts(3)[24m, or [4mMemStreams(3)[24m, i.e. they are contiguous and
+       support read, write, and seek operations.
+
+       [4mCreate[24m creates a persistent text object representing [4ms[24m.  The length  of
+       [4ms[24m  is measured (by seeking to the end of [4ms[24m and taking the current posi-
+       tion), a rewind is performed, and a sub stream (see [4mSubStreams(3)[24m) of [4ms[0m
+       is  opened  covering  the  current length.  This allows [4mtext[24m to keep in
+       touch with [4ms[24m but avoids conflicts regarding shared stream positions  if
+       all other parties interested in accessing [4ms[24m create sub streams as well.
+       A termination of [4ms[24m (see [4mResources(3)[24m) causes [4mtext[24m  to  terminate,  too.
+       Likewise,  a  termination  of  [4mtext[24m  causes  its  connection to [4ms[24m to be
+       dropped.
+
+       [4mOpen[24m returns a stream that allows to access the contents of [4mtext[24m.  Mul-
+       tiple open operations are permitted and return different sub streams of
+       the internal base stream of [4mtext[24m.
+
+[1mEXAMPLE[0m
+       [4mPersistentTexts[24m may be used to transport and store graphs of persistent
+       objects (see [4mLinearizedStructures(3)[24m and [4mModularizedStructures(3)[24m) with
+       the option to delay the time-consuming restoration until it is  needed,
+       or  to  avoid restoration where it is unnecessary as, for example, in a
+       separately running database process like [4mcdbd(1)[24m.
+
+       Following procedures show how to convert a graph of persistent  objects
+       (represented by one root object) into a text object and vice versa:
+
+       PROCEDURE ConvertObjectToText(object: PersistentObjects.Object;
+                                     VAR text: PersistentTexts.Text;
+                                     errors: RelatedEvents.Object) : BOOLEAN;
+          VAR
+             textbuf: Texts.Text;
+       BEGIN
+          Texts.Open(textbuf); RelatedEvents.Forward(textbuf, errors);
+          IF ~LinearizedStructures.Write(textbuf, object) THEN
+             RETURN FALSE
+          END;
+          RETURN PersistentTexts.Create(text, textbuf)
+       END ConvertObjectToText;
+
+       PROCEDURE ConvertTextToObject(text: PersistentTexts.Text;
+                                     VAR object: PersistentObjects.Object;
+                                     errors: RelatedEvents.Object) : BOOLEAN;
+          VAR
+             s: Streams.Stream;
+             ok: BOOLEAN;
+       BEGIN
+          IF ~PersistentTexts.Open(s, text, errors) THEN
+             RETURN FALSE
+          END;
+          RelatedEvents.Forward(s, errors);
+          ok := LinearizedStructures.Read(s, object);
+          Streams.Release(s);
+          RETURN ok
+       END ConvertTextToObject;
+
+
+[1mDIAGNOSTICS[0m
+       [4mPersistentTexts[24m  does not generate any error events on its own.  [4mCreate[0m
+       returns [1mFALSE [22mif it is unable to measure the length of [4ms[24m.  [4mOpen[24m returns
+       [1mFALSE [22min case of terminated text objects.
+
+[1mSEE ALSO[0m
+       [4mPersistentObjects(3)[24m   operations for persistent objects
+       [4mSubStreams(3)[24m          streams  covering  a sub range of another stream
+                              that maintain their own stream position
+       [4mTexts(3)[24m               in-memory streams
+
+[1mBUGS[0m
+       While streams are not necessarily in-memory  streams,  the  marshalling
+       read operation of [4mPersistentTexts[24m stores the entire text into memory.
+
+       While  the  contents of a text object may be changed, its length cannot
+       be modified.
+
+
+
+Release 0.5                Last change: 9 April 2004        PersistentTexts(3)

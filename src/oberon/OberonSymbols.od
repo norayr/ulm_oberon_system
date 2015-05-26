@@ -1,0 +1,516 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonSymbo.od,v 1.1 2001/02/19 13:45:14 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonSymbo.od,v $
+   Revision 1.1  2001/02/19 13:45:14  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION OberonSymbols;
+
+   IMPORT CompilerKeys, CompilerObjects, CompilerPragmas, ConstStrings,
+      Lex := OberonLex, Scopes, Sources := CompilerSources;
+
+   TYPE
+      Ident = POINTER TO IdentRec;
+      Type = POINTER TO TypeRec;
+      Attribute = POINTER TO AttributeRec;
+      BuiltInProcedure = POINTER TO BuiltInProcedureRec;
+      Identifier = ConstStrings.String;
+
+   TYPE
+      NamedObject = POINTER TO NamedObjectRec;
+	 (* serves as base type and is never instantiated *)
+      NamedObjectRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    name: Identifier;
+	 END;
+
+   CONST
+      (* base types *)
+      integer = 0;
+      cardinal = 1;
+      address = 2;
+      real = 3;
+      boolean = 4;
+      char = 5;
+      set = 6;
+      byte = 7;
+      coroutine = 8;
+      (* structured types *)
+      array = 9;
+      record = 10;
+      pointer = 11;
+      proceduretype = 12;
+      forms = 13;
+   TYPE
+      Form = SHORTINT; (* genericInteger .. proceduretype *)
+      FormSet = SET; (* OF Form *)
+   CONST
+      numeric = {integer, cardinal, address, real};
+      basic = numeric + {boolean, char, set, byte, coroutine};
+      structured = {array, record, pointer, proceduretype};
+
+   CONST
+      (* if we are processing a source in the first pass,
+	 we are open regarding the hardware architecture;
+	 therefore all numerical types (integers and reals)
+	 come in three variants:
+
+	 (1) generic, i.e. just integer or real without any
+	     idea whether its long or short or how many bytes
+	     are occupied
+	 (2) standard, i.e. INTEGER or LONGREAL where we
+	     do not know the size yet (well, SHORTINT could
+	     be hardly something different from signed 8 bits)
+	 (3) explicit, i.e. SYSTEM.INT16 where we know
+	     the size but not its relation to the standard types;
+	     note that not all explicit types may be supported
+	     on all hardware platforms
+      *)
+      generic = 0;
+      standard = 1;
+      explicit = 2;
+   TYPE
+      Spec = SHORTINT; (* generic .. explicit *)
+   CONST
+      specforms = {integer, cardinal, real};
+	 (* set of types that possibly support these variants *)
+   
+   CONST
+      (* standard lengths, e.g. SHORTINT, INTEGER and LONGINT *)
+      short = 0;
+      medium = 1;
+      long = 2;
+   TYPE
+      StdLength = SHORTINT; (* short .. long *)
+
+   TYPE
+      FieldList = POINTER TO FieldListRec;
+      FieldListRec =
+	 RECORD
+	    (NamedObjectRec)
+	    private: BOOLEAN;
+	    type: Type; (* may be NIL in case of errors *)
+	    next: FieldList;
+	 END;
+
+   CONST
+      callByValue = 0;
+      callByReference = 1;
+   TYPE
+      ParamKind = SHORTINT; (* callByValue .. callByReference *)
+      ParamList = POINTER TO ParamListRec;
+      ParamListRec =
+	 RECORD
+	    (NamedObjectRec)
+	    paramkind: ParamKind;
+	    type: Type; (* may be NIL in case of errors *)
+	    next: ParamList;
+	 END;
+
+   TYPE
+      TypeRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    ident: Ident; (* defining ident; may be NIL *)
+	    form: Form;
+	    hastracedptrs: BOOLEAN;
+	    (* form IN specforms *)
+	    spec: Spec;
+	    bits: INTEGER; (* number of bits if spec = explicit *)
+	    stdlength: StdLength; (* if spec = standard *)
+	    (* addresses *)
+	    traced: BOOLEAN;
+	    (* arrays *)
+	    dyn: BOOLEAN; (* dynamic array *)
+	    length: Attribute; (* only set if dyn = FALSE *)
+	    element: Type; (* element type; may be NIL in case of errors *)
+	    (* records *)
+	    basetype: Type; (* may be NIL *)
+	    fields: FieldList;
+	    publicfieldscope: Scopes.Scope;
+	    privatefieldscope: Scopes.Scope;
+	    owner: Ident; (* module that owns the private field scope *)
+	    (* pointers *)
+	    reftype: Type;
+	    taggedptr: BOOLEAN; (* IS and WITH legal? *)
+	    (* procedure types *)
+	    function: BOOLEAN;
+	    builtin: BOOLEAN; (* built-in procedure or function? *)
+	    builtinproc: BuiltInProcedure; (* if builtin = TRUE *)
+	    paramlist: ParamList; (* if builtin = FALSE *)
+	    paramscope: Scopes.Scope;
+	    restype: Type; (* if builtin = FALSE and function = TRUE *)
+	 END;
+
+   TYPE
+      CheckArgsProc = PROCEDURE (builtinproc: BuiltInProcedure;
+                                 args: Attribute;
+				 VAR restype: Type);
+	 (* restype is to be set only in case of standard functions
+	    and may be NIL in error cases
+	 *)
+      BuiltInProcedureRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	       (* note that builtin procedures do not have a location;
+		  i.e. the loc component is NIL
+	       *)
+	    minargs, maxargs: INTEGER;
+	       (* minimal and maximal number of args; maxargs may
+	          be set to -1, indicating an unlimited number of
+		  arguments
+	       *)
+	    type: Type;
+	       (* associated type; type.builtinproc should point back *)
+	 END;
+
+   CONST
+      moduleC = 0; constC = 1; typeC = 2; varC = 3; procedureC = 4;
+      classes = 5;
+   TYPE
+      Class = SHORTINT; (* moduleC .. procedureC *)
+
+   CONST
+      valueParam = callByValue;
+      refParam = callByReference;
+      noParam = 2;
+   TYPE
+      VarKind = SHORTINT; (* valueParam .. noParam *)
+
+   TYPE
+      IdentRec =
+	 RECORD
+	    (NamedObjectRec)
+	    module: Ident;
+	    class: Class;
+	    type: Type; (* is NIL for modules and in case of errors *)
+	    (* modules and procedures *)
+	    scope: Scopes.Scope;
+	    body: Attribute; (* statement sequence, chained *)
+	    (* modules *)
+	    kind: Sources.SourceKind;
+	    export: Scopes.Scope;
+	    origname: Identifier; (* original name if aliased *)
+	    key: CompilerKeys.Key;
+	    dependencies: CompilerKeys.Set;
+	    pcontext: CompilerPragmas.PragmaContext;
+	    (* constants *)
+	    constexpr: Attribute;
+	    (* variables and procedures *)
+	    plevel: INTEGER; (* procedure nest level; 0 if global *)
+	    (* variables *)
+	    varkind: VarKind;
+	 END;
+
+   CONST
+      emptySetConst = 0;
+      trueConst = 1;
+      falseConst = 2;
+      tokenConst = 3;
+   TYPE
+      ConstantKind = SHORTINT; (* emptySetConst .. tokenConst *)
+      ConstantValue = POINTER TO ConstantValueRec;
+      ConstantValueRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    kind: ConstantKind;
+	    token: Lex.Token; (* defined if kind = tokenConst *)
+	 END;
+
+   CONST
+      moduleAt = 0;
+      constAt = 1;
+      typeAt = 2;
+      varAt = 3;
+      procAt = 4;
+      callAt = 5;
+      refAt = 6;
+      selectAt = 7;
+      indexAt = 8;
+      guardAt = 9;
+      unaryAt = 10;
+      binaryAt = 11;
+      constvalAt = 12;
+      ifAt = 13;
+      caseAt = 14;
+      singleCaseAt = 15;
+      whileAt = 16;
+      repeatAt = 17;
+      loopAt = 18;
+      exitAt = 19;
+      returnAt = 20;
+      withAt = 21;
+      identModes = {moduleAt .. procAt}; (* with ident field *)
+      designatorModes = {varAt, refAt..guardAt};
+      constModes = {constAt, constvalAt};
+      opModes = designatorModes +
+                {constAt, procAt, callAt, unaryAt, binaryAt, constvalAt};
+      stmtModes = {ifAt .. withAt, callAt, binaryAt (* assignment *)};
+   TYPE
+      AtMode = SHORTINT;
+      AttributeRec =
+	 RECORD
+	    (CompilerObjects.ObjectRec)
+	    next: Attribute;
+	       (* next expression in case of parameter lists,
+		  next statement for statement sequences,
+		  next ELSIF element, or
+		  next case of a case statement
+	       *)
+	    type: Type;
+	       (* may be NIL in case of errors or
+		  is always NIL for statements (exception: withAt)
+	       *)
+	    mode: AtMode;
+	    (* mode IN identModes *)
+	    ident: Ident;
+	    (* mode = constvalAt *)
+	    constval: ConstantValue;
+	    (* mode = callAt *)
+	    firstparam: Attribute; (* linear list via next component *)
+	    paramcnt: INTEGER; (* number of parameters *)
+	    proc: Attribute;
+	    (* mode IN refAt .. guardAt *)
+	    designator: Attribute;
+	    (* mode = indexAt *)
+	    index: Attribute;
+	    (* mode = selectAt *)
+	    field: FieldList;
+	    (* mode = guardAt *)
+	    guard: Attribute;
+	    (* mode = unaryAt or binaryAt *)
+	    opsy: Lex.Symbol;
+	    rightop: Attribute;
+	    (* mode = binaryAt *)
+	    leftop: Attribute;
+	    (* mode = ifAt, caseAt, whileAt, repeatAt, returnAt *)
+	    expression: Attribute;
+	    (* mode = ifAt, caseAt *)
+	    else: Attribute; (* statement sequence, chained *)
+	    (* mode = ifAt *)
+	    then: Attribute; (* statement sequence, chained *)
+	    elsifs: Attribute; (* mode = ifAt, chained by `next' field *)
+	    (* mode = caseAt *)
+	    cases: Attribute; (* mode = singleCaseAt, chained *)
+	    haselse: BOOLEAN; (* has possible empty ELSE-branch *)
+	    (* mode = singleCaseAt *)
+	    labels: Attribute;
+	    (* mode = whileAt, repeatAt, loopAt, singleCaseAt, withAt *)
+	    body: Attribute; (* statement sequence, chained *)
+	    (* mode = exitAt *)
+	    loop: Attribute; (* pointer back to loop stmt *)
+	    (* mode = withAt *)
+	    variable: Ident;
+	 END;
+
+   (* constructors *)
+
+   (* the locations given should always point to the token of the
+      identifier in the source
+   *)
+
+   PROCEDURE CreateModuleIdent(VAR ident: Ident;
+			       name, origname: Identifier;
+			       kind: Sources.SourceKind;
+			       pcontext: CompilerPragmas.PragmaContext;
+			       loc: CompilerObjects.Location);
+
+   PROCEDURE CreateConstIdent(VAR ident: Ident;
+                              name: Identifier;
+			      constexpr: Attribute;
+			      loc: CompilerObjects.Location);
+
+   PROCEDURE CreateTypeIdent(VAR ident: Ident;
+                             name: Identifier; type: Type;
+			     loc: CompilerObjects.Location);
+
+   PROCEDURE CreateVarIdent(VAR ident: Ident;
+                            name: Identifier; type: Type;
+			    plevel: INTEGER; varkind: VarKind;
+			    loc: CompilerObjects.Location);
+
+   PROCEDURE CreateProcedureIdent(VAR ident: Ident;
+                                  name: Identifier; type: Type;
+				  plevel: INTEGER;
+				  loc: CompilerObjects.Location);
+
+   PROCEDURE CreateParameter(VAR param: ParamList;
+			     name: Identifier;
+			     paramkind: ParamKind;
+			     type: Type;
+			     loc: CompilerObjects.Location);
+
+   (* type constructors;
+      the location should always cover the full type specification
+   *)
+
+   PROCEDURE CreateBaseType(VAR type: Type; form: Form);
+
+   PROCEDURE CreateArrayOf(VAR type: Type;
+                           length: Attribute; elemType: Type;
+		           loc: CompilerObjects.Location);
+
+   PROCEDURE CreateDynArrayOf(VAR type: Type;
+                              elemType: Type;
+			      loc: CompilerObjects.Location);
+
+   PROCEDURE CreatePointerTo(VAR type: Type;
+                             refType: Type; tagged: BOOLEAN;
+		             loc: CompilerObjects.Location);
+
+   PROCEDURE CreateRecord(VAR type: Type;
+                          basetype: Type; fields: FieldList;
+			  fieldscope: Scopes.Scope;
+		          loc: CompilerObjects.Location);
+
+   PROCEDURE CreateField(VAR field: FieldList;
+                         name: Identifier; type: Type;
+			 loc: CompilerObjects.Location);
+
+   PROCEDURE CreateProcedureType(VAR type: Type;
+		                 paramlist: ParamList;
+				 paramscope: Scopes.Scope;
+			         loc: CompilerObjects.Location);
+
+   (* constructors for built-in procedures and functions *)
+
+   PROCEDURE InitBuiltInProcedure(builtin: BuiltInProcedure;
+				  minargs, maxargs: INTEGER;
+                                  checkArgs: CheckArgsProc);
+
+   PROCEDURE CreateBuiltInFunction(VAR ident: Ident;
+                                   name: Identifier;
+				   builtin: BuiltInProcedure);
+
+   PROCEDURE CreateBuiltInProcedure(VAR ident: Ident;
+                                    name: Identifier;
+				    builtin: BuiltInProcedure);
+
+   (* constructor for constant values *)
+
+   PROCEDURE CreateConstval(VAR constval: ConstantValue;
+                            kind: ConstantKind);
+
+   (* constructors for expressions *)
+
+   PROCEDURE CreateIdentAt(VAR at: Attribute; ident: Ident;
+                           loc: CompilerObjects.Location);
+
+   PROCEDURE CreateConstvalAt(VAR at: Attribute; constval: ConstantValue;
+                              loc: CompilerObjects.Location);
+
+   PROCEDURE CreateIndexAt(VAR at: Attribute;
+                           designator, index: Attribute;
+			   loc: CompilerObjects.Location);
+
+   PROCEDURE CreateSelectionAt(VAR at: Attribute;
+                               designator: Attribute;
+			       field: FieldList;
+			       loc: CompilerObjects.Location);
+   
+   PROCEDURE CreateDerefAt(VAR at: Attribute;
+                           designator: Attribute;
+			   loc: CompilerObjects.Location);
+
+   PROCEDURE CreateTypeGuardAt(VAR at: Attribute;
+                               designator, guard: Attribute;
+			       loc: CompilerObjects.Location);
+
+   PROCEDURE CreateCallAt(VAR at: Attribute;
+			  designator, params: Attribute;
+			  paramcnt: INTEGER;
+			  loc: CompilerObjects.Location);
+
+   PROCEDURE CreateUnaryAt(VAR at: Attribute;
+                           opsy: Lex.Symbol;
+			   op: Attribute;
+			   loc: CompilerObjects.Location);
+
+   PROCEDURE CreateBinaryAt(VAR at: Attribute;
+                            opsy: Lex.Symbol;
+			    leftop, rightop: Attribute;
+			    loc: CompilerObjects.Location);
+
+   PROCEDURE CreateSetAt(VAR at: Attribute;
+                         expr: Attribute;
+			 loc: CompilerObjects.Location);
+
+   (* constructors for expressions *)
+
+   (* some constructions are done by constructors for expressions:
+      - CreateBinaryAt with opsy = Lex.becomes is to be used for assignments
+      - CreateCallAt is to be used for procedure calls as well
+   *)
+
+   PROCEDURE CreateIfAt(VAR at: Attribute;
+                        expression, then, elsifs, else: Attribute;
+			loc: CompilerObjects.Location);
+   
+   PROCEDURE CreateCaseAt(VAR at: Attribute;
+                          expression, cases, else: Attribute;
+			  haselse: BOOLEAN;
+			  loc: CompilerObjects.Location);
+
+   PROCEDURE CreateSingleCaseAt(VAR at: Attribute;
+                                labels, body: Attribute;
+				loc: CompilerObjects.Location);
+
+   PROCEDURE CreateWhileAt(VAR at: Attribute;
+                           expression, body: Attribute;
+			   loc: CompilerObjects.Location);
+
+   PROCEDURE CreateRepeatAt(VAR at: Attribute;
+                            expression, body: Attribute;
+			    loc: CompilerObjects.Location);
+
+   PROCEDURE CreateLoopAt(VAR at: Attribute;
+                          body: Attribute; loc: CompilerObjects.Location);
+
+   PROCEDURE CreateExitAt(VAR at: Attribute;
+                          loop: Attribute; loc: CompilerObjects.Location);
+
+   PROCEDURE CreateReturnAt(VAR at: Attribute;
+                            expression: Attribute;
+			    loc: CompilerObjects.Location);
+
+   PROCEDURE CreateWithAt(VAR at: Attribute;
+                          variable: Ident; type: Type;
+			  body: Attribute;
+			  loc: CompilerObjects.Location);
+
+   (* misc stuff *)
+
+   PROCEDURE GetFormString(form: Form; VAR string: ARRAY OF CHAR);
+
+   PROCEDURE CheckArgs(builtinproc: BuiltInProcedure;
+		       args: Attribute; VAR restype: Type);
+      (* check args of builtinproc for validity and
+	 set the return type (in case of functions);
+	 note that this procedure must not be called if
+	 the number of arguments is outside of [minargs .. maxargs]
+      *)
+
+END OberonSymbols.

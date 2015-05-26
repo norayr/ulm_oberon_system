@@ -1,0 +1,193 @@
+DNSRecords(3)                 Ulm's Oberon System                DNSRecords(3)
+
+
+
+[1mNAME[0m
+       DNSRecords - support of DNS resource records according to RFC 1035
+
+[1mSYNOPSIS[0m
+       (* non-obsolete record types from RFC 1035, 3.2.2 *)
+       CONST a = 1; ns = 2; cname = 5;
+       CONST soa = 6; ptr = 12; mx = 15;
+       CONST txt = 16;
+       CONST loc = 29; (* RFC 1876 *)
+       CONST aaaa = 28; (* RFC 1886 *)
+       CONST sig = 24; key = 25; nxt = 30; (* RFC 2065 *)
+       CONST srv = 33; (* RFC 2782 *)
+       CONST naptr = 35; (* RFC 2915 *)
+       (* QTYPE values = RFC 1035 = 3.2.3 *)
+       CONST axfr = 252; all = 255;
+       TYPE RRType = Types.Int32; (* unsigned 2-byte integer, a .. all *)
+       TYPE RRName = ARRAY 8 OF CHAR;
+       VAR rrName: ARRAY 256 OF RRName;
+
+       (* classes according to RFC 1035, section 3.2.4 *)
+       CONST classIN = 1; (* the Internet *)
+       CONST classCS = 2; (* obsolete CSNET class *)
+       CONST classCH = 3; (* the CHAOS class *)
+       CONST classHS = 4; (* Hesiod *)
+       CONST classNone = 254; (* RFC 2136 *)
+       CONST classAny = 255; (* any class *)
+       TYPE Class = Types.Int32;
+       TYPE ClassName = ARRAY 8 OF CHAR;
+       VAR className: ARRAY 256 OF ClassName;
+
+       CONST namelen = 512;
+       TYPE Name = ARRAY namelen OF CHAR; (* qualified DNS names *)
+
+       TYPE
+          Record = POINTER TO RecordRec;
+          RecordRec =
+             RECORD
+                (Objects.ObjectRec)
+                next: Record;
+                name: Name;
+                type: RRType;
+                class: Class;
+                ttl: Types.Int32;
+                rdata: Streams.Stream; (* data of this record *)
+                pdata: Streams.Stream; (* entire response packet *)
+                rpos: Streams.Count; (* position of rdata within pdata *)
+             END;
+
+       TYPE ListOfTextRecords = POINTER TO ListOfTextRecordsRec;
+       TYPE ListOfTextRecordsRec =
+             RECORD
+                (Objects.ObjectRec)
+                text: Name;
+                next: ListOfTextRecords;
+             END;
+
+       PROCEDURE ReadQuestion(s: Streams.Stream;
+                              VAR name: ARRAY OF CHAR;
+                              VAR type: RRType;
+                              VAR class: Class) : BOOLEAN;
+       PROCEDURE WriteQuestion(s: Streams.Stream;
+                               name: ARRAY OF CHAR;
+                               type: RRType;
+                               class: Class) : BOOLEAN;
+
+       PROCEDURE ReadRecord(s: Streams.Stream;
+                            VAR name: ARRAY OF CHAR;
+                            VAR type: RRType;
+                            VAR class: Class;
+                            VAR ttl: Types.Int32;
+                            VAR rdata: Streams.Stream;
+                            VAR rpos: Streams.Count) : BOOLEAN;
+       PROCEDURE WriteRecord(s: Streams.Stream;
+                             name: ARRAY OF CHAR;
+                             type: RRType;
+                             class: Class;
+                             ttl: Types.Int32;
+                             rdata: Streams.Stream) : BOOLEAN;
+
+       PROCEDURE ReadRecords(s: Streams.Stream; count: INTEGER;
+                             packetlen: Streams.Count;
+                             VAR records: Record) : BOOLEAN;
+
+       PROCEDURE ReadName(s: Streams.Stream; VAR name: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE WriteName(s: Streams.Stream; name: ARRAY OF CHAR) : BOOLEAN;
+
+       PROCEDURE ExtractName(record: Record; VAR name: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE ExtractA(record: Record;
+                          VAR ipaddr: IPv4Addresses.Address) : BOOLEAN;
+       PROCEDURE ExtractAAAA(record: Record;
+                             VAR ipaddr: IPv6Addresses.Address) : BOOLEAN;
+       PROCEDURE ExtractMX(record: Record;
+                           VAR preference: INTEGER;
+                           VAR name: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE ExtractTXT(record: Record;
+                            VAR list: ListOfTextRecords) : BOOLEAN;
+       PROCEDURE ExtractSOA(record: Record;
+                            VAR mname: ARRAY OF CHAR;
+                            VAR rname: ARRAY OF CHAR;
+                            VAR serial: Types.Int32;
+                            VAR refresh: Types.Int32;
+                            VAR retry: Types.Int32;
+                            VAR expire: Types.Int32;
+                            VAR minimum: Types.Int32) : BOOLEAN;
+
+       PROCEDURE WriteA(s: Streams.Stream;
+                        ipaddr: IPv4Addresses.Address) : BOOLEAN;
+       PROCEDURE WriteAAAA(s: Streams.Stream;
+                           ipaddr: IPv6Addresses.Address) : BOOLEAN;
+       PROCEDURE WriteMX(s: Streams.Stream;
+                         preference: INTEGER;
+                         name: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE WriteTXT(s: Streams.Stream;
+                          list: ListOfTextRecords) : BOOLEAN;
+       PROCEDURE WriteSOA(s: Streams.Stream;
+                          mname: ARRAY OF CHAR;
+                          rname: ARRAY OF CHAR;
+                          serial: Types.Int32;
+                          refresh: Types.Int32;
+                          retry: Types.Int32;
+                          expire: Types.Int32;
+                          minimum: Types.Int32) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mDNSRecords[24m  supports  the  construction  and  extraction of DNS records
+       within DNS packets.  Note that the procedures that operate  on  streams
+       need  the  capabilities  [4mStreams.seek[24m  and  [4mStreams.tell[24m due to the DNS
+       compression format that includes pointers to other parts within  a  DNS
+       packet.  The position 0 of the stream must reflect the beginning of the
+       packet, i.e. the beginning of the header.  Hence, it is recommended  to
+       use  streams  like  [4mMemStreams(3)[24m  or  [4mTexts(3)[24m  that work on in-memory
+       buffers or represent in-memory buffers.
+
+       [4mReadQuestion[24m and [4mWriteQuestion[24m read or write a single  question  record
+       from  or  to  [4ms[24m.   Note  that  the actual number of question records is
+       reflected by the QR value within the header, see [4mDNSHeaders(3)[24m.
+
+       [4mReadRecord[24m and [4mWriteRecord[24m read or write a single resource record  from
+       or  to  [4ms[24m.   The  stream [4mrdata[24m that is returned by [4mReadRecord[24m is a sub-
+       stream (see [4mSubStreams(3)[24m) of [4ms[24m.  Note that [4mrdata[24m does not  necessarily
+       cover  the  entire  record  if  compression is used as it might contain
+       pointers to other parts of the DNS packet.
+
+       [4mReadRecords[24m allows to read an entire section of resource records from [4ms[0m
+       which is returned as a linear list. The returned records have following
+       additional fields:
+       [4mnext[24m    points to the next record (the original order is preserved).
+       [4mrdata[24m   sub stream of [4ms[24m that  covers  (the  not  necessarily  complete)
+               record data.
+       [4mpdata[24m   substream  of [4ms[24m that covers the entire packet. This allows com-
+               pressed names to be retrieved. Note that each of the substreams
+               maintains  its  own position. These substreams do not harm each
+               other but each of them manipulates the stream position  of  the
+               underlying stream [4ms[24m.
+       [4mrpos[24m    specifies the position of [4mrdata[24m within [4mpdata[24m.
+       The  parameter  [4mcount[24m  specifies  the number of records to be read (the
+       corresponding count is to be taken from the header structure) and [4mpack-[0m
+       [4metlen[24m  gives  the  length  of the entire packet (this is used to create
+       [4mpdata[24m from [4ms[24m).
+
+       Names can be read or written using [4mReadName[24m  and  [4mWriteName[24m.   [4mReadName[0m
+       supports  the compression format but [4mWriteName[24m does not attempt to com-
+       press names.
+
+       The extraction of  some  popular  records  is  supported.   [4mExtractName[0m
+       extracts  compressed  names for all record types that consist of a name
+       only like PTR, CNAME, or NS records. [4mExtractA[24m, [4mExtractAAAA[24m,  [4mExtractMX[24m,
+       [4mExtractTXT[24m,  and [4mExtractSOA[24m extract the corresponding resource records.
+       Note that in case of [4mExtractTXT[24m multiple texts can  be  present  within
+       one resource record.
+
+       [4mrrName[24m  and  [4mclassName[24m  provide  the  printable  names for all resource
+       record types and all classes. Unused (or yet unknown) values are repre-
+       sented as decimal numbers.
+
+       Likewise,  the  generation  of  popular records is supported by [4mWriteA[24m,
+       [4mWriteAAAA[24m, [4mWriteMX[24m, [4mWriteTXT[24m, and [4mWriteSOA[24m.
+
+[1mDIAGNOSTICS[0m
+       All procedures return [1mFALSE [22min error case but  do  not  generate  error
+       events on their own.
+
+[1mSEE ALSO[0m
+       [4mDNSHeaders(3)[24m   DNS packet header structure
+
+
+
+Release 0.5              Last change: 20 February 2005           DNSRecords(3)

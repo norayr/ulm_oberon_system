@@ -1,0 +1,438 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StdScopes.om,v 1.3 2005/08/21 21:24:10 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: StdScopes.om,v $
+   Revision 1.3  2005/08/21 21:24:10  borchert
+   ``not declared'' replaced by ``is not declared''
+
+   Revision 1.2  2004/09/04 16:07:33  borchert
+   Iterators.Create replaced by Iterators.CreateQuickIterator
+
+   Revision 1.1  1998/04/06 14:32:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StdScopes;
+
+   IMPORT ASCII, CompilerErrors, CompilerObjects, ConstStrings, Iterators,
+      LinearizedStructures, NetIO, PersistentObjects, Scopes, Services,
+      Streams, Write;
+
+   CONST
+      hashtabsize = 419;
+   TYPE
+      Entry = POINTER TO EntryRec;
+      BucketTable = ARRAY hashtabsize OF Entry;
+      EntryRec =
+	 RECORD
+	    next: Entry;
+	    error: BOOLEAN; (* inserted to avoid repeated error messages? *)
+	    name: ConstStrings.String;
+	    level: INTEGER; (* may be another level if used *)
+	    object: CompilerObjects.Object;
+	    loc: CompilerObjects.Location; (* set only if used *)
+	 END;
+
+      Scope = POINTER TO ScopeRec;
+      ScopeRec =
+	 RECORD
+	    (Scopes.ScopeRec)
+	    up: Scope;
+	    bucket: BucketTable;
+	    level: INTEGER;
+	    closed: BOOLEAN;
+	 END;
+   VAR
+      type: Services.Type;
+      if: Scopes.Interface;
+      objectType: Services.Type; (* that of CompilerObjects.Object *)
+      locationType: Services.Type; (* that of CompilerObjects.Location *)
+
+   CONST
+      endSY = "E"; entrySY = "Y";
+
+   (* === misc private procedures ========================================== *)
+
+   PROCEDURE WriteIdent(es: Streams.Stream; name: ConstStrings.String);
+   BEGIN
+      Write.CharS(es, ASCII.quote);
+      ConstStrings.Write(es, name);
+      Write.CharS(es, ASCII.quote);
+   END WriteIdent;
+
+   (* === if procedures for PersistentObjects ============================== *)
+
+   PROCEDURE CreateScope(VAR object: PersistentObjects.Object);
+      VAR
+	 scope: Scope;
+	 entry: Entry;
+   BEGIN
+      NEW(scope); scope.up := NIL; scope.level := 0;
+      PersistentObjects.Init(scope, type);
+      Scopes.Init(scope, if);
+      object := scope;
+   END CreateScope;
+
+   PROCEDURE ReadScope(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      WITH object: Scope DO
+	 IF ~CompilerObjects.GuardedRead(s, type, object.up) OR
+	       ~NetIO.ReadInteger(s, object.level) THEN
+	    RETURN FALSE
+	 END;
+	 WHILE NetIO.ReadChar(s, sy) & (sy = entrySY) DO
+	    NEW(entry);
+	    IF ~NetIO.ReadBoolean(s, entry.error) OR
+	          ~NetIO.ReadConstString(s, entry.name) OR
+	          ~NetIO.ReadInteger(s, entry.level) OR
+		  (entry.level > object.level) OR
+	          ~CompilerObjects.GuardedRead(s, objectType, entry.object) OR
+		  ~LinearizedStructures.GuardedRead(s, locationType,
+		                                    entry.loc) THEN
+	       RETURN FALSE
+	    END;
+	    index := entry.name.hashval MOD hashtabsize;
+	    entry.next := object.bucket[index];
+	    object.bucket[index] := entry;
+	 END;
+	 RETURN sy = endSY
+      END;
+   END ReadScope;
+
+   PROCEDURE WriteScope(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      WITH object: Scope DO
+	 IF ~CompilerObjects.Write(s, object.up) OR
+	       ~NetIO.WriteInteger(s, object.level) THEN
+	    RETURN FALSE
+	 END;
+	 index := 0;
+	 WHILE index < hashtabsize DO
+	    entry := object.bucket[index];
+	    WHILE entry # NIL DO
+	       IF ~NetIO.WriteChar(s, entrySY) OR
+		     ~NetIO.WriteBoolean(s, entry.error) OR
+		     ~NetIO.WriteConstString(s, entry.name) OR
+		     ~NetIO.WriteInteger(s, entry.level) OR
+		     ~CompilerObjects.Write(s, entry.object) OR
+		     ~LinearizedStructures.Write(s, entry.loc) THEN
+		  RETURN FALSE
+	       END;
+	       entry := entry.next;
+	    END;
+	    INC(index);
+	 END;
+	 RETURN NetIO.WriteChar(s, endSY)
+      END;
+   END WriteScope;
+
+   (* === if procedures of Scopes ==================================== *)
+
+   PROCEDURE Open(scope: Scopes.Scope;
+                  VAR innerScope: Scopes.Scope);
+      VAR
+	 new: Scope;
+   BEGIN
+      WITH scope: Scope DO
+	 CreateScope(new); new.loc := NIL;
+	 new.level := scope.level + 1; new.up := scope;
+	 new.closed := FALSE;
+	 innerScope := new;
+      END;
+   END Open;
+
+   PROCEDURE Close(scope: Scopes.Scope);
+      (* print suspended error messages of Use *)
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+	 es: Streams.Stream;
+   BEGIN
+      WITH scope: Scope DO
+	 index := 0;
+	 WHILE index < hashtabsize DO
+	    entry := scope.bucket[index];
+	    WHILE entry # NIL DO
+	       IF entry.error THEN
+		  CompilerErrors.Open(es);
+		  ASSERT(entry.loc # NIL);
+		  CompilerErrors.At1(es, entry.loc);
+		  Write.CharS(es, ASCII.quote);
+		  ConstStrings.Write(es, entry.name);
+		  Write.CharS(es, ASCII.quote);
+		  Write.StringS(es, " is not declared");
+		  CompilerErrors.Close(es, entry.loc.src);
+	       END;
+	       entry := entry.next;
+	    END;
+	    INC(index);
+	 END;
+	 scope.closed := TRUE;
+      END;
+   END Close;
+
+   PROCEDURE Add(scope: Scopes.Scope; ident: ConstStrings.String;
+	         loc: CompilerObjects.Location; object: CompilerObjects.Object);
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+	 es: Streams.Stream;
+   BEGIN
+      WITH scope: Scope DO
+	 index := ident.hashval MOD hashtabsize;
+	 entry := scope.bucket[index];
+	 WHILE entry # NIL DO
+	    IF ConstStrings.Compare(ident, entry.name) = 0 THEN
+	       CompilerErrors.Open(es);
+	       WriteIdent(es, ident);
+	       ASSERT(loc # NIL);
+	       CompilerErrors.At1(es, loc);
+	       IF entry.level < scope.level THEN
+		  (* scope overlap *)
+		  ASSERT(entry.loc # NIL);
+		  CompilerErrors.Ref(es, entry.loc);
+		  Write.StringS(es, " used before declared (scope overlap)");
+	       ELSIF entry.error THEN
+		  ASSERT(entry.loc # NIL);
+		  CompilerErrors.Ref(es, entry.loc);
+		  Write.StringS(es, " used before declared");
+		  (* fix it *)
+		  entry.error := FALSE;
+		  entry.object := object;
+		  entry.loc := loc;
+	       ELSE
+		  IF entry.object.loc # NIL THEN
+		     CompilerErrors.RefObject(es, entry.object);
+		  END;
+		  Write.StringS(es, " multiply declared");
+	       END;
+	       CompilerErrors.Close(es, object.loc.src);
+	       RETURN
+	    END;
+	    entry := entry.next;
+	 END;
+	 NEW(entry);
+	 entry.error := FALSE;
+	 entry.name := ident;
+	 entry.level := scope.level;
+	 entry.object := object;
+	 entry.loc := NIL;
+	 entry.next := scope.bucket[index];
+	 scope.bucket[index] := entry;
+	 RETURN
+      END;
+   END Add;
+
+   PROCEDURE Use(scope: Scopes.Scope; ident: ConstStrings.String;
+                 loc: CompilerObjects.Location;
+		 VAR object: CompilerObjects.Object);
+      VAR
+	 entry, use: Entry;
+	 sc: Scope;
+	 index: LONGINT;
+	 es: Streams.Stream;
+   BEGIN
+      object := NIL;
+      WITH scope: Scope DO
+	 sc := scope;
+	 index := ident.hashval MOD hashtabsize;
+	 WHILE sc # NIL DO
+	    entry := sc.bucket[index];
+	    WHILE entry # NIL DO
+	       IF ConstStrings.Compare(ident, entry.name) = 0 THEN
+		  IF entry.error THEN
+		     RETURN
+		  END;
+		  object := entry.object;
+		  IF sc # scope THEN
+		     NEW(use);
+		     use.error := FALSE;
+		     use.name := ident;
+		     use.level := sc.level;
+		     use.object := entry.object;
+		     use.loc := loc;
+		     use.next := scope.bucket[index];
+		     scope.bucket[index] := use;
+		  END;
+		  RETURN
+	       END;
+	       entry := entry.next;
+	    END;
+	    sc := sc.up;
+	 END;
+	 (* we suspend the error message until we know whether it is
+	    declared later (violation of declare before use) or
+	    simply unknown;
+	    the error messages are printed later by Close
+	 *)
+	 NEW(entry);
+	 entry.error := TRUE;
+	 entry.name := ident;
+	 entry.level := scope.level;
+	 entry.object := NIL;
+	 entry.loc := loc;
+	 entry.next := scope.bucket[index];
+	 scope.bucket[index] := entry;
+	 IF scope.closed THEN
+	    (* well, the scope is already closed -- so we have
+	       to print it now
+	    *)
+	    CompilerErrors.Open(es);
+	    CompilerErrors.At1(es, entry.loc);
+	    Write.CharS(es, ASCII.quote);
+	    ConstStrings.Write(es, entry.name);
+	    Write.CharS(es, ASCII.quote);
+	    Write.StringS(es, " is not declared");
+	    CompilerErrors.Close(es, entry.loc.src);
+	 END;
+      END;
+   END Use;
+
+   PROCEDURE Lookup(scope: Scopes.Scope; ident: ConstStrings.String;
+                    VAR object: CompilerObjects.Object) : BOOLEAN;
+      VAR
+	 sc: Scope;
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      sc := scope(Scope);
+      index := ident.hashval MOD hashtabsize;
+      WHILE sc # NIL DO
+	 entry := sc.bucket[index];
+	 WHILE entry # NIL DO
+	    IF ConstStrings.Compare(ident, entry.name) = 0 THEN
+	       object := entry.object;
+	       RETURN TRUE
+	    END;
+	    entry := entry.next;
+	 END;
+	 sc := sc.up;
+      END;
+      object := NIL;
+      RETURN FALSE
+   END Lookup;
+
+   PROCEDURE LocalLookup(scope: Scopes.Scope; ident: ConstStrings.String;
+                         VAR object: CompilerObjects.Object) : BOOLEAN;
+      (* lookup the identifier in scope without considering the
+         upper scopes without marking it
+      *)
+      VAR
+	 entry: Entry;
+   BEGIN
+      WITH scope: Scope DO
+	 entry := scope.bucket[ident.hashval MOD hashtabsize];
+	 WHILE entry # NIL DO
+	    IF ConstStrings.Compare(ident, entry.name) = 0 THEN
+	       object := entry.object;
+	       RETURN TRUE
+	    END;
+	    entry := entry.next;
+	 END;
+      END;
+      object := NIL;
+      RETURN FALSE
+   END LocalLookup;
+
+   PROCEDURE Cut(scope: Scopes.Scope);
+      (* cut scope from upper levels; note that this does not
+	 change Level(scope)
+      *)
+   BEGIN
+      WITH scope: Scope DO
+	 scope.up := NIL;
+      END;
+   END Cut;
+
+   PROCEDURE IterateScope(it: Iterators.Iterator;
+                          ref: Iterators.Reference;
+			  mode: Iterators.Mode);
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      WITH ref: Scope DO
+	 index := 0;
+	 WHILE index < hashtabsize DO
+	    entry := ref.bucket[index];
+	    WHILE entry # NIL DO
+	       IF ~entry.error & (entry.level = ref.level) THEN
+		  Iterators.Yield(it, entry.object);
+	       END;
+	       entry := entry.next;
+	    END;
+	    INC(index);
+	 END;
+      END;
+   END IterateScope;
+
+   PROCEDURE GetIterator(scope: Scopes.Scope; VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.CreateQuickIterator(it, IterateScope, scope, 0);
+   END GetIterator;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      Services.SeekType("CompilerObjects.Object", objectType);
+      ASSERT(objectType # NIL);
+      Services.SeekType("CompilerObjects.Location", locationType);
+      ASSERT(locationType # NIL);
+      NEW(persif);
+      persif.create := CreateScope; persif.createAndRead := NIL;
+      persif.read := ReadScope; persif.write := WriteScope;
+      PersistentObjects.RegisterType(type,
+	 "StdScopes.Scope", "Scopes.Scope", persif);
+      NEW(if);
+      if.open := Open; if.close := Close;
+      if.add := Add; if.use := Use; if.lookup := Lookup;
+      if.localLookup := LocalLookup;
+      if.cut := Cut; if.getIterator := GetIterator;
+   END Init;
+
+   (* === exported constructor ============================================= *)
+
+   PROCEDURE Create(VAR scope: Scopes.Scope);
+      VAR
+	 new: Scope;
+   BEGIN
+      CreateScope(new); new.loc := NIL; new.closed := FALSE;
+      scope := new;
+   END Create;
+
+BEGIN
+   Init;
+END StdScopes.

@@ -1,0 +1,1008 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteNames.om,v 1.6 2004/04/02 18:33:44 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteNames.om,v $
+   Revision 1.6  2004/04/02 18:33:44  borchert
+   support for MakeSubnode added
+
+   Revision 1.5  1998/04/05 15:27:16  martin
+   deprecated implementation of Names.Alive removed
+
+   Revision 1.4  1998/03/24  23:12:41  borchert
+   support of new version of RemoteObjects:
+   - initProxy if procedure
+   - dying component moved to discipline because we no longer have
+     static field components if we are cooperating with other
+     RemoteXXX layers
+
+   Revision 1.3  1996/09/25  00:38:42  martin
+   some bug fixes:
+   - RemoteIterators.Setmode could be called with iterator = NIL
+   - Names.Insert could be called with subnode = NIL
+   - GetStatus could dereference status = NIL
+   - Insert could return FALSE despite success
+   - NodeRec contained unused components
+
+   Revision 1.2  1995/12/23  15:23:38  martin
+   TakeInterest event handling implemented
+
+   Revision 1.1  1995/12/22  15:13:23  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteNames;
+(*
+ *	Network interface for Names.
+ *)
+
+   IMPORT ConstStrings, Disciplines, Events, Iterators, LocalSemaphores,
+      Messages, Names, NetIO, Objects, PersistentDisciplines,
+      PersistentObjects, Priorities, RelatedEvents, RemoteEvents,
+      RemoteIterators, RemoteObjects, Resources, Semaphores, Services,
+      Shards, Streams;
+
+   CONST
+      exportMode = RemoteObjects.parallel;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec = RECORD (Names.NodeRec) END;
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    dying: BOOLEAN;			(* cleanup in progress *)
+	 END;
+
+      Params = POINTER TO ParamsRec;
+      ParamsRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    caps: Names.CapabilitySet;
+	 END;
+
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	 END;
+
+      AccessMsg = POINTER TO AccessMsgRec;
+      AccessMsgRec =
+	 RECORD
+	    (MessageRec)
+	    mode:             Names.AccessMode;
+	    auth:             Shards.Lid;
+	 END;
+
+      StatusMsg = POINTER TO StatusMsgRec;
+      StatusMsgRec =
+	 RECORD
+	    (MessageRec)
+	    set:              BOOLEAN;
+	    status:           Names.Status;
+	    auth:             Shards.Lid;
+	 END;
+
+      GetMembersMsg = POINTER TO GetMembersMsgRec;
+      GetMembersMsgRec =
+	 RECORD
+	    (MessageRec)
+	    auth:             Shards.Lid;
+	    (*VAR*)members:   Iterators.Iterator;
+	 END;
+
+      TakeInterestMsg = POINTER TO TakeInterestMsgRec;
+      TakeInterestMsgRec =
+	 RECORD
+	    (MessageRec)
+	    auth:             Shards.Lid;
+	    (*VAR*)eventType: Events.EventType;
+	 END;
+
+      GetNodeMsg = POINTER TO GetNodeMsgRec;
+      GetNodeMsgRec =
+	 RECORD
+	    (MessageRec)
+	    name:             Names.Name;
+	    auth:             Shards.Lid;
+	    (*VAR*)subnode:   Names.Node;
+	 END;
+
+      InsertMsg = POINTER TO InsertMsgRec;
+      InsertMsgRec =
+	 RECORD
+	    (MessageRec)
+	    subnode:          Names.Node;
+	    name:             Names.Name;
+	    auth:             Shards.Lid;
+	 END;
+
+      MakeSubnodeMsg = POINTER TO MakeSubnodeMsgRec;
+      MakeSubnodeMsgRec =
+	 RECORD
+	    (MessageRec)
+	    name:             Names.Name;
+	    status:           Names.Status;
+	    caps:             Names.CapabilitySet;
+	    auth:             Shards.Lid;
+	    (*VAR*)subnode:   Names.Node;
+	 END;
+
+      DeleteMsg = POINTER TO DeleteMsgRec;
+      DeleteMsgRec =
+	 RECORD
+	    (MessageRec)
+	    name:             Names.Name;
+	    auth:             Shards.Lid;
+	 END;
+
+      DestroyMsg = POINTER TO DestroyMsgRec;
+      DestroyMsgRec =
+	 RECORD
+	    (MessageRec)
+	    auth:             Shards.Lid;
+	 END;
+
+   VAR
+      namesInterface: Names.Interface;
+      accessMsgType,
+      statusMsgType,
+      getMembersMsgType,
+      takeInterestMsgType,
+      getNodeMsgType,
+      insertMsgType,
+      makeSubnodeMsgType,
+      deleteMsgType,
+      referenceMsgType,
+      destroyMsgType,
+      purgeMsgType,
+      potType,
+      lidType,
+      iteratorType,
+      eventTypeType,
+      paramsType,
+      nodeType,
+      proxyNodeType,
+      eventMsgType: Services.Type;
+      nodeDiscId: Disciplines.Identifier;
+
+   CONST
+      connectionLost = 0;	(* connection to remote object is lost *)
+      errorcodes = 1;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[connectionLost] := "connection to remote object is lost";
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* ======== message persistency ======== *)
+
+   PROCEDURE ReadAuth(s: Streams.Stream; VAR auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, lidType, auth)
+   END ReadAuth;
+
+   PROCEDURE ReadPot(s: Streams.Stream; VAR pot: Shards.Pot): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, potType, pot)
+   END ReadPot;
+
+   PROCEDURE ReadStatus(s: Streams.Stream; VAR status: Names.Status): BOOLEAN;
+      VAR
+	 amode: Names.AccessMode;
+	 nil: BOOLEAN;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, nil) THEN
+	 RETURN FALSE
+      END;
+      IF nil THEN
+	 status := NIL;
+      ELSE
+	 NEW(status);
+	 amode := 0;
+	 WHILE amode < Names.accessmodes DO
+	    IF ~ReadPot(s, status.perm[amode]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(amode);
+	 END;
+      END;
+      RETURN TRUE
+   END ReadStatus;
+
+   PROCEDURE WriteStatus(s: Streams.Stream; status: Names.Status): BOOLEAN;
+      VAR
+	 amode: Names.AccessMode;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, status = NIL) THEN
+	 RETURN FALSE
+      END;
+      IF status # NIL THEN
+	 amode := 0;
+	 WHILE amode < Names.accessmodes DO
+	    IF ~PersistentObjects.WriteObjectOrNIL(s, status.perm[amode]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(amode);
+	 END;
+      END;
+      RETURN TRUE
+   END WriteStatus;
+
+   PROCEDURE CreateAccessMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: AccessMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, accessMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateAccessMsg;
+
+   PROCEDURE ReadAccessMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: AccessMsg DO
+	 RETURN msg.processed OR
+	    NetIO.ReadShortInt(s, msg.mode) & ReadAuth(s, msg.auth)
+      END;
+   END ReadAccessMsg;
+
+   PROCEDURE WriteAccessMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: AccessMsg DO
+	 RETURN msg.processed OR 
+	    NetIO.WriteShortInt(s, msg.mode) &
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteAccessMsg;
+
+   PROCEDURE CreateStatusMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: StatusMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, statusMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateStatusMsg;
+
+   PROCEDURE ReadStatusMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: StatusMsg DO
+	 RETURN NetIO.ReadBoolean(s, msg.set) &
+	    (msg.processed OR ReadAuth(s, msg.auth)) &
+	    ( (msg.processed = msg.set) OR (~msg.set & ~msg.done) OR
+	    ReadStatus(s, msg.status) )
+      END;
+   END ReadStatusMsg;
+
+   PROCEDURE WriteStatusMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: StatusMsg DO
+	 RETURN NetIO.WriteBoolean(s, msg.set) &
+	    ( msg.processed OR
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth) ) &
+	    ( (msg.processed = msg.set) OR (~msg.set & ~msg.done) OR
+	    WriteStatus(s, msg.status) )
+      END;
+   END WriteStatusMsg;
+
+   PROCEDURE CreateGetMembersMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: GetMembersMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getMembersMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateGetMembersMsg;
+
+   PROCEDURE ReadGetMembersMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: GetMembersMsg DO
+	 IF msg.processed THEN
+	    RETURN ~msg.done OR
+	       RemoteObjects.GuardedImport(s, iteratorType, msg.members)
+	 END;
+	 RETURN ReadAuth(s, msg.auth)
+      END;
+   END ReadGetMembersMsg;
+
+   PROCEDURE WriteGetMembersMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: GetMembersMsg DO
+	 IF msg.processed THEN
+	    IF msg.done THEN
+	       RemoteIterators.SetMode(msg.members, 0(*all*),
+		  RemoteIterators.copyObjects);
+	    END;
+	    RETURN ~msg.done OR RemoteObjects.Export(s, msg.members)
+	 END;
+	 RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteGetMembersMsg;
+
+   PROCEDURE CreateTakeInterestMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: TakeInterestMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, takeInterestMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateTakeInterestMsg;
+
+   PROCEDURE ReadTakeInterestMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: TakeInterestMsg DO
+	 IF msg.processed THEN
+	    RETURN ~msg.done OR
+	       RemoteObjects.GuardedImport(s, eventTypeType, msg.eventType)
+	 END;
+	 RETURN ReadAuth(s, msg.auth)
+      END;
+   END ReadTakeInterestMsg;
+
+   PROCEDURE WriteTakeInterestMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: TakeInterestMsg DO
+	 IF msg.processed THEN
+	    RETURN ~msg.done OR RemoteObjects.Export(s, msg.eventType)
+	 END;
+	 RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteTakeInterestMsg;
+
+   PROCEDURE CreateGetNodeMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: GetNodeMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getNodeMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateGetNodeMsg;
+
+   PROCEDURE ReadGetNodeMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: GetNodeMsg DO
+	 IF msg.processed & msg.done THEN
+	    RETURN RemoteObjects.GuardedImport(s, nodeType, msg.subnode)
+	 END;
+	 RETURN NetIO.ReadConstString(s, msg.name) & ReadAuth(s, msg.auth)
+      END;
+   END ReadGetNodeMsg;
+
+   PROCEDURE WriteGetNodeMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: GetNodeMsg DO
+	 IF msg.processed & msg.done THEN
+	    RETURN RemoteObjects.Export(s, msg.subnode)
+	 END;
+	 RETURN NetIO.WriteConstString(s, msg.name) &
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteGetNodeMsg;
+
+   PROCEDURE CreateInsertMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: InsertMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, insertMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateInsertMsg;
+
+   PROCEDURE ReadInsertMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: InsertMsg DO
+	 RETURN msg.processed OR
+	    NetIO.ReadConstString(s, msg.name) &
+	    RemoteObjects.GuardedImport(s, nodeType, msg.subnode) &
+	    ReadAuth(s, msg.auth)
+      END;
+   END ReadInsertMsg;
+
+   PROCEDURE WriteInsertMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: InsertMsg DO
+	 RETURN msg.processed OR
+	    NetIO.WriteConstString(s, msg.name) &
+	    RemoteObjects.Export(s, msg.subnode) &
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteInsertMsg;
+
+   PROCEDURE CreateMakeSubnodeMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: MakeSubnodeMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, makeSubnodeMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateMakeSubnodeMsg;
+
+   PROCEDURE ReadMakeSubnodeMsg(s: Streams.Stream;
+			        msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: MakeSubnodeMsg DO
+	 IF msg.processed THEN
+	    RETURN RemoteObjects.GuardedImport(s, nodeType, msg.subnode)
+	 ELSE
+	    RETURN NetIO.ReadConstString(s, msg.name) &
+	       ReadStatus(s, msg.status) &
+	       NetIO.ReadSet(s, msg.caps) &
+	       ReadAuth(s, msg.auth)
+	 END;
+      END;
+   END ReadMakeSubnodeMsg;
+
+   PROCEDURE WriteMakeSubnodeMsg(s: Streams.Stream;
+			         msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: MakeSubnodeMsg DO
+	 IF msg.processed THEN
+	    RETURN RemoteObjects.Export(s, msg.subnode)
+	 ELSE
+	    RETURN NetIO.WriteConstString(s, msg.name) &
+	       WriteStatus(s, msg.status) &
+	       NetIO.WriteSet(s, msg.caps) &
+	       PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+	 END;
+      END;
+   END WriteMakeSubnodeMsg;
+
+   PROCEDURE CreateDeleteMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: DeleteMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, deleteMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateDeleteMsg;
+
+   PROCEDURE ReadDeleteMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: DeleteMsg DO
+	 RETURN msg.processed OR
+	    NetIO.ReadConstString(s, msg.name) & ReadAuth(s, msg.auth)
+      END;
+   END ReadDeleteMsg;
+
+   PROCEDURE WriteDeleteMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: DeleteMsg DO
+	 RETURN msg.processed OR
+	    NetIO.WriteConstString(s, msg.name) &
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteDeleteMsg;
+
+   PROCEDURE CreateDestroyMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: DestroyMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, destroyMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateDestroyMsg;
+
+   PROCEDURE ReadDestroyMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: DestroyMsg DO
+	 RETURN msg.processed OR ReadAuth(s, msg.auth)
+      END;
+   END ReadDestroyMsg;
+
+   PROCEDURE WriteDestroyMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: DestroyMsg DO
+	 RETURN msg.processed OR
+	    PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+      END;
+   END WriteDestroyMsg;
+
+   (* ======== params persistency ======== *)
+
+   PROCEDURE CreateParams(VAR obj: PersistentObjects.Object);
+      VAR
+	 params: Params;
+   BEGIN
+      NEW(params);
+      PersistentObjects.Init(params, paramsType);
+      obj := params;
+   END CreateParams;
+
+   PROCEDURE ReadParams(s: Streams.Stream;
+			params: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      RETURN NetIO.ReadSet(s, params(Params).caps)
+   END ReadParams;
+
+   PROCEDURE WriteParams(s: Streams.Stream;
+			params: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      RETURN NetIO.WriteSet(s, params(Params).caps)
+   END WriteParams;
+
+   (* ======== server side: message and event handlers ======== *)
+
+   PROCEDURE Handler(node: Messages.Object; VAR msg: Messages.Message);
+   BEGIN
+      WITH node: Names.Node DO
+	 IF msg IS Message THEN
+	    RelatedEvents.Save(node);
+	    RelatedEvents.Forward(node, msg.errors);
+	    IF msg IS AccessMsg THEN
+	       WITH msg: AccessMsg DO
+		  msg.done := Names.Access(node, msg.mode, msg.auth);
+	       END;
+	    ELSIF msg IS StatusMsg THEN
+	       WITH msg: StatusMsg DO
+		  IF msg.set THEN
+		     msg.done := Names.SetStatus(node, msg.status, msg.auth);
+		  ELSE
+		     NEW(msg.status);
+		     msg.done := Names.GetStatus(node, msg.auth, msg.status^);
+		  END;
+	       END;
+	    ELSIF msg IS GetMembersMsg THEN
+	       WITH msg: GetMembersMsg DO
+		  msg.done := Names.GetMembers(node, msg.auth, msg.members);
+	       END;
+	    ELSIF msg IS TakeInterestMsg THEN
+	       WITH msg: TakeInterestMsg DO
+		  msg.done := Names.TakeInterest(node, msg.auth, msg.eventType);
+	       END;
+	    ELSIF msg IS GetNodeMsg THEN
+	       WITH msg: GetNodeMsg DO
+		  msg.done :=
+		     Names.GetNode(node, msg.name, msg.auth, msg.subnode);
+	       END;
+	    ELSIF msg IS InsertMsg THEN
+	       WITH msg: InsertMsg DO
+		  IF msg.subnode = NIL THEN
+		     Names.Error(msg.errors, Names.nodeNotFound);
+		     msg.done := FALSE;
+		  ELSE
+		     msg.done :=
+			Names.Insert(node, msg.subnode, msg.name, msg.auth);
+		  END;
+	       END;
+	    ELSIF msg IS MakeSubnodeMsg THEN
+	       WITH msg: MakeSubnodeMsg DO
+		  msg.done := Names.MakeSubnode(node, msg.name, msg.status,
+				 msg.caps, msg.auth, msg.subnode);
+	       END;
+	    ELSIF msg IS DeleteMsg THEN
+	       WITH msg: DeleteMsg DO
+		  msg.done := Names.Delete(node, msg.name, msg.auth);
+	       END;
+	    ELSIF msg IS DestroyMsg THEN
+	       WITH msg: DestroyMsg DO
+		  msg.done := Names.Destroy(node, msg.auth);
+	       END;
+	    ELSE	(* another msg type? -- this should not happen *)
+	       Names.Error(msg.errors, Names.serverFailure);
+	       msg.done := FALSE;
+	    END;
+	    RelatedEvents.Restore(node);
+	    msg.processed := TRUE;
+	 END;
+      END;
+   END Handler;
+
+   (* ======== client side: message and event handlers ======== *)
+
+   PROCEDURE NodeNotificationEventHandler(event: Events.Event);
+      VAR
+	 node: Names.Node;
+	 nodeDisc: NodeDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH event: Resources.Event DO
+	 CASE event.change OF
+	 | Resources.terminated:
+	    node := event.resource(Names.Node);
+	    ok := Disciplines.Seek(node, nodeDiscId, nodeDisc); ASSERT(ok);
+	    IF ~nodeDisc.dying THEN
+	       nodeDisc.dying := TRUE;
+	       IF ~Names.Destroy(node, NIL) THEN
+		  (* not reached *)
+	       END;
+	    END;
+	 ELSE (*ignore*)
+	 END;
+      END;
+   END NodeNotificationEventHandler;
+
+   (* ======== RemoteObjects interface ======== *)
+
+   PROCEDURE GetParams(node: Services.Object;
+			   VAR params: PersistentObjects.Object;
+			   VAR mode: RemoteObjects.ExportMode);
+   BEGIN
+      CreateParams(params);
+      params(Params).caps := Names.Capabilities(node(Names.Node));
+      mode := RemoteObjects.linked;
+   END GetParams;
+
+   PROCEDURE InitProxy(obj: Services.Object;
+		       params: PersistentObjects.Object);
+      VAR
+	 event: Events.EventType;
+	 nodeDisc: NodeDiscipline;
+   BEGIN
+      WITH obj: Names.Node DO
+	 Names.InitNode(obj, namesInterface, params(Params).caps);
+	 NEW(nodeDisc); nodeDisc.id := nodeDiscId; nodeDisc.dying := FALSE;
+	 Disciplines.Add(obj, nodeDisc);
+	 Resources.TakeInterest(obj, event);
+	 Events.Handler(event, NodeNotificationEventHandler);
+      END;
+   END InitProxy;
+
+   PROCEDURE CreateProxy(VAR obj: Services.Object;
+			   params: PersistentObjects.Object);
+      VAR
+	 node: Node;
+	 event: Events.EventType;
+   BEGIN
+      NEW(node);
+      Services.Init(node, proxyNodeType);
+      InitProxy(node, params);
+      obj := node;
+   END CreateProxy;
+
+   (* ======== initializations ======== *)
+
+   PROCEDURE InitDatatypes;
+      VAR
+	 face: PersistentObjects.Interface;
+	 remoteObjectsIf: RemoteObjects.Interface;
+   BEGIN
+      NEW(face);
+      face.read := ReadAccessMsg;
+      face.write := WriteAccessMsg;
+      face.create := CreateAccessMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(accessMsgType,
+	 "RemoteNames.AccessMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadStatusMsg;
+      face.write := WriteStatusMsg;
+      face.create := CreateStatusMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(statusMsgType,
+	 "RemoteNames.StatusMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadGetMembersMsg;
+      face.write := WriteGetMembersMsg;
+      face.create := CreateGetMembersMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(getMembersMsgType,
+	 "RemoteNames.GetMembersMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadTakeInterestMsg;
+      face.write := WriteTakeInterestMsg;
+      face.create := CreateTakeInterestMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(takeInterestMsgType,
+	 "RemoteNames.TakeInterestMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadGetNodeMsg;
+      face.write := WriteGetNodeMsg;
+      face.create := CreateGetNodeMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(getNodeMsgType,
+	 "RemoteNames.GetNodeMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadInsertMsg;
+      face.write := WriteInsertMsg;
+      face.create := CreateInsertMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(insertMsgType,
+	 "RemoteNames.InsertMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadMakeSubnodeMsg;
+      face.write := WriteMakeSubnodeMsg;
+      face.create := CreateMakeSubnodeMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(makeSubnodeMsgType,
+	 "RemoteNames.MakeSubnodeMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadDeleteMsg;
+      face.write := WriteDeleteMsg;
+      face.create := CreateDeleteMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(deleteMsgType,
+	 "RemoteNames.DeleteMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := ReadDestroyMsg;
+      face.write := WriteDestroyMsg;
+      face.create := CreateDestroyMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(destroyMsgType,
+	 "RemoteNames.DestroyMsg", "Messages.Message", face);
+      Services.CreateType(proxyNodeType, "RemoteNames.Node", "Names.Node");
+      NEW(face);
+      face.read := ReadParams;
+      face.write := WriteParams;
+      face.create := CreateParams;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(paramsType,
+	 "RemoteNames.Params", "", face);
+      Services.SeekType("Shards.Pot", potType);
+      Services.SeekType("Shards.Lid", lidType);
+      Services.SeekType("Iterators.Iterator", iteratorType);
+      ASSERT( (potType # NIL) & (lidType # NIL) & (iteratorType # NIL) );
+      Services.SeekType("Events.EventType", eventTypeType);
+      Services.SeekType("Names.Node", nodeType);
+      ASSERT( (eventTypeType # NIL) & (nodeType # NIL) );
+      NEW(remoteObjectsIf);
+      remoteObjectsIf.getParams := GetParams;
+      remoteObjectsIf.createProxy := CreateProxy;
+      remoteObjectsIf.initProxy := InitProxy;
+      remoteObjectsIf.msgHandler := Handler;
+      RemoteObjects.Register(nodeType, remoteObjectsIf, exportMode);
+      nodeDiscId := Disciplines.Unique();
+   END InitDatatypes;
+
+   (* ======== client side: Names implementation ======== *)
+
+   PROCEDURE Send(node: Names.Node; VAR msg: Message;
+		  errors: RelatedEvents.Object);
+      VAR
+	 queue: RelatedEvents.Queue;
+	 nodeDisc: NodeDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(node, nodeDiscId, nodeDisc); ASSERT(ok);
+      IF nodeDisc.dying THEN
+	 Error(errors, connectionLost);
+      ELSE
+	 Messages.Send(node, msg);
+	 RelatedEvents.GetQueue(msg.errors, queue);
+	 RelatedEvents.AppendQueue(errors, queue);
+	 IF ~msg.processed THEN
+	    Names.Error(errors, Names.serverFailure);
+	 END;
+      END;
+   END Send;
+
+   PROCEDURE Access(node: Names.Node; mode: Names.AccessMode;
+			   auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: AccessMsg;
+   BEGIN
+      CreateAccessMsg(msg);
+      msg.mode := mode;
+      msg.auth := auth;
+      Send(node, msg, node);
+      RETURN msg.done
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node; auth: Shards.Lid;
+			   VAR status: Names.StatusRec): BOOLEAN;
+      VAR
+	 msg: StatusMsg;
+   BEGIN
+      CreateStatusMsg(msg);
+      msg.set := FALSE;
+      msg.auth := auth;
+      Send(node, msg, node);
+      IF msg.status # NIL THEN
+	 status := msg.status^;
+      END;
+      RETURN msg.done
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node; status: Names.Status;
+			   auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: StatusMsg;
+   BEGIN
+      CreateStatusMsg(msg);
+      msg.set := TRUE;
+      msg.status := status;
+      msg.auth := auth;
+      Send(node, msg, node);
+      RETURN msg.done
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+			   VAR members: Names.Lister): BOOLEAN;
+      VAR
+	 msg: GetMembersMsg;
+   BEGIN
+      CreateGetMembersMsg(msg);
+      msg.auth := auth;
+      Send(node, msg, node);
+      IF msg.done THEN
+	 members := msg.members;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+			  VAR eventType: Events.EventType): BOOLEAN;
+      VAR
+	 msg: TakeInterestMsg;
+   BEGIN
+      CreateTakeInterestMsg(msg);
+      msg.auth := auth;
+      Send(node, msg, node);
+      IF msg.eventType = NIL THEN
+	 msg.done := FALSE;
+      END;
+      IF msg.done THEN
+	 eventType := msg.eventType;
+      ELSE
+	 eventType := NIL;
+      END;
+      RETURN msg.done
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name; auth: Shards.Lid;
+			   VAR subnode: Names.Node): BOOLEAN;
+      VAR
+	 msg: GetNodeMsg;
+   BEGIN
+      CreateGetNodeMsg(msg);
+      msg.name := name;
+      msg.auth := auth;
+      Send(node, msg, node);
+      subnode := msg.subnode;
+      RETURN msg.done
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+			   auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: InsertMsg;
+   BEGIN
+      CreateInsertMsg(msg);
+      msg.subnode := subnode;
+      msg.name := name;
+      msg.auth := auth;
+      Send(node, msg, node);
+      RETURN msg.done
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status; caps: Names.CapabilitySet;
+			 auth: Shards.Lid; VAR subnode: Names.Node): BOOLEAN;
+      VAR
+	 msg: MakeSubnodeMsg;
+   BEGIN
+      CreateMakeSubnodeMsg(msg);
+      msg.name := name;
+      msg.status := status;
+      msg.caps := caps;
+      msg.auth := auth;
+      Send(node, msg, node);
+      IF msg.done THEN
+	 subnode := msg.subnode;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+			   auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: DeleteMsg;
+   BEGIN
+      CreateDeleteMsg(msg);
+      msg.name := name;
+      msg.auth := auth;
+      Send(node, msg, node);
+      RETURN msg.done
+   END Delete;
+
+   PROCEDURE Destroy(node: Names.Node; auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: DestroyMsg;
+	 nodeDisc: NodeDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(node, nodeDiscId, nodeDisc); ASSERT(ok);
+      IF nodeDisc.dying THEN
+	 RETURN TRUE
+      END;
+      CreateDestroyMsg(msg);
+      msg.auth := auth;
+      Send(node, msg, node);
+      RETURN msg.done
+   END Destroy;
+
+   PROCEDURE InitNamesInterface;
+   BEGIN
+      NEW(namesInterface);
+      namesInterface.access := Access;
+      namesInterface.getStatus := GetStatus;
+      namesInterface.setStatus := SetStatus;
+      namesInterface.getMembers := GetMembers;
+      namesInterface.takeInterest := TakeInterest;
+      namesInterface.getNode := GetNode;
+      namesInterface.insert := Insert;
+      namesInterface.makeSubnode := MakeSubnode;
+      namesInterface.delete := Delete;
+      namesInterface.destroy := Destroy;
+   END InitNamesInterface;
+
+BEGIN
+   InitErrorHandling;
+   InitNamesInterface;
+   InitDatatypes;
+END RemoteNames.

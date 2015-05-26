@@ -1,0 +1,129 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: NodeFactori.om,v 1.2 2005/08/30 15:23:51 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: NodeFactori.om,v $
+   Revision 1.2  2005/08/30 15:23:51  borchert
+   GetFactory added
+
+   Revision 1.1  2004/06/05 14:20:55  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NodeFactories;
+
+   IMPORT Conditions, Disciplines, Names, Objects, PersistentDisciplines,
+      PersistentObjects, Services;
+
+   TYPE
+      Factory = POINTER TO FactoryRec;
+      Interface = POINTER TO InterfaceRec;
+      FactoryRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    if: Interface;
+	 END;
+   VAR
+      factoryType: Services.Type;
+
+   TYPE
+      ConstructNodeProc = PROCEDURE (factory: Factory;
+                                     VAR node: Names.Node) : BOOLEAN;
+      GetConditionsProc = PROCEDURE (factory: Factory;
+                                     VAR conditions: Conditions.ConditionSet);
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    constructNode: ConstructNodeProc;
+	    getConditions: GetConditionsProc;
+	 END;
+
+   TYPE
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    factory: Factory;
+	 END;
+   VAR
+      ndid: Disciplines.Identifier;
+
+   PROCEDURE InitModule;
+   BEGIN
+      PersistentObjects.RegisterType(factoryType,
+	 "NodeFactories.Factory", "PersistentDisciplines.Object", NIL);
+      ndid := Disciplines.Unique();
+   END InitModule;
+
+   PROCEDURE Attach(node: Names.Node; factory: Factory);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      ASSERT(factory # NIL);
+      NEW(nd); nd.id := ndid; nd.factory := factory;
+      Disciplines.Add(node, nd);
+   END Attach;
+
+   PROCEDURE GetFactory(node: Names.Node; VAR factory: Factory) : BOOLEAN;
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      IF Disciplines.Seek(node, ndid, nd) THEN
+	 factory := nd.factory; RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetFactory;
+
+   PROCEDURE Init(factory: Factory; if: Interface);
+      VAR
+	 type: Services.Type;
+   BEGIN
+      ASSERT((if # NIL) & (if.constructNode # NIL));
+      Services.GetType(factory, type);
+      ASSERT((type # NIL) & Services.IsExtensionOf(type, factoryType));
+      factory.if := if;
+   END Init;
+
+   PROCEDURE GetConditions(factory: Factory;
+                           VAR conditions: Conditions.ConditionSet);
+   BEGIN
+      IF factory.if.getConditions = NIL THEN
+	 conditions := NIL;
+      ELSE
+	 factory.if.getConditions(factory, conditions);
+      END;
+   END GetConditions;
+
+   PROCEDURE ConstructNode(factory: Factory; VAR node: Names.Node) : BOOLEAN;
+   BEGIN
+      IF factory.if.constructNode(factory, node) THEN
+	 Attach(node, factory);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ConstructNode;
+
+BEGIN
+   InitModule;
+END NodeFactories.

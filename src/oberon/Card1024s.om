@@ -1,0 +1,813 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Card1024s.om,v 1.1 1997/04/03 09:38:44 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Card1024s.om,v $
+   Revision 1.1  1997/04/03  09:38:44  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Card1024s; (* Frank B.J. Fischer *)
+
+   IMPORT IntOperations, MemOps, NetIO, Operations, PersistentObjects,
+          SYS := SYSTEM, Services, Streams, Types;
+
+   CONST
+      nrOfBlocks  = 32;      (* absolut length of number in blocks   *)
+      blockLen    = 32;      (* number of bits in a block            *)
+      bitLen      = nrOfBlocks * blockLen; (* absolut length in bits *)
+      caps = {Operations.add, Operations.sub, Operations.mul,
+	      Operations.div, Operations.cmp,
+	      IntOperations.shift, IntOperations.mod,
+              IntOperations.pow, IntOperations.inc,
+	      IntOperations.dec, IntOperations.mmul,
+	      IntOperations.mpow, IntOperations.odd};
+
+   TYPE
+      Card1024 = POINTER TO Card1024Rec;
+      Card1024Rec = RECORD 
+		      (IntOperations.OperandRec)
+		      block: ARRAY nrOfBlocks OF Types.Int32; (* 1024 bit *)
+                   END;
+
+   VAR
+      val0        : Card1024;      (* (Card1024) 0        *)
+      val1        : Card1024;      (* (Card1024) 1        *)
+      card1024type: Services.Type;
+      if          : IntOperations.Interface;
+      pOif        : PersistentObjects.Interface;
+
+
+   PROCEDURE Create(VAR op: Operations.Operand);
+      (* create a operand op of type Card1024 *)
+      VAR
+         c: Card1024;     (* new created number *) 
+   BEGIN
+      NEW(c);
+      MemOps.Clear(SYS.VAL(Types.Address, c), SYS.SIZE(Card1024Rec));
+      PersistentObjects.Init(c, card1024type);
+      IntOperations.Init(c, if, caps);
+      op := c;
+   END Create;
+
+
+   PROCEDURE POCreate(VAR object: PersistentObjects.Object);
+      VAR
+	 op: Operations.Operand;
+   BEGIN
+      Create(op); 
+      object := op;
+   END POCreate;
+
+
+   PROCEDURE PORead(s: Streams.Stream;
+                    object: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 i    : INTEGER;
+	 dummy: LONGINT;
+   BEGIN
+      WITH object: Card1024 DO
+	 i := 0;
+	 WHILE i < nrOfBlocks DO
+	    IF ~NetIO.ReadLongInt(s, dummy) THEN 
+	       RETURN FALSE 
+	    END;
+	    object.block[i] := Types.ToInt32(dummy);
+	    INC(i);
+	 END;
+      END;
+      RETURN TRUE
+   END PORead;
+
+
+   PROCEDURE POWrite(s: Streams.Stream;
+                     object: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 i    : INTEGER;
+   BEGIN
+      WITH object: Card1024 DO
+	 i := 0;
+	 WHILE i < nrOfBlocks DO
+	    IF ~NetIO.WriteLongInt(s, object.block[i]) THEN 
+	       RETURN FALSE 
+	    END;
+	    INC(i);
+	 END;
+      END;
+      RETURN TRUE
+   END POWrite;
+
+
+   PROCEDURE Assign(VAR target: Operations.Operand; source: Operations.Operand);
+   BEGIN
+      MemOps.Copy(SYS.VAL(Types.Address, source),
+		  SYS.VAL(Types.Address, target),
+		  SYS.SIZE(Card1024Rec));
+   END Assign;
+
+
+   PROCEDURE Compare(a, b: Operations.Operand): INTEGER;
+      (* compares the two values a and b and 
+         returns <0 (-1) if a<b, 
+         returns >0 ( 1) if a>b 
+         and returns 0 if a=b                   *)
+      VAR
+         i: SHORTINT;    (* block index *)
+   BEGIN
+      WITH a:Card1024 DO
+         WITH b:Card1024 DO
+            i := nrOfBlocks-1;
+            WHILE i >= 0 DO
+	       IF (a.block[i]<0) & (b.block[i]<0) THEN
+	          IF a.block[i] > b.block[i] THEN
+		     RETURN 1;
+                  ELSIF a.block[i] < b.block[i] THEN
+		     RETURN -1;
+                  ELSE
+		     DEC(i);
+                  END;
+               ELSIF a.block[i]<0 THEN      (* b.block[i] >= 0 *)
+	          RETURN 1;
+               ELSIF b.block[i]<0 THEN      (* a.block[i] >= 0 *)
+	          RETURN -1;
+               ELSE                         (* both >= 0       *)
+		  IF a.block[i] > b.block[i] THEN
+		     RETURN 1;
+                  ELSIF a.block[i] < b.block[i] THEN
+		     RETURN -1;
+                  ELSE
+		     DEC(i);
+                  END;
+               END;
+            END;
+	    RETURN 0;
+	 END;
+      END;
+   END Compare;
+
+
+   PROCEDURE IsLargeEnoughFor(op: Operations.Operand; bits: LONGINT): BOOLEAN;
+   BEGIN
+      RETURN (bits<=bitLen)
+   END IsLargeEnoughFor;
+
+
+   PROCEDURE Unsigned(op: Operations.Operand): BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END Unsigned;
+
+
+   PROCEDURE Odd(op: Operations.Operand): BOOLEAN;
+   BEGIN
+      WITH op: Card1024 DO
+	 RETURN ODD(op.block[0])
+      END;
+   END Odd;
+
+
+   PROCEDURE ShiftBlock(a: Card1024; n: INTEGER): Card1024;
+      (* shift a of type Card1024 n 32-bit blocks left if n>0
+         shift a of type Card1024 n 32-bit blocks right if n<0  *)
+      VAR
+         sh  : Card1024;          (* shifted value *)
+         i, j: SHORTINT;         (* block indices *)
+
+   BEGIN
+      (* check range of n *)
+      IF ABS(n)>nrOfBlocks-1 THEN
+         RETURN val0;
+      END;
+
+      (* create a copy of variable a *)
+      Create(sh); 
+      Assign(sh, a);   
+
+      IF n>0 THEN    (* shift left *)
+ 	 i := 0;
+	 WHILE i<n DO
+	    j := nrOfBlocks-1;
+	    WHILE j>0 DO
+	       sh.block[j] := sh.block[j-1];
+	       DEC(j);
+            END;
+	    sh.block[0] := 0;         (* the new block *)
+	    INC(i);
+         END;
+      ELSIF n<0 THEN (* shift right *)
+         i := 0;
+	 n := ABS(n);
+	 WHILE i<n DO
+	    j := 0;
+	    WHILE j<nrOfBlocks-1 DO
+	       sh.block[j] := sh.block[j+1];
+	       INC(j);
+            END;
+	    sh.block[nrOfBlocks-1] := 0; (* the new block *)
+	    INC(i);
+         END;
+      END;
+      RETURN sh
+   END ShiftBlock;
+
+
+   PROCEDURE LSH(a: Card1024): Card1024;
+      VAR 
+         i        : SHORTINT;                    (* block index          *)
+         carry    : BOOLEAN;                     (* carry for act. block *)
+	 nextcarry: BOOLEAN;                     (* carry for next block *)
+         sh       : Card1024;                    (* copy                 *)
+   BEGIN
+      (* init *)
+      carry := FALSE;
+      i := 0;
+
+      (* create a copy of variable a *)
+      Create(sh); 
+      Assign(sh, a);   
+
+      (* shift *)
+      WHILE (i < nrOfBlocks) DO
+ 	 IF (sh.block[i] < 0) THEN 
+	    nextcarry := TRUE;
+         ELSE
+	    nextcarry := FALSE;
+         END;
+         sh.block[i] := SYS.LSH(sh.block[i], 1);  (* shift left       *)
+         IF carry THEN              (* add carrying bit from previous *)
+            INC(sh.block[i]);       (* block                          *)
+         END;
+         INC(i);
+	 carry := nextcarry;
+      END;
+      RETURN sh
+   END LSH;
+
+
+   PROCEDURE RSH(a: Card1024): Card1024;
+      VAR
+         i        : SHORTINT;                    (* block index          *)
+         carry    : BOOLEAN;                     (* carry for act. block *)
+	 nextcarry: BOOLEAN;                     (* carry for next block *)
+         sh       : Card1024;                    (* copy                 *)
+   BEGIN
+      (*init*)
+      carry := FALSE;
+      i := nrOfBlocks-1;
+
+      (* create a copy of variable a *)
+      Create(sh);
+      Assign(sh, a);   
+
+      (* shift *)
+      WHILE i>=0 DO
+         IF ODD(sh.block[i]) THEN
+	    nextcarry := TRUE;
+         ELSE
+	    nextcarry := FALSE;
+         END;
+	 sh.block[i] := SYS.LSH(sh.block[i], -1);  (*shift one bit right*)
+	 IF carry THEN
+	    sh.block[i] := sh.block[i] + MIN(LONGINT);
+         END;
+	 DEC(i);
+	 carry := nextcarry;
+      END;
+      RETURN sh
+   END RSH;
+
+
+   PROCEDURE Shift(a: Operations.Operand; n: INTEGER ): Operations.Operand;
+      VAR
+         i     : SHORTINT;     (* block index                    *)
+         blocks: INTEGER;      (* separation from n in number of *)
+         bits  : INTEGER;      (* blocks and number of bits left *)
+         sh    : Card1024;     (* copy                           *)
+   BEGIN
+      WITH a: Card1024 DO
+
+         (* check range of n: |n| > 1023 ? *)
+         IF ABS(n)>bitLen-1 THEN 
+            RETURN val0;
+         END;
+
+	 (* create a copy of variable a *)
+	 Create(sh);
+	 Assign(sh, a);   
+            
+	 IF n>0 THEN                       (* shift left *)
+	    blocks := n DIV blockLen;
+	    bits   := n MOD blockLen;
+            sh := ShiftBlock(a, blocks);
+
+   	    i := 0;
+	    WHILE i < bits DO
+	       sh := LSH(sh);
+	       INC(i);
+            END;
+         ELSIF n<0 THEN                     (* shift right *)
+            blocks := ABS(n) DIV blockLen;
+	    bits   := ABS(n) MOD blockLen;
+            sh := ShiftBlock(a, -blocks);
+
+	    i := 0;
+	    WHILE i < bits DO
+	       sh := RSH(sh);
+	       INC(i);
+            END;
+         END;
+	 RETURN sh
+      END;
+   END Shift;
+
+
+   PROCEDURE Log2(op: Operations.Operand): LONGINT;
+      VAR
+	 i : LONGINT;
+	 sh: Operations.Operand;
+   BEGIN
+      Create(sh);
+      Assign(sh, op);
+      i := 0;
+      WHILE Compare(sh, val0)>0 DO
+	 sh := Shift(sh, -1);
+	 INC(i);
+      END;
+      RETURN i
+   END Log2;
+
+
+   PROCEDURE Add(a, b: Operations.Operand): Operations.Operand;
+      (* calculate a + b with type Card1024 *)
+      VAR
+         i, j     : SHORTINT;             (* block index          *)
+         res      : Card1024;             (* result type          *)
+         carry    : BOOLEAN;              (* carry for act. block *)
+	 nextcarry: BOOLEAN;              (* carry for next block *)
+   BEGIN
+      WITH b: Card1024 DO
+	 (* create copies of variable a and b *)
+	 Create(res);
+	 Assign(res, a);   
+
+	 (* init *)
+	 carry := FALSE;
+	 i := 0;
+	       
+	 (* add *)
+	 WHILE i<nrOfBlocks DO
+	    (* init *)
+	    nextcarry := FALSE;
+
+	    (* add carry *)
+	    IF carry THEN
+	       IF res.block[i] = -1 THEN               (* 11111...11111 *)
+		  res.block[i] := 0;
+		  IF i < nrOfBlocks-1 THEN
+		     nextcarry := TRUE;
+		  END;
+	       ELSE    
+		  INC(res.block[i]);
+	       END;
+	    END;
+
+	    (* add block i of a and b *)
+	    IF (res.block[i]<0) & (b.block[i]<0) THEN      (* case 1 *)
+	       IF i < nrOfBlocks-1 THEN
+		  nextcarry := TRUE;
+	       END;
+	       DEC(res.block[i], MIN(LONGINT));
+	       INC(res.block[i], (b.block[i] - MIN(LONGINT)));
+	    ELSIF (res.block[i]<0) OR (b.block[i]<0) THEN  (* case 2 *)
+	       INC(res.block[i], b.block[i]);
+	       IF res.block[i] >= 0 THEN
+		  IF i < nrOfBlocks-1 THEN
+		     nextcarry := TRUE;
+		  END;
+	       END;
+	    ELSE                                           (* case 3 *)
+	       INC(res.block[i], b.block[i]);
+	    END;
+	    INC(i);
+	    carry := nextcarry;
+	 END;
+	 RETURN res
+      END;
+   END Add;
+
+
+   PROCEDURE Inc(a: Operations.Operand ): Operations.Operand;
+      (* increment a by 1 of type Card1024 *)
+   BEGIN
+      RETURN Add(a, val1)
+   END Inc;
+	    
+
+   PROCEDURE Sub(a, b: Operations.Operand): Operations.Operand;
+      (* calculate a - b with type Card1024 *)
+      VAR
+         i   : SHORTINT;    (* block index *)
+         minb: Card1024;    (* -b          *)
+   BEGIN
+      WITH b: Card1024 DO
+	 (* idea: a-b = a+(-b) and (-b) = NOT(b)+1 *)
+	 i := 0;
+	 Create(minb);
+	 WHILE i < nrOfBlocks DO
+	    minb.block[i] := SYS.VAL(LONGINT, -SYS.VAL(SET, b.block[i]));
+	    INC(i);
+         END;
+
+	 (* Sub *)
+	 RETURN Add(a, Inc(minb))
+      END;
+   END Sub;
+		
+	    
+   PROCEDURE Dec(a: Operations.Operand): Operations.Operand;
+      (* increment a by 1 of type Card1024 *)
+   BEGIN
+      RETURN Sub(a, val1)
+   END Dec;
+	    
+
+   PROCEDURE Mul(a, b: Operations.Operand): Operations.Operand;
+      (* calculate a*b *)
+      VAR
+         bc  : Operations.Operand;          (* copy of b        *)
+         sh  : Card1024;                    (* shifted a        *)
+         res : Operations.Operand;          (* result type      *)
+         i, j: SHORTINT;                    (* block index      *)
+        
+   BEGIN
+      (* create copies of both variables *)
+      Create(sh);
+      Create(bc);
+      IF Compare(a, b)<0 THEN
+         Assign(sh, a);   
+         Assign(bc, b);   
+      ELSE
+	 Assign(sh, b);
+	 Assign(bc, a);
+      END;
+
+      (* init *)
+      i := 0;
+      Create(res);
+
+      (* Mul *)
+      WHILE (Compare(bc, val0)>0) DO (* all bits of b *)
+         IF ODD(bc(Card1024).block[i]) THEN
+            res := Add(res, sh);
+         END;
+     	 sh := LSH(sh); 
+	 bc := Shift(bc, -1); (*i.bit -> i-1.bit*)
+      END;
+      RETURN res
+   END Mul;
+
+
+   PROCEDURE Div(a, b: Operations.Operand): Operations.Operand;
+      (* calculate a DIV b *)
+      VAR
+         bsh: Card1024;            (* b shifted to the left *)
+         ac : Operations.Operand;  (* copy of a             *)
+         res: Operations.Operand;  (* result of DIV         *)
+   BEGIN
+      (* check trivial cases *)
+      IF Compare(a, b)<0 THEN
+         RETURN val0;
+      END;
+      IF Compare(a, b)=0 THEN
+	 RETURN val1;
+      END;
+
+      (* init *)
+      Create(res);
+
+      (* make copies of a and b *)
+      Create(bsh); 
+      Assign(bsh, b);
+      Create(ac); 
+      Assign(ac, a);
+
+      (* shift *)
+      IF ac(Card1024).block[nrOfBlocks-1]=0 THEN
+	 WHILE Compare(bsh, ac)<0 DO
+	    bsh := ShiftBlock(bsh, 1);
+         END;
+	 WHILE Compare(bsh, ac)>0 DO
+	    bsh := RSH(bsh);
+         END;
+      ELSE  (* ac.block[nrOfBlocks-1]#0 *)
+	 WHILE bsh.block[nrOfBlocks-1]=0 DO
+	    bsh := ShiftBlock(bsh, 1);
+         END;
+	 IF Compare(bsh, ac)>0 THEN
+	    WHILE Compare(bsh, ac)>0 DO
+	       bsh := RSH(bsh);
+            END;
+         ELSE
+	    WHILE (Compare(bsh, ac)<0) & (bsh.block[nrOfBlocks-1]>0) DO
+	       bsh := LSH(bsh);
+            END;
+	    IF Compare(bsh, ac)>0 THEN
+	       bsh := RSH(bsh);
+            END;
+         END;
+      END;
+      (* now bsh<=ac, but as high as possible *)
+	 
+      (* Div *)
+      WHILE Compare(bsh, b)>=0 DO
+	 WITH res: Card1024 DO
+	    res := LSH(res);
+         END;
+	 IF Compare(ac, bsh)>=0 THEN  
+	    ac := Sub(ac, bsh);
+	    res := Inc(res);
+	 END;
+	 bsh := RSH(bsh);
+      END;
+      RETURN res
+   END Div;
+
+
+   PROCEDURE Pow(b, x: Operations.Operand): Operations.Operand;
+      VAR 
+	 res: Operations.Operand;  (* result variable    *) 
+	 xc : Card1024;            (* copy of x          *)
+   BEGIN
+      (* check trivial cases *)
+      IF Compare(x, val0)=0 THEN
+	 RETURN val1
+      ELSIF Compare(x, val1)=0 THEN
+	 RETURN b
+      END;
+
+      (* create copy of variable x *)
+      Create(xc); 
+      Assign(xc, x);   
+
+      (* init *)
+      Create(res); 
+      Assign(res, val1);
+
+      (* shift *)
+      WHILE xc.block[nrOfBlocks-1]=0 DO
+	 xc := ShiftBlock(xc, 1);
+      END;
+      WHILE xc.block[nrOfBlocks-1]>0 DO
+	 xc := LSH(xc);
+      END;
+
+      (* Pow *)
+      WHILE Compare(xc, val0)>0 DO     (* all significant bits of x *)
+	 res := Mul(res, res);
+	 IF xc.block[nrOfBlocks-1]<0 THEN    (* absolut highest bit *)
+	    res := Mul(res, b);
+	 END;
+	 xc := LSH(xc);                      (* shift one bit right *)
+      END;
+      RETURN res
+   END Pow;
+
+
+   PROCEDURE Mod(a, n: Operations.Operand): Operations.Operand;
+      VAR
+	 ac : Operations.Operand; (* copy of a        *)
+	 nsh: Card1024;           (* n shifted left   *)
+   BEGIN
+      (* check trivial case *)
+      IF Compare(a, n)<0 THEN
+	 RETURN a;
+      ELSIF (Compare(a, n)=0) OR (Compare(n, val0)=0) THEN
+	 RETURN val0;
+      END;
+
+      (* create copies of variable a and n *)
+      Create(ac);
+      Assign(ac, a);   
+      Create(nsh); 
+      Assign(nsh, n);   
+      
+      (* shift *)
+      IF ac(Card1024).block[nrOfBlocks-1]=0 THEN
+	 WHILE Compare(nsh, ac)<0 DO
+	    nsh := ShiftBlock(nsh, 1);
+         END;
+	 WHILE Compare(nsh, ac)>0 DO
+	    nsh := RSH(nsh);
+         END;
+      ELSE  (* ac.block[nrOfBlocks-1]#0 *)
+	 WHILE nsh.block[nrOfBlocks-1]=0 DO
+	    nsh := ShiftBlock(nsh, 1);
+         END;
+	 IF Compare(nsh, ac)>0 THEN
+	    WHILE Compare(nsh, ac)>0 DO
+	       nsh := RSH(nsh);
+            END;
+         ELSE
+	    WHILE (Compare(nsh, ac)<0) & (nsh.block[nrOfBlocks-1]>0) DO
+	       nsh := LSH(nsh);
+            END;
+	    IF Compare(nsh, ac)>0 THEN
+	       nsh := RSH(nsh);
+            END;
+         END;
+      END;
+      (* now nsh<=ac, but as high as possible *)
+
+      (* mod *)
+      WHILE Compare(nsh, n)>=0 DO
+	 IF Compare(ac, nsh)>=0 THEN 
+	    ac := Sub(ac, nsh);
+	 END;
+	 nsh := RSH(nsh);
+      END;
+      RETURN ac
+   END Mod;
+
+
+   PROCEDURE MMul(a, b, n: Operations.Operand): Operations.Operand;
+      (* calculate a*b MOD n *)
+      VAR
+         bc  : Operations.Operand;          (* copy of b        *)
+         sh  : Card1024;                    (* shifted a        *)
+         res : Operations.Operand;          (* result type      *)
+         i, j: SHORTINT;                    (* block index      *)
+        
+   BEGIN
+      (* create copies of both variables *)
+      Create(sh);
+      Create(bc); 
+      IF Compare(a, b)<0 THEN
+         Assign(sh, a);   
+         Assign(bc, b);   
+      ELSE
+	 Assign(sh, b);
+	 Assign(bc, a);
+      END;
+
+      (* init *)
+      i := 0;
+      Create(res);
+
+      (* Mul *)
+      WHILE (Compare(bc, val0)>0) DO (* all bits of b *)
+         IF ODD(bc(Card1024).block[i]) THEN
+            res := Add(res, sh);
+	    IF res(Card1024).block[nrOfBlocks-1]<0 THEN (* danger of overflow *)
+	       res := Mod(res, n); 
+            END;
+         END;
+     	 sh := LSH(sh); 
+	 bc := Shift(bc, -1); (*i.bit -> i-1.bit*)
+      END;
+      IF Compare(res, n)>0 THEN
+         RETURN Mod(res, n)
+      ELSE
+	 RETURN res
+      END;
+   END MMul;
+
+
+   PROCEDURE MPow(b, x, n: Operations.Operand): Operations.Operand;
+   VAR 
+      res: Operations.Operand;           (* result variable    *)
+      xc : Card1024;                     (* copy of x          *)
+   BEGIN
+      (* check trivial cases *)
+      IF Compare(x, val0)=0 THEN
+	 RETURN val1
+      ELSIF Compare(x, val1)=0 THEN
+	 RETURN b
+      END;
+
+      (* create copy of variable x *)
+      Create(xc);
+      Assign(xc, x);   
+
+      (* init *)
+      Create(res);
+      Assign(res, val1);
+
+      (* shift *)
+      WHILE xc.block[nrOfBlocks-1]=0 DO
+	 xc := ShiftBlock(xc, 1);
+      END;
+      WHILE xc.block[nrOfBlocks-1]>0 DO
+	 xc := LSH(xc);
+      END;
+
+      (* Pow *)
+      WHILE Compare(xc, val0)>0 DO       (* all significant bits of x *)
+	 res := MMul(res, res, n);
+	 IF xc.block[nrOfBlocks-1]<0 THEN      (* absolut highest bit *)
+	    res := MMul(res, b, n);
+	 END;
+	 xc := LSH(xc);                        (* shift one bit right *)
+      END;
+      RETURN res
+   END MPow;
+
+    
+   PROCEDURE IntToCard1024(int32: Types.Int32; VAR op: Operations.Operand);
+      VAR
+         c: Card1024;
+   BEGIN
+      Create(c);
+      c.block[0] := int32;
+      op := c;
+   END IntToCard1024;
+
+
+   PROCEDURE Card1024ToInt(op: Operations.Operand; VAR int32: Types.Int32);
+      VAR 
+	 max: Operations.Operand;
+   BEGIN
+      Create(max);
+      Assign(max, val1);
+      max := Shift(max, 32);
+      max := Mod(op, max);
+      int32 := max(Card1024).block[0];
+   END Card1024ToInt;
+
+
+   PROCEDURE Op(op:Operations.Operation; 
+		op1, op2: Operations.Operand;
+		VAR result : Operations.Operand);
+   BEGIN
+      Create(result);
+      CASE op OF
+	 |Operations.add : result := Add(op1, op2);
+         |Operations.sub : result := Sub(op1, op2);
+	 |Operations.mul : result := Mul(op1, op2);
+	 |Operations.div : result := Div(op1, op2);
+      END;
+   END Op;
+
+    
+   PROCEDURE IntOp(op:IntOperations.Operation; 
+		   op1, op2, op3: Operations.Operand; 
+		   VAR result : Operations.Operand);
+   BEGIN
+      Create(result);
+      CASE op OF
+	 |IntOperations.mod : result := Mod(op1, op2);
+	 |IntOperations.pow : result := Pow(op1, op2);
+	 |IntOperations.inc : result := Inc(op1);
+	 |IntOperations.dec : result := Dec(op1);
+	 |IntOperations.mmul: result := MMul(op1, op2, op3);
+	 |IntOperations.mpow: result := MPow(op1, op2, op3);
+      END;
+   END IntOp;
+
+
+   PROCEDURE Init;
+   BEGIN
+      Create(val0);
+      Create(val1);
+      IntToCard1024(1, val1);
+   END Init;
+
+BEGIN
+   NEW(if);
+   if.create := Create;
+   if.assign := Assign;
+   if.op := Op;
+   if.compare := Compare;
+   if.isLargeEnoughFor := IsLargeEnoughFor;
+   if.log2 := Log2;
+   if.unsigned := Unsigned;
+   if.intToOp := IntToCard1024;
+   if.opToInt := Card1024ToInt;
+   if.odd := Odd;
+   if.shift := Shift;
+   if.intOp := IntOp;
+   NEW(pOif);
+   pOif.create := POCreate; pOif.read := PORead; pOif.write := POWrite;
+   pOif.createAndRead := NIL;
+   PersistentObjects.RegisterType(card1024type, "Card1024s.Card1024", 
+			          "IntOperations.Operand", pOif);
+   Init;
+END Card1024s.

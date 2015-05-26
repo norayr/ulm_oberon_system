@@ -1,0 +1,356 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: MemStreams.om,v 1.3 2004/02/19 16:39:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: MemStreams.om,v $
+   Revision 1.3  2004/02/19 16:39:46  borchert
+   support of trunc operation added
+
+   Revision 1.2  1998/03/24 22:53:00  borchert
+   bug fix: RETURN statement was missing in OpenSubStreamU
+
+   Revision 1.1  1996/12/08  14:02:32  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE MemStreams;
+
+   (* streams which represent a memory area *)
+
+   IMPORT Events, MemOps, Priorities, RelatedEvents, Services, Streams,
+      SubStreams, SYS := SYSTEM, Types;
+
+   CONST
+      read = 0; write = 1; rdwr = 2;
+   TYPE
+      Mode = SHORTINT; (* read..rdwr *)
+
+   CONST
+      supportedCaps = {Streams.read, Streams.write, Streams.addrio,
+                       Streams.seek, Streams.tell, Streams.trunc};
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    length: Types.Size;
+	    pos: Streams.Count;
+	 END;
+      StreamT = POINTER TO StreamTRec;
+      StreamTRec =
+	 RECORD
+	    (StreamRec)
+	    addr: Types.Address;
+	 END;
+      StreamU = POINTER TO StreamURec;
+      StreamURec =
+	 RECORD
+	    (StreamRec)
+	    addr: Types.UntracedAddress;
+	 END;
+   VAR
+      type, typeT, typeU: Services.Type;
+      ifT, ifU: Streams.Interface;
+
+   CONST
+      beyondEndOfStream = 0;
+      posOutOfRange = 1;
+      invalidRange = 2; (* invalid range given to SubStreams.Open *)
+      errors = 3;
+   TYPE
+      ErrorCode = SHORTINT; (* illegalMode..beyondEndOfStream *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === Stream implementation basing on Types.Address ==================== *)
+
+   PROCEDURE AddrReadT(s: Streams.Stream; ptr: Streams.Address;
+                       cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: StreamT DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       cnt := s.length - s.pos;
+	    END;
+	    MemOps.Copy(s.addr + s.pos, ptr, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrReadT;
+
+   PROCEDURE AddrWriteT(s: Streams.Stream; ptr: Streams.Address;
+                        cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: StreamT DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       Error(s, beyondEndOfStream);
+	    END;
+	    MemOps.Copy(ptr, s.addr + s.pos, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrWriteT;
+
+   PROCEDURE ReadT(s: Streams.Stream; VAR byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrReadT(s, SYS.ADR(byte), 1) = 1
+   END ReadT;
+
+   PROCEDURE WriteT(s: Streams.Stream; byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrWriteT(s, SYS.ADR(byte), 1) = 1
+   END WriteT;
+
+   (* === Stream implementation basing on Types.UntracedAddress ============ *)
+
+   PROCEDURE AddrReadU(s: Streams.Stream; ptr: Streams.Address;
+                       cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: StreamU DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       cnt := s.length - s.pos;
+	    END;
+	    MemOps.CopyU(s.addr + s.pos, ptr, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrReadU;
+
+   PROCEDURE AddrWriteU(s: Streams.Stream; ptr: Streams.Address;
+                        cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: StreamU DO
+	 IF cnt > 0 THEN
+	    IF s.pos + cnt > s.length THEN
+	       Error(s, beyondEndOfStream);
+	    END;
+	    MemOps.CopyU(ptr, s.addr + s.pos, cnt);
+	    INC(s.pos, cnt);
+	    RETURN cnt
+	 ELSE
+	    RETURN 0
+	 END;
+      END;
+   END AddrWriteU;
+
+   PROCEDURE ReadU(s: Streams.Stream; VAR byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrReadU(s, SYS.ADR(byte), 1) = 1
+   END ReadU;
+
+   PROCEDURE WriteU(s: Streams.Stream; byte: Types.Byte) : BOOLEAN;
+   BEGIN
+      RETURN AddrWriteU(s, SYS.ADR(byte), 1) = 1
+   END WriteU;
+
+   (* === common part of both Stream implementations ======================= *)
+
+   PROCEDURE Seek(s: Streams.Stream; cnt: Streams.Count;
+                  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: newpos := cnt;
+	 | Streams.fromPos:   newpos := s.pos + cnt;
+	 | Streams.fromEnd:   newpos := s.length - cnt;
+	 END;
+	 IF (newpos < 0) OR (newpos > s.length) THEN
+	    Error(s, posOutOfRange); RETURN FALSE
+	 END;
+	 s.pos := newpos;
+	 RETURN TRUE
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 cnt := s.pos;
+	 RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Trunc(s: Streams.Stream; cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 IF (cnt < 0) OR (cnt > s.length) OR (s.pos > cnt) THEN
+	    Error(s, posOutOfRange); RETURN FALSE
+	 END;
+	 s.length := cnt;
+	 RETURN TRUE
+      END;
+   END Trunc;
+
+   (* === interfaces to SubStreams ========================================= *)
+
+   PROCEDURE OpenSubStreamT(VAR s: Streams.Stream;
+                            base: Streams.Stream;
+			    from, length: Streams.Count;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 caps: Streams.CapabilitySet;
+	 newstream: StreamT;
+   BEGIN
+      WITH base: StreamT DO
+	 IF (from < 0) OR (length < 0) OR (from + length > base.length) THEN
+	    Error(errors, invalidRange); RETURN FALSE
+	 END;
+	 caps := Streams.Capabilities(base);
+	 NEW(newstream);
+	 newstream.addr := base.addr + from;
+	 newstream.length := length;
+	 newstream.pos := 0;
+	 Services.Init(newstream, typeT);
+	 Streams.Init(newstream, ifT, caps, Streams.nobuf);
+	 s := newstream;
+	 RETURN TRUE
+      END;
+   END OpenSubStreamT;
+
+   PROCEDURE OpenSubStreamU(VAR s: Streams.Stream;
+                            base: Streams.Stream;
+			    from, length: Streams.Count;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 caps: Streams.CapabilitySet;
+	 newstream: StreamT;
+   BEGIN
+      WITH base: StreamU DO
+	 IF (from < 0) OR (length < 0) OR (from + length > base.length) THEN
+	    Error(errors, invalidRange); RETURN FALSE
+	 END;
+	 caps := Streams.Capabilities(base);
+	 NEW(newstream);
+	 newstream.addr := base.addr + from;
+	 newstream.length := length;
+	 newstream.pos := 0;
+	 Services.Init(newstream, typeU);
+	 Streams.Init(newstream, ifU, caps, Streams.nobuf);
+	 s := newstream;
+	 RETURN TRUE
+      END;
+   END OpenSubStreamU;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(type, "MemStreams.Stream", "Streams.Stream");
+      Services.CreateType(typeT, "MemStreams.StreamT", "MemStreams.Stream");
+      Services.CreateType(typeU, "MemStreams.StreamU", "MemStreams.Stream");
+      NEW(ifT);
+      ifT.addrread := AddrReadT; ifT.addrwrite := AddrWriteT;
+      ifT.read := ReadT; ifT.write := WriteT;
+      ifT.seek := Seek; ifT.tell := Tell; ifT.trunc := Trunc;
+      NEW(ifU);
+      ifU.addrread := AddrReadU; ifU.addrwrite := AddrWriteU;
+      ifU.read := ReadU; ifU.write := WriteU;
+      ifU.seek := Seek; ifU.tell := Tell; ifU.trunc := Trunc;
+      SubStreams.Register(typeT, OpenSubStreamT);
+      SubStreams.Register(typeU, OpenSubStreamU);
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[posOutOfRange] := "position out of valid range";
+      errormsg[beyondEndOfStream] := "write attempted beyond end of stream";
+      errormsg[invalidRange] := "range exceeds that of base stream";
+   END Init;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Open(VAR s: Streams.Stream;
+                  addr: Types.Address; length: Types.Size;
+		  mode: Mode);
+      VAR
+	 newstream: StreamT;
+	 caps: Streams.CapabilitySet;
+   BEGIN
+      NEW(newstream);
+      newstream.addr := addr; newstream.length := length;
+      newstream.pos := 0;
+      caps := supportedCaps;
+      CASE mode OF
+      | read:  EXCL(caps, Streams.write);
+      | write: EXCL(caps, Streams.read);
+      | rdwr:  (* OK *)
+      END;
+      Services.Init(newstream, typeT);
+      Streams.Init(newstream, ifT, caps, Streams.nobuf);
+      s := newstream;
+   END Open;
+
+   PROCEDURE OpenU(VAR s: Streams.Stream;
+                   addr: Types.UntracedAddress; length: Types.Size;
+		   mode: Mode);
+      VAR
+	 newstream: StreamU;
+	 caps: Streams.CapabilitySet;
+   BEGIN
+      NEW(newstream);
+      newstream.addr := addr; newstream.length := length;
+      newstream.pos := 0;
+      caps := supportedCaps;
+      CASE mode OF
+      | read:  EXCL(caps, Streams.write);
+      | write: EXCL(caps, Streams.read);
+      | rdwr:  (* OK *)
+      END;
+      Services.Init(newstream, typeU);
+      Streams.Init(newstream, ifU, caps, Streams.nobuf);
+      s := newstream;
+   END OpenU;
+
+BEGIN
+   Init;
+END MemStreams.

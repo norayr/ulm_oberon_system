@@ -1,0 +1,891 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: NamesShell.om,v 1.3 1998/04/18 14:38:06 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: NamesShell.om,v $
+   Revision 1.3  1998/04/18  14:38:06  martin
+   default root filename changed, domainCap test for cd added
+
+   Revision 1.2  1998/04/09  14:26:37  martin
+   now uses new version of PasswordShards (based on OneWayHashes)
+
+   Revision 1.1  1998/04/07  16:40:16  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NamesShell;
+
+   IMPORT
+      (* ----- required: ----- *)
+      RemoteCDBNames,			                (* compiler *)
+      PersMesgMaintenance,				(* mesg example *)
+      PrivateShards, VolatileShards,			(* misc. clients *)
+      InetTCP, PersistentEvents, RemoteEvents, RemoteNames, (* network *)
+      RemoteCommandNodes, ProxyNodes,
+      LoaderErrors,
+      (* ----- explicitly used: ----- *)
+      ASCII, Cmds, Conclusions, ConstStrings, Disciplines,
+      Errors, Events, IPv4NameSystems, Iterators, Loader,
+      MD5, Names, NameServerMaintenance, Objects, OneWayHashes,
+      PasswordShards, PathConditions, Paths, PersistentObjects, Networks,
+      NodeConstructors, NodeFactories, Priorities, Process, RelatedEvents,
+      RemoteObjects, Resources, RootNodes, Services, Shards, Storage,
+      Streams, Strings, Tasks, TranslucentNames, UnixEnvironment,
+      UnixFiles, UnixNames, Write;
+
+   CONST
+      maxerr = 50;
+      prompt = "* ";
+
+   CONST
+      destroyC = 1;
+      deleteC = 2;
+      getmembersC = 3;
+      shutdownC = 4;
+      quitC = 5;
+      changedirC = 6;
+      printpathC = 7;
+      makedirC = 8;
+      linkC = 9;
+      aliveC = 10;
+      statC = 11;
+      changeC = 12;
+      spaceC = 13;
+      authC = 14;
+      authfileC = 15;
+      permC = 16;
+      rebootC = 17;
+      observeC = 18;
+      forgetC = 19;
+      waitC = 20;
+      tfsC = 21;
+      rfsC = 22;
+      maxnargs = 3;
+
+   TYPE
+      String = ARRAY 1024 OF CHAR;
+
+   TYPE
+      EventDisc = POINTER TO EventDiscRec;
+      EventDiscRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    etype: Events.EventType;
+	 END;
+
+   VAR
+      intensity: INTEGER;
+      s: Streams.Stream;
+      nameserver,
+      oldnode,
+      current: Names.Node;
+      oldpath,
+      currentpath: String;
+      spaceChar: CHAR;
+      pot: Shards.Pot;
+      lid: Shards.Lid;
+      lister: Iterators.Iterator;
+      member: Iterators.Reference;
+      errors: RelatedEvents.Object;
+      eventDiscId: Disciplines.Identifier;
+      defStatus: Names.Status;
+      rootKey: Resources.Key;
+      potType,
+      lidType: Services.Type;
+      error: Events.EventType;
+
+      nargs: INTEGER;
+      args: ARRAY maxnargs OF String;
+
+      rfsipv4if: RootNodes.Interface;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors);
+      RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE Defined(obj: Objects.Object;
+		     errors: RelatedEvents.Object): BOOLEAN;
+      VAR
+	 event: Events.Event;
+   BEGIN
+      IF obj # NIL THEN
+	 RETURN TRUE
+      END;
+      NEW(event);
+      event.type := error;
+      event.message := "got unexpected NIL pointer";
+      RelatedEvents.Raise(errors, event);
+      RETURN FALSE
+   END Defined;
+
+   PROCEDURE IsDir(node: Names.Node; errors: RelatedEvents.Object): BOOLEAN;
+      VAR
+	 event: Events.Event;
+   BEGIN
+      IF Names.domainCap IN Names.Capabilities(node) THEN
+	 RETURN TRUE
+      END;
+      NEW(event);
+      event.type := error;
+      event.message := "node is not a domain";
+      RelatedEvents.Raise(errors, event);
+      RETURN FALSE
+   END IsDir;
+
+   PROCEDURE NotificationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 Write.StringS(Streams.stderr, "nameserver: ");
+	 CASE event.change OF
+	 | Resources.terminated:
+	       Write.LineS(Streams.stderr, "terminated");
+	 | Resources.unreferenced:
+	       Write.LineS(Streams.stderr, "unreferenced");
+	 | Resources.communicationStopped:
+	       Write.LineS(Streams.stderr, "communicationStopped");
+	 | Resources.communicationResumed:
+	       Write.LineS(Streams.stderr, "communicationResumed");
+	 END;
+      END;
+   END NotificationHandler;
+
+   PROCEDURE Startup;
+      VAR
+	 notification: Events.EventType;
+	 pubroot: Names.Node;
+   BEGIN
+      current := Names.root;
+      currentpath := "";
+      oldnode := current;
+      oldpath := "";
+      IF ~Paths.GetNode("/pub", lid, errors, pubroot) THEN
+	 Conclusions.Conclude(UnixNames.errors, Errors.fatal, "public root");
+      END;
+      (*
+      IF ~Paths.GetNode("nameserver", lid, errors, nameserver) OR
+	    ~Defined(nameserver, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "nameserver");
+      END;
+      Resources.TakeInterest(nameserver, notification);
+      Events.Handler(notification, NotificationHandler);
+      *)
+   END Startup;
+
+   PROCEDURE Space;
+   BEGIN
+      IF nargs = 0 THEN
+	 spaceChar := " ";
+      ELSE
+	 spaceChar := args[0][0];
+      END;
+      Write.String("space = "); Write.Char(ASCII.quote);
+      Write.Char(spaceChar);
+      Write.Char(ASCII.quote); Write.Ln;
+   END Space;
+
+   PROCEDURE NewAuth;
+      VAR
+	 buffer: Streams.Stream;
+	 string: OneWayHashes.Value;
+	 tmpPot: Shards.Pot;
+	 tmpLid: Shards.Lid;
+   BEGIN
+      IF nargs = 0 THEN
+	 lid := NIL;
+      ELSE
+	 Strings.Open(buffer, args[0]);
+	 OneWayHashes.Generate(MD5.hash, buffer, string);
+	 Streams.Release(buffer);
+	 PasswordShards.CreatePot(tmpPot, string);
+	 IF ~Shards.Fits(tmpPot, lid) THEN
+	    PasswordShards.CreateLid(tmpLid, string);
+	    Shards.CombineLids(lid, tmpLid, lid);
+	 END;
+      END;
+   END NewAuth;
+
+   PROCEDURE NewAuthFromFile;
+      VAR
+	 tmpPot: Shards.Pot;
+	 tmpLid: Shards.Lid;
+	 file: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(file, args[0], UnixFiles.read, Streams.onebuf,
+	    errors) THEN
+	 Conclusions.Conclude(errors, Errors.error, args[0]);
+      ELSE
+	 RelatedEvents.Forward(file, errors);
+	 IF ~PersistentObjects.GuardedRead(file, lidType, tmpLid) THEN
+	    Conclusions.Conclude(errors, Errors.error, args[0]);
+	 ELSE
+	    RelatedEvents.Forward(file, RelatedEvents.null);
+	    IF ~PersistentObjects.GuardedRead(file, potType, tmpPot) OR
+		  ~Shards.Fits(tmpPot, lid) THEN
+	       Shards.CombineLids(lid, tmpLid, lid);
+	    END;
+	 END;
+	 Streams.Release(file);
+      END;
+   END NewAuthFromFile;
+
+   PROCEDURE NewPerm;
+      VAR
+	 buffer: Streams.Stream;
+	 string: OneWayHashes.Value;
+   BEGIN
+      IF nargs = 0 THEN
+	 Shards.CreateSimplePot(pot, TRUE);
+      ELSE
+	 Strings.Open(buffer, args[0]);
+	 OneWayHashes.Generate(MD5.hash, buffer, string);
+	 Streams.Release(buffer);
+	 PasswordShards.CreatePot(pot, string);
+      END;
+   END NewPerm;
+
+   PROCEDURE Split(path: ARRAY OF CHAR;
+                   VAR dirname, basename: ARRAY OF CHAR);
+      VAR
+	 spos,
+	 index: INTEGER;
+	 nextch, ch: CHAR;
+   BEGIN
+      spos := -1;
+      index := 0;
+      ch := path[0];
+      WHILE ch # 0X DO
+	 INC(index); nextch := path[index];
+	 IF ch = Paths.separator THEN
+	    IF nextch = Paths.separator THEN
+	       INC(index); nextch := path[index];
+	    ELSE
+	       spos := index - 1;
+	    END;
+	 END;
+	 ch := nextch;
+      END;
+      IF spos >= 0 THEN
+	 Strings.PartCopy(basename, 0, path, spos + 1);
+	 path[spos] := 0X; COPY(path, dirname);
+      ELSE
+	 COPY(path, basename); dirname[0] := 0X;
+      END;
+   END Split;
+
+   PROCEDURE ChangeCurrentPath;
+      VAR
+	 node: Names.Node;
+
+      PROCEDURE Parent(VAR p: String);
+	 VAR
+	    spos,
+	    index: INTEGER;
+	    nextch, ch: CHAR;
+      BEGIN
+	 spos := -1;
+	 index := 0;
+	 ch := p[0];
+	 WHILE ch # 0X DO
+	    INC(index); nextch := p[index];
+	    IF ch = Paths.separator THEN
+	       IF nextch = Paths.separator THEN
+		  INC(index); nextch := p[index];
+	       ELSE
+		  spos := index - 1;
+	       END;
+	    END;
+	    ch := nextch;
+	 END;
+	 IF spos >= 0 THEN
+	    p[spos] := 0X;
+	 END;
+      END Parent;
+
+   BEGIN
+      IF nargs = 0 THEN
+	 oldnode := current;
+	 Strings.Copy(oldpath, currentpath);
+	 current := Names.root;
+	 currentpath := "";
+      ELSE
+	 IF args[0] = "-" THEN
+	    Strings.Copy(args[0], oldpath);
+	 ELSIF args[0] = "." THEN
+	    Strings.Copy(args[0], currentpath);
+	 ELSIF args[0] = ".." THEN
+	    Strings.Copy(args[0], currentpath);
+	    Parent(args[0]);
+	 END;
+	 IF args[0][0] = Paths.separator THEN
+	    IF ~Paths.GetNode(args[0], lid, errors, node) OR
+		  ~Defined(node, errors) OR ~IsDir(node, errors) THEN
+	       Conclusions.Conclude(errors, Errors.error, args[0]);
+	       RETURN
+	    END;
+	    oldnode := current;
+	    Strings.Copy(oldpath, currentpath);
+	    current := node;
+	    Strings.Copy(currentpath, args[0]);
+	 ELSE
+	    IF ~Paths.GetNodeN(current, args[0], lid, errors, node) OR
+		  ~Defined(node, errors) OR ~IsDir(node, errors) THEN
+	       Conclusions.Conclude(errors, Errors.error, args[0]);
+	       RETURN
+	    END;
+	    oldnode := current;
+	    Strings.Copy(oldpath, currentpath);
+	    current := node;
+	    IF currentpath # "/" THEN
+	       Strings.Concatenate(currentpath, "/");
+	    END;
+	    Strings.Concatenate(currentpath, args[0]);
+	 END;
+      END;
+   END ChangeCurrentPath;
+
+   PROCEDURE FetchNode(VAR path: ARRAY OF CHAR; VAR node: Names.Node): BOOLEAN;
+   BEGIN
+      IF path[0] = Paths.separator THEN
+	 IF ~Paths.GetNode(path, lid, errors, node) OR
+	       ~Defined(node, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, path);
+	    RETURN FALSE
+	 END;
+      ELSE
+	 IF ~Paths.GetNodeN(current, path, lid, errors, node) OR
+	       ~Defined(node, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, path);
+	    RETURN FALSE
+	 END;
+      END;
+      RETURN TRUE
+   END FetchNode;
+
+   PROCEDURE GetMembers;
+      VAR
+	 node: Names.Node;
+	 name: Names.Name;
+   BEGIN
+      IF nargs = 0 THEN
+	 node := current;
+      ELSIF ~FetchNode(args[0], node) THEN
+	 RETURN
+      END;
+      IF ~Names.GetMembers(node, lid, lister) THEN
+	 Conclusions.Conclude(node, Errors.error, "get members");
+      ELSE
+	 WHILE Iterators.Get(lister, name) DO
+	    Write.String("    ");
+	    ConstStrings.Write(Streams.stdout, name);
+	    Write.Ln;
+	 END;
+      END;
+   END GetMembers;
+
+   PROCEDURE Delete;
+   BEGIN
+      IF args[0][0] = Paths.separator THEN
+	 IF Paths.Delete(args[0], lid, errors) THEN
+	    RETURN
+	 END;
+      ELSE
+	 IF Paths.DeleteN(current, args[0], lid, errors) THEN
+	    RETURN
+	 END;
+      END;
+      Conclusions.Conclude(errors, Errors.error, "delete");
+   END Delete;
+
+   PROCEDURE Alive;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      IF nargs = 0 THEN
+	 IF ~NameServerMaintenance.PingPong(nameserver) THEN
+	    Conclusions.Conclude(nameserver, Errors.error, args[0]);
+	    RETURN
+	 END;
+	 RETURN
+      END;
+      IF FetchNode(args[0], node) & ~Resources.Alive(node) THEN
+	 Conclusions.Conclude(node, Errors.error, args[0]);
+      END;
+   END Alive;
+
+   PROCEDURE Stat;
+      VAR
+	 node: Names.Node;
+	 caps: Names.CapabilitySet;
+	 first: BOOLEAN;
+	 queue: RelatedEvents.Queue;
+
+      PROCEDURE WriteCap(cap: ARRAY OF CHAR; set: BOOLEAN);
+      BEGIN
+	 IF set THEN
+	    IF ~first THEN
+	       Write.String(", ");
+	    ELSE
+	       first := FALSE;
+	    END;
+	    Write.String(cap);
+	 END;
+      END WriteCap;
+
+      PROCEDURE WritePerm(cap: ARRAY OF CHAR; mode: Names.AccessMode);
+      BEGIN
+	 IF ~first THEN
+	    Write.String(", ");
+	 ELSE
+	    first := FALSE;
+	 END;
+	 IF ~Names.Access(node, mode, NIL) THEN
+	    IF (lid # NIL) & Names.Access(node, mode, lid) THEN
+	       Write.Char("+");
+	    ELSE
+	       Write.Char("-");
+	    END;
+	 END;
+	 Write.String(cap);
+      END WritePerm;
+
+   BEGIN
+      IF ~FetchNode(args[0], node) THEN
+	 RETURN
+      END;
+      caps := Names.Capabilities(node);
+      first := TRUE;
+      Write.String("caps = { ");
+      WriteCap("access", Names.accessCap IN caps);
+      WriteCap("status", Names.statusCap IN caps);
+      WriteCap("domain", Names.domainCap IN caps);
+      WriteCap("makesubnode", Names.makeSubnodeCap IN caps);
+      WriteCap("destroy", Names.destroyCap IN caps);
+      Write.Line(" }");
+      IF Resources.Alive(node) THEN
+	 RelatedEvents.Save(node);
+	 RelatedEvents.Forward(node, RelatedEvents.null);
+	 first := TRUE;
+	 Write.String("permissions: ");
+	 WritePerm("examine", Names.examine);
+	 WritePerm("change", Names.change);
+	 WritePerm("read", Names.read);
+	 WritePerm("search", Names.search);
+	 WritePerm("insert", Names.insert);
+	 WritePerm("delete", Names.delete);
+	 WritePerm("destroy", Names.destroy);
+	 Write.Ln;
+	 RelatedEvents.Restore(node);
+      ELSE
+	 Conclusions.Conclude(node, Errors.error, args[0]);
+      END;
+   END Stat;
+
+   PROCEDURE Destroy;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      IF FetchNode(args[0], node) & ~Names.Destroy(node, lid) THEN
+	 Conclusions.Conclude(node, Errors.error, "destroy");
+      END;
+   END Destroy;
+
+   PROCEDURE Link;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      IF ~FetchNode(args[0], node) THEN
+	 RETURN
+      END;
+      IF args[1][0] = Paths.separator THEN
+	 IF Paths.Insert(args[1], node, lid, errors) THEN
+	    RETURN
+	 END;
+      ELSE
+	 IF Paths.InsertN(current, args[1], node, lid, errors) THEN
+	    RETURN
+	 END;
+      END;
+      Conclusions.Conclude(errors, Errors.error, "insert");
+   END Link;
+
+   PROCEDURE MakeDirectory;
+      VAR
+	 node, subnode: Names.Node;
+	 dirname, basename: String;
+	 name: ConstStrings.String;
+   BEGIN
+      Split(args[0], dirname, basename);
+      IF dirname = "" THEN
+	 node := current;
+      ELSIF ~FetchNode(dirname, node) THEN
+	 RETURN
+      END;
+      ConstStrings.Create(name, basename);
+      IF ~Names.MakeSubnode(node, name, NIL, Names.allCaps, lid, subnode) THEN
+	 Conclusions.Conclude(node, Errors.error, "mkdir");
+      END;
+   END MakeDirectory;
+
+   PROCEDURE ChangeMode;
+      CONST
+	 maxmodeCh = CHR(ORD("0")+Names.accessmodes-1);
+      VAR
+	 mode: Names.AccessMode;
+	 modes: SET;
+	 statrec: Names.StatusRec;
+	 status: Names.Status;
+	 node: Names.Node;
+
+      PROCEDURE ExtractModes(VAR str: ARRAY OF CHAR; VAR modes: SET): BOOLEAN;
+	 VAR
+	    index: INTEGER;
+	    char: CHAR;
+      BEGIN
+	 modes := {};
+	 index := 0;
+	 char := str[0];
+	 WHILE char # 0X DO
+	    IF (char < "0") OR (maxmodeCh < char) THEN
+	       Write.String("access modes must be in 0..");
+	       Write.Char(maxmodeCh); Write.Ln;
+	       RETURN FALSE
+	    END;
+	    INCL(modes, ORD(char)-ORD("0"));
+	    INC(index);
+	    char := str[index];
+	 END; (*WHILE char*)
+	 RETURN TRUE
+      END ExtractModes;
+
+   BEGIN
+      IF ~ExtractModes(args[0], modes) OR
+	    (nargs > 1) & ~FetchNode(args[1], node) THEN
+	 RETURN
+      END;
+      IF (nargs > 1) THEN
+	 IF ~Names.GetStatus(node, lid, statrec) THEN
+	    Conclusions.Conclude(node, Errors.error, args[1]);
+	    RETURN
+	 END;
+	 NEW(status);
+	 status^ := statrec;
+      ELSE
+	 IF defStatus = NIL THEN
+	    NEW(defStatus);
+	 END;
+	 status := defStatus;
+      END;
+      mode := 0;
+      WHILE mode < Names.accessmodes DO
+	 IF mode IN modes THEN
+	    status.perm[mode] := pot;
+	 END;
+	 INC(mode);
+      END;
+      IF (nargs > 1) & ~Names.SetStatus(node, status, lid) THEN
+	 Conclusions.Conclude(node, Errors.error, args[1]);
+      END;
+   END ChangeMode;
+
+   PROCEDURE Shutdown;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      IF nargs = 0 THEN
+	 IF ~NameServerMaintenance.Shutdown(nameserver, lid) THEN
+	    Conclusions.Conclude(nameserver, Errors.error, "shutdown server");
+	 END;
+      ELSE
+	 IF FetchNode(args[0], node) &
+	       ~NameServerMaintenance.Shutdown(node, lid) THEN
+	    Conclusions.Conclude(node, Errors.error, "shutdown");
+	 END;
+      END;
+   END Shutdown;
+
+   PROCEDURE Watchdog(event: Events.Event);
+   BEGIN
+      IF event IS Names.MemberEvent THEN
+	 WITH event: Names.MemberEvent DO
+	    Write.String("**** Node ");
+	    ConstStrings.Write(Streams.stdout, event.name);
+	    Write.String(" was ");
+	    CASE event.state OF
+	       Names.inserted:
+		  Write.String("inserted");
+	    |  Names.deleted:
+		  Write.String("deleted");
+	       ELSE
+		  Write.String("transmogrified");		(* not likely *)
+	    END;
+	    Write.Line(" ****");
+	 END;
+      ELSE
+	 Write.String("**** got unexpected watchdog event: ");
+	 Write.Line(event.message);
+      END;
+   END Watchdog;
+
+   PROCEDURE Observe;
+      VAR
+	 node: Names.Node;
+	 etype: Events.EventType;
+	 edisc: EventDisc;
+   BEGIN
+      IF ~FetchNode(args[0], node) THEN
+	 RETURN
+      END;
+      IF ~Disciplines.Seek(node, eventDiscId, edisc) THEN
+	 IF ~Names.TakeInterest(node, lid, etype) THEN
+	    Conclusions.Conclude(errors, Errors.error, args[0]);
+	    RETURN
+	 END;
+	 NEW(edisc);
+	 edisc.id := eventDiscId;
+	 edisc.etype := etype;
+	 Disciplines.Add(node, edisc);
+      END;
+      Events.Handler(edisc.etype, Watchdog);
+   END Observe;
+
+   PROCEDURE Forget;
+      VAR
+	 node: Names.Node;
+	 edisc: EventDisc;
+   BEGIN
+      IF ~FetchNode(args[0], node) THEN
+	 RETURN
+      END;
+      IF Disciplines.Seek(node, eventDiscId, edisc) THEN
+	 Events.Ignore(edisc.etype);
+      ELSE
+	 Write.String(args[0]); Write.Line(": this node was never watched");
+      END;
+   END Forget;
+
+   PROCEDURE WaitForPath;
+      VAR
+	 node: Names.Node;
+	 condition: PathConditions.Condition;
+   BEGIN
+      IF args[0][0] = Paths.separator THEN
+	 PathConditions.Create(condition, args[0], Names.root, lid);
+      ELSE
+	 PathConditions.Create(condition, args[0], current, lid);
+      END;
+      Tasks.WaitFor(condition);
+      IF ~PathConditions.GetNode(condition, node, errors) THEN
+	 Conclusions.Conclude(errors, Errors.error, args[0]);
+      END;
+   END WaitForPath;
+
+   PROCEDURE CreateTFS;
+      VAR
+	 writable, subnode: Names.Node;
+	 status: Names.Status;
+	 factory: NodeFactories.Factory;
+
+      PROCEDURE MakeAbsolute(VAR path: ARRAY OF CHAR);
+	 VAR
+	    abspath: String;
+      BEGIN
+	 IF path[0] # Paths.separator THEN
+	    COPY(currentpath, abspath);
+	    Strings.Concatenate(abspath, Paths.separator);
+	    Strings.Concatenate(abspath, path);
+	    COPY(abspath, path);
+	 END;
+      END MakeAbsolute;
+
+   BEGIN (* CreateTFS *)
+      IF ~FetchNode(args[1], writable) THEN
+	 RETURN
+      END;
+      NEW(status);
+      IF ~Names.GetStatus(writable, lid, status^) THEN
+	 status := NIL;
+      END;
+      MakeAbsolute(args[0]);
+      MakeAbsolute(args[1]);
+      TranslucentNames.CreateFactory(factory,
+	 args[0], args[1], lid, lid,
+	 status, TranslucentNames.unsorted);
+      IF args[2][0] = Paths.separator THEN
+	 IF ~NodeConstructors.CreateAndInsertPath(args[2],
+	       factory, lid, errors, subnode) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      ELSE
+	 IF ~NodeConstructors.CreateAndInsertPathN(current, args[2],
+	       factory, lid, errors, subnode) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END CreateTFS;
+
+   PROCEDURE CreateRFS;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      RootNodes.Create(node, rfsipv4if, NIL);
+      IF args[0][0] = Paths.separator THEN
+	 IF Paths.Insert(args[0], node, lid, errors) THEN
+	    RETURN
+	 END;
+      ELSE
+	 IF Paths.InsertN(current, args[0], node, lid, errors) THEN
+	    RETURN
+	 END;
+      END;
+      Conclusions.Conclude(errors, Errors.error, "rfs");
+   END CreateRFS;
+
+   PROCEDURE Dialog;
+      VAR
+	 cmd: INTEGER;
+
+      PROCEDURE MapSpaces;
+	 VAR
+	    count,
+	    index: INTEGER;
+	    ch: CHAR;
+      BEGIN
+	 count := 0;
+	 WHILE count < nargs DO
+	    index := 0;
+	    ch := args[count,0];
+	    WHILE ch # 0X DO
+	       IF ch = spaceChar THEN
+		  args[count,index] := " ";
+	       END;
+	       INC(index);
+	       ch := args[count,index];
+	    END;
+	    INC(count);
+	 END;
+      END MapSpaces;
+
+   BEGIN
+      s := Streams.stdin;
+      Cmds.Add(s, changedirC, "cd",   0, 1, "[path|-|.|..]",
+	 "change current path");
+      Cmds.Add(s, printpathC, "pwd",  0, 0, "",          "print current path");
+      Cmds.Add(s, getmembersC,"ls",   0, 1, "[path]",    "list members");
+      Cmds.Add(s, statC,      "stat", 1, 1, "path",      "show status of node");
+      Cmds.Add(s, aliveC,     "ping", 0, 1, "[path]",    "ping server/object");
+      Cmds.Add(s, destroyC,   "kill", 1, 1, "path",      "destroy a node");
+      Cmds.Add(s, deleteC,    "rm",   1, 1, "path",      "unlink a node");
+      Cmds.Add(s, linkC,      "ln",   2, 2, "path path", "create a link");
+      Cmds.Add(s, makedirC,   "mkdir",1, 1, "path",      "create a new node");
+      Cmds.Add(s, changeC,    "chmod",1, 2, "modes [path]",
+						   "set (default) permissions");
+      Cmds.Add(s, shutdownC,  "shut", 0, 1, "[path]", "shutdown server/object");
+      Cmds.Add(s, rebootC,    "reboot",0,0, "",          "re-import root");
+      Cmds.Add(s, spaceC,     "space",0, 1, "[char]", "(un-)define space char");
+      Cmds.Add(s, authC,      "auth", 0, 1, "[passwd]",
+						   "reset/upgrade default lid");
+      Cmds.Add(s, authfileC,  "authf",1, 1, "file",      "get lid from file");
+      Cmds.Add(s, permC,      "perm" ,0, 1, "[passwd]", "(re-)set default pot");
+      Cmds.Add(s, observeC,   "watch",1, 1, "path",  "take interest in a node");
+      Cmds.Add(s, forgetC,    "forget",1,1, "path",     "quit watching a node");
+      Cmds.Add(s, waitC,      "wait", 1, 1, "path",
+					     "wait for path to become valid");
+      Cmds.Add(s, rfsC,       "rfs",  1, 1, "path", "create remote root space");
+      Cmds.Add(s, tfsC,       "tfs",  3, 3, "readonly writable path",
+                                             "create translucent name space");
+      Cmds.Add(s, quitC,      "q",    0, 0, "",          "terminate session");
+      LOOP
+	 Write.String(prompt);
+	 cmd := Cmds.Read(s, nargs, args);
+	 IF nargs > 0 THEN
+	    MapSpaces;
+	 END;
+	 CASE cmd OF
+	 | Cmds.unknown:	Write.Line("Unknown command; try help.");
+	 | Cmds.done, Cmds.empty:	(* OK *)
+	 | Cmds.error:		EXIT
+	 | changedirC:		ChangeCurrentPath;
+	 | printpathC:		Write.Line(currentpath);
+	 | deleteC:		Delete;
+	 | aliveC:   	        Alive;
+	 | statC:		Stat;
+	 | destroyC:		Destroy;
+	 | getmembersC:		GetMembers;
+	 | linkC:		Link;
+	 | makedirC:		MakeDirectory;
+	 | changeC:             ChangeMode;
+	 | shutdownC:		Shutdown;
+	 | rebootC:		Startup;
+	 | observeC:		Observe;
+	 | forgetC:		Forget;
+	 | waitC:               WaitForPath;
+	 | spaceC:		Space;
+	 | authC:		NewAuth;
+	 | authfileC:		NewAuthFromFile;
+	 | permC:		NewPerm;
+	 | rfsC:                CreateRFS;
+	 | tfsC:                CreateTFS;
+	 | quitC:		EXIT
+	 END;
+      END; (*LOOP*)
+   END Dialog;
+
+BEGIN
+   intensity := Storage.Intensity(4);
+   NEW(errors);
+   RelatedEvents.QueueEvents(errors);
+   eventDiscId := Disciplines.Unique();
+   Services.SeekType("Shards.Pot", potType);
+   Services.SeekType("Shards.Lid", lidType);
+   ASSERT( (potType # NIL) & (lidType # NIL) );
+   Events.Define(error);
+   Events.SetPriority(error, Priorities.error);
+   spaceChar := " ";
+   Shards.CreateSimplePot(pot, TRUE);
+   lid := NIL;
+   defStatus := NIL;
+   rootKey := NIL;
+   NEW(rfsipv4if); rfsipv4if.convert := IPv4NameSystems.Convert;
+   Startup;
+   OpenAllKindsOfPorts;
+   Conclusions.CatchEvent(Loader.error, Errors.warning);
+
+   Dialog;
+   Process.Exit(0);
+END NamesShell.

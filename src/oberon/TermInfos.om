@@ -1,0 +1,1449 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TermInfos.om,v 1.2 2004/09/29 14:07:36 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: TermInfos.om,v $
+   Revision 1.2  2004/09/29 14:07:36  borchert
+   support of a 2nd default directory for terminfo entries
+
+   Revision 1.1  2004/06/11 12:11:15  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermInfos; (* Ralf Beck *)
+
+   IMPORT ASCII, Disciplines, Events, Objects, Priorities, RelatedEvents,
+      Sets, Streams, Strings, SYS := SYSTEM, UnixEnvironment, UnixFiles,
+      Write;
+
+   CONST 
+      booleans = 37;
+      numbers = 33;
+      strings = 394;
+      stringlen = 128;
+
+      maxParameters = 9;
+
+      defaultdir = "/usr/share/lib/terminfo";
+      defaultdir2 = "/usr/share/terminfo";
+
+      (* errorcodes *)
+      notSupported = 0;
+      badFormatString = 1;
+      invalidParameterList = 2;
+      stackUnderflow = 3;
+      stackOverflow = 4;
+      endOfStream = 5;
+      invalidTerminfo = 6;
+      errorcodes = 7;
+
+   CONST
+      (* booleans *)
+      autoLeftMargin = 0;
+      autoRightMargin = 1;
+      noEscCtlc = 2;
+      ceolStandoutGlitch = 3;
+      eatNewlineGlitch = 4;
+      eraseOverstrike = 5;
+      genericType = 6;
+      hardCopy = 7;
+      hasMetaKey = 8;
+      hasStatusLine = 9;
+      insertNullGlitch = 10;
+      memoryAbove = 11;
+      memoryBelow = 12;
+      moveInsertMode = 13;
+      moveStandoutMode = 14;
+      overStrike = 15;
+      statusLineEscOk = 16;
+      destTabsMagicSmso = 17;
+      tildeGlitch = 18;
+      transparentUnderline = 19;
+      xonXoff = 20;
+      needsXonXoff = 21;
+      prtrSilent = 22;
+      hardCursor = 23;
+      nonRevRmcup = 24;
+      noPadChar = 25;
+      nonDestScrollRegion = 26;
+      canChange = 27;
+      backColorErase = 28;
+      hueLightnessSaturation = 29;
+      colAddrGlitch = 30;
+      crCancelsMicroMode = 31;
+      hasPrintWheel = 32;
+      rowAddrGlitch = 33;
+      semiAutoRightMargin = 34;
+      cpiChangesRes = 35;
+      lpiChangesRes = 36;
+
+      (* numbers *)
+      columns = 0;
+      initTabs = 1;
+      lines = 2;
+      linesOfMemory = 3;
+      magicCookieGlitch = 4;
+      paddingBaudRate = 5;
+      virtualTerminal = 6;
+      widthStatusLine = 7;
+      numLabels = 8;
+      lablHeight = 9;
+      lablWidth = 10;
+      maxAttributes = 11;
+      maximumWindows = 12;
+      maxColors = 13;
+      maxPairs = 14;
+      noColorVideo = 15;
+      bufferCapacity = 16;
+      dotVertSpacing = 17;
+      dotHorzSpacing = 18;
+      maxMicroAddress = 19;
+      maxMicroJump = 20;
+      microCharSize = 21;
+      microLineSize = 22;
+      numberOfPins = 23;
+      outputResChar = 24;
+      outputResLine = 25;
+      outputResHorzInch = 26;
+      outputResVertInch = 27;
+      printRate = 28;
+      wideCharSize = 29;
+      buttons = 30;
+      bitImageEntwining = 31;
+      bitImageType = 32;
+
+      (* strings *)
+      backTab = 0;
+      bell = 1;
+      carriageReturn = 2;
+      changeScrollRegion = 3;
+      clearAllTabs = 4;
+      clearScreen = 5;
+      clrEol = 6;
+      clrEos = 7;
+      columnAddress = 8;
+      commandCharacter = 9;
+      cursorAddress = 10;
+      cursorDown = 11;
+      cursorHome = 12;
+      cursorInvisible = 13;
+      cursorLeft = 14;
+      cursorMemoryAddress = 15;
+      cursorNormal = 16;
+      cursorRight = 17;
+      cursorToLl = 18;
+      cursorUp = 19;
+      cursorVisible = 20;
+      deleteCharacter = 21;
+      deleteLine = 22;
+      disStatusLine = 23;
+      downHalfLine = 24;
+      enterAltCharsetMode = 25;
+      enterBlinkMode = 26;
+      enterBoldMode = 27;
+      enterCaMode = 28;
+      enterDeleteMode = 29;
+      enterDimMode = 30;
+      enterInsertMode = 31;
+      enterSecureMode = 32;
+      enterProtectedMode = 33;
+      enterReverseMode = 34;
+      enterStandoutMode = 35;
+      enterUnderlineMode = 36;
+      eraseChars = 37;
+      exitAltCharsetMode = 38;
+      exitAttributeMode = 39;
+      exitCaMode = 40;
+      exitDeleteMode = 41;
+      exitInsertMode = 42;
+      exitStandoutMode = 43;
+      exitUnderlineMode = 44;
+      flashScreen = 45;
+      formFeed = 46;
+      fromStatusLine = 47;
+      init1string = 48;
+      init2string = 49;
+      init3string = 50;
+      initFile = 51;
+      insertCharacter = 52;
+      insertLine = 53;
+      insertPadding = 54;
+      keyBackspace = 55;
+      keyCatab = 56;
+      keyClear = 57;
+      keyCtab = 58;
+      keyDc = 59;
+      keyDl = 60;
+      keyDown = 61;
+      keyEic = 62;
+      keyEol = 63;
+      keyEos = 64;
+      keyF0 = 65;
+      keyF1 = 66;
+      keyF10 = 67;
+      keyF2 = 68;
+      keyF3 = 69;
+      keyF4 = 70;
+      keyF5 = 71;
+      keyF6 = 72;
+      keyF7 = 73;
+      keyF8 = 74;
+      keyF9 = 75;
+      keyHome = 76;
+      keyIc = 77;
+      keyIl = 78;
+      keyLeft = 79;
+      keyLl = 80;
+      keyNpage = 81;
+      keyPpage = 82;
+      keyRight = 83;
+      keySf = 84;
+      keySr = 85;
+      keyStab = 86;
+      keyUp = 87;
+      keypadLocal = 88;
+      keypadXmit = 89;
+      labF0 = 90;
+      labF1 = 91;
+      labF10 = 92;
+      labF2 = 93;
+      labF3 = 94;
+      labF4 = 95;
+      labF5 = 96;
+      labF6 = 97;
+      labF7 = 98;
+      labF8 = 99;
+      labF9 = 100;
+      metaOff = 101;
+      metaOn = 102;
+      newline = 103;
+      padChar = 104;
+      parmDch = 105;
+      parmDeleteLine = 106;
+      parmDownCursor = 107;
+      parmIch = 108;
+      parmIndex = 109;
+      parmInsertLine = 110;
+      parmLeftCursor = 111;
+      parmRightCursor = 112;
+      parmRindex = 113;
+      parmUpCursor = 114;
+      pkeyKey = 115;
+      pkeyLocal = 116;
+      pkeyXmit = 117;
+      printScreen = 118;
+      prtrOff = 119;
+      prtrOn = 120;
+      repeatChar = 121;
+      reset1string = 122;
+      reset2string = 123;
+      reset3string = 124;
+      resetFile = 125;
+      restoreCursor = 126;
+      rowAddress = 127;
+      saveCursor = 128;
+      scrollForward = 129;
+      scrollReverse = 130;
+      setAttributes = 131;
+      setTab = 132;
+      setWindow = 133;
+      tab = 134;
+      toStatusLine = 135;
+      underlineChar = 136;
+      upHalfLine = 137;
+      initProg = 138;
+      keyA1 = 139;
+      keyA3 = 140;
+      keyB2 = 141;
+      keyC1 = 142;
+      keyC3 = 143;
+      prtrNon = 144;
+      charPadding = 145;
+      acsChars = 146;
+      plabNorm = 147;
+      keyBtab = 148;
+      enterXonMode = 149;
+      exitXonMode = 150;
+      enterAmMode = 151;
+      exitAmMode = 152;
+      xonCharacter = 153;
+      xoffCharacter = 154;
+      enaAcs = 155;
+      lablOn = 156;
+      lablOff = 157;
+      keyBeg = 158;
+      keyCancel = 159;
+      keyClose = 160;
+      keyCommand = 161;
+      keyCopy = 162;
+      keyCreate = 163;
+      keyEnd = 164;
+      keyEnter = 165;
+      keyExit = 166;
+      keyFind = 167;
+      keyHelp = 168;
+      keyMark = 169;
+      keyMessage = 170;
+      keyMove = 171;
+      keyNext = 172;
+      keyOpen = 173;
+      keyOptions = 174;
+      keyPrevious = 175;
+      keyPrint = 176;
+      keyRedo = 177;
+      keyReference = 178;
+      keyRefresh = 179;
+      keyReplace = 180;
+      keyRestart = 181;
+      keyResume = 182;
+      keySave = 183;
+      keySuspend = 184;
+      keyUndo = 185;
+      keySbeg = 186;
+      keyScancel = 187;
+      keyScommand = 188;
+      keyScopy = 189;
+      keyScreate = 190;
+      keySdc = 191;
+      keySdl = 192;
+      keySelect = 193;
+      keySend = 194;
+      keySeol = 195;
+      keySexit = 196;
+      keySfind = 197;
+      keyShelp = 198;
+      keyShome = 199;
+      keySic = 200;
+      keySleft = 201;
+      keySmessage = 202;
+      keySmove = 203;
+      keySnext = 204;
+      keySoptions = 205;
+      keySprevious = 206;
+      keySprint = 207;
+      keySredo = 208;
+      keySreplace = 209;
+      keySright = 210;
+      keySrsume = 211;
+      keySsave = 212;
+      keySsuspend = 213;
+      keySundo = 214;
+      reqForInput = 215;
+      keyF11 = 216;
+      keyF12 = 217;
+      keyF13 = 218;
+      keyF14 = 219;
+      keyF15 = 220;
+      keyF16 = 221;
+      keyF17 = 222;
+      keyF18 = 223;
+      keyF19 = 224;
+      keyF20 = 225;
+      keyF21 = 226;
+      keyF22 = 227;
+      keyF23 = 228;
+      keyF24 = 229;
+      keyF25 = 230;
+      keyF26 = 231;
+      keyF27 = 232;
+      keyF28 = 233;
+      keyF29 = 234;
+      keyF30 = 235;
+      keyF31 = 236;
+      keyF32 = 237;
+      keyF33 = 238;
+      keyF34 = 239;
+      keyF35 = 240;
+      keyF36 = 241;
+      keyF37 = 242;
+      keyF38 = 243;
+      keyF39 = 244;
+      keyF40 = 245;
+      keyF41 = 246;
+      keyF42 = 247;
+      keyF43 = 248;
+      keyF44 = 249;
+      keyF45 = 250;
+      keyF46 = 251;
+      keyF47 = 252;
+      keyF48 = 253;
+      keyF49 = 254;
+      keyF50 = 255;
+      keyF51 = 256;
+      keyF52 = 257;
+      keyF53 = 258;
+      keyF54 = 259;
+      keyF55 = 260;
+      keyF56 = 261;
+      keyF57 = 262;
+      keyF58 = 263;
+      keyF59 = 264;
+      keyF60 = 265;
+      keyF61 = 266;
+      keyF62 = 267;
+      keyF63 = 268;
+      clrBol = 269;
+      clearMargins = 270;
+      setLeftMargin = 271;
+      setRightMargin = 272;
+      lablFormat = 273;
+      setClock = 274;
+      displayClock = 275;
+      removeClock = 276;
+      createWindow = 277;
+      gotoWindow = 278;
+      hangup = 279;
+      dialPhone = 280;
+      quickDial = 281;
+      tone = 282;
+      pulse = 283;
+      flashHook = 284;
+      fixedPause = 285;
+      waitTone = 286;
+      user0 = 287;
+      user1 = 288;
+      user2 = 289;
+      user3 = 290;
+      user4 = 291;
+      user5 = 292;
+      user6 = 293;
+      user7 = 294;
+      user8 = 295;
+      user9 = 296;
+      origPair = 297;
+      origColors = 298;
+      initializeColor = 299;
+      initializePair = 300;
+      setColorPair = 301;
+      setForeground = 302;
+      setBackground = 303;
+      changeCharPitch = 304;
+      changeLinePitch = 305;
+      changeResHorz = 306;
+      changeResVert = 307;
+      defineChar = 308;
+      enterDoublewideMode = 309;
+      enterDraftQuality = 310;
+      enterItalicsMode = 311;
+      enterLeftwardMode = 312;
+      enterMicroMode = 313;
+      enterNearLetterQuality = 314;
+      enterNormalQuality = 315;
+      enterShadowMode = 316;
+      enterSubscriptMode = 317;
+      enterSuperscriptMode = 318;
+      enterUpwardMode = 319;
+      exitDoublewideMode = 320;
+      exitItalicsMode = 321;
+      exitLeftwardMode = 322;
+      exitMicroMode = 323;
+      exitShadowMode = 324;
+      exitSubscriptMode = 325;
+      exitSuperscriptMode = 326;
+      exitUpwardMode = 327;
+      microColumnAddress = 328;
+      microDown = 329;
+      microLeft = 330;
+      microRight = 331;
+      microRowAddress = 332;
+      microUp = 333;
+      orderOfPins = 334;
+      parmDownMicro = 335;
+      parmLeftMicro = 336;
+      parmRightMicro = 337;
+      parmUpMicro = 338;
+      selectCharSet = 339;
+      setBottomMargin = 340;
+      setBottomMarginParm = 341;
+      setLeftMarginParm = 342;
+      setRightMarginParm = 343;
+      setTopMargin = 344;
+      setTopMarginParm = 345;
+      startBitImage = 346;
+      startCharSetDef = 347;
+      stopBitImage = 348;
+      stopCharSetDef = 349;
+      subscriptCharacters = 350;
+      superscriptCharacters = 351;
+      theseCauseCr = 352;
+      zeroMotion = 353;
+      charSetNames = 354;
+      keyMouse = 355;
+      mouseInfo = 356;
+      reqMousePos = 357;
+      getMouse = 358;
+      setAForeground = 359;
+      setABackground = 360;
+      pkeyPlab = 361;
+      deviceType = 362;
+      codeSetInit = 363;
+      set0DesSeq = 364;
+      set1DesSeq = 365;
+      set2DesSeq = 366;
+      set3DesSeq = 367;
+      setLrMargin = 368;
+      setTbMargin = 369;
+      bitImageRepeat = 370;
+      bitImageNewline = 371;
+      bitImageCarriageReturn = 372;
+      colorNames = 373;
+      defineBitImageRegion = 374;
+      endBitImageRegion = 375;
+      setColorBand = 376;
+      setPageLength = 377;
+      displayPcChar = 378;
+      enterPcCharsetMode = 379;
+      exitPcCharsetMode = 380;
+      enterScancodeMode = 381;
+      exitScancodeMode = 382;
+      pcTermOptions = 383;
+      scancodeEscape = 384;
+      altScancodeEsc = 385;
+      enterHorizontalHlMode = 386;
+      enterLeftHlMode = 387;
+      enterLowHlMode = 388;
+      enterRightHlMode = 389;
+      enterTopHlMode = 390;
+      enterVerticalHlMode = 391;
+      setAAttributes = 392;
+      setPglenInch = 393;
+
+   CONST
+      (* aliases *)
+      exitAltCharSet = exitAltCharsetMode;
+      enterAltCharSet = enterAltCharsetMode;
+
+   TYPE 
+      String = ARRAY stringlen OF CHAR;
+
+      Parameter = POINTER TO ParameterRec;
+      ParameterRec = RECORD END;
+
+      BoolPara = POINTER TO BoolParaRec;
+      BoolParaRec =
+	 RECORD
+	    (ParameterRec)
+	    bool: BOOLEAN;
+         END;
+
+      IntPara = POINTER TO IntParaRec;
+      IntParaRec =
+	 RECORD
+	    (ParameterRec)
+	    int: INTEGER;
+         END;
+
+      StringPara = POINTER TO StringParaRec;
+      StringParaRec =
+	 RECORD
+	    (ParameterRec)
+	    string: String;
+         END;
+
+     
+      ParameterList = POINTER TO ParameterListRec;
+      ParameterListRec =
+         RECORD
+            (Objects.ObjectRec)
+            para: ARRAY maxParameters OF Parameter;
+         END;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+         END;
+
+      TermInfo = POINTER TO TermInfoRec;
+      TermInfoRec =   
+	 RECORD 
+	    (Disciplines.ObjectRec)
+	    bool: ARRAY booleans OF BOOLEAN;
+	    num: ARRAY numbers OF INTEGER;
+            strings: ARRAY strings OF String;
+         END;
+
+      Capability = INTEGER;
+
+   VAR
+      lowerCaseLetters, digits, flags: Sets.CharSet;
+      asciicode: INTEGER;
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[notSupported] :=
+	 "parameter type not supported, currently only %d allowed";
+      errormsg[badFormatString] := 
+	 "bad format string, check terminfo database";
+      errormsg[invalidParameterList] :=
+	 "invalid parameterlist";
+      errormsg[stackUnderflow] :=
+	 "underflow of parameter stack";
+      errormsg[stackOverflow] := 
+	 "overflow of parameter stack";
+      errormsg[endOfStream] := 
+	 "end of stream reached";
+      errormsg[invalidTerminfo] := 
+	 "unknown format of terminfo file";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE CapStringOk(terminfo: TermInfo; cap: Capability): BOOLEAN;
+   BEGIN
+      RETURN terminfo.strings[cap][0] # ASCII.nul;
+   END CapStringOk;
+
+   PROCEDURE GetCapString(terminfo: TermInfo; cap: Capability;
+                          VAR string: String);
+   BEGIN
+      Strings.Copy(string, terminfo.strings[cap]);
+   END GetCapString;
+
+   PROCEDURE GetBoolean(terminfo: TermInfo; cap: Capability): BOOLEAN;
+   BEGIN
+      RETURN terminfo.bool[cap];
+   END GetBoolean;
+
+   PROCEDURE GetNumber(terminfo: TermInfo; cap: Capability): INTEGER;
+   BEGIN
+      RETURN terminfo.num[cap];
+   END GetNumber;
+
+   PROCEDURE PutCapString(terminfo: TermInfo;
+                          cap: Capability;
+			  plist: ParameterList; 
+                          speed: INTEGER;
+			  affcount: INTEGER;
+			  stream: Streams.Stream);
+      CONST
+         stacksize = 256;  (* max size of parameterstack *) 
+         then = 0; else = 1; (* denote then or else branch in formatstring *)
+
+      VAR
+         dynamicvars: ARRAY 26   OF Parameter;  (* indexes "a" - "z" *)
+         nestlevel: INTEGER;
+         stack: ARRAY stacksize-1 OF Parameter; 
+         top: INTEGER;
+         digit: INTEGER;
+	 stringlength: LONGINT;
+         capstring: String;
+	 capindex: INTEGER;
+         op1, op2: Parameter;
+	 intresult: IntPara;
+	 op: INTEGER;
+	 minus: BOOLEAN;
+
+      PROCEDURE SetToInt(set: SET): INTEGER;
+      BEGIN
+	 RETURN SYS.VAL(INTEGER, set);
+      END SetToInt;
+
+      PROCEDURE IntToSet(int: INTEGER): SET;
+      BEGIN
+	 RETURN SYS.VAL(SET, int);
+      END IntToSet;
+
+      PROCEDURE Push(para: Parameter);
+         BEGIN
+            IF top < stacksize THEN
+               stack[top] := para;
+               INC(top);
+            ELSE
+	       Error(terminfo, stackOverflow);
+            END;
+      END Push;
+
+      PROCEDURE Pop() : Parameter;
+      BEGIN
+         IF top > 0 THEN
+            DEC(top);
+            RETURN stack[top];
+         ELSE
+	    Error(terminfo, stackUnderflow);
+	    RETURN NIL;
+         END;
+      END Pop;
+
+      PROCEDURE Next;
+      BEGIN
+         IF capindex < stringlength THEN
+            INC(capindex);
+         ELSE
+	    Error(terminfo, badFormatString);
+         END;
+      END Next;
+
+      PROCEDURE PushParm(i: INTEGER);
+      BEGIN
+         IF plist # NIL THEN
+            IF plist.para[i-1] # NIL  THEN;
+               Push(plist.para[i-1]);
+               RETURN;
+            END;
+         END;
+	 Error(terminfo, invalidParameterList);
+      END PushParm;
+
+      PROCEDURE Increment;
+      BEGIN
+         IF plist # NIL THEN
+            IF plist.para[0] IS IntPara THEN
+               INC(plist.para[0](IntPara).int);
+               IF plist.para[1] IS IntPara THEN
+                  INC(plist.para[1](IntPara).int);
+               END;
+               RETURN;
+            END;
+         ELSE
+            Error(terminfo, invalidParameterList);
+         END;
+      END Increment;
+
+      PROCEDURE Skip(branch: SHORTINT); (* branch = then or else *)
+         VAR level: INTEGER;
+      BEGIN
+         level := 0; Next;
+         LOOP
+            IF capstring[capindex] = "%" THEN
+               Next;
+               IF level = 0 THEN
+                  IF capstring[capindex] = "e" THEN
+                     IF branch = then THEN
+                        RETURN;
+                     END;
+                  END;
+                  IF capstring[capindex] = ";" THEN
+                     RETURN;
+                  END;
+               END;
+               CASE capstring[capindex] OF
+               | "?": INC(level);
+               | ";": ASSERT(level > 0);
+                      DEC(level);
+               ELSE
+               END;
+            END;
+            Next;
+         END;
+      END Skip;
+
+      PROCEDURE WriteFormatted;
+	 (* convert stacktop according to %..dosxX format *)
+	 VAR
+	    width, precision: INTEGER;
+	    pad: INTEGER;
+	    minussign, plus, pound, space, precisionPoint: BOOLEAN;
+	    minus: BOOLEAN;
+            done: BOOLEAN;
+            number: ARRAY 10 OF CHAR;
+            nindex : INTEGER;
+	    value: INTEGER;
+	    para: Parameter;
+      BEGIN
+         (* init flags to default values *)
+         minussign := FALSE; plus := FALSE;
+	 pound := FALSE; space := FALSE;
+
+         done := FALSE;
+         WHILE ~done DO
+            CASE capstring[capindex] OF
+	    | ":": Next;
+	    | " ": space := TRUE; Next;
+            | "-": minussign := TRUE; Next;
+            | "+": plus := TRUE; Next;
+            | "#": pound := TRUE; Next;
+            ELSE
+               done := TRUE;
+            END;
+         END;
+
+         width := 0;
+         WHILE Sets.CharIn(digits, capstring[capindex]) DO
+	    digit := ORD(capstring[capindex]) - ORD("0");
+	    width := width * 10 + digit;
+            Next;
+         END;
+
+         precision := 0; precisionPoint := FALSE;
+         IF capstring[capindex] = "." THEN
+            precisionPoint := TRUE;
+	    Next;   
+            WHILE Sets.CharIn(digits, capstring[capindex]) DO
+	       digit := ORD(capstring[capindex]) - ORD("0");
+	       precision := precision * 10 + digit;
+               Next;
+            END;
+         END;
+
+	 para := Pop();
+         CASE capstring[capindex] OF
+         | "d": value := para(IntPara).int;
+		IF value < 0 THEN
+                   minus := TRUE;
+		   value := -value;
+                ELSE
+                   minus := FALSE;
+                END;
+
+                nindex := 0;
+                REPEAT
+                  digit := value MOD 10;
+                  value := value DIV 10;
+                  number[nindex] := CHR(digit + ORD("0"));
+                  INC(nindex);
+                UNTIL value = 0;
+
+                pad := width - precision; 
+		IF space OR minus OR plus THEN
+                   DEC(pad);
+                END;
+                IF ~minussign THEN
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;   
+               
+                IF ~minus THEN
+                   IF plus THEN
+                      Write.CharS(stream, "+");
+                   ELSIF space THEN
+                      Write.CharS(stream, " ");
+                   END;
+                ELSE
+                   Write.CharS(stream, "-");
+                END;
+
+                pad := precision - nindex;
+                WHILE pad > 0 DO
+                   Write.CharS(stream, "0");
+                   DEC(pad);
+                END;
+                WHILE nindex > 0 DO
+                   DEC(nindex);
+                   Write.CharS(stream, number[nindex]);
+                END;
+                pad := width - precision;
+                IF minussign THEN
+		   IF space OR minus OR plus THEN
+                      DEC(pad);
+                   END;
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;   
+                  
+         | "o": value := para(IntPara).int;
+		IF (value # 0) & pound THEN INC(precision); END;
+                IF value < 0 THEN
+		   Error(terminfo, notSupported);
+                   RETURN;
+                END;
+
+                nindex := 0;
+                REPEAT
+                  digit := value MOD 8;
+                  value := value DIV 8;
+                  number[nindex] := CHR(digit + ORD("0"));
+                  INC(nindex);
+                UNTIL value = 0;
+
+                IF ~minussign THEN
+                   pad := width - precision;
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;
+                IF (value = 0) & (precision = 0) & precisionPoint THEN
+                   RETURN;
+                END;
+                pad := precision - nindex;
+                WHILE pad > 0 DO
+                   Write.CharS(stream, "0");
+                   DEC(pad);
+                END;
+                WHILE nindex > 0 DO
+                   DEC(nindex);
+                   Write.CharS(stream, number[nindex]);
+                END;
+                IF minussign THEN
+                   pad := width - precision;
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;
+                
+                
+         | "x","X": value := para(IntPara).int;
+		IF value < 0 THEN
+		   Error(terminfo, notSupported);
+                   RETURN;
+                END;
+
+                nindex := 0;
+                REPEAT
+                  digit := value MOD 16;
+                  value := value DIV 16;
+		  IF digit < 10 THEN
+                     number[nindex] := CHR(digit + ORD("0"));
+                  ELSIF capstring[capindex] = "x" THEN
+		     number[nindex] := CHR(digit - 10 + ORD("a"));
+                  ELSE
+		     number[nindex] := CHR(digit - 10 + ORD("A"));
+		  END;
+                  INC(nindex);
+                UNTIL value = 0;
+
+                IF ~minussign THEN
+                   pad := width - precision;
+                   IF pound & (value # 0) THEN
+                      DEC(pad, 2);
+                   END;
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;
+                IF pound & (value # 0) THEN
+                   Write.CharS(stream, "0");
+                   Write.CharS(stream, capstring[capindex]);
+                END;
+                pad := precision - nindex;
+                WHILE pad > 0 DO
+                   Write.CharS(stream, "0");
+                   DEC(pad);
+                END;
+                WHILE nindex > 0 DO
+                   DEC(nindex);
+                   Write.CharS(stream, number[nindex]);
+                END;
+                IF minussign THEN
+                   pad := width - precision;
+                   WHILE pad > 0 DO
+                      Write.CharS(stream, " ");
+                      DEC(pad);
+                   END;
+                END;
+                
+         | "s": Write.StringS(stream, para(StringPara).string);
+
+         ELSE
+            Error(terminfo, badFormatString);
+         END;
+      END WriteFormatted;
+  
+      PROCEDURE Pad;
+         VAR
+            padalways: BOOLEAN; (* pad regardless of padding baudrate *)
+	    index: INTEGER;    (* used within $<..> statement *)
+            delay: INTEGER;    (* delay in tenth of milliseconds *)
+	    rest: INTEGER;     (* rest to pad *)
+
+      BEGIN
+         (* convert delay: "$<" {digit} ["."] [digit]] ["*"] ["/"] ">" *)
+         delay := 0;
+	 index := capindex+2;
+
+	 (* read {digit} *)
+         WHILE (index < stringlength) &
+	       Sets.CharIn(digits, capstring[index]) DO
+            delay := 10 * delay + ORD(capstring[index]) - ORD("0");
+            INC(index);
+         END;
+         delay := delay * 10;
+
+	 (* read .[digit] *)
+         IF (index < stringlength) & (capstring[index] = ".") THEN
+            INC(index);
+            IF (index < stringlength) &
+		  Sets.CharIn(digits, capstring[index]) THEN
+               delay := delay + ORD(capstring[index]) - ORD("0"); 
+               INC(index);
+            END;
+         END;
+
+         (* read [*] *)
+         IF (index < stringlength) & (capstring[index] = "*") THEN
+	    delay := delay * affcount;
+	    INC(index);
+         END;
+	
+	 (* read [/] *)
+         padalways := FALSE;
+	 IF (index < stringlength) & (capstring[index] = "/") THEN
+            padalways := TRUE;
+	    (* mandatory padding, we pad always *)
+	    INC(index);
+         END;
+
+         (* read ">" *)
+         IF (index = stringlength) OR (capstring[index] # ">") THEN
+            (* "$<" with no ">" *)
+            Write.CharS(stream, capstring[capindex]); (* avoid infinite loop *)
+	    RETURN
+         END;
+
+         capindex := index;
+         IF (speed < terminfo.num[paddingBaudRate]) & ~padalways THEN
+            RETURN
+         END;
+	 rest := delay * (speed MOD 8000);   (* 8000, because delay is in *) 
+         delay := delay * (speed DIV 8000);  (* msecs and byte = 8 bits *)
+	 IF rest > 0 THEN
+	    INC(delay);
+         END;
+         WHILE delay > 0 DO
+	    Write.CharS(stream, terminfo.strings[padChar][0]);
+	    DEC(delay);
+         END;
+      END Pad;
+
+   BEGIN (* ConvertCap *)
+      capindex := 0;
+      Strings.Copy(capstring, terminfo.strings[cap]);
+      stringlength := Strings.Len(capstring);
+      nestlevel := 0; top := 0; 
+      WHILE (capindex < stringlen) & (capstring[capindex] # 000X) DO
+         IF capstring[capindex] = "%" THEN
+            Next;
+            CASE capstring[capindex] OF
+	    | "%": Write.CharS(stream, "%");
+            | "c": op1 := Pop();
+		   Write.CharS(stream, CHR(op1(IntPara).int));
+            | "g": Next;
+                   IF Sets.CharIn(lowerCaseLetters, capstring[capindex]) THEN
+                      Push(dynamicvars[ORD(capstring[capindex]) - ORD("a")]);
+                   ELSE
+		      Error(terminfo, badFormatString);
+                   END;
+            | "i": Increment;
+            | "p": Next;
+		   IF Sets.CharIn(digits, capstring[capindex]) THEN
+                      PushParm(ORD(capstring[capindex]) - ORD("0"));
+                   ELSE
+		      Error(terminfo, badFormatString);
+                   END;
+            | "P": Next;
+                   IF Sets.CharIn(lowerCaseLetters, capstring[capindex]) THEN
+                      dynamicvars[ORD(capstring[capindex]) - ORD("a")] := Pop();
+                   ELSE
+		      Error(terminfo, badFormatString);
+                   END;
+            | "{": op := 0; Next;
+                   IF capstring[capindex] = "-" THEN
+                      minus := TRUE; Next;
+                   ELSE
+                      IF capstring[capindex] = "+" THEN Next; END;
+                      minus := FALSE;
+                   END;
+		   REPEAT
+		      IF Sets.CharIn(digits, capstring[capindex]) THEN
+                         op := op * 10 + (ORD(capstring[capindex]) - ORD("0"));
+                      ELSE
+			 Error(terminfo, badFormatString);
+                      END;
+                      Next;
+                   UNTIL capstring[capindex] = "}";
+                   IF minus THEN op := - op END;
+		   NEW(intresult);
+		   intresult.int := op;
+                   Push(intresult);
+             (* if-then-else *)
+            | "?": INC(nestlevel);
+            | "t": op1 := Pop();
+		   IF op1(IntPara).int = 0 THEN Skip(then) END;
+            | "e": Skip(else);
+            | ";": ASSERT(nestlevel > 0);
+                   DEC(nestlevel);
+             (* arithmetic operations *)
+            | "+": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := op1(IntPara).int + op2(IntPara).int;
+		   Push(intresult);
+            | "-": op1 := Pop(); op2 := Pop();
+		   NEW(intresult); 
+		   intresult.int := op2(IntPara).int - op1(IntPara).int;
+		   Push(intresult);
+            | "*": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := op1(IntPara).int * op2(IntPara).int;
+		   Push(intresult);
+            | "/": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := op2(IntPara).int DIV op1(IntPara).int;
+		   Push(intresult);
+            | "m": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := op2(IntPara).int MOD op1(IntPara).int;
+		   Push(intresult);
+            (* logical operations *)
+            | "=": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   IF op1(IntPara).int = op2(IntPara).int THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            | ">": op1 := Pop(); op2 := Pop(); 
+		   NEW(intresult);
+		   IF op2(IntPara).int > op1(IntPara).int THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            | "<": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   IF op2(IntPara).int < op1(IntPara).int THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            | "!": op1 := Pop();
+		   NEW(intresult);
+		   IF op1(IntPara).int = 0 THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            | "A": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   IF (op1(IntPara).int # 0) & (op2(IntPara).int # 0) THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            | "O": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   IF (op1(IntPara).int # 0) OR (op2(IntPara).int # 0) THEN
+		      intresult.int := 1;
+                   ELSE
+		      intresult.int := 0;
+                   END;
+		   Push(intresult);
+            (* bit operations *)
+            | "&": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := SetToInt(IntToSet(op1(IntPara).int) *
+					 IntToSet(op2(IntPara).int));
+                   Push(intresult);
+            | "|": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := SetToInt(IntToSet(op1(IntPara).int) +
+					     IntToSet(op2(IntPara).int));
+                   Push(intresult);
+            | "^": op1 := Pop(); op2 := Pop();
+		   NEW(intresult);
+		   intresult.int := SetToInt((IntToSet(op1(IntPara).int) *
+		      (IntToSet(-op2(IntPara).int-1))) +
+		      (IntToSet(op2(IntPara).int) *
+		      (IntToSet(-op1(IntPara).int-1))));
+		   Push(intresult);
+            | "~": op1 := Pop();
+	           NEW(intresult);
+		   intresult.int := -op1(IntPara).int - 1;
+            | "'": Next; 
+		   NEW(intresult);
+		   intresult.int := ORD(capstring[capindex]); 
+		   Next;
+		   Push(intresult);
+            ELSE
+	       WriteFormatted;
+            END;
+         ELSIF (capstring[capindex] = "$") & 
+	       (capindex+1 < stringlength) &
+	       (capstring[capindex+1] = "<") THEN
+	    Pad;
+         ELSE
+            Write.CharS(stream, capstring[capindex]);
+         END;
+         Next;
+      END;
+   END PutCapString;
+
+   PROCEDURE Open(termname: ARRAY OF CHAR; VAR terminfo: TermInfo;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+         TImagic = 282;           (* magic number of terminfo file *)
+         headersize = 6 * 2;      (* size of header in bytes *)
+      TYPE
+         Header =
+            RECORD
+               magic: INTEGER;    (* to be compared with TImagic *)
+               nameSize: INTEGER; (* in bytes *)
+               boolcnt: INTEGER;  (* in bytes *)
+               numcnt: INTEGER;   (* # of short integers *)
+               offcnt: INTEGER;   (* # of offsets *)
+               tabsize: INTEGER;  (* in bytes of the string table *)
+            END;
+      CONST
+	 boolsec = 0; numbersec = 1; offsetsec = 2; stringsec = 3;
+      TYPE
+	 Section = SHORTINT; (* boolsec .. stringsec *)
+      VAR
+         tidir: ARRAY 512 OF CHAR; (* terminfo directory *)
+         tname: ARRAY 256 OF CHAR; (* terminal name *)
+         header: Header; (* header of terminfo file *)
+         stream: Streams.Stream;	(* terminfo file *)
+         done: BOOLEAN; (* set to FALSE if anything goes wrong *)
+         info: TermInfo;
+	 failures: RelatedEvents.Object;
+	 queue: RelatedEvents.Queue;
+
+      PROCEDURE ReadShort(VAR value: INTEGER);
+         VAR byte1, byte2: CHAR;
+      BEGIN
+         IF Streams.ReadByte(stream, byte1) &
+	       Streams.ReadByte(stream, byte2) THEN
+            IF (byte1 = 0FFX) & (byte2 = 0FFX) THEN
+               value := -1; (* other negative values are illegal *)
+            ELSE
+               (* reverse byte order (like PDP-11) *)
+               value := ORD(byte2) * 256 + ORD(byte1);
+            END;
+         ELSE
+            (* bad terminfo file *)
+            value := -1;
+            done := FALSE;
+         END;
+      END ReadShort;
+
+      PROCEDURE ReadHeader;
+      BEGIN
+         ReadShort(header.magic);
+         ReadShort(header.nameSize);
+         ReadShort(header.boolcnt);
+         ReadShort(header.numcnt);
+         ReadShort(header.offcnt);
+         ReadShort(header.tabsize);
+         done := done & (header.magic = TImagic);
+      END ReadHeader;
+
+      PROCEDURE SeekToSection(section: Section; offset: Streams.Count);
+	 (* seek to the begin of the given section + offset *)
+	 VAR origin: Streams.Count;
+      BEGIN
+	 origin := headersize + header.nameSize;
+	 CASE section OF
+	 | boolsec:   (* OK *)
+	 | numbersec: INC(origin, header.boolcnt);
+	 | offsetsec: INC(origin, header.boolcnt + header.numcnt * 2);
+	 | stringsec: INC(origin, header.boolcnt + header.numcnt * 2 +
+				  header.offcnt * 2);
+	 END;
+	 IF (section > boolsec) & ODD(origin) THEN
+	    INC(origin);
+	 END;
+	 done := done &
+	    Streams.Seek(stream, origin + offset, Streams.fromStart);
+      END SeekToSection;
+
+      PROCEDURE ReadBooleanSection;
+         VAR
+            index: INTEGER;
+            byte: CHAR;
+      BEGIN
+	 SeekToSection(boolsec, 0);
+	 index := 0;
+         WHILE (index < header.boolcnt) & Streams.ReadByte(stream, byte)  DO
+	    IF index < booleans THEN
+	       info.bool[index] := (byte = 001X);
+               INC(index);
+            END;
+         END;
+
+         IF index < booleans THEN
+	    WHILE index < booleans DO
+	       info.bool[index] := FALSE;
+	       INC(index);
+            END;
+         END;
+      END ReadBooleanSection;
+
+      PROCEDURE ReadNumberSection;
+         VAR
+            index: INTEGER;
+            value: INTEGER;
+	    pos: LONGINT;
+      BEGIN
+	 SeekToSection(numbersec, 0);
+	 index := 0;
+         WHILE done & (index < header.numcnt) DO
+	    ReadShort(value);
+	    IF index < numbers THEN
+	       info.num[index] := value;
+               INC(index);
+            END;
+         END;
+
+	 IF index < numbers THEN
+	    WHILE index < numbers DO
+	       info.num[index] := -1;
+	       INC(index);
+            END;
+         END;
+      END ReadNumberSection;
+
+      PROCEDURE ReadStringSection;
+         VAR
+            offtab: ARRAY strings OF INTEGER;
+            index, count: INTEGER;
+
+         PROCEDURE ReadString(offset: INTEGER);
+            VAR
+               ch: CHAR;
+               cnt: INTEGER;
+         BEGIN
+	    SeekToSection(stringsec, offset);
+            cnt := 0;
+            WHILE done & Streams.ReadByte(stream, ch) & (ch # ASCII.nul) & 
+		  (cnt < stringlen) DO
+	       info.strings[index][cnt] := ch;
+               INC(cnt);
+            END;
+	    IF cnt < stringlen THEN
+	       info.strings[index][cnt] := ASCII.nul;
+            END;
+         END ReadString;
+
+      BEGIN (* ReadStringSection *)
+	 SeekToSection(offsetsec, 0);
+	 index := 0;
+         IF header.offcnt > strings THEN
+	    count := strings;
+         ELSE
+	    count := header.offcnt;
+         END;
+         WHILE index < count DO
+	    ReadShort(offtab[index]);
+	    INC(index);
+         END;
+	 index := 0;
+	 WHILE (index < count) & done DO
+	    IF offtab[index] = -1 THEN
+	       info.strings[index][0] := ASCII.nul;
+            ELSE
+	       ReadString(offtab[index]);
+            END;
+	    INC(index);
+         END;
+	 IF index < strings THEN
+	    WHILE index < strings DO
+	       info.strings[index][0] := ASCII.nul;
+	       INC(index);
+            END;
+         END;
+      END ReadStringSection;
+
+      PROCEDURE Load(tidir: ARRAY OF CHAR) : BOOLEAN;
+	 (* try to load the terminfo file from the given directory *)
+	 VAR
+	    dir: ARRAY 4 OF CHAR;(* first letter of terminal name *)
+	    path: ARRAY 512 OF CHAR;
+      BEGIN
+	 COPY(tidir, path);
+	 dir[0] := "/"; dir[1] := tname[0]; dir[2] := "/"; dir[3] := 0X;
+	 Strings.Concatenate(path, dir);
+	 Strings.Concatenate(path, tname);
+	 IF ~UnixFiles.Open(stream, path, UnixFiles.read, 
+			   Streams.onebuf, failures) THEN
+	    RETURN FALSE
+	 END;
+	 done := TRUE;
+	 ReadHeader;
+	 NEW(info);
+	 IF done THEN ReadBooleanSection; END;
+	 IF done THEN ReadNumberSection; END;
+	 IF done THEN ReadStringSection; END;
+	 Streams.Release(stream);
+	 IF done THEN
+	    terminfo := info;
+	    RETURN TRUE
+	 ELSE
+	    Error(failures, invalidTerminfo);
+	    RETURN FALSE
+	 END;
+      END Load;
+
+   BEGIN (* Open *)
+      IF termname = "" THEN
+	 IF ~UnixEnvironment.String("TERM", tname) THEN
+            tname := "dialup";
+         END;
+      ELSE
+         Strings.Copy(tname, termname);
+      END;
+      done := TRUE;
+      NEW(failures); RelatedEvents.QueueEvents(failures);
+      IF UnixEnvironment.String("TERMINFO", tidir) & (tidir # "") THEN
+	 IF Load(tidir) THEN RETURN TRUE END;
+      ELSE
+	 IF Load(defaultdir) THEN RETURN TRUE END;
+	 IF Load(defaultdir2) THEN RETURN TRUE END;
+      END;
+      RelatedEvents.GetQueue(failures, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN FALSE
+   END Open;
+
+BEGIN
+   Sets.InitSet(flags);
+   Sets.InclChar(flags, ":"); Sets.InclChar(flags, "-");
+   Sets.InclChar(flags, "+"); Sets.InclChar(flags, "#");
+   Sets.InclChar(flags, " ");
+
+   Sets.InitSet(digits);
+   asciicode := ORD("0");
+   REPEAT
+      Sets.InclChar(digits, CHR(asciicode));
+      INC(asciicode);
+   UNTIL asciicode > ORD("9");
+
+   Sets.InitSet(lowerCaseLetters);
+   asciicode := ORD("a");
+   REPEAT
+      Sets.InclChar(lowerCaseLetters, CHR(asciicode));
+      INC(asciicode);
+   UNTIL asciicode > ORD("z");
+   InitErrorHandling;
+END TermInfos.

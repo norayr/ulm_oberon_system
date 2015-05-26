@@ -1,0 +1,1694 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentN.om,v 1.2 2004/06/11 09:20:29 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: PersistentN.om,v $
+   Revision 1.2  2004/06/11 09:20:29  borchert
+   bug fix: MakeSubnode did not set subnode in case of success
+
+   Revision 1.1  2004/03/31 14:54:57  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersistentNodes;
+
+   IMPORT Arrays, AVLTrees, Conditions, ConstStrings, ContainerIdentKeys,
+      Containers, Disciplines, EventConditions, Events, IdentKeys, Iterators,
+      Jobs, Keys, Names, NetIO, NodeConstructors, NodeFactories,
+      ObjectTransactions, PersistentDisciplines, PersistentObjects, Process,
+      RelatedEvents, Resources, Services, Shards, SortedBags, Streams,
+      SYS := SYSTEM, Tasks, Transactions;
+
+   CONST
+      nil = -1;
+
+   TYPE
+      PersistentLink = POINTER TO PersistentLinkRec;
+      PersistentLinkRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    parent: Containers.Ident; (* parent persistent node *)
+	    name: ConstStrings.String;
+	    node: Containers.Ident; (* referenced persistent node *)
+	 END;
+   VAR
+      plinkType: Services.Type;
+
+   TYPE
+      PersistentNode = POINTER TO PersistentNodeRec;
+      PersistentNodeRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    permissions: Names.Permissions;
+	 END;
+   VAR
+      pnodeType: Services.Type;
+
+   TYPE
+      PersistentLeaf = POINTER TO PersistentLeafRec;
+      PersistentLeafRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    factory: NodeFactories.Factory;
+	    permissions: Names.Permissions;
+	 END;
+   VAR
+      pleafType: Services.Type;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      Leaf = POINTER TO LeafRec;
+      Link = POINTER TO LinkRec;
+      LinkRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    name: ConstStrings.String;
+	    parent: Node;
+	    object: Names.Node;
+	    leaf: Leaf; (* # NIL in case of leafs *)
+	    plink: PersistentLink; (* may be NIL if it is non-persistent *)
+	    id: Containers.Ident;
+	    next: Link; (* just temporarily used within ScanDatabase *)
+	 END;
+   VAR
+      linkType: Services.Type;
+
+   TYPE
+      System = POINTER TO SystemRec;
+   TYPE
+      NodeRec =
+	 RECORD
+	    (Names.NodeRec)
+	    dead: BOOLEAN;
+	    system: System;
+	    pnode: PersistentNode;
+	    id: Containers.Ident; (* id of pnode *)
+	    subnodes: AVLTrees.AVLTree; (* tree of link objects *)
+	    eventType: Events.EventType; (* for TakeInterest *)
+	 END;
+   VAR
+      nodeType: Services.Type;
+
+   TYPE
+      LeafRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    dead: BOOLEAN;
+	    system: System;
+	    pleaf: PersistentLeaf;
+	    id: Containers.Ident; (* id of pleaf *)
+	    node: Names.Node; (* node created by factory *)
+	    links: Link; (* temporarily used for delayed leafs *)
+	 END;
+   VAR
+      leafType: Services.Type;
+
+   TYPE
+      LeafConstructionJob = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    leaf: Leaf;
+	 END;
+
+   TYPE
+      SystemRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    container: Containers.Container;
+	    trans: Transactions.Transaction;
+	    root: Node;
+	 END;
+   VAR
+      potType: Services.Type; (* type of Shards.Pot *)
+      factoryType: Services.Type; (* type of NodeFactories.Factory *)
+
+   TYPE
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+         RECORD
+	    (Disciplines.DisciplineRec)
+	    links: SortedBags.Bag; (* of links *)
+	    leaf: Leaf; (* # NIL in case of leafs *)
+	 END;
+   VAR
+      ndid: Disciplines.Identifier;
+
+   VAR
+      if: Names.Interface;
+
+   VAR
+      defaultStatus: Names.Status;
+
+   CONST
+      dbfailure = 0;
+      dbinconsistent = 1;
+      transfailure = 2;
+      noroot = 3;
+      linkwithoutparent = 4;
+      nonunique = 5;
+      badlink = 6;
+      errors = 7;
+   TYPE
+      ErrorCode = SHORTINT; (* dbfailure ... *)
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   (* === error handling ============================================ *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error; event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[dbfailure] := "PONS database failure";
+      errormsg[dbinconsistent] := "inconsistencies detected in PONS database";
+      errormsg[transfailure] := "PONS database transaction failure";
+      errormsg[noroot] := "root node not found in PONS database";
+      errormsg[linkwithoutparent] :=
+	 "link record without parent node found in PONS database";
+      errormsg[nonunique] := "non-unique names found in PONS database";
+      errormsg[badlink] := "dead link found in PONS database";
+   END InitErrorHandling;
+
+   (* === node discipline management ================================ *)
+
+   PROCEDURE GetNodeDiscipline(node: Names.Node; VAR nd: NodeDiscipline);
+   BEGIN
+      IF ~Disciplines.Seek(node, ndid, nd) THEN
+	 NEW(nd); nd.id := ndid;
+	 SortedBags.Create(nd.links, ContainerIdentKeys.key);
+	 nd.leaf := NIL;
+	 Disciplines.Add(node, nd);
+      END;
+   END GetNodeDiscipline;
+
+   PROCEDURE GetLeaf(node: Names.Node; VAR leaf: Leaf) : BOOLEAN;
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      IF Disciplines.Seek(node, ndid, nd) & (nd.leaf # NIL) THEN
+	 leaf := nd.leaf; RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetLeaf;
+
+   PROCEDURE SetLeaf(node: Names.Node; leaf: Leaf);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      GetNodeDiscipline(node, nd);
+      ASSERT(nd.leaf = NIL);
+      nd.leaf := leaf;
+   END SetLeaf;
+
+   (* === back reference management ================================= *)
+
+   PROCEDURE InsertBackReference(link: Link; node: Names.Node);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      GetNodeDiscipline(node, nd);
+      SortedBags.Add(nd.links, link);
+      Disciplines.Add(node, nd);
+   END InsertBackReference;
+
+   PROCEDURE RemoveBackReference(link: Link; node: Names.Node);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      IF Disciplines.Seek(node, ndid, nd) THEN
+	 SortedBags.Remove(nd.links, link);
+      END;
+   END RemoveBackReference;
+
+   (* === constructors ============================================== *)
+
+   PROCEDURE ^ TerminationHandler(event: Events.Event);
+
+   PROCEDURE CreateNode(VAR node: Node; system: System;
+                        pnode: PersistentNode;
+			id: Containers.Ident);
+      VAR
+	 eventType: Events.EventType;
+	 key: Resources.Key;
+   BEGIN
+      NEW(node); Services.Init(node, nodeType);
+      node.system := system; node.pnode := pnode; node.dead := FALSE;
+      AVLTrees.Create(node.subnodes, IdentKeys.key);
+      node.eventType := NIL; node.id := id;
+      Names.InitNode(node, if, Names.allCaps);
+      NodeConstructors.InstallHandler(node);
+      RelatedEvents.QueueEvents(node);
+      Resources.DependsOn(node, system);
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      (* do not let the node become unreferenced
+         because the last client left us
+      *)
+      Resources.Attach(node, key);
+   END CreateNode;
+
+   PROCEDURE CreateLink(VAR link: Link; name: ConstStrings.String;
+			parent: Node;
+                        plink: PersistentLink; id: Containers.Ident);
+   BEGIN
+      NEW(link); Services.Init(link, linkType);
+      link.name := name; link.object := NIL; link.plink := plink;
+      link.id := id; link.next := NIL; link.parent := parent;
+      link.leaf := NIL;
+   END CreateLink;
+
+   PROCEDURE ^ RemoveLink(node: Node; name: Names.Name;
+                          enforcedRemove: BOOLEAN;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ConnectLeaf(leaf: Leaf; node: Names.Node);
+      VAR
+	 eventType: Events.EventType;
+	 key: Resources.Key;
+   BEGIN
+      leaf.node := node;
+      SetLeaf(node, leaf);
+      (* do not let the node become unreferenced
+	 because the last client left us
+      *)
+      Resources.Attach(node, key);
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, TerminationHandler);
+   END ConnectLeaf;
+
+   PROCEDURE ConstructLeaf(job: Jobs.Job);
+      VAR
+	 leaf: Leaf;
+	 factory: NodeFactories.Factory;
+	 conditions: Conditions.ConditionSet;
+	 setOfTrueConditions: Conditions.ConditionSet;
+	 condition: Conditions.Condition;
+	 link: Link;
+	 termCond, softTermCond: Conditions.Condition;
+	 ok: BOOLEAN;
+	 node: Names.Node;
+	 terminate: BOOLEAN;
+	 event: Names.MemberEvent;
+   BEGIN (* ConstructLeaf *)
+      leaf := job(LeafConstructionJob).leaf;
+      factory := leaf.pleaf.factory;
+      NodeFactories.GetConditions(factory, conditions);
+      IF (conditions # NIL) & (Conditions.Card(conditions) > 0) THEN
+	 EventConditions.Create(termCond, Process.termination);
+	 EventConditions.Create(softTermCond, Process.softTermination);
+	 Conditions.Incl(conditions, termCond);
+	 Conditions.Incl(conditions, softTermCond);
+	 terminate := FALSE;
+	 LOOP
+	    Tasks.Select(conditions, setOfTrueConditions);
+	    IF Conditions.In(setOfTrueConditions, termCond) OR
+		  Conditions.In(setOfTrueConditions, softTermCond) THEN
+	       terminate := TRUE;
+	       EXIT
+	    END;
+	    Conditions.ExamineConditions(setOfTrueConditions);
+	    WHILE Conditions.GetNextCondition(setOfTrueConditions, condition) DO
+	       Conditions.Excl(conditions, condition);
+	    END;
+	    IF Conditions.Card(conditions) = 2 THEN EXIT END;
+	 END;
+	 EventConditions.Drop(termCond);
+	 EventConditions.Drop(softTermCond);
+      END;
+      IF terminate THEN RETURN END;
+      RelatedEvents.Forward(factory, leaf.system);
+      IF NodeFactories.ConstructNode(factory, node) THEN
+	 leaf.node := node;
+	 link := leaf.links;
+	 WHILE link # NIL DO
+	    link.object := node;
+	    (* notify, if necessary, that this node is now to be seen *)
+	    IF link.parent.eventType # NIL THEN
+	       NEW(event); event.type := link.parent.eventType;
+	       event.state := Names.inserted;
+	       event.name := link.name;
+	       event.node := link.parent;
+	       Events.Raise(event);
+	    END;
+	    link := link.next;
+	 END;
+	 ConnectLeaf(leaf, node);
+      ELSE
+	 link := leaf.links;
+	 WHILE link # NIL DO
+	    ok := RemoveLink(link.parent, link.name, TRUE, leaf.system);
+	    link := link.next;
+	 END;
+      END;
+      leaf.links := NIL;
+   END ConstructLeaf;
+
+   PROCEDURE SpawnDelayedLeafConstruction(leaf: Leaf);
+      VAR
+	 job: LeafConstructionJob;
+   BEGIN
+      NEW(job); job.leaf := leaf; Jobs.Submit(job, ConstructLeaf);
+   END SpawnDelayedLeafConstruction;
+
+   PROCEDURE CreateLeaf(VAR leaf: Leaf; system: System;
+                        pleaf: PersistentLeaf;
+			id: Containers.Ident;
+			node: Names.Node);
+      VAR
+	 eventType: Events.EventType;
+	 nd: NodeDiscipline;
+   BEGIN
+      NEW(leaf); Services.Init(leaf, leafType);
+      leaf.system := system; leaf.pleaf := pleaf; leaf.dead := FALSE;
+      leaf.id := id; leaf.node := node; leaf.links := NIL;
+      IF node # NIL THEN
+	 ConnectLeaf(leaf, node);
+      END;
+   END CreateLeaf;
+
+   (* === Extract if procedures for ContainerIdentKeys ============== *)
+
+   PROCEDURE ExtractContainerIdentFromLink(object: Services.Object;
+                                           key: Keys.Key;
+				           VAR keyval: Keys.Value);
+      VAR
+	 kval: ContainerIdentKeys.Value;
+   BEGIN
+      WITH object: Link DO
+	 ContainerIdentKeys.CreateValue(kval); kval.id := object.id;
+	 keyval := kval;
+      END;
+   END ExtractContainerIdentFromLink;
+
+   PROCEDURE ExtractContainerIdentFromNode(object: Services.Object;
+                                           key: Keys.Key;
+				           VAR keyval: Keys.Value);
+      VAR
+	 kval: ContainerIdentKeys.Value;
+   BEGIN
+      WITH object: Node DO
+	 ContainerIdentKeys.CreateValue(kval); kval.id := object.id;
+	 keyval := kval;
+      END;
+   END ExtractContainerIdentFromNode;
+
+   PROCEDURE ExtractContainerIdentFromLeaf(object: Services.Object;
+                                           key: Keys.Key;
+				           VAR keyval: Keys.Value);
+      VAR
+	 kval: ContainerIdentKeys.Value;
+   BEGIN
+      WITH object: Leaf DO
+	 ContainerIdentKeys.CreateValue(kval); kval.id := object.id;
+	 keyval := kval;
+      END;
+   END ExtractContainerIdentFromLeaf;
+
+   (* === Extract if procedures for IdentKeys ======================= *)
+
+   PROCEDURE ExtractIdentFromLink(object: Services.Object;
+                                  key: Keys.Key;
+				  VAR keyval: Keys.Value);
+      VAR
+	 kval: IdentKeys.Value;
+   BEGIN
+      WITH object: Link DO
+	 IdentKeys.CreateValue(kval); kval.ident := object.name;
+	 keyval := kval;
+      END;
+   END ExtractIdentFromLink;
+
+   (* === PersistentObjects if procedures for PersistentLink ======== *)
+
+   PROCEDURE CreatePersistentLink(VAR object: PersistentObjects.Object);
+      VAR
+	 plink: PersistentLink;
+   BEGIN
+      NEW(plink); PersistentObjects.Init(plink, plinkType);
+      plink.parent := nil; plink.name := NIL; plink.node := nil;
+      object := plink;
+   END CreatePersistentLink;
+
+   PROCEDURE ReadPersistentLink(s: Streams.Stream;
+                                object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: PersistentLink DO
+	 RETURN NetIO.ReadLongInt(s, object.parent) &
+	        NetIO.ReadConstString(s, object.name) &
+		NetIO.ReadLongInt(s, object.node)
+      END;
+   END ReadPersistentLink;
+
+   PROCEDURE WritePersistentLink(s: Streams.Stream;
+                                 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: PersistentLink DO
+	 RETURN NetIO.WriteLongInt(s, object.parent) &
+	        NetIO.WriteConstString(s, object.name) &
+		NetIO.WriteLongInt(s, object.node)
+      END;
+   END WritePersistentLink;
+
+   (* === PersistentObjects if procedures for PersistentLeaf ======== *)
+
+   PROCEDURE CreatePersistentLeaf(VAR object: PersistentObjects.Object);
+      VAR
+	 pleaf: PersistentLeaf;
+   BEGIN
+      NEW(pleaf); PersistentObjects.Init(pleaf, pleafType);
+      pleaf.factory := NIL;
+      object := pleaf;
+   END CreatePersistentLeaf;
+
+   PROCEDURE ReadPersistentLeaf(s: Streams.Stream;
+                                object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 accessmode: Names.AccessMode;
+   BEGIN
+      WITH object: PersistentLeaf DO
+	 accessmode := 0;
+	 WHILE accessmode < Names.accessmodes DO
+	    IF ~PersistentObjects.GuardedReadObjectOrNIL(s,
+		  potType, object.permissions[accessmode]) THEN
+	       Error(s, dbfailure);
+	       RETURN FALSE
+	    END;
+	    INC(accessmode);
+	 END;
+	 RETURN PersistentObjects.GuardedRead(s, factoryType, object.factory)
+      END;
+   END ReadPersistentLeaf;
+
+   PROCEDURE WritePersistentLeaf(s: Streams.Stream;
+                                 object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 accessmode: Names.AccessMode;
+   BEGIN
+      WITH object: PersistentLeaf DO
+	 accessmode := 0;
+	 WHILE accessmode < Names.accessmodes DO
+	    IF ~PersistentObjects.WriteObjectOrNIL(s,
+		  object.permissions[accessmode]) THEN
+	       Error(s, dbfailure);
+	       RETURN FALSE
+	    END;
+	    INC(accessmode);
+	 END;
+	 RETURN PersistentObjects.Write(s, object.factory)
+      END;
+   END WritePersistentLeaf;
+
+   (* === PersistentObjects if procedures for PersistentNode ======== *)
+
+   PROCEDURE CreatePersistentNode(VAR object: PersistentObjects.Object);
+      VAR
+	 pnode: PersistentNode;
+   BEGIN
+      NEW(pnode); PersistentObjects.Init(pnode, pnodeType);
+      object := pnode;
+   END CreatePersistentNode;
+
+   PROCEDURE ReadPersistentNode(s: Streams.Stream;
+                                object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 accessmode: Names.AccessMode;
+   BEGIN
+      WITH object: PersistentNode DO
+	 accessmode := 0;
+	 WHILE accessmode < Names.accessmodes DO
+	    IF ~PersistentObjects.GuardedReadObjectOrNIL(s,
+		  potType, object.permissions[accessmode]) THEN
+	       Error(s, dbfailure);
+	       RETURN FALSE
+	    END;
+	    INC(accessmode);
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadPersistentNode;
+
+   PROCEDURE WritePersistentNode(s: Streams.Stream;
+                                 object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 accessmode: Names.AccessMode;
+   BEGIN
+      WITH object: PersistentNode DO
+	 accessmode := 0;
+	 WHILE accessmode < Names.accessmodes DO
+	    IF ~PersistentObjects.WriteObjectOrNIL(s,
+		  object.permissions[accessmode]) THEN
+	       Error(s, dbfailure);
+	       RETURN FALSE
+	    END;
+	    INC(accessmode);
+	 END;
+	 RETURN TRUE
+      END;
+   END WritePersistentNode;
+
+   (* === transaction management ==================================== *)
+
+   PROCEDURE BeginTransaction(system: System; VAR nested: BOOLEAN) : BOOLEAN;
+      VAR
+	 state: Transactions.State;
+   BEGIN
+      IF ~Transactions.GetState(system.trans, NIL, state) THEN
+	 Error(system, transfailure);
+	 RETURN FALSE
+      END;
+      nested := state = Transactions.begun;
+      IF nested THEN RETURN TRUE END;
+      RETURN Transactions.Begin(system.trans, NIL)
+   END BeginTransaction;
+
+   PROCEDURE CommitTransaction(system: System; nested: BOOLEAN) : BOOLEAN;
+   BEGIN
+      IF nested THEN RETURN TRUE END;
+      RETURN Transactions.Commit(system.trans, NIL)
+   END CommitTransaction;
+
+   PROCEDURE AbortTransaction(system: System);
+      VAR
+	 state: Transactions.State;
+	 ignore: BOOLEAN;
+   BEGIN
+      IF Transactions.GetState(system.trans, NIL, state) &
+	    (state = Transactions.aborted) THEN
+	 (* already aborted *)
+	 RETURN
+      END;
+      ignore := Transactions.Abort(system.trans, NIL)
+   END AbortTransaction;
+
+   (* === database accessing procedures ============================= *)
+
+   PROCEDURE RemovePersistentNode(node: Node) : BOOLEAN;
+
+      VAR
+	 nested: BOOLEAN;
+	 system: System;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* RemovePersistentNode *)
+      IF SYS.TAS(node.dead) THEN
+	 RETURN TRUE
+      ELSE
+	 system := node.system;
+	 IF Resources.Terminated(system) THEN RETURN FALSE END;
+	 IF ~BeginTransaction(system, nested) THEN
+	    Error(node, transfailure);
+	    RETURN FALSE
+	 END;
+	 IF ~Containers.Delete(system.container, system.trans, node.id) THEN
+	    Error(node, dbfailure);
+	    Abort; RETURN FALSE
+	 END;
+	 RETURN CommitTransaction(system, nested)
+      END;
+   END RemovePersistentNode;
+
+   PROCEDURE RemovePersistentLeaf(leaf: Leaf) : BOOLEAN;
+
+      VAR
+	 nested: BOOLEAN;
+	 system: System;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* RemovePersistentLeaf *)
+      IF SYS.TAS(leaf.dead) THEN
+	 RETURN TRUE
+      ELSE
+	 system := leaf.system;
+	 IF Resources.Terminated(system) THEN RETURN FALSE END;
+	 IF ~BeginTransaction(system, nested) THEN
+	    Error(leaf, transfailure);
+	    RETURN FALSE
+	 END;
+	 IF ~Containers.Delete(system.container, system.trans, leaf.id) THEN
+	    Error(leaf, dbfailure);
+	    Abort; RETURN FALSE
+	 END;
+	 RETURN CommitTransaction(system, nested)
+      END;
+   END RemovePersistentLeaf;
+
+   PROCEDURE RemovePersistentLink(system: System; link: Link) : BOOLEAN;
+
+      VAR
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* RemovePersistentLink *)
+      IF Resources.Terminated(system) THEN RETURN FALSE END;
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      IF ~Containers.Delete(system.container, system.trans, link.id) THEN
+	 Abort; RETURN FALSE
+      END;
+      RETURN CommitTransaction(system, nested)
+   END RemovePersistentLink;
+
+   PROCEDURE RemoveLink(node: Node; name: Names.Name;
+                        enforcedRemove: BOOLEAN;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 link: Link;
+	 ok: BOOLEAN;
+	 event: Names.MemberEvent;
+	 failed: BOOLEAN;
+   BEGIN
+      IdentKeys.CreateValue(keyval); keyval.ident := name;
+      IF ~AVLTrees.Get(node.subnodes, keyval, link) THEN
+	 (* no link with the given name exists *)
+	 Names.Error(errors, Names.nodeNotFound);
+	 RETURN FALSE
+      END;
+      failed := FALSE;
+      IF (link.object # NIL) & (link.object IS Node) &
+	    (node.system = link.object(Node).system) OR
+	    (link.leaf # NIL) THEN
+	 IF ~RemovePersistentLink(node.system, link) THEN
+	    (* database failure *)
+	    Error(errors, dbfailure);
+	    IF enforcedRemove THEN
+	       failed := TRUE;
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+      ok := AVLTrees.Remove(node.subnodes, keyval); ASSERT(ok);
+      IF Resources.Alive(node) & (link.object # NIL) THEN
+	 RemoveBackReference(link, link.object);
+      END;
+      IF (node.eventType # NIL) & (link.object # NIL) THEN
+	 NEW(event); event.type := node.eventType;
+	 event.state := Names.deleted;
+	 event.name := name; event.node := node;
+	 Events.Raise(event);
+      END;
+      RETURN ~failed
+   END RemoveLink;
+
+   PROCEDURE DestroyNode(node: Names.Node) : BOOLEAN;
+
+      VAR
+	 ok: BOOLEAN;
+	 system: System;
+	 nested: BOOLEAN;
+	 leaf: Leaf;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+      PROCEDURE RemoveLinks(node: Names.Node) : BOOLEAN;
+	 VAR
+	    nd: NodeDiscipline;
+	    it: Iterators.Iterator;
+	    link: Link;
+      BEGIN
+	 (* remove all links that reference node *)
+	 IF Disciplines.Seek(node, ndid, nd) THEN
+	    Disciplines.Remove(node, ndid);
+	    SortedBags.GetEntries(nd.links, SortedBags.ascending,
+	       NIL, NIL, it);
+	    WHILE Iterators.Get(it, link) DO
+	       IF ~RemoveLink(link.parent, link.name, TRUE, node) THEN
+		  RETURN FALSE
+	       END;
+	    END;
+	 END;
+	 (* remove all links that originate from node *)
+	 IF node IS Node THEN
+	    AVLTrees.GetEntries(node(Node).subnodes, AVLTrees.ascending,
+	       NIL, NIL, it);
+	    WHILE Iterators.Get(it, link) DO
+	       IF ~RemoveLink(link.parent, link.name, TRUE, node) THEN
+		  RETURN FALSE
+	       END;
+	    END;
+	 END;
+	 RETURN TRUE
+      END RemoveLinks;
+
+   BEGIN (* DestroyNode *)
+      nested := FALSE;
+      IF node IS Node THEN
+	 WITH node: Node DO
+	    system := node.system;
+	    IF node = node.system.root THEN
+	       (* thou shalt not kill root:
+		  we let the persistent root survive
+		  by terminating the transaction
+	       *)
+	       ok := Transactions.Release(system.trans, NIL);
+	       Resources.Notify(system.trans, Resources.terminated);
+	    ELSIF BeginTransaction(system, nested) THEN
+	       ok := RemoveLinks(node) & RemovePersistentNode(node);
+	       IF ok THEN
+		  ok := CommitTransaction(system, nested);
+	       ELSE
+		  Abort; RETURN FALSE
+	       END;
+	    ELSE
+	       ok := FALSE;
+	    END;
+	 END;
+	 Resources.Notify(node, Resources.terminated);
+      ELSIF GetLeaf(node, leaf) THEN
+	 ASSERT(leaf.node = node);
+	 system := leaf.system;
+	 IF BeginTransaction(system, nested) THEN
+	    ok := RemoveLinks(node) & RemovePersistentLeaf(leaf);
+	    IF ok THEN
+	       ok := CommitTransaction(system, nested);
+	    ELSE
+	       Abort; RETURN FALSE
+	    END;
+	 ELSE
+	    ok := FALSE;
+	 END;
+      ELSE
+	 ok := RemoveLinks(node);
+      END;
+      RETURN ok
+   END DestroyNode;
+
+   PROCEDURE ScanDatabase(system: System) : BOOLEAN;
+      VAR
+	 id: Containers.Ident;
+	 object: Containers.Object;
+	 nodes: Arrays.Array; node: Node;
+	 subnode: Names.Node;
+	 leafs: Arrays.Array; leaf: Leaf;
+	 links: Link; link, next: Link;
+	 keyval: ContainerIdentKeys.Value;
+	 rootid: Containers.Ident;
+	 root: Node;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+      PROCEDURE GarbageCollection() : BOOLEAN;
+	 VAR
+	    living: AVLTrees.AVLTree;
+
+	 PROCEDURE Mark(node: Node);
+	    VAR
+	       it: Iterators.Iterator;
+	       link: Link;
+	       ok: BOOLEAN;
+	 BEGIN
+	    IF AVLTrees.Add(living, node) THEN
+	       AVLTrees.GetEntries(node.subnodes, AVLTrees.ascending,
+		  NIL, NIL, it);
+	       WHILE Iterators.Get(it, link) DO
+		  IF link.leaf # NIL THEN
+		     ok := AVLTrees.Add(living, link.leaf);
+		     (* ok can be FALSE due to multiple links to
+			the same leaf object
+		     *)
+		  ELSIF link.object IS Node THEN
+		     Mark(link.object(Node));
+		  END;
+	       END;
+	    END;
+	 END Mark;
+
+	 PROCEDURE Sweep() : BOOLEAN;
+	    VAR
+	       it: Iterators.Iterator;
+	       node: Node;
+	       leaf: Leaf;
+	       keyval: ContainerIdentKeys.Value;
+	 BEGIN
+	    Arrays.GetEntries(nodes, Arrays.ascending, NIL, NIL, it);
+	    WHILE Iterators.Get(it, node) DO
+	       ContainerIdentKeys.CreateValue(keyval); keyval.id := node.id;
+	       IF ~AVLTrees.Exists(living, keyval) THEN
+		  (* the termination handler for nodes does the rest *)
+		  IF ~DestroyNode(node) THEN
+		     Error(system, dbfailure);
+		     RETURN FALSE
+		  END;
+		  Resources.Notify(node, Resources.terminated);
+	       END;
+	    END;
+	    Arrays.GetEntries(leafs, Arrays.ascending, NIL, NIL, it);
+	    WHILE Iterators.Get(it, leaf) DO
+	       ContainerIdentKeys.CreateValue(keyval); keyval.id := leaf.id;
+	       IF ~AVLTrees.Exists(living, keyval) THEN
+		  (* the termination handler for nodes does the rest *)
+		  leaf.dead := TRUE;
+		  IF leaf.node # NIL THEN
+		     IF ~DestroyNode(leaf.node) THEN
+			Error(system, dbfailure);
+			RETURN FALSE
+		     END;
+		     Resources.Notify(leaf.node, Resources.terminated);
+		  END;
+	       END;
+	    END;
+	    RETURN TRUE
+	 END Sweep;
+
+      BEGIN (* GarbageCollection *)
+	 AVLTrees.Create(living, ContainerIdentKeys.key);
+	 Mark(root);
+	 RETURN Sweep();
+      END GarbageCollection;
+
+      PROCEDURE SpawnLeafNodeConstructors;
+	 VAR
+	    it: Iterators.Iterator;
+	    leaf: Leaf;
+      BEGIN
+	 Arrays.GetEntries(leafs, Arrays.ascending, NIL, NIL, it);
+	 WHILE Iterators.Get(it, leaf) DO
+	    IF ~leaf.dead THEN
+	       SpawnDelayedLeafConstruction(leaf);
+	    END;
+	 END;
+      END SpawnLeafNodeConstructors;
+
+   BEGIN (* ScanDatabase *)
+      IF ~BeginTransaction(system, nested) THEN
+	 Error(system, transfailure);
+	 RETURN FALSE
+      END;
+
+      (* scan through all database objects *)
+      IF ~Containers.Find(system.container, system.trans,
+	    Containers.first, id) THEN
+	 Error(system.container, dbfailure);
+	 RETURN FALSE
+      END;
+      Arrays.Create(nodes, ContainerIdentKeys.key); links := NIL;
+      Arrays.Create(leafs, ContainerIdentKeys.key);
+      REPEAT
+	 IF ~Containers.Obtain(system.container, system.trans, id, object) THEN
+	    Error(system.container, dbfailure);
+	    Abort; RETURN FALSE
+	 END;
+	 ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+	 IF object IS PersistentNode THEN
+	    WITH object: PersistentNode DO
+	       CreateNode(node, system, object, id);
+	       Arrays.Set(nodes, keyval, node);
+	    END;
+	 ELSIF object IS PersistentLink THEN
+	    WITH object: PersistentLink DO
+	       CreateLink(link, object.name, NIL, object, id);
+	       link.next := links; links := link;
+	    END;
+	 ELSIF object IS PersistentLeaf THEN
+	    WITH object: PersistentLeaf DO
+	       CreateLeaf(leaf, system, object, id, NIL);
+	       Arrays.Set(leafs, keyval, leaf);
+	    END;
+	 ELSE
+	    (* unknown object type *)
+	    Abort; RETURN FALSE
+	 END;
+      UNTIL ~Containers.Find(system.container, system.trans,
+	       Containers.succ, id);
+
+      (* get root node *)
+      IF ~Containers.GetAnchor(system.container, system.trans, rootid) THEN
+	 Error(system.container, noroot);
+	 Abort; RETURN FALSE
+      END;
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := rootid;
+      IF ~Arrays.Get(nodes, keyval, root) THEN
+	 Error(system.container, noroot);
+	 Error(system.container, dbinconsistent);
+	 Abort; RETURN FALSE
+      END;
+      system.root := root;
+
+      (* insert all links into the subnodes AVL tree of their nodes *)
+      link := links;
+      WHILE link # NIL DO
+	 ContainerIdentKeys.CreateValue(keyval);
+	 keyval.id := link.plink.parent;
+	 IF ~Arrays.Get(nodes, keyval, node) THEN
+	    (* link without parent found *)
+	    Error(system.container, linkwithoutparent);
+	    Error(system.container, dbinconsistent);
+	    Abort; RETURN FALSE
+	 END;
+	 IF ~AVLTrees.Add(node.subnodes, link) THEN
+	    (* name of a link for a node is not unique *)
+	    Error(system.container, nonunique);
+	    Error(system.container, dbinconsistent);
+	    Abort; RETURN FALSE
+	 END;
+	 leaf := NIL;
+	 keyval.id := link.plink.node;
+	 IF Arrays.Get(leafs, keyval, leaf) THEN
+	    subnode := leaf.node;
+	    link.leaf := leaf;
+	 ELSIF ~Arrays.Get(nodes, keyval, subnode) THEN
+	    (* referenced node not found *)
+	    Error(system.container, badlink);
+	    Error(system.container, dbinconsistent);
+	    Abort; RETURN FALSE
+	 END;
+	 link.parent := node; link.object := subnode;
+	 IF subnode = NIL THEN
+	    next := link.next;
+	    link.next := leaf.links; leaf.links := link;
+	    link := next;
+	 ELSE
+	    InsertBackReference(link, subnode);
+	    link := link.next;
+	 END;
+      END;
+      IF ~GarbageCollection() OR ~CommitTransaction(system, nested) THEN
+	 RETURN FALSE
+      END;
+      SpawnLeafNodeConstructors;
+      RETURN TRUE
+   END ScanDatabase;
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 entryit: Iterators.Iterator;
+	 link: Link;
+   BEGIN
+      WITH ref: Node DO
+	 ASSERT(ref.subnodes # NIL);
+	 AVLTrees.GetEntries(ref.subnodes, AVLTrees.ascending,
+	    NIL, NIL, entryit);
+	 WHILE Iterators.Get(entryit, link) DO
+	    IF link.object # NIL THEN (* skip unfinished links *)
+	       Iterators.Yield(it, link.name);
+	    END;
+	 END;
+      END;
+   END IterateMembers;
+
+   PROCEDURE PurgeDatabase(system: System) : BOOLEAN;
+      VAR
+	 id: Containers.Ident;
+	 card: LONGINT;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* PurgeDatabase *)
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      WHILE Containers.Find(system.container, system.trans,
+	       Containers.first, id) DO
+	 IF ~Containers.Delete(system.container, system.trans,
+	                       id) THEN
+	    Error(system, dbfailure);
+	    Abort; RETURN FALSE
+	 END;
+      END;
+      IF ~Containers.Elements(system.container, system.trans, card) THEN
+	 Error(system, dbfailure);
+	 Abort; RETURN FALSE
+      END;
+      IF card # 0 THEN
+	 Error(system, dbfailure);
+	 Abort; RETURN FALSE
+      END;
+      RETURN CommitTransaction(system, nested)
+   END PurgeDatabase;
+
+   PROCEDURE CreateAndInsertPersistentLink(VAR plink: PersistentLink;
+					   VAR id: Containers.Ident;
+				           system: System;
+                                           name: ConstStrings.String;
+				           parent: Node;
+					   nodeID: Containers.Ident) : BOOLEAN;
+      VAR
+	 link: PersistentLink;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* CreateAndInsertPersistentLink *)
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      CreatePersistentLink(link);
+      link.parent := parent.id;
+      link.name := name;
+      link.node := nodeID;
+      IF ~Containers.Insert(system.container, system.trans, id, link) THEN
+	 Abort; RETURN FALSE
+      END;
+      IF CommitTransaction(system, nested) THEN
+	 plink := link;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateAndInsertPersistentLink;
+
+   PROCEDURE CreateAndInsertPersistentNode(VAR pnode: PersistentNode;
+	       VAR id: Containers.Ident;
+	       system: System;
+	       permissions: Names.Permissions) : BOOLEAN;
+      VAR
+	 node: PersistentNode;
+	 card: LONGINT;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* CreateAndInsertPersistentNode *)
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      IF ~Containers.Elements(system.container, system.trans, card) THEN
+	 Abort; RETURN FALSE
+      END;
+      CreatePersistentNode(node);
+      node.permissions := permissions;
+      IF ~Containers.Insert(system.container, system.trans, id, node) THEN
+	 Abort; RETURN FALSE
+      END;
+      IF card = 0 THEN
+	 (* root node inserted *)
+	 IF ~Containers.SetAnchor(system.container, system.trans, id) THEN
+	    Abort; RETURN FALSE
+	 END;
+      END;
+      IF CommitTransaction(system, nested) THEN
+	 pnode := node;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateAndInsertPersistentNode;
+
+   PROCEDURE UpdatePersistentNode(system: System; node: Node) : BOOLEAN;
+
+      VAR
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* UpdatePersistentNode *)
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      IF ~Containers.Replace(system.container, system.trans, node.id,
+            node.pnode) THEN
+	 Abort; RETURN FALSE
+      END;
+      RETURN CommitTransaction(system, nested)
+   END UpdatePersistentNode;
+
+   PROCEDURE CreateAndInsertPersistentLeaf(VAR pleaf: PersistentLeaf;
+	       VAR id: Containers.Ident;
+	       system: System;
+	       factory: NodeFactories.Factory;
+	       permissions: Names.Permissions) : BOOLEAN;
+      VAR
+	 leaf: PersistentLeaf;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* CreateAndInsertPersistentLeaf *)
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      CreatePersistentLeaf(leaf);
+      leaf.factory := factory;
+      leaf.permissions := permissions;
+      IF ~Containers.Insert(system.container, system.trans, id, leaf) THEN
+	 Abort; RETURN FALSE
+      END;
+      IF CommitTransaction(system, nested) THEN
+	 pleaf := leaf;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateAndInsertPersistentLeaf;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 node: Names.Node;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    node := event.resource(Names.Node);
+	    IF ~DestroyNode(node) THEN
+	       (* database failure? *)
+	    END;
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE PerformInsert(node: Node; subnode: Names.Node;
+                           name: Names.Name;
+			   auth: Shards.Lid) : BOOLEAN;
+      (* common part of Insert and MakeSubnode *)
+      VAR
+	 link: Link;
+	 plink: PersistentLink;
+	 keyval: IdentKeys.Value;
+	 ok: BOOLEAN;
+	 event: Names.MemberEvent;
+	 id, leafid: Containers.Ident;
+	 eventType: Events.EventType;
+	 leaf: Leaf;
+	 pleaf: PersistentLeaf;
+	 permissions: Names.Permissions;
+	 status: Names.StatusRec;
+	 factory: NodeFactories.Factory;
+	 nested: BOOLEAN;
+   BEGIN
+      IdentKeys.CreateValue(keyval); keyval.ident := name;
+      IF AVLTrees.Get(node.subnodes, keyval, link) THEN
+	 (* a link with the given name exists already *)
+	 IF link.object # NIL THEN
+	    Names.Error(node, Names.nameExists);
+	    RETURN FALSE
+	 END;
+	 (* preliminary link exists that needs now to be removed
+	    to avoid conflicts
+	 *)
+	 IF ~RemoveLink(link.parent, name, TRUE, node) THEN
+	    Error(node, dbfailure);
+	    RETURN FALSE
+	 END;
+      END;
+      IF (subnode IS Node) & (subnode(Node).system = node.system) THEN
+	 RelatedEvents.Save(node.system);
+	 RelatedEvents.Forward(node.system, node);
+	 IF ~CreateAndInsertPersistentLink(plink, id,
+	       node.system, name, node, subnode(Node).id) THEN
+	    (* database failure *)
+	    RelatedEvents.Restore(node.system);
+	    Error(node, dbfailure);
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Restore(node.system);
+      ELSIF GetLeaf(subnode, leaf) & (leaf.system = node.system) THEN
+	 RelatedEvents.Save(node.system);
+	 RelatedEvents.Forward(node.system, node);
+	 IF ~CreateAndInsertPersistentLink(plink, id,
+	       node.system, name, node, leaf.id) THEN
+	    (* database failure *)
+	    RelatedEvents.Restore(node.system);
+	    Error(node, dbfailure);
+	    RETURN FALSE
+	 END;
+      ELSIF NodeFactories.GetFactory(subnode, factory) THEN
+	 IF ~Names.GetStatus(subnode, auth, status) THEN
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+	 nested := FALSE;
+	 IF BeginTransaction(node.system, nested) THEN
+	    IF CreateAndInsertPersistentLeaf(pleaf, leafid,
+		     node.system, factory, status.perm) &
+		  CreateAndInsertPersistentLink(plink, id,
+		     node.system, name, node, leafid) THEN
+	       IF ~CommitTransaction(node.system, nested) THEN
+		  Names.Error(node, dbfailure);
+		  RETURN FALSE
+	       END;
+	    ELSE
+	       AbortTransaction(node.system);
+	       Names.Error(node, dbfailure);
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    Error(node, dbfailure);
+	    RETURN FALSE
+	 END;
+	 CreateLeaf(leaf, node.system, pleaf, leafid, subnode);
+      ELSE
+	 plink := NIL; id := 0;
+      END;
+      CreateLink(link, name, node, plink, id);
+      link.object := subnode;
+      ok := AVLTrees.Add(node.subnodes, link); ASSERT(ok);
+      InsertBackReference(link, subnode);
+      IF node.eventType # NIL THEN
+	 NEW(event); event.type := node.eventType;
+	 event.state := Names.inserted;
+	 event.name := name;
+	 event.node := node;
+	 Events.Raise(event);
+      END;
+      IF ~(subnode IS Node) THEN
+	 Resources.TakeInterest(subnode, eventType);
+	 Events.Handler(eventType, TerminationHandler);
+      END;
+      RETURN TRUE
+   END PerformInsert;
+
+   (* === Names interface procedures ================================ *)
+
+   PROCEDURE Access(node: Names.Node;
+                    mode: Names.AccessMode; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 RETURN Resources.Alive(node) &
+		((node.pnode.permissions[mode] = NIL) OR
+		   Shards.Fits(node.pnode.permissions[mode], auth))
+      END;
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node;
+                       auth: Shards.Lid;
+		       VAR status: Names.StatusRec) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.examine, auth) THEN
+	    status.perm := node.pnode.permissions;
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node;
+		       status: Names.Status;
+                       auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 oldpermissions: Names.Permissions;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.change, auth) THEN
+	    RelatedEvents.Save(node.system);
+	    RelatedEvents.Forward(node.system, node);
+	    oldpermissions := node.pnode.permissions;
+	    IF status = NIL THEN
+	       status := defaultStatus;
+	    END;
+	    node.pnode.permissions := status.perm;
+	    IF UpdatePersistentNode(node.system, node) THEN
+	       RelatedEvents.Restore(node.system);
+	       RETURN TRUE
+	    ELSE
+	       RelatedEvents.Restore(node.system);
+	       node.pnode.permissions := oldpermissions;
+	       Error(node, dbfailure);
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+                        VAR members: Iterators.Iterator) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.read, auth) THEN
+	    Iterators.Create(members, IterateMembers, node, 0);
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.read, auth) THEN
+	    IF node.eventType = NIL THEN
+	       Events.Define(node.eventType);
+	       Names.InitMemberEventType(node.eventType);
+	    END;
+	    eventType := node.eventType;
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name; auth: Shards.Lid;
+                     VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 link: Link;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.search, auth) THEN
+	    IdentKeys.CreateValue(keyval); keyval.ident := name;
+	    IF AVLTrees.Get(node.subnodes, keyval, link) THEN
+	       IF link.object = NIL THEN
+		  (* the creation of the node is delayed
+		     until all preconditions are met for
+		     its creation
+		  *)
+		  Names.Error(node, Names.nodeNotFound);
+		  RETURN FALSE
+	       ELSE
+		  subnode := link.object;
+		  RETURN TRUE
+	       END;
+	    ELSE
+	       Names.Error(node, Names.nodeNotFound);
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.insert, auth) THEN
+	    RETURN PerformInsert(node, subnode, name, auth)
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status;
+                         caps: Names.CapabilitySet; auth: Shards.Lid;
+			 VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 pnode: PersistentNode;
+	 id: Containers.Ident;
+	 permissions: Names.Permissions;
+	 snode: Node;
+	 system: System;
+	 nested: BOOLEAN;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(system);
+      END Abort;
+
+   BEGIN (* MakeSubnode *)
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.insert, auth) THEN
+	    IF status = NIL THEN
+	       permissions := node.pnode.permissions;
+	    ELSE
+	       permissions := status.perm;
+	    END;
+	    system := node.system;
+	    IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+	    ASSERT(~nested);
+	    IF ~CreateAndInsertPersistentNode(pnode, id, node.system,
+		  permissions) THEN
+	       Error(node, dbfailure);
+	       RETURN FALSE
+	    END;
+	    CreateNode(snode, node.system, pnode, id);
+	    IF ~PerformInsert(node, snode, name, auth) THEN
+	       Abort; RETURN FALSE
+	    END;
+	    IF ~CommitTransaction(system, nested) THEN
+	       RETURN FALSE
+	    END;
+	    subnode := snode;
+	    RETURN TRUE
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.delete, auth) THEN
+	    RelatedEvents.Save(node.system);
+	    RelatedEvents.Forward(node.system, node);
+	    ok := RemoveLink(node, name, FALSE, node);
+	    RelatedEvents.Restore(node.system);
+	    RETURN ok
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Delete;
+
+   PROCEDURE Destroy(node: Names.Node; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    (* node is already dead *)
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.destroy, auth) &
+	       (node # node.system.root) THEN
+	    RETURN DestroyNode(node)
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Destroy;
+
+   (* === module initialization ===================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 pif: PersistentObjects.Interface;
+	 service: Services.Service;
+	 accessmode: Names.AccessMode;
+   BEGIN
+      Services.CreateType(nodeType, "PersistentNodes.Node", "Names.Node");
+      Services.CreateType(linkType, "PersistentNodes.Link", "");
+      Services.CreateType(leafType, "PersistentNodes.Leaf", "");
+      NEW(pif);
+      pif.create := CreatePersistentLink;
+      pif.read := ReadPersistentLink;
+      pif.write := WritePersistentLink;
+      PersistentObjects.RegisterType(plinkType,
+	 "PersistentNodes.PersistentLink", "", pif);
+      NEW(pif);
+      pif.create := CreatePersistentNode;
+      pif.read := ReadPersistentNode;
+      pif.write := WritePersistentNode;
+      PersistentObjects.RegisterType(pnodeType,
+	 "PersistentNodes.PersistentNode", "", pif);
+      NEW(pif);
+      pif.create := CreatePersistentLeaf;
+      pif.read := ReadPersistentLeaf;
+      pif.write := WritePersistentLeaf;
+      PersistentObjects.RegisterType(pleafType,
+	 "PersistentNodes.PersistentLeaf", "", pif);
+      Services.SeekType("Shards.Pot", potType); ASSERT(potType # NIL);
+      Services.SeekType("NodeFactories.Factory", factoryType);
+      ASSERT(factoryType # NIL);
+      Keys.GetService(ContainerIdentKeys.key, service);
+      Keys.Support(service, nodeType, ExtractContainerIdentFromNode);
+      Keys.Support(service, linkType, ExtractContainerIdentFromLink);
+      Keys.Support(service, leafType, ExtractContainerIdentFromLeaf);
+      Keys.GetService(IdentKeys.key, service);
+      Keys.Support(service, linkType, ExtractIdentFromLink);
+      ndid := Disciplines.Unique();
+      NEW(if);
+      if.access := Access;
+      if.getStatus := GetStatus;
+      if.setStatus := SetStatus;
+      if.getMembers := GetMembers;
+      if.takeInterest := TakeInterest;
+      if.getNode := GetNode;
+      if.insert := Insert;
+      if.makeSubnode := MakeSubnode;
+      if.delete := Delete;
+      if.destroy := Destroy;
+      NEW(defaultStatus);
+      accessmode := 0;
+      WHILE accessmode < Names.accessmodes DO
+	 defaultStatus.perm[accessmode] := NIL;
+	 INC(accessmode);
+      END;
+   END InitModule;
+
+   (* === exported procedures ======================================= *)
+
+   PROCEDURE Init(container: Containers.Container;
+                  permissions: Names.Permissions) : BOOLEAN;
+      (* to be called on a newly created container before Open *)
+      VAR
+	 trans: Transactions.Transaction;
+	 pnode: PersistentNode;
+	 system: System;
+	 ok: BOOLEAN;
+	 id: Containers.Ident;
+	 nested: BOOLEAN;
+   BEGIN
+      IF ~ObjectTransactions.Create(trans, container, NIL, container) THEN
+	 (* container does not support object transactions
+	    or is already attached to another transaction
+	 *)
+	 RETURN FALSE
+      END;
+      NEW(system);
+      system.container := container;
+      system.trans := trans;
+      IF ~BeginTransaction(system, nested) THEN RETURN FALSE END;
+      ASSERT(~nested);
+      IF ~PurgeDatabase(system) OR
+	    ~CreateAndInsertPersistentNode(pnode, id, system, permissions) THEN
+	 ok := Transactions.Release(trans, NIL); ASSERT(ok);
+	 RETURN FALSE
+      END;
+      ok := CommitTransaction(system, nested) &
+            Transactions.Release(trans, NIL);
+      RETURN ok
+   END Init;
+
+   PROCEDURE Open(VAR root: Names.Node;
+                  container: Containers.Container) : BOOLEAN;
+      VAR
+	 system: System;
+	 trans: Transactions.Transaction;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~ObjectTransactions.Create(trans, container, NIL, container) THEN
+	 (* container does not support object transactions
+	    or is already attached to another transaction
+	 *)
+	 RETURN FALSE
+      END;
+      NEW(system); RelatedEvents.QueueEvents(system);
+      system.container := container;
+      system.trans := trans;
+      Resources.DependsOn(system, trans);
+	 (* note that trans terminates if its object, the container,
+	    terminates
+	 *)
+      IF ~ScanDatabase(system) THEN
+	 ok := Transactions.Release(trans, NIL); ASSERT(ok);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(trans, system);
+      RelatedEvents.Forward(container, system);
+      root := system.root;
+      RETURN TRUE
+   END Open;
+
+BEGIN
+   InitErrorHandling;
+   InitModule;
+END PersistentNodes.

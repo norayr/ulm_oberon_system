@@ -1,0 +1,576 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ResolvConfP.om,v 1.1 2004/03/05 07:26:39 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ResolvConfP.om,v $
+   Revision 1.1  2004/03/05 07:26:39  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ResolvConfParser;
+
+   IMPORT ASCII, ConstStrings, Disciplines, Errors, Events, IPv4Addresses,
+      Iterators, Objects, RelatedEvents, Streams, Types, Write;
+
+   (* parses resolv.conf configuration files *)
+
+   TYPE
+      NameServer = POINTER TO NameServerRec;
+      NameServerRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    ipaddr: IPv4Addresses.Address;
+	    (* private *)
+	    next: NameServer;
+	 END;
+      SearchMember = POINTER TO SearchMemberRec;
+      SearchMemberRec =
+	 RECORD
+	    domain: ConstStrings.String;
+	    next: SearchMember;
+	 END;
+      SortListMember = POINTER TO SortListMemberRec;
+      Option = POINTER TO OptionRec;
+      Configuration = POINTER TO ConfigurationRec;
+      ConfigurationRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    csdomain: ConstStrings.Domain;
+	    nameservers: NameServer;
+	    domain: ConstStrings.String;
+	    searchlist: SearchMember;
+	    sortlist: SortListMember;
+	    options: Option;
+	 END;
+   TYPE
+      SortListMemberRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    ipaddr: IPv4Addresses.Address;
+	    netmask: IPv4Addresses.Address;
+	    netmaskDefined: BOOLEAN;
+	    (* private *)
+	    next: SortListMember;
+	 END;
+   TYPE
+      OptionRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name: ConstStrings.String; (* option name *)
+	    value: INTEGER; (* 1 for set BOOLEAN options *)
+	    (* private *)
+	    next: Option;
+	 END;
+
+   CONST
+      dottedDecimalExpected = 0;
+      keywordExpected = 1;
+      domainExpected = 2;
+      multipleDomains = 3;
+      integerExpected = 3;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* dottedEcimalExpected... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    line, col: INTEGER;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE WriteErrorEvent(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 Write.StringS(s, "at line ");
+	 Write.IntS(s, event.line, 1);
+	 Write.StringS(s, ", column ");
+	 Write.IntS(s, event.col, 1);
+	 Write.StringS(s, ": ");
+	 Write.StringS(s, event.message);
+      END;
+   END WriteErrorEvent;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[dottedDecimalExpected] := "dotted decimal expected";
+      errormsg[keywordExpected] := "keyword expected";
+      errormsg[domainExpected] := "domain expected";
+      errormsg[multipleDomains] :=
+	 "at maximum one domain declaration is permitted";
+      errormsg[integerExpected] := "integer expected";
+      Errors.AssignWriteProcedure(error, WriteErrorEvent);
+   END InitErrorHandling;
+
+   PROCEDURE DoIterateNameServers(it: Iterators.Iterator;
+                                  ref: Iterators.Reference;
+				  mode: Iterators.Mode);
+      VAR
+	 ns: NameServer;
+   BEGIN
+      WITH ref: Configuration DO
+	 ns := ref.nameservers;
+	 WHILE ns # NIL DO
+	    Iterators.Yield(it, ns);
+	    ns := ns.next;
+	 END;
+      END;
+   END DoIterateNameServers;
+
+   PROCEDURE DoIterateSearchList(it: Iterators.Iterator;
+                                 ref: Iterators.Reference;
+				 mode: Iterators.Mode);
+      VAR
+	 member: SearchMember;
+   BEGIN
+      WITH ref: Configuration DO
+	 member := ref.searchlist;
+	 WHILE member # NIL DO
+	    Iterators.Yield(it, member.domain);
+	    member := member.next;
+	 END;
+      END;
+   END DoIterateSearchList;
+
+   PROCEDURE DoIterateSortLists(it: Iterators.Iterator;
+                                ref: Iterators.Reference;
+				mode: Iterators.Mode);
+      VAR
+	 member: SortListMember;
+   BEGIN
+      WITH ref: Configuration DO
+	 member := ref.sortlist;
+	 WHILE member # NIL DO
+	    Iterators.Yield(it, member);
+	    member := member.next;
+	 END;
+      END;
+   END DoIterateSortLists;
+
+   PROCEDURE DoIterateOptions(it: Iterators.Iterator;
+                              ref: Iterators.Reference;
+			      mode: Iterators.Mode);
+      VAR
+	 member: Option;
+   BEGIN
+      WITH ref: Configuration DO
+	 member := ref.options;
+	 WHILE member # NIL DO
+	    Iterators.Yield(it, member);
+	    member := member.next;
+	 END;
+      END;
+   END DoIterateOptions;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Parse(VAR conf: Configuration;
+                   s: Streams.Stream;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+
+      CONST
+	 eofChar = 0X;
+      VAR
+	 ch: CHAR; (* last result of GetChar *)
+	 eof: BOOLEAN;
+	 newline: BOOLEAN;
+      CONST
+	 eofSY = 0;
+	 nameserverSY = 1;
+	 domainSY = 2;
+	 searchSY = 3;
+	 sortlistSY = 4;
+	 optionsSY = 5;
+	 integerSY = 6;
+	 dottedDecimalSY = 7;
+	 stringSY = 8;
+	 colonSY = 9;
+	 slashSY = 10;
+	 errorSY = 11;
+      VAR
+	 integerValue: INTEGER; (* set if sy = integerSY *)
+	 stringValue: ConstStrings.String;
+	 ipaddrValue: IPv4Addresses.Address;
+	 sy: SHORTINT;
+	 errorsSeen: BOOLEAN;
+	 line, col: INTEGER;
+	 nextline: BOOLEAN;
+      VAR
+	 nsTail: NameServer;
+	 slTail: SearchMember;
+	 sortlTail: SortListMember;
+	 optionsTail: Option;
+      VAR
+	 domain: ConstStrings.Domain;
+      VAR
+	 nameserverCS: ConstStrings.String;
+	 domainCS: ConstStrings.String;
+	 searchCS: ConstStrings.String;
+	 sortlistCS: ConstStrings.String;
+	 optionsCS: ConstStrings.String;
+
+      PROCEDURE Error(errorcode: ErrorCode);
+	 VAR
+	    event: ErrorEvent;
+      BEGIN
+	 IF ~errorsSeen THEN
+	    NEW(event);
+	    event.message := errormsg[errorcode];
+	    event.type := error;
+	    event.line := line;
+	    event.col := col;
+	    RelatedEvents.Raise(errors, event);
+	    errorsSeen := TRUE;
+	 END;
+      END Error;
+
+      PROCEDURE GetChar;
+      BEGIN
+	 IF eof THEN
+	    ch := eofChar;
+	 ELSE
+	    IF nextline THEN
+	       INC(line); col := 1;
+	       nextline := FALSE;
+	    ELSE
+	       INC(col);
+	    END;
+	    eof := ~Streams.ReadByte(s, ch);
+	    IF eof THEN
+	       ch := eofChar;
+	    ELSIF ch = ASCII.nl THEN
+	       nextline := TRUE;
+	    END;
+	 END;
+      END GetChar;
+
+      PROCEDURE GetSy;
+	 VAR
+	    s: Streams.Stream;
+	    cs: ConstStrings.String;
+	    dottedDecimal: BOOLEAN;
+	    dots: INTEGER;
+	    intval: INTEGER;
+
+	 PROCEDURE AddByteToIPAddr;
+	 BEGIN
+	    IF intval > 255 THEN
+	       dottedDecimal := FALSE;
+	    ELSE
+	       CASE Types.byteorder OF
+	       | Types.bigEndian:
+		     INC(ipaddrValue, ASH(intval, 8 * (3 - dots)));
+	       | Types.littleEndian:
+		     INC(ipaddrValue, ASH(intval, 8 * dots));
+	       END;
+	    END;
+	 END AddByteToIPAddr;
+
+      BEGIN (* GetSy *)
+	 IF errorsSeen THEN
+	    sy := errorSY; RETURN
+	 END;
+	 REPEAT
+	    WHILE (ch = " ") OR (ch = ASCII.tab) OR (ch = ASCII.nl) DO
+	       IF ch = ASCII.nl THEN
+		  newline := TRUE;
+	       END;
+	       GetChar;
+	    END;
+	    IF (ch = ";") OR (ch = "#") THEN
+	       GetChar;
+	       WHILE (ch # ASCII.nl) & (ch # eofChar) DO
+		  GetChar;
+	       END;
+	       newline := TRUE;
+	    END;
+	    IF ch = eofChar THEN sy := eofSY; RETURN END;
+	 UNTIL (ch # " ") & (ch # ASCII.tab) & (ch # ASCII.nl);
+	 CASE ch OF
+	 | "a".."z", "A".."Z", "0".."9", "-":
+	       ConstStrings.Init(s);
+	       dottedDecimal := TRUE; dots := 0; intval := 0;
+	       ipaddrValue := 0;
+	       WHILE (ch >= "a") & (ch <= "z") OR
+		     (ch >= "A") & (ch <= "Z") OR
+		     (ch >= "0") & (ch <= "9") OR
+		     (ch = "-") OR
+		     (ch = ".") DO
+		  Write.CharS(s, ch);
+		  IF ch = "." THEN
+		     IF dottedDecimal THEN
+			IF dots <= 2 THEN
+			   AddByteToIPAddr;
+			   intval := 0;
+			ELSE
+			   dottedDecimal := FALSE;
+			END;
+		     END;
+		     INC(dots);
+		  ELSIF dottedDecimal THEN
+		     IF (ch >= "0") & (ch <= "9") THEN
+			intval := intval * 10 + ORD(ch) - ORD("0");
+		     ELSE
+			dottedDecimal := FALSE;
+		     END;
+		  END;
+		  GetChar;
+	       END;
+	       IF dottedDecimal & (dots = 3) THEN
+		  AddByteToIPAddr;
+	       END;
+	       ConstStrings.CloseD(s, domain, cs);
+	       IF newline THEN
+		  newline := FALSE;
+		  IF cs = nameserverCS THEN
+		     sy := nameserverSY; RETURN
+		  ELSIF cs = domainCS THEN
+		     sy := domainSY; RETURN
+		  ELSIF cs = searchCS THEN
+		     sy := searchSY; RETURN
+		  ELSIF cs = sortlistCS THEN
+		     sy := sortlistSY; RETURN
+		  ELSIF cs = optionsCS THEN
+		     sy := optionsSY; RETURN
+		  END;
+	       END;
+	       IF dottedDecimal THEN
+		  IF dots = 0 THEN
+		     integerValue := intval; sy := integerSY; RETURN
+		  ELSIF dots = 3 THEN
+		     sy := dottedDecimalSY; RETURN
+		  END;
+	       END;
+	       stringValue := cs; sy := stringSY; RETURN
+	 | ":":
+	       sy := colonSY; GetChar; newline := FALSE; RETURN
+	 | "/":
+	       sy := slashSY; GetChar; newline := FALSE; RETURN
+	 ELSE
+	    sy := errorSY; errorsSeen := TRUE; RETURN
+	 END;
+      END GetSy;
+
+      PROCEDURE ParseNameServer;
+	 VAR
+	    ns: NameServer;
+      BEGIN
+	 IF sy # dottedDecimalSY THEN
+	    Error(dottedDecimalExpected); RETURN
+	 END;
+	 NEW(ns);
+	 ns.ipaddr := ipaddrValue;
+	 ns.next := NIL;
+	 IF nsTail = NIL THEN
+	    conf.nameservers := ns;
+	 ELSE
+	    nsTail.next := ns;
+	 END;
+	 nsTail := ns;
+	 GetSy;
+      END ParseNameServer;
+
+      PROCEDURE ParseDomain;
+      BEGIN
+	 IF sy # stringSY THEN
+	    Error(domainExpected); RETURN
+	 END;
+	 IF conf.domain # NIL THEN
+	    Error(multipleDomains); RETURN
+	 END;
+	 conf.domain := stringValue;
+	 GetSy;
+      END ParseDomain;
+
+      PROCEDURE ParseSearchList;
+	 VAR
+	    member: SearchMember;
+      BEGIN
+	 WHILE sy = stringSY DO
+	    NEW(member);
+	    member.domain := stringValue;
+	    member.next := NIL;
+	    IF slTail = NIL THEN
+	       conf.searchlist := member;
+	    ELSE
+	       slTail.next := member;
+	    END;
+	    slTail := member;
+	    GetSy;
+	 END;
+      END ParseSearchList;
+
+      PROCEDURE ParseSortList;
+	 VAR
+	    member: SortListMember;
+      BEGIN
+	 WHILE sy = dottedDecimalSY DO
+	    NEW(member);
+	    member.ipaddr := ipaddrValue;
+	    member.netmaskDefined := FALSE;
+	    GetSy;
+	    IF sy = slashSY THEN
+	       GetSy;
+	       IF sy # dottedDecimalSY THEN
+		  Error(dottedDecimalExpected); RETURN
+	       END;
+	       member.netmask := ipaddrValue;
+	       member.netmaskDefined := TRUE;
+	       GetSy;
+	    END;
+	    member.next := NIL;
+	    IF sortlTail = NIL THEN
+	       conf.sortlist := member;
+	    ELSE
+	       sortlTail.next := member;
+	    END;
+	    sortlTail := member;
+	 END;
+      END ParseSortList;
+
+      PROCEDURE ParseOptions;
+	 VAR
+	    option: Option;
+      BEGIN
+	 WHILE sy = stringSY DO
+	    NEW(option);
+	    option.name := stringValue;
+	    option.value := 1;
+	    GetSy;
+	    IF sy = colonSY THEN
+	       GetSy;
+	       IF sy # integerSY THEN
+		  Error(integerExpected);
+	       END;
+	       option.value := integerValue;
+	       GetSy;
+	    END;
+	    option.next := NIL;
+	    IF optionsTail = NIL THEN
+	       conf.options := option;
+	    ELSE
+	       optionsTail.next := option;
+	    END;
+	    optionsTail := option;
+	 END;
+      END ParseOptions;
+
+   BEGIN (* Parse *)
+      ConstStrings.CreateDomain(domain);
+      ConstStrings.CreateD(nameserverCS, domain, "nameserver");
+      ConstStrings.CreateD(domainCS, domain, "domain");
+      ConstStrings.CreateD(searchCS, domain, "search");
+      ConstStrings.CreateD(sortlistCS, domain, "sortlist");
+      ConstStrings.CreateD(optionsCS, domain, "options");
+      NEW(conf); conf.csdomain := domain;
+      line := 1; col := 1; nextline := FALSE;
+      nsTail := NIL; conf.nameservers := NIL;
+      slTail := NIL; conf.searchlist := NIL;
+      sortlTail := NIL; conf.sortlist := NIL;
+      optionsTail := NIL; conf.options := NIL;
+      eof := FALSE; errorsSeen := FALSE; newline := TRUE; GetChar; GetSy;
+      WHILE (sy # eofSY) & (sy # errorSY) DO
+	 CASE sy OF
+	 | nameserverSY:
+	       GetSy; ParseNameServer;
+	 | domainSY:
+	       GetSy; ParseDomain;
+	 | searchSY:
+	       GetSy; ParseSearchList;
+	 | sortlistSY:
+	       GetSy; ParseSortList;
+	 | optionsSY:
+	       GetSy; ParseOptions;
+	 ELSE
+	    Error(keywordExpected); GetSy;
+	 END;
+      END;
+      IF errorsSeen THEN RETURN FALSE END;
+      RETURN TRUE
+   END Parse;
+
+   PROCEDURE IterateNameServers(conf: Configuration;
+                                VAR it: Iterators.Iterator);
+      (* returns NameServer objects *)
+   BEGIN
+      Iterators.Create(it, DoIterateNameServers, conf, 0);
+   END IterateNameServers;
+
+   PROCEDURE IterateSearchList(conf: Configuration;
+                               VAR it: Iterators.Iterator);
+      (* returns ConstStrings.String objects *)
+   BEGIN
+      Iterators.Create(it, DoIterateSearchList, conf, 0);
+   END IterateSearchList;
+
+   PROCEDURE IterateSortLists(conf: Configuration;
+                              VAR it: Iterators.Iterator);
+      (* returns SortListMember objects *)
+   BEGIN
+      Iterators.Create(it, DoIterateSortLists, conf, 0);
+   END IterateSortLists;
+
+   PROCEDURE IterateOptions(conf: Configuration;
+			    VAR it: Iterators.Iterator);
+      (* returns Option objects *)
+   BEGIN
+      Iterators.Create(it, DoIterateOptions, conf, 0);
+   END IterateOptions;
+
+   PROCEDURE GetOption(conf: Configuration;
+                       name: ARRAY OF CHAR;
+                       VAR value: INTEGER) : BOOLEAN;
+      VAR
+	 string: ConstStrings.String;
+	 option: Option;
+   BEGIN
+      IF conf.options = NIL THEN RETURN FALSE END;
+      IF name[0] = 0X THEN RETURN FALSE END;
+      ConstStrings.CreateD(string, conf.csdomain, name);
+      option := conf.options;
+      WHILE option # NIL DO
+	 IF string = option.name THEN
+	    value := option.value;
+	    RETURN TRUE
+	 END;
+	 option := option.next;
+      END;
+      RETURN FALSE
+   END GetOption;
+
+   PROCEDURE GetLocalDomain(conf: Configuration;
+                            VAR domain: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      IF conf.domain = NIL THEN RETURN FALSE END;
+      ConstStrings.Extract(domain, conf.domain);
+      RETURN TRUE
+   END GetLocalDomain;
+
+BEGIN
+   InitErrorHandling;
+END ResolvConfParser.

@@ -1,0 +1,92 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: NamesBootSe.om,v 1.1 2004/03/11 22:54:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: NamesBootSe.om,v $
+   Revision 1.1  2004/03/11 22:54:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NamesBootService;
+
+   IMPORT Daemons, Names, Networks, RelatedEvents, RemoteNames,
+      RemoteObjects, Resources, Services, Streams;
+
+   TYPE
+      Daemon = POINTER TO DaemonRec;
+      DaemonRec =
+	 RECORD
+	    (Daemons.DaemonRec)
+	    root: Names.Node;
+	 END;
+   VAR
+      type, guard: Services.Type;
+
+   PROCEDURE ProcessRequests(daemon: Daemons.Daemon;
+                             s: Streams.Stream);
+   BEGIN
+      WITH daemon: Daemon DO
+	 RelatedEvents.Forward(s, daemon);
+	 IF Resources.Terminated(daemon.root) OR
+	       ~RemoteObjects.Export(s, daemon.root) THEN
+	    Resources.Notify(daemon, Resources.terminated);
+	 END;
+	 Streams.Release(s);
+      END;
+   END ProcessRequests;
+
+   PROCEDURE Export(address: Networks.Address;
+		    root: Names.Node;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+      (* server side *)
+      VAR
+	 daemon: Daemon;
+   BEGIN
+      ASSERT(root # NIL);
+      IF ~RemoteObjects.Exportable(root) THEN RETURN FALSE END;
+      NEW(daemon); daemon.root := root; Services.Init(daemon, type);
+      Resources.DependsOn(daemon, root);
+      RETURN Daemons.Start(daemon, address, ProcessRequests)
+   END Export;
+
+   PROCEDURE Import(address: Networks.Address;
+                    VAR root: Names.Node;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* client side *)
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      IF Networks.Open(s, address, Streams.onebuf, errors) THEN
+	 RelatedEvents.Forward(s, errors);
+	 ok := RemoteObjects.GuardedImport(s, guard, root);
+	 Streams.Release(s);
+	 RETURN ok
+      ELSE
+	 RETURN FALSE
+      END;
+   END Import;
+
+BEGIN
+   Services.SeekType("Names.Node", guard); ASSERT(guard # NIL);
+   Services.CreateType(type, "NamesBootService.Daemon", "Daemons.Daemon");
+END NamesBootService.

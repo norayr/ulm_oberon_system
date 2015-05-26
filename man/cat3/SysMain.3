@@ -1,0 +1,59 @@
+SysMain(3)                    Ulm's Oberon System                   SysMain(3)
+
+
+
+[1mNAME[0m
+       SysMain - determine initialization order
+
+[1mSYNOPSIS[0m
+       VAR mainTaskFinished: Events.EventType;
+
+
+[1mDESCRIPTION[0m
+       [4mSysMain[24m  is  initialized  by the runtime startoff after building up the
+       data structures of [4mSysModules(3)[24m and serves as handle  for  code  which
+       determines the initialization order of the other modules.
+
+       Not all modules which are linked together need to be initialized.  This
+       could be useful if the decision about the module selection  depends  on
+       command line arguments or the environment.
+
+       The  module  bodies  protect themselves against multiple executions and
+       each module body calls the initialization part of all imported modules.
+
+       The   default  implementation  of  [4mSysMain[24m  creates  a  task  group  of
+       [4mRoundRobin(3)[24m (which becomes the default task group  of  [4mTasks(3)[24m)  and
+       adds as first task a coroutine which initializes all modules in linkage
+       order:
+
+       PROCEDURE InitAllModules;
+          VAR
+             module: SysModules.Module;
+       BEGIN
+          module := SysModules.modules;
+          WHILE module # NIL DO
+             module.init;
+             module := module.next;
+          END;
+       END InitAllModules;
+
+
+       Note that [4mSysMain[24m, and, in consequence, the process does not  necessar-
+       ily  terminate  when  [4mInitAllModules[24m  terminates.  [4mSysMain[24m returns when
+       there are no living tasks of the main  task  group  ([4mInitAllModules[24m  is
+       just one of these tasks).
+
+       The  [4mSysMain[24m  implementation  is expected to raise an event of the type
+       [4mmainTaskFinished[24m as soon as all modules are initialized. This gives all
+       modules the opportunity to shutdown unneeded tasks to allow the process
+       to terminate if no real activities continue.
+
+[1mSEE ALSO[0m
+       [4mRoundRobin(3)[24m   round robin scheduler which manages the main task group
+       [4mSchedulers(3)[24m   general  scheduler  interface  which  is  supported  by
+                       [4mRoundRobin(3)[0m
+       [4mSysModules(3)[24m   list of modules
+
+
+
+Release 0.5                Last change: 2 March 2004                SysMain(3)

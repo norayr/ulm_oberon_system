@@ -1,0 +1,239 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Iterators.om,v 1.4 2004/09/03 09:01:01 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Iterators.om,v $
+   Revision 1.4  2004/09/03 09:01:01  borchert
+   CreateQuickIterator added
+
+   Revision 1.3  2004/08/30 13:48:17  borchert
+   recycle idle coroutines until the next GC
+
+   Revision 1.2  1995/01/04  12:02:27  borchert
+   iterators are now an extension of Services.Object
+
+   Revision 1.1  1994/02/23  08:03:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Iterators;
+
+   IMPORT Conditions, Coroutines, Events, Objects, Process, Resources,
+      Services, SYS := SYSTEM, SysMain;
+
+   TYPE
+      Reference = Objects.Object; Mode = SHORTINT;
+      Iterator = POINTER TO IteratorRec;
+      IteratorProc = PROCEDURE (it: Iterator; ref: Reference; mode: Mode);
+
+   CONST
+      incremental = 0;
+      quick = 1;
+   TYPE
+      Variant = SHORTINT; (* incremental, quick *)
+
+   TYPE
+      TokenList = POINTER TO TokenListRec;
+      TokenListRec =
+	 RECORD
+	    object: Objects.Object;
+	    next: TokenList;
+	 END;
+
+   TYPE
+      IteratorRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    (* private components *)
+	    variant: Variant;
+	    finished: BOOLEAN;
+	    (* variant = incremental *)
+	    producer, consumer: Coroutines.Coroutine;
+	    token: Objects.Object;
+	    (* variant = quick *)
+	    itproc: IteratorProc;
+	    ref: Reference;
+	    mode: Mode;
+	    tokens, tail: TokenList;
+	 END;
+   VAR
+      type: Services.Type; (* of Iterators.Iterator *)
+
+   TYPE
+      Coroutine = POINTER TO CoroutineRec;
+      CoroutineRec =
+	 RECORD
+	    cr: Coroutines.Coroutine;
+	    next: Coroutine; (* list of idle coroutines *)
+	    (* current task *)
+	    it: Iterator;
+	    itproc: IteratorProc;
+	    ref: Reference;
+	    mode: Mode;
+	 END;
+   VAR
+      idle: Coroutine;
+      mutex: BOOLEAN;
+
+   PROCEDURE FreeHandler(event: Events.Event);
+   BEGIN
+      (* release all idle coroutines *)
+      idle := NIL; mutex := FALSE;
+   END FreeHandler;
+
+   PROCEDURE IteratingCoroutine(VAR newcr: Coroutine);
+      VAR
+	 cr: Coroutine;
+	 consumer: Coroutines.Coroutine;
+   BEGIN
+      NEW(cr); cr.next := NIL; cr.it := NIL;
+      newcr := cr;
+      SYS.CRSPAWN(cr.cr);
+      LOOP
+	 (* process iterating job *)
+	 ASSERT(cr.it # NIL);
+	 cr.itproc(cr.it, cr.ref, cr.mode);
+	 cr.it.finished := TRUE;
+	 Resources.Notify(cr.it, Resources.terminated);
+	 consumer := cr.it.consumer;
+	 cr.it := NIL;
+	 (* register as idle coroutine *)
+	 IF ~SYS.TAS(mutex) THEN
+	    cr.next := idle; idle := cr;
+	    mutex := FALSE;
+	 END;
+	 SYS.CRSWITCH(consumer);
+	 consumer := NIL;
+      END;
+   END IteratingCoroutine;
+
+   PROCEDURE FindIteratingCoroutine(VAR cr: Coroutine);
+   BEGIN
+      IF ~SYS.TAS(mutex) THEN
+	 IF idle # NIL THEN
+	    cr := idle; idle := idle.next; cr.next := NIL;
+	 END;
+	 mutex := FALSE;
+      END;
+      IF cr = NIL THEN
+	 IteratingCoroutine(cr);
+      END;
+   END FindIteratingCoroutine;
+
+   PROCEDURE StartIterator(it: Iterator;
+			   itproc: IteratorProc;
+			   ref: Reference; mode: Mode;
+			   VAR cr: Coroutines.Coroutine);
+      VAR
+	 itcr: Coroutine;
+   BEGIN
+      FindIteratingCoroutine(itcr);
+      itcr.it := it; itcr.itproc := itproc;
+      itcr.ref := ref; itcr.mode := mode;
+      cr := itcr.cr;
+   END StartIterator;
+
+   PROCEDURE Create(VAR it: Iterator; itproc: IteratorProc;
+		    ref: Reference; mode: Mode);
+      VAR
+	 newit: Iterator;
+   BEGIN
+      NEW(newit); newit.finished := FALSE; newit.variant := incremental;
+      Services.Init(newit, type);
+      StartIterator(newit, itproc, ref, mode, newit.producer);
+      it := newit;
+   END Create;
+
+   PROCEDURE CreateQuickIterator(VAR it: Iterator;
+                                 itproc: IteratorProc;
+				 ref: Reference; mode: Mode);
+      VAR
+	 newit: Iterator;
+   BEGIN
+      ASSERT(itproc # NIL);
+      NEW(newit); newit.variant := quick; newit.finished := FALSE;
+      newit.tokens := NIL; newit.tail := NIL;
+      newit.itproc := itproc; newit.ref := ref; newit.mode := mode;
+      Services.Init(newit, type);
+      it := newit;
+   END CreateQuickIterator;
+
+   PROCEDURE Get(it: Iterator; VAR object: Objects.Object) : BOOLEAN;
+   BEGIN
+      IF it.finished THEN RETURN FALSE END;
+      CASE it.variant OF
+      | incremental:
+	 it.consumer := Coroutines.current;
+	 SYS.CRSWITCH(it.producer);
+	 IF it.finished THEN
+	    RETURN FALSE
+	 ELSE
+	    object := it.token;
+	    RETURN TRUE
+	 END;
+      | quick:
+	 IF it.tokens = NIL THEN
+	    (* first call of Get for this iterator;
+	       generate all tokens in one rush
+	    *)
+	    it.itproc(it, it.ref, it.mode);
+	    IF it.tokens = NIL THEN
+	       it.finished := TRUE;
+	       RETURN FALSE
+	    END;
+	 END;
+	 object := it.tokens.object;
+	 it.tokens := it.tokens.next;
+	 IF it.tokens = NIL THEN
+	    it.finished := TRUE;
+	 END;
+	 RETURN TRUE
+      END;
+   END Get;
+
+   PROCEDURE Yield(it: Iterator; object: Objects.Object);
+      VAR
+	 token: TokenList;
+   BEGIN
+      CASE it.variant OF
+      | incremental:
+	 it.token := object;
+	 SYS.CRSWITCH(it.consumer);
+      | quick:
+	 NEW(token); token.next := NIL; token.object := object;
+	 IF it.tail = NIL THEN
+	    it.tokens := token;
+	 ELSE
+	    it.tail.next := token;
+	 END;
+	 it.tail := token;
+      END;
+   END Yield;
+
+BEGIN
+   Services.CreateType(type, "Iterators.Iterator", "");
+   mutex := FALSE; idle := NIL;
+   Events.Handler(Process.startOfGarbageCollection, FreeHandler);
+   Events.Handler(Process.termination, FreeHandler);
+   Events.Handler(SysMain.mainTaskFinished, FreeHandler);
+   Events.Handler(Process.softTermination, FreeHandler);
+END Iterators.

@@ -1,0 +1,379 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonStdPr.om,v 1.1 2004/05/04 08:57:50 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonStdPr.om,v $
+   Revision 1.1  2004/05/04 08:57:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonStdProcedures;
+
+   (* architecture independent standard procedures and functions;
+      note that not all of them are in common use or in each case
+      visible
+   *)
+
+   IMPORT BaseTypes := OberonBaseTypes, CompilerErrors, CompilerObjects,
+      ConstantObjects, ConstStrings, NetIO, PersistentObjects, Services,
+      Streams, Strings, Sym := OberonSymbols, Types := OberonTypes, Write;
+
+   CONST
+      abs = 0;             get = 11;            odd = 22;
+      adr = 1;             halt = 12;           ord = 23;
+      ash = 2;             inc = 13;            put = 24;
+      assert = 3;          incl = 14;           rot = 25;
+      bit = 4;             len = 15;            short = 26;
+      cap = 5;             long = 16;           size = 27;
+      chr = 6;             lsh = 17;            sysnew = 28;
+      copy = 7;            max = 18;            val = 29;
+      dec = 8;             min = 19;
+      entier = 9;          move = 20;
+      excl = 10;           new = 21;
+
+      stdprocs = 30;
+   TYPE
+      StdProc = SHORTINT; (* abs .. val *)
+
+   TYPE
+      StdProcedure = POINTER TO StdProcedureRec;
+      StdProcedureRec =
+	 RECORD
+	    (Sym.BuiltInProcedureRec)
+	    stdproc: StdProc;
+	 END;
+   VAR
+      stdprocType: Services.Type;
+
+   VAR
+      absF: Sym.Ident;            longF: Sym.Ident;
+      adrF: Sym.Ident;            lshF: Sym.Ident;
+      ashF: Sym.Ident;            maxF: Sym.Ident;
+      assertP: Sym.Ident;         minF: Sym.Ident;
+      bitF: Sym.Ident;            moveP: Sym.Ident;
+      capF: Sym.Ident;            newP: Sym.Ident;
+      chrF: Sym.Ident;            oddF: Sym.Ident;
+      copyP: Sym.Ident;           ordF: Sym.Ident;
+      decP: Sym.Ident;            putP: Sym.Ident;
+      entierF: Sym.Ident;         rotF: Sym.Ident;
+      exclP: Sym.Ident;           shortF: Sym.Ident;
+      getP: Sym.Ident;            sizeF: Sym.Ident;
+      haltP: Sym.Ident;           sysnewP: Sym.Ident;
+      incP: Sym.Ident;            valF: Sym.Ident;
+      inclP: Sym.Ident;
+      lenF: Sym.Ident;
+
+   (* === OberonSymbols if for StdProcedure =============================== *)
+
+   PROCEDURE CheckArgs(builtinproc: Sym.BuiltInProcedure;
+                       args: Sym.Attribute;
+		       VAR restype: Sym.Type);
+      CONST
+	 maxargs = 3;
+      VAR
+	 stdproc: StdProc;
+	 arg: Sym.Attribute;
+	 nofargs: INTEGER;
+	 index: INTEGER;
+	 types: ARRAY maxargs OF Sym.Type;
+	 forms: ARRAY maxargs OF Sym.Form;
+	 at: ARRAY maxargs OF Sym.Attribute;
+	 es: Streams.Stream;
+	 error: BOOLEAN;
+
+      PROCEDURE OpenError(at: Sym.Attribute);
+      BEGIN
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.AtObject1(es, at);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, at[0].loc.src);
+      END CloseError;
+
+      PROCEDURE Error(at: Sym.Attribute; msg: ARRAY OF CHAR);
+      BEGIN
+	 OpenError(at);
+	 Write.StringS(es, msg);
+	 CloseError;
+      END Error;
+
+      PROCEDURE CheckDesignator(at: Sym.Attribute);
+      BEGIN
+	 IF ~(at.mode IN Sym.designatorModes) THEN
+	    Error(at, "designator expected");
+	 END;
+      END CheckDesignator;
+
+      PROCEDURE CheckInteger(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal});
+      END CheckInteger;
+
+      PROCEDURE CheckIntegerOrByte(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal, Sym.byte});
+      END CheckIntegerOrByte;
+
+      PROCEDURE CheckCharOrByte(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.char, Sym.byte});
+      END CheckCharOrByte;
+
+      PROCEDURE CheckChar(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.char});
+      END CheckChar;
+
+      PROCEDURE CheckAddress(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal, Sym.address});
+      END CheckAddress;
+
+      PROCEDURE CheckIntegerOrAddress(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer, Sym.cardinal, Sym.address});
+      END CheckIntegerOrAddress;
+
+      PROCEDURE CheckBoolean(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.boolean});
+      END CheckBoolean;
+
+      PROCEDURE CheckSet(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.set});
+      END CheckSet;
+
+      PROCEDURE CheckReal(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.real});
+      END CheckReal;
+
+      PROCEDURE CheckNumeric(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, Sym.numeric);
+      END CheckNumeric;
+
+      PROCEDURE CheckString(at: Sym.Attribute);
+      BEGIN
+	 IF ~Types.IsString(at) THEN
+	    Error(at, "string or character array expected");
+	 END;
+      END CheckString;
+
+      PROCEDURE CheckArray(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.array});
+      END CheckArray;
+
+      PROCEDURE CheckPointer(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.pointer});
+      END CheckPointer;
+
+      PROCEDURE CheckBaseType(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, Sym.basic);
+      END CheckBaseType;
+
+   BEGIN (* CheckArgs *)
+      stdproc := builtinproc(StdProcedure).stdproc;
+      restype := NIL;
+      error := FALSE;
+      nofargs := 0;
+      arg := args;
+      WHILE arg # NIL DO
+	 at[nofargs] := arg;
+	 types[nofargs] := at[nofargs].type;
+	 IF types[nofargs] = NIL THEN
+	    RETURN (* do not check if there are already errors *)
+	 END;
+	 forms[nofargs] := types[nofargs].form;
+	 INC(nofargs); arg := arg.next;
+      END;
+
+      ASSERT((nofargs >= builtinproc.minargs) &
+             (nofargs <= builtinproc.maxargs));
+      ASSERT(nofargs > 0);
+      IF stdproc IN {min, max, size, val} THEN
+	 IF at[0].mode # Sym.typeAt THEN
+	    Error(at[0], "qualified type identifier expected");
+	 END;
+      ELSIF ~(at[0].mode IN Sym.opModes) THEN
+	 Error(at[0], "expression expected");
+      END;
+      index := 1;
+      WHILE index < nofargs DO
+	 IF ~(at[index].mode IN Sym.opModes) THEN
+	    Error(at[index], "expression expected");
+	 END;
+	 INC(index);
+      END;
+
+      IF error THEN RETURN END;
+
+      CASE stdproc OF
+      | abs:      CheckNumeric(at[0]); restype := types[0];
+      | adr:      CheckDesignator(at[0]); restype := BaseTypes.address;
+      | ash:      CheckIntegerOrAddress(at[0]); CheckInteger(at[1]);
+                  restype := BaseTypes.longint;
+      | assert:   CheckBoolean(at[0]);
+      | bit:      CheckAddress(at[0]); CheckInteger(at[1]);
+                  restype := BaseTypes.boolean;
+      | cap:      CheckChar(at[0]); restype := BaseTypes.char;
+      | chr:      CheckIntegerOrByte(at[0]); restype := BaseTypes.char;
+      | copy:     CheckString(at[0]); CheckDesignator(at[1]);
+                  CheckString(at[1]);
+      | dec, 
+        inc:      CheckDesignator(at[0]); CheckIntegerOrAddress(at[0]);
+                  IF nofargs > 1 THEN CheckInteger(at[1]) END;
+      | entier:   CheckReal(at[0]); restype := BaseTypes.longint;
+      | excl,
+        incl:     CheckDesignator(at[0]); CheckSet(at[0]);
+                  CheckInteger(at[1]);
+      | get:      CheckAddress(at[0]); CheckDesignator(at[1]);
+      | halt:     CheckInteger(at[0]);
+      | len:      CheckDesignator(at[0]); CheckArray(at[0]);
+                  IF nofargs > 1 THEN CheckInteger(at[1]) END;
+		  restype := BaseTypes.longint;
+      | long, 
+        short:    CheckNumeric(at[0]);
+		  IF forms[0] = Sym.real THEN
+		     restype := BaseTypes.genericReal;
+		  ELSE
+		     restype := BaseTypes.genericInteger;
+		  END;
+      | lsh:      CheckIntegerOrAddress(at[0]); CheckInteger(at[1]);
+                  restype := BaseTypes.longint;
+      | max, 
+        min:      CheckBaseType(at[0]);
+		  IF (types[0] # NIL) & (types[0].form = Sym.set) THEN
+		     restype := BaseTypes.genericInteger;
+		  ELSE
+		     restype := types[0];
+		  END;
+      | move:     CheckDesignator(at[0]); CheckDesignator(at[1]);
+                  CheckInteger(at[2]);
+      | new:      CheckDesignator(at[0]); CheckPointer(at[0]);
+      | odd:      CheckIntegerOrAddress(at[0]); restype := BaseTypes.boolean;
+      | ord:      CheckCharOrByte(at[0]); restype := BaseTypes.integer;
+      | put:      CheckAddress(at[0]);
+      | rot:      CheckIntegerOrAddress(at[0]); CheckInteger(at[1]);
+                  restype := BaseTypes.longint;
+      | size:     restype := BaseTypes.longint;
+      | sysnew:   CheckDesignator(at[0]); CheckPointer(at[0]);
+                  CheckInteger(at[1]);
+      | val:      restype := types[0];
+      END;
+   END CheckArgs;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+   BEGIN
+      ConstantObjects.RegisterType(stdprocType,
+         "OberonStdProcedures.StdProcedure", "OberonSymbols.BuiltInProcedure");
+   END Init;
+
+   PROCEDURE InitStd;
+
+      PROCEDURE Create(name: ARRAY OF CHAR;
+                       stdproc: StdProc;
+		       minargs, maxargs: INTEGER;
+		       function: BOOLEAN;
+		       VAR ident: Sym.Ident);
+	 VAR
+	    cstring: ConstStrings.String;
+	    stdprocedure: StdProcedure;
+	    qualifiedName: ARRAY 128 OF CHAR;
+      BEGIN
+	 qualifiedName := "OberonStdProcedures.";
+	 Strings.Concatenate(qualifiedName, name);
+	 NEW(stdprocedure);
+	 ConstantObjects.Init(stdprocedure, stdprocType, qualifiedName);
+	 Sym.InitBuiltInProcedure(stdprocedure, minargs, maxargs, CheckArgs);
+	 ConstStrings.Create(cstring, name);
+	 IF function THEN
+	    Sym.CreateBuiltInFunction(ident, cstring, stdprocedure);
+	 ELSE
+	    Sym.CreateBuiltInProcedure(ident, cstring, stdprocedure);
+	 END;
+	 CompilerObjects.InitBuiltInObject(ident);
+	 stdprocedure.stdproc := stdproc;
+      END Create;
+
+      PROCEDURE CreateFunc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, TRUE, ident);
+      END CreateFunc;
+
+      PROCEDURE CreateProc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, FALSE, ident);
+      END CreateProc;
+
+   BEGIN (* Init *)
+      CreateFunc("ABS", abs, 1, 1, absF);
+      CreateFunc("ADR", adr, 1, 1, adrF);
+      CreateFunc("ASH", ash, 2, 2, ashF);
+      CreateProc("ASSERT", assert, 1, 1, assertP);
+      CreateFunc("BIT", bit, 2, 2, bitF);
+      CreateFunc("CAP", cap, 1, 1, capF);
+      CreateFunc("CHR", chr, 1, 1, chrF);
+      CreateProc("COPY", copy, 2, 2, copyP);
+      CreateProc("DEC", dec, 1, 2, decP);
+      CreateFunc("ENTIER", entier, 1, 1, entierF);
+      CreateProc("EXCL", excl, 2, 2, exclP);
+      CreateProc("GET", get, 2, 2, getP);
+      CreateProc("HALT", halt, 1, 1, haltP);
+      CreateProc("INC", inc, 1, 2, incP);
+      CreateProc("INCL", incl, 2, 2, inclP);
+      CreateFunc("LEN", len, 1, 2, lenF);
+      CreateFunc("LSH", lsh, 2, 2, lshF);
+      CreateFunc("LONG", long, 1, 1, longF);
+      CreateFunc("MAX", max, 1, 1, maxF);
+      CreateFunc("MIN", min, 1, 1, minF);
+      CreateProc("MOVE", move, 3, 3, moveP);
+      CreateProc("NEW", new, 1, 1, newP);
+      CreateProc("NEW", sysnew, 2, 2, sysnewP);
+      CreateFunc("ODD", odd, 1, 1, oddF);
+      CreateFunc("ORD", ord, 1, 1, ordF);
+      CreateProc("PUT", put, 2, 2, putP);
+      CreateFunc("ROT", rot, 2, 2, rotF);
+      CreateFunc("SHORT", short, 1, 1, shortF);
+      CreateFunc("SIZE", size, 1, 1, sizeF);
+      CreateFunc("VAL", val, 2, 2, valF);
+   END InitStd;
+
+BEGIN
+   Init;
+   InitStd;
+END OberonStdProcedures.

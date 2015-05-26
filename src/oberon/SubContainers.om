@@ -1,0 +1,888 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SubContainers;
+
+   IMPORT Arrays, ContainerIdentKeys, Containers, Events, Iterators, Keys,
+      NetIO, ObjectTransactions, PersistentDisciplines, PersistentObjects,
+      RelatedEvents, Resources, Services, Streams, SubTransactions,
+      Transactions;
+
+   CONST
+      blocklen = 1024; (* number of ids per block *)
+   TYPE
+      Block = POINTER TO BlockRec;
+      BlockRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    count: INTEGER;
+	    ids: ARRAY blocklen OF Containers.Ident;
+	    last: BOOLEAN; (* TRUE, if last block in list *)
+	    nextid: Containers.Ident; (* of next block *)
+	    (* non-persistent fields *)
+	    id: Containers.Ident; (* own id *)
+	    next: Block;
+	 END;
+   VAR
+      blockType: Services.Type;
+
+   TYPE
+      SuperBlock = POINTER TO SuperBlockRec;
+      SuperBlockRec =
+	 RECORD
+	    (BlockRec)
+	    rootDefined: BOOLEAN;
+	    root: Containers.Ident;
+	    (* non-persistent fields *)
+	    idtab: Arrays.Array;
+	 END;
+   VAR
+      superBlockType: Services.Type;
+
+   TYPE
+      Container = POINTER TO ContainerRec;
+      ContainerRec =
+	 RECORD
+	    (Containers.ContainerRec)
+	    host: Containers.Container;
+	    id: Containers.Ident;
+	    sblock: SuperBlock; (* may be NIL if a transaction was aborted *)
+	    ptrans: Transactions.Transaction;
+	    ltrans: Transactions.Transaction;
+	 END;
+   VAR
+      containerType: Services.Type;
+      cif: Containers.Interface;
+      stif: SubTransactions.Interface;
+
+   CONST
+      noSubContainer = 0;
+      invalidTransaction = 1;
+      transactionAborted = 2;
+      dbFailure = 3;
+      noSuchIdent = 4; 
+      noAnchorDefined = 5;
+      errors = 6;
+   TYPE
+      ErrorCode = SHORTINT; (* noSubContainer... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    container: Containers.Container;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   (* === error handling ================================================= *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[noSubContainer] := "is not a subcontainer";
+      errormsg[invalidTransaction] := "invalid transaction";
+      errormsg[transactionAborted] := "transaction was already aborted";
+      errormsg[dbFailure] := "failure of hosting container";
+      errormsg[noSuchIdent] := "no such object identifier";
+      errormsg[noAnchorDefined] := "no anchor defined";
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   code: ErrorCode;
+		   container: Containers.Container);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      event.container := container;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === PersistentObjects if procedures for Block ====================== *)
+
+   PROCEDURE CreateBlock(VAR object: PersistentObjects.Object);
+      VAR
+	 block: Block;
+   BEGIN
+      NEW(block); PersistentObjects.Init(block, blockType);
+      object := block;
+   END CreateBlock;
+
+   PROCEDURE ReadBlock(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      WITH object: Block DO
+	 IF ~NetIO.ReadInteger(s, object.count) OR
+	       (object.count < 0) OR
+	       ~NetIO.ReadBoolean(s, object.last) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~object.last & ~NetIO.ReadLongInt(s, object.nextid) THEN
+	    RETURN FALSE
+	 END;
+	 i := 0;
+	 WHILE i < object.count DO
+	    IF ~NetIO.ReadLongInt(s, object.ids[i]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(i);
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadBlock;
+
+   PROCEDURE WriteBlock(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      WITH object: Block DO
+	 ASSERT(object.count >= 0);
+	 IF ~NetIO.WriteInteger(s, object.count) OR
+	       ~NetIO.WriteBoolean(s, object.last) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~object.last & ~NetIO.WriteLongInt(s, object.nextid) THEN
+	    RETURN FALSE
+	 END;
+	 i := 0;
+	 WHILE i < object.count DO
+	    IF ~NetIO.WriteLongInt(s, object.ids[i]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(i);
+	 END;
+	 RETURN TRUE
+      END;
+   END WriteBlock;
+
+   (* === PersistentObjects if procedures for SuperBlock ================= *)
+
+   PROCEDURE CreateSuperBlock(VAR object: PersistentObjects.Object);
+      VAR
+	 superBlock: SuperBlock;
+   BEGIN
+      NEW(superBlock);
+      PersistentObjects.Init(superBlock, superBlockType);
+      object := superBlock;
+   END CreateSuperBlock;
+
+   PROCEDURE ReadSuperBlock(s: Streams.Stream;
+                            object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: SuperBlock DO
+	 IF ~NetIO.ReadBoolean(s, object.rootDefined) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN ~object.rootDefined OR NetIO.ReadLongInt(s, object.root)
+      END;
+   END ReadSuperBlock;
+
+   PROCEDURE WriteSuperBlock(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: SuperBlock DO
+	 IF ~NetIO.WriteBoolean(s, object.rootDefined) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN ~object.rootDefined OR NetIO.WriteLongInt(s, object.root)
+      END;
+   END WriteSuperBlock;
+
+   (* === non-persistent id management =================================== *)
+
+   PROCEDURE InitIdTab(sblock: SuperBlock);
+   BEGIN
+      Arrays.Create(sblock.idtab, ContainerIdentKeys.key);
+   END InitIdTab;
+
+   PROCEDURE AddId(sblock: SuperBlock; id: Containers.Ident;
+                   block: Block);
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      Arrays.Set(sblock.idtab, keyval, block);
+   END AddId;
+
+   PROCEDURE RemoveId(sblock: SuperBlock; id: Containers.Ident);
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      Arrays.Remove(sblock.idtab, keyval);
+   END RemoveId;
+
+   PROCEDURE ValidId(sblock: SuperBlock;
+                     id: Containers.Ident) : BOOLEAN;
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      RETURN Arrays.Exists(sblock.idtab, keyval);
+   END ValidId;
+
+   PROCEDURE GetBlock(sblock: SuperBlock;
+                      id: Containers.Ident;
+		      VAR block: Block) : BOOLEAN;
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      RETURN Arrays.Get(sblock.idtab, keyval, block)
+   END GetBlock;
+
+   (* === transaction-based management =================================== *)
+
+   PROCEDURE InitContainer(host: Containers.Container;
+                           trans: Transactions.Transaction;
+			   VAR sblock: SuperBlock;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 id: Containers.Ident;
+   BEGIN
+      CreateSuperBlock(sblock);
+      sblock.rootDefined := FALSE;
+      InitIdTab(sblock);
+      sblock.count := 0;
+      sblock.last := TRUE;
+      sblock.next := NIL;
+      IF Containers.Insert(host, trans, sblock.id, sblock) &
+	     Containers.SetAnchor(host, trans, sblock.id) THEN
+	 Error(errors, dbFailure, host);
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END InitContainer;
+
+   PROCEDURE GuardedObtain(host: Containers.Container;
+                           trans: Transactions.Transaction;
+			   id: Containers.Ident;
+			   guard: Services.Type;
+			   VAR object: PersistentDisciplines.Object;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 obj: PersistentDisciplines.Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~Containers.Obtain(host, trans, id, obj) THEN
+	 Error(errors, dbFailure, NIL);
+	 RETURN FALSE
+      END;
+      Services.GetType(obj, type);
+      IF ~Services.IsExtensionOf(type, guard) THEN
+	 Error(errors, noSubContainer, NIL);
+	 RETURN FALSE
+      END;
+      object := obj;
+      RETURN TRUE
+   END GuardedObtain;
+
+   PROCEDURE OpenContainer(host: Containers.Container;
+                           trans: Transactions.Transaction;
+			   id: Containers.Ident;
+			   VAR sblock: SuperBlock;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 block, next: Block;
+
+      PROCEDURE AddIdsOfBlock(block: Block);
+	 VAR
+	    i: INTEGER;
+      BEGIN
+	 i := 0;
+	 WHILE i < block.count DO
+	    AddId(sblock, block.ids[i], block);
+	    INC(i);
+	 END;
+      END AddIdsOfBlock;
+
+   BEGIN (* OpenContainer *)
+      IF ~GuardedObtain(host, trans, id, superBlockType, sblock, errors) THEN
+	 RETURN FALSE
+      END;
+      sblock.id := id; InitIdTab(sblock);
+      AddIdsOfBlock(sblock);
+      block := sblock;
+      WHILE ~block.last DO
+	 IF ~GuardedObtain(host, trans,
+	       block.nextid, blockType, next, errors) THEN
+	    RETURN FALSE
+	 END;
+	 block.next := next;
+	 next.id := block.nextid;
+	 block := next;
+	 AddIdsOfBlock(block);
+      END;
+      block.next := NIL;
+   END OpenContainer;
+
+   PROCEDURE Abort(container: Container);
+   BEGIN
+      container.sblock := NIL;
+      IF container.ptrans # NIL THEN
+	 Resources.Notify(container.ptrans, Resources.terminated);
+	 container.ptrans := NIL;
+      END;
+      IF container.ltrans # NIL THEN
+	 Resources.Notify(container.ltrans, Resources.terminated);
+	 container.ltrans := NIL;
+      END;
+   END Abort;
+
+   PROCEDURE AllocateLink(container: Container;
+                          id: Containers.Ident;
+			  VAR block: Block) : BOOLEAN;
+      VAR
+	 b, prev: Block;
+   BEGIN
+      b := container.sblock;
+      WHILE (b # NIL) & (b.count = blocklen) DO
+	 prev := b; b := b.next;
+      END;
+      IF b = NIL THEN
+	 (* create new block *)
+	 CreateBlock(b);
+	 b.count := 1; b.ids[0] := id;
+	 b.last := TRUE; b.next := NIL;
+	 IF ~Containers.Insert(container.host, container.ptrans,
+	       b.id, b) THEN
+	    Error(container, dbFailure, container);
+	    RETURN FALSE
+	 END;
+	 prev.nextid := b.id;
+	 IF ~Containers.Replace(container.host, container.ptrans,
+	       prev.id, prev) THEN
+	    Error(container, dbFailure, container);
+	    Abort(container);
+	    RETURN FALSE
+	 END;
+	 prev.next := b; prev.last := FALSE;
+	 block := b;
+	 RETURN TRUE
+      END;
+      (* extend existing block *)
+      b.ids[b.count] := id; INC(b.count);
+      IF ~Containers.Replace(container.host, container.ptrans,
+	    b.id, b) THEN
+	 Error(container, dbFailure, container);
+	 Abort(container);
+	 RETURN FALSE
+      END;
+      block := b;
+      RETURN TRUE
+   END AllocateLink;
+
+   PROCEDURE RemoveLink(container: Container;
+			block: Block;
+                        id: Containers.Ident) : BOOLEAN;
+      VAR
+	 i: INTEGER;
+	 prev, oblock: Block;
+   BEGIN
+      i := 0;
+      WHILE (i < block.count) & (block.ids[i] # id) DO
+	 INC(i);
+      END;
+      ASSERT(i < block.count);
+      DEC(block.count);
+      IF (block.count > 0) OR
+	    (block = container.sblock) & (block.next = NIL) THEN
+	 WHILE i < block.count DO
+	    block.ids[i] := block.ids[i + 1];
+	    INC(i);
+	 END;
+	 IF ~Containers.Replace(container.host, container.ptrans,
+	       block.id, block) THEN
+	    Error(container, dbFailure, container);
+	    Abort(container);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+      IF block.next # NIL THEN
+	 IF ~Containers.Delete(container.host, container.ptrans,
+	       block.nextid) THEN
+	    Error(container, dbFailure, container);
+	    Abort(container);
+	    RETURN FALSE
+	 END;
+	 oblock := block.next;
+	 block.ids := oblock.ids;
+	 block.count := oblock.count;
+	 block.last := oblock.last;
+	 block.nextid := oblock.nextid;
+	 block.next := oblock.next;
+	 IF ~Containers.Replace(container.host, container.ptrans,
+	       block.id, block) THEN
+	    Error(container, dbFailure, container);
+	    Abort(container);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+      IF ~Containers.Delete(container.host, container.ptrans,
+	    block.id) THEN
+	 Error(container, dbFailure, container);
+	 Abort(container);
+	 RETURN FALSE
+      END;
+      prev := container.sblock;
+      WHILE prev.next # block DO
+	 prev := prev.next;
+      END;
+      prev.last := TRUE;
+      IF ~Containers.Replace(container.host, container.ptrans,
+	    prev.id, prev) THEN
+	 Error(container, dbFailure, container);
+	 Abort(container);
+	 RETURN FALSE
+      END;
+      prev.next := NIL;
+      RETURN TRUE
+   END RemoveLink;
+
+   PROCEDURE CheckTrans(container: Container;
+                        trans: Transactions.Transaction) : BOOLEAN;
+   BEGIN
+      IF trans = NIL THEN
+	 Error(container, invalidTransaction, container);
+	 RETURN FALSE
+      END;
+      IF container.sblock = NIL THEN
+	 Error(container, transactionAborted, container);
+	 RETURN FALSE
+      END;
+      IF container.ltrans # trans THEN
+	 Error(container, invalidTransaction, container);
+	 RETURN FALSE
+      END;
+      IF (container.ptrans # NIL) &
+	    Resources.Alive(trans) &
+	    Resources.Alive(container.ptrans) THEN
+	 RETURN TRUE
+      END;
+      Error(container, transactionAborted, container);
+      RETURN FALSE
+   END CheckTrans;
+
+   PROCEDURE CreateContainer(VAR container: Container;
+			     id: Containers.Ident;
+			     host: Containers.Container;
+                             sblock: SuperBlock);
+      VAR
+	 cont: Container;
+   BEGIN
+      NEW(cont); Services.Init(cont, containerType);
+      Containers.Init(cont, cif);
+      cont.id := id; cont.host := host;
+      cont.ptrans := NIL; cont.ltrans := NIL;
+      cont.sblock := sblock;
+      Resources.DependsOn(cont, host);
+      IF ~SubTransactions.Supported(host) THEN
+	 SubTransactions.RegisterRoot(host, stif);
+      END;
+      SubTransactions.RegisterSubnode(host, cont);
+      container := cont;
+   END CreateContainer;
+
+   (* === ObjectTransactions if procedures =============================== *)
+
+   PROCEDURE BeginTransaction(object: Services.Object;
+                              trans: Transactions.Transaction) : BOOLEAN;
+      VAR
+	 sblock: SuperBlock;
+   BEGIN
+      WITH object: Container DO
+	 IF ~ObjectTransactions.Create(object.ptrans,
+	       object.host, NIL, trans) THEN
+	    RETURN FALSE
+	 END;
+	 IF object.sblock = NIL THEN
+	    IF ~OpenContainer(object.host, object.ptrans,
+		  object.id, sblock, trans) THEN
+	       RETURN FALSE
+	    END;
+	    object.sblock := sblock;
+	 END;
+	 object.ltrans := trans;
+	 RETURN TRUE
+      END;
+   END BeginTransaction;
+
+   PROCEDURE CommitTransaction(object: Services.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 IF (object.ptrans = NIL) OR (object.ltrans = NIL) THEN
+	    RETURN FALSE
+	 END;
+	 ok := Transactions.Commit(object.ptrans, NIL);
+	 object.ptrans := NIL; object.ltrans := NIL;
+	 RETURN ok
+      END;
+   END CommitTransaction;
+
+   PROCEDURE AbortTransaction(object: Services.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 IF (object.ptrans = NIL) OR (object.ltrans = NIL) THEN
+	    RETURN object.sblock = NIL
+	 END;
+	 ok := Transactions.Abort(object.ptrans, NIL);
+	 object.ptrans := NIL; object.ltrans := NIL;
+	 object.sblock := NIL; (* invalidate cache *)
+	 RETURN ok
+      END;
+   END AbortTransaction;
+
+   PROCEDURE ReleaseTransaction(object: Services.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH object: Container DO
+	 IF (object.ptrans = NIL) OR (object.ltrans = NIL) THEN
+	    RETURN TRUE
+	 END;
+	 ok := Transactions.Release(object.ptrans, NIL);
+	 object.ptrans := NIL; object.ltrans := NIL;
+	 object.sblock := NIL;
+	 RETURN ok
+      END;
+   END ReleaseTransaction;
+
+   (* === Containers if procedures ======================================= *)
+
+   PROCEDURE Insert(cont: Containers.Container;
+                    trans: Transactions.Transaction;
+                    VAR id: Containers.Ident;
+		    object: PersistentDisciplines.Object) : BOOLEAN;
+      VAR
+	 nid: Containers.Ident;
+	 block: Block;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) OR
+	       ~Containers.Insert(cont.host, cont.ptrans, nid, object) THEN
+	    Error(cont, dbFailure, cont);
+	    RETURN FALSE
+	 END;
+	 IF ~AllocateLink(cont, nid, block) THEN
+	    Abort(cont);
+	    RETURN FALSE
+	 END;
+	 AddId(cont.sblock, nid, block);
+	 id := nid;
+	 RETURN TRUE
+      END;
+   END Insert;
+
+   PROCEDURE Delete(cont: Containers.Container;
+                    trans: Transactions.Transaction;
+		    id: Containers.Ident) : BOOLEAN;
+      VAR
+	 block: Block;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) OR
+	       ~GetBlock(cont.sblock, id, block) OR
+	       ~Containers.Delete(cont.host, cont.ptrans, id) THEN
+	    Error(cont, dbFailure, cont);
+	    RETURN FALSE
+	 END;
+	 IF ~RemoveLink(cont, block, id) THEN
+	    Abort(cont);
+	    RETURN FALSE
+	 END;
+	 RemoveId(cont.sblock, id);
+	 RETURN TRUE
+      END;
+   END Delete;
+
+   PROCEDURE Replace(cont: Containers.Container;
+                     trans: Transactions.Transaction;
+                     id: Containers.Ident;
+		     object: PersistentDisciplines.Object) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~ValidId(cont.sblock, id) THEN
+	    Error(cont, noSuchIdent, cont);
+	    RETURN FALSE
+	 END;
+	 IF ~Containers.Replace(cont.host, cont.ptrans, id, object) THEN
+	    Error(cont, dbFailure, cont);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+   END Replace;
+
+   PROCEDURE Obtain(cont: Containers.Container;
+                    trans: Transactions.Transaction;
+                    id: Containers.Ident;
+		    VAR object: PersistentDisciplines.Object) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~ValidId(cont.sblock, id) THEN
+	    Error(cont, noSuchIdent, cont);
+	    RETURN FALSE
+	 END;
+	 IF ~Containers.Obtain(cont.host, cont.ptrans, id, object) THEN
+	    Error(cont, dbFailure, cont);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+   END Obtain;
+
+   PROCEDURE Elements(cont: Containers.Container;
+                      trans: Transactions.Transaction;
+                      VAR nelems: LONGINT) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 nelems := Arrays.Card(cont.sblock.idtab);
+	 RETURN TRUE
+      END;
+   END Elements;
+
+   PROCEDURE Find(cont: Containers.Container;
+                  trans: Transactions.Transaction;
+		  dir: Containers.SearchDir;
+		  VAR id: Containers.Ident) : BOOLEAN;
+      VAR
+	 it: Iterators.Iterator;
+	 from, to: ContainerIdentKeys.Value;
+	 order: Arrays.Order;
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 CASE dir OF
+	 | Containers.first:
+	       from := NIL; to := NIL; order := Arrays.ascending;
+	 | Containers.last:
+	       from := NIL; to := NIL; order := Arrays.descending;
+	 | Containers.this:
+	       RETURN ValidId(cont.sblock, id)
+	 | Containers.pred:
+	       order := Arrays.descending;
+	       ContainerIdentKeys.CreateValue(to); to.id := id - 1;
+	       from := NIL;
+	 | Containers.succ:
+	       order := Arrays.ascending;
+	       ContainerIdentKeys.CreateValue(from); keyval.id := id + 1;
+	       to := NIL;
+	 END;
+	 Arrays.GetKeys(cont.sblock.idtab, order, from, to, it);
+	 IF ~Iterators.Get(it, keyval) THEN RETURN FALSE END;
+	 id := keyval.id;
+	 RETURN TRUE
+      END;
+   END Find;
+
+   PROCEDURE SetAnchor(cont: Containers.Container;
+                       trans: Transactions.Transaction;
+		       id: Containers.Ident) : BOOLEAN;
+      VAR
+	 sblock: SuperBlock;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 sblock := cont.sblock;
+	 sblock.root := id;
+	 sblock.rootDefined := TRUE;
+	 IF Containers.Replace(cont.host, cont.ptrans, sblock.id, sblock) THEN
+	    RETURN TRUE
+	 END;
+	 Error(cont, dbFailure, cont);
+	 Abort(cont);
+	 RETURN FALSE
+      END;
+   END SetAnchor;
+
+   PROCEDURE GetAnchor(cont: Containers.Container;
+                       trans: Transactions.Transaction;
+		       VAR id: Containers.Ident) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 IF ~CheckTrans(cont, trans) THEN
+	    RETURN FALSE
+	 END;
+	 IF cont.sblock.rootDefined THEN
+	    id := cont.sblock.root;
+	    RETURN TRUE
+	 ELSE
+	    Error(cont, noAnchorDefined, cont);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetAnchor;
+
+   PROCEDURE Close(cont: Containers.Container) : BOOLEAN;
+   BEGIN
+      WITH cont: Container DO
+	 Resources.Notify(cont, Resources.terminated);
+	 cont.sblock := NIL;
+	 RETURN TRUE
+      END;
+   END Close;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 pif: PersistentObjects.Interface;
+	 otif: ObjectTransactions.Interface;
+   BEGIN
+      NEW(pif);
+      pif.create := CreateBlock;
+      pif.read := ReadBlock;
+      pif.write := WriteBlock;
+      PersistentObjects.RegisterType(blockType,
+	 "SubContainers.Block", "PersistentDisciplines.Object", pif);
+      NEW(pif);
+      pif.create := CreateSuperBlock;
+      pif.read := ReadSuperBlock;
+      pif.write := WriteSuperBlock;
+      PersistentObjects.RegisterType(superBlockType,
+	 "SubContainers.SuperBlock", "SubContainers.Block", pif);
+      NEW(otif);
+      otif.begin := BeginTransaction;
+      otif.commit := CommitTransaction;
+      otif.abort := AbortTransaction;
+      otif.release := ReleaseTransaction;
+      Services.CreateType(containerType, "SubContainers.Container",
+	 "Containers.Container");
+      ObjectTransactions.Register(containerType, otif);
+      NEW(cif);
+      cif.insert := Insert;
+      cif.delete := Delete;
+      cif.replace := Replace;
+      cif.obtain := Obtain;
+      cif.elements := Elements;
+      cif.find := Find;
+      cif.setAnchor := SetAnchor;
+      cif.getAnchor := GetAnchor;
+      cif.close := Close;
+      NEW(stif);
+      stif.createTransaction := ObjectTransactions.Create;
+      InitErrorHandling;
+   END InitModule;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Open(VAR container: Containers.Container;
+		  trans: Transactions.Transaction;
+                  host: Containers.Container;
+		  id: Containers.Ident;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 sblock: SuperBlock;
+	 cont: Container;
+   BEGIN
+      IF ~OpenContainer(host, trans, id, sblock, errors) THEN
+	 RETURN FALSE
+      END;
+      CreateContainer(cont, id, host, sblock);
+      container := cont;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE Create(VAR container: Containers.Container;
+                    trans: Transactions.Transaction;
+                    host: Containers.Container;
+		    VAR id: Containers.Ident;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 sblock: SuperBlock;
+	 cont: Container;
+   BEGIN
+      IF ~InitContainer(host, trans, sblock, errors) THEN
+	 RETURN FALSE
+      END;
+      CreateContainer(cont, sblock.id, host, sblock);
+      container := cont;
+      RETURN TRUE
+   END Create;
+
+   PROCEDURE Dispose(container: Containers.Container;
+		     trans: Transactions.Transaction) : BOOLEAN;
+      VAR
+	 sblock: SuperBlock;
+	 block: Block;
+	 i: INTEGER;
+   BEGIN
+      WITH container: Container DO
+	 IF container.sblock = NIL THEN
+	    IF ~OpenContainer(container.host, trans,
+		  container.id, sblock, container) THEN
+	       RETURN FALSE
+	    END;
+	    container.sblock := sblock;
+	 END;
+	 block := container.sblock; container.sblock := NIL;
+	 WHILE block # NIL DO
+	    i := 0;
+	    WHILE i < block.count DO
+	       IF ~Containers.Delete(container.host, trans, block.ids[i]) THEN
+		  RETURN FALSE
+	       END;
+	       INC(i);
+	    END;
+	    IF ~Containers.Delete(container.host, trans, block.id) THEN
+	       RETURN FALSE
+	    END;
+	    block := block.next;
+	 END;
+	 Resources.Notify(container, Resources.terminated);
+	 RETURN TRUE
+      END;
+   END Dispose;
+
+BEGIN
+   InitModule;
+END SubContainers.

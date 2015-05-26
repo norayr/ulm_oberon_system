@@ -1,0 +1,197 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PrivateShar.om,v 1.3 2005/04/20 21:12:18 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PrivateShar.om,v $
+   Revision 1.3  2005/04/20 21:12:18  borchert
+   uses now RandomGenerators.unpredictable, if available
+
+   Revision 1.2  1997/04/01 16:34:43  borchert
+   Random renamed to RandomGenerators
+
+   Revision 1.1  1995/12/22  15:14:30  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PrivateShards;
+
+   IMPORT NetIO, PersistentObjects, Random := RandomGenerators, Services,
+      Shards, Streams;
+
+   TYPE
+      Pot = POINTER TO PotRec;
+      PotRec =
+	 RECORD
+	    (Shards.PotRec)
+	    id, key: LONGINT;
+	 END;
+      Lid = POINTER TO LidRec;
+      LidRec =
+	 RECORD
+	    (Shards.LidRec)
+	    id, key: LONGINT;
+	 END;
+
+   VAR
+      unique: LONGINT;
+      potType, lidType: Services.Type;
+      potInterface: Shards.Interface;
+
+   (* === marshalling procedures ========================================= *)
+
+   PROCEDURE CreatePot(VAR obj: PersistentObjects.Object);
+      VAR
+	 pot: Pot;
+   BEGIN
+      INC(unique);
+      NEW(pot);
+      PersistentObjects.Init(pot, potType);
+      Shards.Init(pot, potInterface);
+      pot.id := unique;
+      IF Random.unpredictable # NIL THEN
+	 pot.key := Random.ValS(Random.unpredictable,
+	    MIN(LONGINT), MAX(LONGINT));
+      ELSE
+	 pot.key := Random.Val(MIN(LONGINT), MAX(LONGINT));
+      END;
+      obj := pot;
+   END CreatePot;
+
+   PROCEDURE ReadPot(s: Streams.Stream;
+		     object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Pot DO
+	 RETURN NetIO.ReadLongInt(s, object.id) &
+		NetIO.ReadLongInt(s, object.key)
+      END;
+   END ReadPot;
+
+   PROCEDURE WritePot(s: Streams.Stream;
+		      object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Pot DO
+	 RETURN NetIO.WriteLongInt(s, object.id) &
+		NetIO.WriteLongInt(s, object.key)
+      END;
+   END WritePot;
+
+   PROCEDURE CreateLid(VAR obj: PersistentObjects.Object);
+      VAR
+	 lid: Lid;
+   BEGIN
+      NEW(lid);
+      PersistentObjects.Init(lid, lidType);
+      lid.id := 0;		(* will never fit to any of our pots *)
+      lid.key := 0;
+      obj := lid;
+   END CreateLid;
+
+   PROCEDURE ReadLid(s: Streams.Stream;
+		     object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Lid DO
+	 RETURN NetIO.ReadLongInt(s, object.id) &
+		NetIO.ReadLongInt(s, object.key)
+      END;
+   END ReadLid;
+
+   PROCEDURE WriteLid(s: Streams.Stream;
+		      object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Lid DO
+	 RETURN NetIO.WriteLongInt(s, object.id) &
+		NetIO.WriteLongInt(s, object.key)
+      END;
+   END WriteLid;
+
+   (* === Shards interface procedures ==================================== *)
+
+   PROCEDURE Fits(pot: Shards.Pot; lid: Shards.Lid): BOOLEAN;
+   BEGIN
+      IF lid IS Lid THEN
+	 WITH lid: Lid DO
+	    WITH pot: Pot DO
+	       RETURN (lid.id = pot.id) & (lid.key = pot.key)
+	    END;
+	 END;
+      ELSE
+	 RETURN FALSE
+      END;
+   END Fits;
+
+   PROCEDURE Supply(pot: Shards.Pot; VAR lid: Shards.Lid): BOOLEAN;
+      VAR
+	 mylid: Lid;
+   BEGIN
+      CreateLid(mylid);
+      WITH pot: Pot DO
+	 mylid.id := pot.id;
+	 mylid.key := pot.key;
+      END;
+      lid := mylid;
+      RETURN TRUE
+   END Supply;
+
+   (* === initialization ================================================= *)
+
+   PROCEDURE Init;
+
+      PROCEDURE InitPT(name, baseName: ARRAY OF CHAR;
+		       createProc: PersistentObjects.CreateProc;
+		       readProc: PersistentObjects.ReadProc;
+		       writeProc: PersistentObjects.WriteProc;
+		       VAR type: Services.Type);
+	 VAR
+	    if: PersistentObjects.Interface;
+      BEGIN
+	 NEW(if); if.read := readProc; if.write := writeProc;
+	 if.create := createProc; if.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, baseName, if);
+      END InitPT;
+
+   BEGIN
+      InitPT("PrivateShards.Pot", "Shards.Pot",
+	     CreatePot, ReadPot, WritePot, potType);
+      InitPT("PrivateShards.Lid", "Shards.Lid",
+	     CreateLid, ReadLid, WriteLid, lidType);
+      NEW(potInterface);
+      potInterface.fits := Fits;
+      potInterface.supply := Supply;
+   END Init;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR pot: Shards.Pot; VAR lid: Shards.Lid);
+      VAR
+	 mypot: Pot;
+	 mylid: Lid;
+	 ign: BOOLEAN;
+   BEGIN
+      CreatePot(mypot);
+      ign := Supply(mypot, mylid);
+      pot := mypot; lid := mylid;
+   END Create;
+
+BEGIN
+   unique := 1;
+   Init;
+END PrivateShards.

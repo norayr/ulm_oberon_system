@@ -1,0 +1,96 @@
+Process(3)                    Ulm's Oberon System                   Process(3)
+
+
+
+[1mNAME[0m
+       Process - suspension and termination of the current process
+
+[1mSYNOPSIS[0m
+       TYPE Name = ARRAY 128 OF CHAR;
+       VAR name: Name;
+       VAR id: Name;
+       VAR host: Name;
+       TYPE ExitCode = INTEGER;
+       VAR indicateSuccess: ExitCode;
+       VAR indicateFailure: ExitCode;
+       TYPE ExitEvent = POINTER TO ExitEventRec;
+       TYPE ExitEventRec =
+          RECORD
+             (Events.EventRec)
+             exitcode: ExitCode;
+          END;
+       VAR softTermination: Events.EventType;
+       VAR termination: Events.EventType;
+       VAR abort: Events.EventType;
+       VAR startOfGarbageCollection: Events.EventType;
+       VAR endOfGarbageCollection: Events.EventType;
+       TYPE ExitProc = PROCEDURE (code: ExitCode);
+       TYPE AbortProc = PROCEDURE;
+       TYPE PauseProc = PROCEDURE;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             exit: ExitProc;
+             abort: AbortProc;
+             pause: PauseProc;
+          END;
+
+       PROCEDURE SetHandlers(if: Interface);
+       PROCEDURE TerminateSoftly;
+       PROCEDURE Terminate;
+       PROCEDURE Abort;
+       PROCEDURE Exit(code: ExitCode);
+       PROCEDURE Pause;
+
+
+[1mDESCRIPTION[0m
+       [4mProcess[24m interfaces the system-dependent calls which allow to suspend or
+       to terminate the current process.  Calls to the standard procedure [1mHALT[0m
+       are  converted  to  calls of [4mProcess.Exit[24m by the Oberon compiler.  Fur-
+       ther, [4mProcess[24m causes [4mEvents(3)[24m to call [4mAbort[24m in case of abortions.
+
+       Three string variables are provided that are  possibly  initialized  by
+       more  system-dependant modules. These strings can be empty in case they
+       are unknown or not yet initialized.
+       [4mname[24m   contains a user-readable name of the current process.  The  pro-
+              cess name is suitable for error messages.
+       [4mid[24m     is  similar  but  attempts to be a more formal identification of
+              the current process.
+       [4mhost[24m   a string that identifies our host.
+
+       [4mExit[24m raises an event of type [4mtermination[24m and causes the current process
+       to  be  terminated.  The exit code is passed to the invocation environ-
+       ment.  [4mTerminate[24m calls [4mExit[24m with an exit code of [4mindicateSuccess[24m.  [4mPro-[0m
+       [4mcess[24m  exits  immediately  without  event  handling in case of recursive
+       calls of [4mExit[24m or [4mAbort[24m.
+
+       [4mTerminateSoftly[24m raises an event of type [4msoftTermination[24m that  asks  all
+       running  tasks  to  terminate.  In comparison to [4mTerminate[24m, this method
+       gives all tasks the opportunity to terminate gracefully. However,  this
+       termination  succeeds  only if all tasks honor directly or indirectly a
+       [4msoftTermination[24m event.
+
+       [4mAbort[24m raises an event of type [4mabort[24m and causes the current  process  to
+       be  aborted.   This  is  suitable in case of serious programming errors
+       where post mortem debugging could be of interest.
+
+       [4mPause[24m suspends the execution  of  the  current  process.   Some  system
+       dependent  events  which  are  raised from external sources are able to
+       resume suspended processes.
+
+       [4mSetHandlers[24m is to be called during  initialization  time  by  a  module
+       which  implements  these  operations  for  the  given environment.  The
+       default interface of [4mProcess[24m consists of procedures with endless loops.
+
+       Additionally,  [4mProcess[24m  offers the event types [4mstartOfGarbageCollection[0m
+       and [4mendOfGarbageCollection[24m which may be used by garbage  collectors  to
+       indicate start and end of their work (see [4mStorage(3)[24m).
+
+[1mSEE ALSO[0m
+       [4mEvents(3)[24m        event handling
+       [4mStorage(3)[24m       storage allocating interface
+       [4mUnixProcess(3)[24m   initializes [4mProcess(3)[24m during startup
+
+
+
+Release 0.5               Last change: 9 August 2006                Process(3)

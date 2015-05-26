@@ -1,0 +1,481 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2003 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH NeWS 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+NeWS \- interface to the Network/extensible Window System
+.SH SYNOPSIS
+.Pg
+CONST raw = 0; (* no intermediate processing is done *)
+CONST halfcooked = 1; (* compress outgoing stuff *)
+CONST cooked = 2; (* check for tags & compress outgoing stuff *)
+TYPE Mode = SHORTINT; (* raw..cooked *)
+.sp 0.3
+TYPE Tag = INTEGER;
+TYPE ListOfObjects = POINTER TO ListOfObjectsRec;
+TYPE ListOfObjectsRec = RECORD (Disciplines.ObjectRec) END;
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec)
+      s: Streams.Stream; (* NeWS stream *)
+      tag: Tag;
+   END;
+.sp 0.3
+CONST syntaxError = 0; (* syntax error in NEWSSERVER environment variable *)
+CONST rejectedConnection = 1; (* network security violation *)
+CONST errorInHexString = 2; (* bad syntax of hex string *)
+CONST badInputToken = 3; (* corrupted input token *)
+CONST connectionFinished = 4; (* no longer connected to NeWS server *)
+CONST outOfTagNumbers = 5; (* no more unique tag numbers available *)
+CONST errorcodes = 6;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: SHORTINT;
+   END;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE Open(VAR s: Streams.Stream; mode: Mode;
+               errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.3
+PROCEDURE DefineUserToken(s: Streams.Stream; token: ARRAY OF CHAR);
+.sp 0.3
+(* token output operations *)
+PROCEDURE PutInt(s: Streams.Stream; intval: INTEGER);
+PROCEDURE PutReal(s: Streams.Stream; realval: REAL);
+PROCEDURE PutString(s: Streams.Stream; string: ARRAY OF CHAR);
+PROCEDURE PutUserToken(s: Streams.Stream; code: INTEGER);
+.sp 0.3
+(* input operations for cooked NeWS streams *)
+PROCEDURE GetListOfObjects(s: Streams.Stream; tag: Tag;
+                           VAR list: ListOfObjects) : BOOLEAN;
+PROCEDURE Length(list: ListOfObjects) : INTEGER;
+PROCEDURE IsInteger(list: ListOfObjects) : BOOLEAN;
+PROCEDURE GetInt(list: ListOfObjects; VAR intval: LONGINT) : BOOLEAN;
+PROCEDURE IsReal(list: ListOfObjects) : BOOLEAN;
+PROCEDURE GetReal(list: ListOfObjects; VAR realval: REAL) : BOOLEAN;
+PROCEDURE IsString(list: ListOfObjects) : BOOLEAN;
+PROCEDURE GetString(list: ListOfObjects;
+                    VAR string: ARRAY OF CHAR) : BOOLEAN;
+PROCEDURE GetStringAsStream(list: ListOfObjects;
+                            VAR s: Streams.Stream) : BOOLEAN;
+.sp 0.3
+PROCEDURE CreateCondition(VAR condition: Conditions.Condition;
+                          s: Streams.Stream; tag: Tag; minlen: INTEGER);
+PROCEDURE GetNotice(s: Streams.Stream; tag: Tag; minlen: INTEGER;
+                    eventType: Events.EventType);
+.sp 0.3
+PROCEDURE GetUniqueTag(s: Streams.Stream; VAR tag: Tag);
+PROCEDURE GetUniqueTags(s: Streams.Stream; VAR tag: Tag; count: INTEGER);
+.Pe
+.SH DESCRIPTION
+.ds PS P\s-1OST\s0S\s-1CRIPT\s0
+.I NeWS
+provides the basic communication facilities for the equally named
+window system.
+The window system is represented by a server process whose protocol
+is based upon an extension of \*(PS.
+Hence, the communication is based on ordinary texts in ASCII representation
+in comparison to other protocols (e.g. X11) which use binary records.
+.PP
+In addition to the usual text representation,
+the NeWS-server supports some special encodings for many tokens
+of the \*(PS language (i.e. for numbers, strings, frequent system tokens
+and optionally for user defined tokens).
+These encodings are always introduced by a non-ASCII character and
+may be embedded anywhere in the ASCII-text.
+Encoded tokens reduce the network traffic and the overhead of
+the lexical analysis on the server side.
+.PP
+Output of the NeWS-system can be read as input.
+E.g. writing "(It works) print" to a NeWS stream causes
+"It works" to be returned on subsequent reading.
+Further, the NeWS-server supports the operations \fBtagprint\fP
+and \fBtypedprint\fP which allow to send a list of objects which is
+introduced by a tag number.
+Tag numbers and objects printed by \fBtypedprint\fP are encoded
+like the tokens on the input side of the NeWS-server.
+Typically, events of the NeWS-server side which are of interest
+for the client (like pressing a button) are encoded in this way.
+.PP
+.I NeWS
+offers three working modes with different support of
+token compression and input processing:
+.Tb halfcooked
+.Tp raw
+provides a raw connection to the NeWS-server.
+No input or output processing is done.
+While the advanced input operations may not be used for this mode,
+the output operations (\fIPutInt\fP, \fIPutReal\fP etc.) may be
+used to compress tokens.
+.Tp halfcooked
+requests the lexical analysis of the \*(PS language to be done
+on the client side and to encode tokens whenever possible.
+The input side remains unprocessed.
+.Tp cooked
+offers the facilities of the \fIhalfcooked\fP mode and
+removes all tagged object lists from the input queue.
+Further, it guarantees that write operations will never block
+due to not yet processed input.
+Tagged object lists may be accessed by giving a tag number.
+Accesses to tagged object lists need not to be in the order of
+arrival.
+It is in the responsibility of the NeWS stream user to process
+everything which has been requested before to be sent over
+the communication channel.
+The stream implementation collects everything on the input side
+until it gets processed.
+The more unprocessed input the more memory usage.
+.Te
+.PP
+.I Open
+connects to the NeWS server and returns a stream to it with the
+requested working mode.
+\fIOpen\fP uses the algorithm of OpenWindows Version 3 to connect
+to the server.
+Firstly, the environment variables \fBDISPLAY\fP and \fBNEWSSERVER\fP
+are checked and compared against the local host.
+If one of them is given and does not point to the local hostname,
+\fIOpen\fP opens an Internet socket on port 2000
+(or 2000+\fIn\fP for display \fIn\fP) of the given host.
+For local hosts (or if neither \fBDISPLAY\fP nor \fBNEWSSERVER\fP
+has been given), the UNIX domain socket at \fI/tmp/.NeWS-unix/N\fP
+followed by the display number is used.
+.PP
+After having connected successfully,
+\fIOpen\fP passes the authorization information to the server.
+The X11/NeWS-server of Sun Microsystems expects X11-authorization data
+(even for NeWS connections)
+which is usally stored in
+the users home directory in \fI.Xauthority\fP and maintained by
+the \fIxauth(1)\fP command.
+Alternatively, it is possible to specify another authority file
+by use of the \fBXAUTHORITY\fP variable.
+The authorization data is passed in a way which does not confuse
+NeWS servers which do not require it.
+\fIOpen\fP checks for successful authorization.
+.PP
+Streams returned by \fIOpen\fP are buffered (independent of
+the working mode) and support read and write operations.
+They are bidirectional in the sense of \fIStreams(3)\fP and
+do not support \fIseek\fP, \fItell\fP or \fItrunc\fP operations.
+Further, \fINeWS\fP supports the conditions of \fIStreamConditions\fP
+and a special condition type for \fIcooked\fP streams which
+allows to wait for tagged sequences with a given tag number.
+Implicit flushing occurs if conditions for the input side
+are evaluated or waited for.
+.PP
+.I DefineUserToken
+allows to specify frequently used tokens
+(e.g. names of objects or own operators).
+The calling order of \fIDefineUserToken\fP is important:
+the first tokens need less bytes to be encoded than tokens
+which has been defined later.
+The number of possible encodable user tokens is limited and
+\fIDefineUserToken\fP silently ignores the call if the
+limit is exceeded.
+\fIDefineUserToken\fP must not be called for \fIraw\fP streams.
+.PP
+While \fIhalfcooked\fP and \fIcooked\fP streams compress
+all registered user tokens,
+\fIPutUserToken\fP allows to encode user tokens for
+\fIraw\fP streams or to circumvents the lexical analysis of
+\fIhalfcooked\fP or \fIcooked\fP streams.
+.PP
+\fIPutInt\fP, \fIPutReal\fP, \fIPutString\fP,
+and \fIPutUserToken\fP output their parameter in encoded form.
+These operations may be mixed with usual output operations but
+note that these routines terminate most tokens but may not be used
+inside strings or hexstrings.
+.PP
+\fIGetListOfObjects\fP returns a list of objects which has
+been introduced by \fItag\fP and removes it from the input queue.
+This operation is valid for \fIcooked\fP streams only.
+Note that the NeWS server does not support an end-of-list notation.
+Thus, lists are terminated by tags or ordinary input.
+Because \fIGetListOfObjects\fP is free to return a list immediately after
+seeing the tag, the list may grow even after accessing the list.
+Usually, the expected list length is known and
+\fICreateCondition\fP allows to wait for a tag followed by
+a list of a given length (see below).
+.PP
+Not all objects of the NeWS version of \*(PS are supported by
+\fBtypedprint\fP.
+Regrettably, the current documentation about the NeWS server
+does not contain any hints for these cases but states that
+strings and numbers (integers or floating point numbers) are supported.
+In fact, arrays are supported too.
+Encoded arrays on the input side are expanded by \fINeWS\fP
+to avoid the introduction of a non-documented NeWS-feature in the
+\fINeWS\fP module,
+e.g. \fB[ 1 2 3] typedprint\fP is converted to three integer objects.
+Other objects are encoded as non-objects and converted to
+zero-valued integers by \fINeWS\fP to achieve the correct length.
+.PP
+\fILength\fP returns the current number of objects of the given list.
+As described above, the length may grow.
+.PP
+\fIIsInteger\fP returns \fBTRUE\fP if the next object in the
+list is an integer object.
+\fIGetInt\fP returns and removes an integer object from the
+given length.
+\fIGetInt\fP returns \fBFALSE\fP if the next object is not an integer
+or at the end of the list.
+\fIIsReal\fP and \fIGetReal\fP work like \fIIsInteger\fP and
+\fIGetInt\fP but allow also to read integer objects as reals.
+\fIIsString\fP returns \fBTRUE\fP if the next object in the
+list is a string object.
+Strings may be retrieved either by \fIGetString\fP
+which puts the string into a fixed-sized character arrays
+(silent truncation is possible; \fB0X\fP-termination is guaranteed),
+or \fIGetStringAsStream\fP which allows a stream access to
+the string object which is suitable for arbitrary long strings.
+.PP
+\fICreateCondition\fP creates a condition which evaluates to \fBTRUE\fP
+if a tagged sequence with the given minimal length can be accessed from
+the input queue.
+Shorter lengths are possible if the sequence has been terminated
+by other input (tags or ordinary input).
+.PP
+\fIGetNotice\fP causes events of type \fIeventType\fP to be raised
+for each tagged sequence with the given minimal length.
+The length may be shorter if the sequence has been terminated.
+.PP
+\fIGetUniqueTag\fP and \fIGetUniqueTags\fP assure the use of unique tags.
+While \fIGetUniqueTag\fP returns one tag number,
+\fIGetUniqueTag\fP returns \fIcount\fP consecutive tag numbers.
+.SH DIAGNOSTICS
+Beside of connection related I/O errors,
+following errors are detected by the \fINeWS\fP module and
+lead to error events which are related to the stream or
+the \fIerrors\fP parameter:
+.Tb rejectedConnection
+.Tp syntaxError
+a syntax error has been found either in the \fBDISPLAY\fP
+or \fBNEWSSERVER\fP environment variable.
+See below for the correct format.
+.Tp rejectedConnection
+indicates a network security violation,
+i.e. the authentication was not successful.
+This may result from missing or wrong authentication files.
+.Tp errorInHexString
+a hex string was given in an invalid form.
+.Tp badInputToken
+an input token which has been written by the NeWS server
+has been found in a corrupted form.
+.Tp connectionFinished
+the connection has been either broken or finished.
+.Tp outOfTagNumbers
+indicates that no more unique tag numbers are available.
+.Te
+.SH ENVIRONMENT
+.Tb rejectedConnection
+.Tp DISPLAY
+specifies the host of the NeWS server and the display to be used
+in the form \fIhostname\fP\fB:\fP\fIdisplay\fP.
+.Tp HOME
+specifies the users home directory.
+.Tp NEWSSERVER
+specifies the Internet address, the port number, and the
+host name of the NeWS server in the form
+\fIaddress\fP\fB.\fP\fIport\fP\fB;\fP\fIhostname\fP.
+.Tp XAUTHORITY
+specifies the name of the X authority file.
+.Te
+.SH FILES
+.Tb "NeWS Programmer's Guide"
+.Tp /tmp/.NeWS-unix/N[0-9]
+UNIX domain socket of the NeWS server
+.Tp ~/.Xauthority
+default X authority file
+.Te
+.SH "SEE ALSO"
+.Tb "NeWS Programmer's Guide"
+.Tp newsserverstr(1)
+generates a string for the \fBNEWSSERVER\fP environment variable
+.Tp xauth(1)
+X authority file utility
+.Tp xnews(1)
+X11/NeWS server
+.Tp RelatedEvents(3)
+error event handling
+.Tp Streams(3)
+stream operations
+.Tp StreamConditions(3)
+stream conditions which allow to wait for available input
+or nonblocking output
+.Tp "\*(PS Language"
+\fIReference Manual, Adobe Systems Inc., Addison-Wesley\fP
+.Tp "NeWS Programmer's Guide"
+documents the extensions of the \*(PS language and
+the NeWS protocol
+.Te
+.SH LIBRARY
+\fINeWS\fP is part of the \fINeWS\fP-library,
+i.e. \fB+lNeWS\fP must be specified for \fImmo(1)\fP.
+.SH BUGS
+The implementation of \fINeWS\fP depends on the current version of the
+NeWS protocol and the current version of UNIX.
+While all dependencies are documented above,
+the interface itself is independent of the NeWS version and
+client modules should not rely on these informations
+(e.g. trying to send arrays by \fBtypedprint\fP or
+printing error messages which mention one of the environment variables).
+.PP
+By default, error messages of the NeWS server are printed onto
+the console window.
+It would be more convenient to catch those errors
+(by defining another error handler) and convert them into
+events which are related to the \fINeWS\fP stream.
+.\" ---------------------------------------------------------------------------
+.\" $Id: NeWS.3,v 1.3 2003/07/10 09:20:03 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: NeWS.3,v $
+.\" Revision 1.3  2003/07/10 09:20:03  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.2  1992/04/10 08:23:45  borchert
+.\" one of the long sentences has been rewritten
+.\"
+.\" Revision 1.1  1992/03/12  19:42:57  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

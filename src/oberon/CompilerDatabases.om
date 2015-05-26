@@ -1,0 +1,155 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerDat.om,v 1.1 1998/04/14 08:47:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerDat.om,v $
+   Revision 1.1  1998/04/14 08:47:26  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerDatabases;
+
+   IMPORT Architectures, CompilerKeys, CompilerObjects, ConstStrings,
+      Objects, PersistentTexts, RelatedEvents, Services,
+      Sources := CompilerSources, Streams;
+
+   TYPE
+      Database = POINTER TO DatabaseRec;
+
+   TYPE
+      LookupProc = PROCEDURE (db: Database; modname: ConstStrings.String;
+                              type: CompilerObjects.ObjectType;
+			      arch: Architectures.Architecture;
+			      keys: CompilerKeys.Set;
+			      VAR header: CompilerObjects.Header;
+			      VAR text: PersistentTexts.Text;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+      LookupHeaderProc = PROCEDURE (db: Database; modname: ConstStrings.String;
+                              type: CompilerObjects.ObjectType;
+			      arch: Architectures.Architecture;
+			      keys: CompilerKeys.Set;
+			      VAR header: CompilerObjects.Header;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+      StoreProc = PROCEDURE (db: Database; header: CompilerObjects.Header;
+                             text: PersistentTexts.Text;
+		             errors: RelatedEvents.Object) : BOOLEAN;
+      LookupSrcProc = PROCEDURE (db: Database; modname: ConstStrings.String;
+				 kind: Sources.SourceKind;
+			         VAR src: Sources.Source;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      StoreSrcProc = PROCEDURE (db: Database;
+                                src: Sources.Source;
+		                errors: RelatedEvents.Object) : BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    lookup: LookupProc;
+	    lookupHeader: LookupHeaderProc;
+	    store: StoreProc;
+	    lookupSrc: LookupSrcProc;
+	    storeSrc: StoreSrcProc;
+	 END;
+
+   TYPE
+      DatabaseRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	 END;
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "CompilerDatabases.Database", "");
+   END InitModule;
+
+   PROCEDURE Init(db: Database; if: Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.lookup # NIL) & (if.store # NIL) &
+             (if.lookupSrc # NIL) & (if.storeSrc # NIL));
+      db.if := if;
+   END Init;
+
+   PROCEDURE Lookup(db: Database; modname: ConstStrings.String;
+                    type: CompilerObjects.ObjectType;
+		    arch: Architectures.Architecture;
+		    keys: CompilerKeys.Set;
+		    VAR header: CompilerObjects.Header;
+		    VAR text: PersistentTexts.Text;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 combinedArch: Architectures.Architecture;
+   BEGIN
+      IF db.if.lookup(db, modname, type, arch, keys, header, text, errors) THEN
+	 ASSERT(CompilerKeys.CompatibleWith(header.key, keys));
+	 ASSERT(Architectures.Compatible(arch, header.arch, combinedArch));
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Lookup;
+
+   PROCEDURE LookupHeader(db: Database; modname: ConstStrings.String;
+			  type: CompilerObjects.ObjectType;
+			  arch: Architectures.Architecture;
+			  keys: CompilerKeys.Set;
+			  VAR header: CompilerObjects.Header;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 combinedArch: Architectures.Architecture;
+   BEGIN
+      IF db.if.lookupHeader(db, modname, type, arch, keys, header, errors) THEN
+	 ASSERT(CompilerKeys.CompatibleWith(header.key, keys));
+	 ASSERT(Architectures.Compatible(arch, header.arch, combinedArch));
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END LookupHeader;
+
+   PROCEDURE Store(db: Database; header: CompilerObjects.Header;
+                   text: PersistentTexts.Text;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN db.if.store(db, header, text, errors)
+   END Store;
+
+   PROCEDURE LookupSrc(db: Database; modname: ConstStrings.String;
+                       kind: Sources.SourceKind;
+                       VAR src: Sources.Source;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN db.if.lookupSrc(db, modname, kind, src, errors)
+   END LookupSrc;
+
+   PROCEDURE StoreSrc(db: Database; src: Sources.Source;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN db.if.storeSrc(db, src, errors)
+   END StoreSrc;
+
+BEGIN
+   InitModule;
+END CompilerDatabases.

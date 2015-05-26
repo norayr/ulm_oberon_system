@@ -1,0 +1,330 @@
+
+
+
+Services(3)            Ulm's Oberon System            Services(3)
+
+
+NNAAMMEE
+       Services - type-independent definition of extensions
+
+SSYYNNOOPPSSIISS
+       TYPE Object = POINTER TO ObjectRec;
+       TYPE ObjectRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE Type = POINTER TO TypeRec;
+       TYPE TypeRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE Service = POINTER TO ServiceRec;
+       TYPE ServiceRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE InstallProc = PROCEDURE (object: Object; service: Service);
+
+       TYPE LoadModuleProc = PROCEDURE (module: ARRAY OF CHAR) : BOOLEAN;
+       TYPE LoadServiceProc = PROCEDURE (service, for: ARRAY OF CHAR) : BOOLEAN;
+       TYPE LoaderInterface = POINTER TO LoaderInterfaceRec;
+       TYPE LoaderInterfaceRec =
+          RECORD
+             loadModule: LoadModuleProc;
+             loadService: LoadServiceProc;
+          END;
+       PROCEDURE InitLoader(if: LoaderInterface);
+
+       PROCEDURE CreateType(VAR type: Type; name, baseName: ARRAY OF CHAR);
+       PROCEDURE InitType(type: Type; name, baseName: ARRAY OF CHAR);
+       PROCEDURE Init(object: Object; type: Type);
+       PROCEDURE GetType(object: Object; VAR type: Type);
+       PROCEDURE GetTypeName(type: Type; VAR name: ARRAY OF CHAR);
+       PROCEDURE GetBaseType(type: Type; VAR baseType: Type);
+       PROCEDURE IsExtensionOf(type, baseType: Type) : BOOLEAN;
+       PROCEDURE SeekType(name: ARRAY OF CHAR; VAR type: Type);
+
+       PROCEDURE Create(VAR service: Service; name: ARRAY OF CHAR);
+       PROCEDURE Seek(name: ARRAY OF CHAR; VAR service: Service);
+       PROCEDURE Define(type: Type; service: Service; install: InstallProc);
+       PROCEDURE Install(object: Object; service: Service) : BOOLEAN;
+       PROCEDURE Supported(object: Object; service: Service) : BOOLEAN;
+       PROCEDURE Installed(object: Object; service: Service) : BOOLEAN;
+       PROCEDURE GetSupportedBaseType(object: Object; service: Service;
+                                      VAR baseType: Type);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_e_r_v_i_c_e_s associates objects which are an extension of _S_e_r_­
+       _v_i_c_e_s_._O_b_j_e_c_t with types.  The types of _S_e_r_v_i_c_e_s are  first
+       class  objects  unlike  the  types  of the Oberon language
+       which only allow for type tests and the IISS operator.  Ser­
+       vices  are  created independently of a particular type and
+       then implemented by different implementors  for  different
+       types  and  their  extensions.   This  mechanism allows to
+       offer extensions for objects without changing their imple­
+       mentation  and without adding object-specific code to mod­
+       ules which  are  interested  in  using  these  extensions.
+       Implementing modules of services may even be loaded dynam­
+       ically, if supported by _L_o_a_d_e_r_(_3_).
+
+
+
+Release 0.5       Last change: 16 September 1996                1
+
+
+
+
+
+Services(3)            Ulm's Oberon System            Services(3)
+
+
+   TTyyppee ssyysstteemm
+       Modules which define extensions  of  _S_e_r_v_i_c_e_s_._O_b_j_e_c_t  must
+       call  _C_r_e_a_t_e_T_y_p_e  or _I_n_i_t_T_y_p_e during their initialization.
+       The parameters _n_a_m_e and _b_a_s_e_N_a_m_e are strings which  should
+       correspond to the names of the types in dot notation, e.g.
+       "Events.EventType"   or   "Streams.Stream".     If    _S_e_r_­
+       _v_i_c_e_s_._O_b_j_e_c_t  is  extended  directly,  ""  should be given
+       instead of  "Services.Object".   Note  that  _P_e_r_s_i_s_t_e_n_t_O_b_­
+       _j_e_c_t_s_._R_e_g_i_s_t_e_r_T_y_p_e  does  this  already  for extensions of
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._O_b_j_e_c_t.  _I_n_i_t_T_y_p_e is an option  when  an
+       extension  of _S_e_r_v_i_c_e_s_._T_y_p_e has been declared.  Later, any
+       object which is created by this module must be initialized
+       by  _I_n_i_t  to  connect  objects with their type.  Note that
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._I_n_i_t does this already for extensions of
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._O_b_j_e_c_t.   The  type  system  of _S_e_r_v_i_c_e_s
+       does not include _S_e_r_v_i_c_e_s_._O_b_j_e_c_t because this type is con­
+       sidered  as  an  abstract type which must not be instanti­
+       ated.
+
+       Based on these initializations a couple of  type  oriented
+       operations  are  possible  which  extend the built-in type
+       test and the IISS operator.  _G_e_t_T_y_p_e retrieves the  type  of
+       the given object.  _G_e_t_T_y_p_e_N_a_m_e returns the name previously
+       given to _C_r_e_a_t_e_T_y_p_e or _I_n_i_t_T_y_p_e.  _G_e_t_B_a_s_e_T_y_p_e returns  the
+       base type of a given type.  NNIILL is returned if the type is
+       a  direct  extension  of  _S_e_r_v_i_c_e_s_._O_b_j_e_c_t.   _I_s_E_x_t_e_n_s_i_o_n_O_f
+       allows  to perform a type test.  Giving the name of a type
+       (e.g. "Streams.Stream"), _S_e_e_k_T_y_p_e returns  the  associated
+       type.   The  empty  string (i.e. "") and "Services.Object"
+       must not be given because _S_e_r_v_i_c_e_s_._O_b_j_e_c_t  itself  is  not
+       covered by the type system.
+
+       The  combination  of  _G_e_t_T_y_p_e  and _I_s_E_x_t_e_n_s_i_o_n_O_f allows to
+       perform checks at runtime which are similar to type checks
+       for anchored types in Eiffel:
+
+       Services.GetType(refObject, refType);
+       Services.GetType(otherObject, otherType);
+       IF Services.IsExtensionOf(otherType, refType) THEN
+          (* otherObject has a type which extends that of refObject *)
+       END;
+
+
+   CCrreeaattiinngg aa SSeerrvviiccee
+       Services  are abstractions which are created independently
+       of a particular type but  need  type-specific  implementa­
+       tions.   They  are always extensions which are (in princi­
+       ple) not known by the static implementors of a type.  Each
+       service  abstraction  is  represented  by a module and the
+       name of the service is usually the name  of  this  module.
+       _C_r_e_a_t_e  is to be called by this module during the initial­
+       ization.
+
+       Additionally, this module usually defines an interface and
+
+
+
+Release 0.5       Last change: 16 September 1996                2
+
+
+
+
+
+Services(3)            Ulm's Oberon System            Services(3)
+
+
+       a  per-object  initialization  procedure  which  has  this
+       interface as parameter.  This initialization procedure  is
+       then  later  to  be  called  by service providers if their
+       _i_n_s_t_a_l_l interface procedure of _S_e_r_v_i_c_e gets  called.   The
+       other exported operations of this abstraction should check
+       for a valid interface,  and  if  not  yet  provided,  call
+       _I_n_s_t_a_l_l  for  this object, which in turn, causes the type-
+       specific service provider to invoke  the  service-specific
+       per-object initialization procedure.
+
+       There  is  no  guarantee, however, that a service provider
+       for a specific type exists.  Consequently, each  operation
+       of  a service abstraction may fail just due to the missing
+       availability of a service provider.  This possibility  may
+       be  checked  for  by  _S_u_p_p_o_r_t_e_d which returns TTRRUUEE for the
+       given object when the service abstraction  is  applicable.
+       _I_n_s_t_a_l_l_e_d  returns  TTRRUUEE if the object is already prepared
+       for the given service.
+
+       In some cases there is no necessity for a  object-specific
+       initialization  to  access  the service.  Then the service
+       abstraction should offer  a  type-specific  initialization
+       procedure  which is to be called by service providers dur­
+       ing their initialization phase.  This  type-specific  init
+       procedure  is then free to attach a discipline to the type
+       which references the interface of  the  provider.   _D_e_f_i_n_e
+       may  then  be called by the service abstraction instead of
+       the service provider with _i_n_s_t_a_l_l set to NNIILL.  The  opera­
+       tions  of the abstraction can now check for the type of an
+       object (by using _G_e_t_S_u_p_p_o_r_t_e_d_B_a_s_e_T_y_p_e) and  seek  for  the
+       interface  at the previously attached discipline.  _G_e_t_S_u_p_­
+       _p_o_r_t_e_d_B_a_s_e_T_y_p_e must be used  instead  of  _G_e_t_T_y_p_e  because
+       service  offers extend to all extensions of a type (if not
+       overridden by service offers for specific derived  types).
+
+   SSeerrvviiccee pprroovviiddeerrss
+       Implementors  of  a  service  for  a  specific type should
+       always consult the manual page which describes the service
+       abstraction.  While usually _D_e_f_i_n_e has to be called by the
+       service provider there may exist cases where this is  done
+       by the service abstraction.
+
+       _D_e_f_i_n_e  should  be called during the initialization phase.
+       The offered service does not only cover the given type but
+       all  its  extensions, if not overridden by other providers
+       of the same service for more specific types.  The  _i_n_s_t_a_l_l
+       interface procedure gets called once only for each object.
+       _I_n_s_t_a_l_l_e_d allows to test whether _i_n_s_t_a_l_l has  been  called
+       for the given object or not.
+
+   SSuuppppoorrtt ffoorr ddyynnaammiicc llooaaddiinngg
+       To   avoid   reference  cycles,  _S_e_r_v_i_c_e_s  doesn't  import
+       _L_o_a_d_e_r_(_3_) but expects _L_o_a_d_e_r_(_3_) to call _I_n_i_t_L_o_a_d_e_r  during
+       the  startup and to provide some hooks which allow to load
+
+
+
+Release 0.5       Last change: 16 September 1996                3
+
+
+
+
+
+Services(3)            Ulm's Oberon System            Services(3)
+
+
+       dynamically services.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _S_e_r_v_i_c_e_s does not generate any error events  (to  avoid  a
+       reference  cycle  problem  because  _E_v_e_n_t_s_(_3_) imports _S_e_r_­
+       _v_i_c_e_s).  There a couple of assertions which check for var­
+       ious preconditions:
+
+       ·      _C_r_e_a_t_e_T_y_p_e  and  _I_n_i_t_T_y_p_e:  the  type _b_a_s_e_N_a_m_e must
+              have been declared before  and  _n_a_m_e  must  not  be
+              declared twice.
+
+       ·      _I_n_i_t:  must not be called twice for the same object
+              and _t_y_p_e must be non-NIL.
+
+       ·      _I_s_E_x_t_e_n_s_i_o_n_O_f: _b_a_s_e_T_y_p_e must be non-NIL.
+
+       ·      _C_r_e_a_t_e: _n_a_m_e must not be declared twice.
+
+       ·      _D_e_f_i_n_e: must not be called twice for the same  com­
+              bination  of _t_y_p_e and _s_e_r_v_i_c_e; _s_e_r_v_i_c_e must be non-
+              NIL.
+
+       ·      _I_n_i_t_L_o_a_d_e_r must not be called twice and the  passed
+              interface must be non-NIL.
+
+       Note that naming conflicts can be easily avoided by adopt­
+       ing the naming conventions, i.e. by  prefixing  all  names
+       with the module name.
+
+       Some errors are indicated by returning a NNIILL-value:
+
+       ·      _G_e_t_T_y_p_e  returns  NNIILL when _I_n_i_t has not been called
+              for this object.
+
+       ·      _G_e_t_B_a_s_e_T_y_p_e  returns  NNIILL  for  the  type  of  _S_e_r_­
+              _v_i_c_e_s_._O_b_j_e_c_t.
+
+       ·      _S_e_e_k_T_y_p_e returns NNIILL for unknown type names.
+
+       ·      _S_e_e_k returns NNIILL for unknown service names.
+
+       ·      _G_e_t_S_u_p_p_o_r_t_e_d_B_a_s_e_T_y_p_e  returns NNIILL if _s_e_r_v_i_c_e is not
+              supported for _o_b_j_e_c_t.
+
+SSEEEE AALLSSOO
+       _D_i_s_c_i_p_l_i_n_e_s_(_3_)         defines  the  base  type  of   _S_e_r_­
+                              _v_i_c_e_s_._O_b_j_e_c_t
+       _K_e_y_s_(_3_)                definition of a meta service
+       _L_o_a_d_e_r_(_3_)              interface  to  dynamic  loading  of
+                              modules
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   defines an important  extension  of
+                              _S_e_r_v_i_c_e_s_._O_b_j_e_c_t
+
+
+
+
+Release 0.5       Last change: 16 September 1996                4
+
+
+
+
+
+Services(3)            Ulm's Oberon System            Services(3)
+
+
+       _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_)       defines the "RemoteObjects" service
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 16 September 1996                5
+
+

@@ -1,0 +1,222 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Maps.om,v 1.2 1995/01/04 16:43:15 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Maps.om,v $
+   Revision 1.2  1995/01/04  16:43:15  borchert
+   fixes due to Services
+
+   Revision 1.1  1994/02/22  20:08:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Maps;
+
+   IMPORT Objects, Services, Streams, Types;
+
+   TYPE
+      Byte = Types.Byte;
+      Map = POINTER TO MapRec;
+      MapRec =
+	 (* mapping rule:
+	    map an address inside of [begin..end) to
+	       offset + address - begin
+	 *)
+	 RECORD
+	    begin: Streams.Count; (* included *)
+	    end: Streams.Count; (* not included *)
+	    offset: Streams.Count;
+	    to: Streams.Stream;
+	    caps: Streams.CapabilitySet;
+	    next: Map;
+	 END;
+
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    pos: Streams.Count;
+	    length: Streams.Count; (* current stream length *)
+	    head, tail: Map;
+	 END;
+
+   VAR
+      if: Streams.Interface;
+      caps: Streams.CapabilitySet;
+      type: Services.Type; (* Maps.Stream *)
+
+   (* private procedures *)
+
+   PROCEDURE SearchMap(s: Streams.Stream;
+		       access: SHORTINT; (* Streams.Capability: read or write *)
+		       address: Streams.Count;
+		       VAR map: Map) : BOOLEAN;
+      VAR
+	 m: Map;
+   BEGIN
+      WITH s: Stream DO
+	 m := s.head;
+	 WHILE m # NIL DO
+	    IF (access IN m.caps) &
+		  (address >= m.begin) & (address < m.end) THEN
+	       map := m; RETURN TRUE
+	    END;
+	    m := m.next;
+	 END;
+      END;
+      RETURN FALSE
+   END SearchMap;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: Byte) : BOOLEAN;
+      VAR
+	 map: Map;
+   BEGIN
+      WITH s: Stream DO
+	 IF ~SearchMap(s, Streams.read, s.pos, map) OR
+	       ~Streams.Seek(map.to, map.offset + s.pos - map.begin,
+				     Streams.fromStart) OR
+	       ~Streams.ReadByte(map.to, byte) THEN
+	    RETURN FALSE
+	 ELSE
+	    INC(s.pos);
+	    RETURN TRUE
+	 END;
+      END;
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; byte: Byte) : BOOLEAN;
+      VAR
+	 map: Map;
+   BEGIN
+      WITH s: Stream DO
+	 IF ~SearchMap(s, Streams.write, s.pos, map) OR
+	       ~Streams.Seek(map.to, map.offset + s.pos - map.begin,
+				     Streams.fromStart) OR
+	       ~Streams.WriteByte(map.to, byte) THEN
+	    RETURN FALSE
+	 ELSE
+	    INC(s.pos);
+	    RETURN TRUE
+	 END;
+      END;
+   END Write;
+
+   PROCEDURE Seek(s: Streams.Stream; offset: Streams.Count;
+		  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 newpos: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: newpos := offset;
+	 | Streams.fromPos:   newpos := s.pos + offset;
+	 | Streams.fromEnd:   newpos := s.length + offset;
+	 END;
+	 IF newpos >= 0 THEN
+	    s.pos := newpos; RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR offset: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 offset := s.pos;
+	 RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+      VAR
+	 map: Map;
+   BEGIN
+      WITH s: Stream DO
+	 IF SearchMap(s, Streams.read, s.pos, map) THEN
+	    Streams.Send(map.to, msg);
+	 END;
+      END;
+   END Handler;
+
+   (* public procedures *)
+
+   PROCEDURE Open(VAR s: Streams.Stream);
+      (* Streams.Close(s) does not close base *)
+      VAR
+	 new: Stream;
+   BEGIN
+      NEW(new);
+      Services.Init(new, type);
+      Streams.Init(new, if, caps, Streams.nobuf);
+      new.head := NIL; new.tail := NIL;
+      new.pos := 0; new.length := 0;
+      s := new;
+   END Open;
+
+   PROCEDURE AddMap(s: Streams.Stream;
+		    begin, end, offset: Streams.Count;
+		    to: Streams.Stream);
+      (* mapping rule:
+	 map an address inside of [begin..end) to the stream `to' at
+	    offset + address - begin
+      *)
+      VAR
+	 map: Map;
+   BEGIN
+      IF (begin < end) & (offset >= 0) THEN
+	 WITH s: Stream DO
+	    NEW(map);
+	    map.begin := begin; map.end := end; map.offset := offset;
+	    map.to := to;
+	    map.caps := Streams.Capabilities(to);
+	    map.next := NIL;
+	    IF s.tail = NIL THEN
+	       s.head := map;
+	    ELSE
+	       s.tail.next := map;
+	    END;
+	    s.tail := map;
+	    IF end > s.length THEN
+	       s.length := end;
+	    END;
+	 END;
+      END;
+   END AddMap;
+
+   PROCEDURE Valid(s: Streams.Stream; address: Streams.Count) : BOOLEAN;
+      VAR
+	 map: Map;
+   BEGIN
+      RETURN SearchMap(s, Streams.read, address, map)
+   END Valid;
+
+BEGIN
+   NEW(if);
+   if.read := Read; if.write := Write; if.seek := Seek; if.tell := Tell;
+   if.handler := Handler;
+   caps := {Streams.read, Streams.write, Streams.seek, Streams.tell,
+	    Streams.handler, Streams.holes};
+   Services.CreateType(type, "Maps.Stream", "Streams.Stream");
+END Maps.

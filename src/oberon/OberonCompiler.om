@@ -1,0 +1,111 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonCompi.om,v 1.1 1998/04/05 13:15:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonCompi.om,v $
+   Revision 1.1  1998/04/05 13:15:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonCompiler;
+
+   IMPORT Architectures, Args, CompilerDatabases, CompilerKeys,
+      CompilerObjects, Compilers, ModularizedStructures, OberonBuiltIns,
+      OberonParser, OberonStdBuiltIns, OberonSymbols, OberonSysBuiltIns,
+      OberonUlmBuiltIns, Services, Sources := CompilerSources;
+
+   TYPE
+      Compiler = POINTER TO CompilerRec;
+      CompilerRec = RECORD (Compilers.CompilerRec) END;
+   VAR
+      type: Services.Type;
+
+   VAR
+      compiler: Compilers.Compiler;
+
+   (* === Compilers if procedures ========================================= *)
+
+   PROCEDURE Pass1(compiler: Compilers.Compiler;
+		   context: Compilers.Context;
+                   source: Sources.Source;
+		   VAR definition, module: Compilers.Result) : BOOLEAN;
+      (* process independent from any specific hardware or software
+         architecture ``source'' and return the
+         result in ``definition'' (in case of definitions),
+	 in ``module'' (in case of modules), or in both (ETHZ model);
+	 in case of errors all events should be related to source
+	 (they should be of type CompilerErrors in case of syntax
+	 and semantic errors);
+	 return TRUE if successful
+      *)
+      VAR
+	 modip: OberonSymbols.Ident;
+	 header: CompilerObjects.Header;
+	 result: Compilers.Result;
+   BEGIN
+      WITH compiler: Compiler DO
+	 definition := NIL; module := NIL;
+	 IF ~OberonParser.Parse(source, compiler, context, modip) THEN
+	    RETURN FALSE
+	 END;
+	 CompilerObjects.CreateHeader(header, modip.name);
+	 header.src := source;
+	 header.srcid := source.header.srcid;
+	 header.key := modip.key;
+	 header.dependencies := modip.dependencies;
+	 header.stage := CompilerObjects.archIndependent;
+	 header.arch := NIL;
+	 NEW(result);
+	 result.header := header; result.object := modip;
+	 IF source.header.kind = Sources.definition THEN
+	    header.type := CompilerObjects.public;
+	    definition := result;
+	 ELSE
+	    header.type := CompilerObjects.private;
+	    module := result;
+	 END;
+	 RETURN TRUE
+      END;
+   END Pass1;
+
+   PROCEDURE DefineArgs(compiler: Compilers.Compiler; args: Args.Arguments);
+   BEGIN
+      OberonBuiltIns.DefArgs(args);
+   END DefineArgs;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 new: Compiler;
+	 if: Compilers.Pass1Interface;
+   BEGIN
+      Services.CreateType(type, "OberonCompiler.Compiler",
+         "Compilers.Compiler");
+      NEW(if); if.pass1 := Pass1; if.defineArgs := DefineArgs;
+      NEW(new); Services.Init(new, type); Compilers.Init(new, if);
+      compiler := new;
+   END Init;
+
+BEGIN
+   Init;
+END OberonCompiler.

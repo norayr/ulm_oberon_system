@@ -1,0 +1,142 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IntArgs.om,v 1.3 2004/09/03 09:30:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IntArgs.om,v $
+   Revision 1.3  2004/09/03 09:30:56  borchert
+   bug fix: use Read.FieldS instead of Read.IntS, followed by Read.FieldS
+
+   Revision 1.2  1995/04/13  07:38:47  borchert
+   simplifications & cleanup
+
+   Revision 1.1  1994/10/28  10:23:30  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IntArgs;
+
+   IMPORT Args, NetIO, PersistentObjects, Print, Read, Services,
+      Streams, Strings, Write;
+
+   TYPE 
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Args.ValueRec)
+	    int: INTEGER;
+	 END;
+
+   VAR 
+      type: Args.Type;
+      if: Args.TypeInterface;
+
+   VAR 
+      valueType : Services.Type;
+      valueIf   : PersistentObjects.Interface;
+
+   (* === interface to PersistentObjects ================================= *)
+
+   PROCEDURE CreateValue(VAR obj: PersistentObjects.Object);
+      VAR 
+	 value : Value;
+   BEGIN
+      NEW (value);
+      PersistentObjects.Init(value, valueType);
+      obj := value;
+   END CreateValue;
+
+   PROCEDURE WriteValue(s: Streams.Stream;
+			obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.WriteInteger(s, obj.int)
+      END;
+   END WriteValue;
+
+   PROCEDURE ReadValue(s: Streams.Stream;
+		       obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.ReadInteger(s, obj.int)
+      END;
+   END ReadValue;
+
+   (* === interface to Args ========================================== *)
+
+   PROCEDURE ReadArg(s: Streams.Stream; VAR value: Args.Value): BOOLEAN;
+      VAR 
+	 int: INTEGER;
+	 field: ARRAY 32 OF CHAR; fs: Streams.Stream;
+	 myval: Value;
+   BEGIN
+      IF ~Read.FieldS(s, field) THEN RETURN FALSE END;
+      Strings.Open(fs, field);
+      Read.IntS(fs, int);
+      IF fs.count = 0 THEN RETURN FALSE END;
+
+      CreateValue(myval);
+      myval.int := int;
+      value := myval;
+      RETURN TRUE
+   END ReadArg;
+
+   PROCEDURE PrintValue(s: Streams.Stream; value: Args.Value);
+   BEGIN
+      WITH value: Value DO
+	 Write.IntS(s, value.int, 1);
+      END;
+   END PrintValue;
+
+   PROCEDURE Help(s: Streams.Stream);
+   BEGIN
+      Print.S2(s, "signed integers from %d to %d", MIN(INTEGER), MAX(INTEGER));
+   END Help;
+
+   (* === exported procedure ============================================ *)
+
+   PROCEDURE Create(VAR value: Args.Value; int: INTEGER);
+   BEGIN
+      CreateValue(value);
+      value(Value).int := int;
+   END Create;
+
+BEGIN
+   NEW(if);
+   if.read := ReadArg;
+   if.help := Help;
+   if.print := PrintValue;
+
+   NEW(valueIf);
+   valueIf.read := ReadValue;
+   valueIf.write := WriteValue;
+   valueIf.create := CreateValue;
+   valueIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(valueType, "IntArgs.Value", "Args.Value",
+      valueIf);
+
+   NEW(type);
+   type.name := "INTEGER";
+   type.moduleName := "IntArgs";
+   Args.DefineType(type, if, valueType);
+END IntArgs.

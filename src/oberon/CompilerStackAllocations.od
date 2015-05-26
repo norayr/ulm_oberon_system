@@ -1,0 +1,103 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerSta.od,v 1.2 2004/09/10 06:01:22 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerSta.od,v $
+   Revision 1.2  2004/09/10 06:01:22  borchert
+   Direction changed from INTEGER to SHORTINT
+   import list minimized
+   comments added to individual procedures
+   formatting fixed
+
+   Revision 1.1  2004/09/06 12:10:13  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION CompilerStackAllocations; (* Christian Ehrhardt *)
+
+   IMPORT Disciplines, Types;
+
+   (* TBD:
+      currently we have no way to generate appropriate CompilerErrors;
+      hence we resort to ASSERTs in case of insufficient space;
+      this will require a change of this definition
+   *)
+
+   CONST
+      growsup = 1; growsdown = 2;
+   TYPE
+      Direction = SHORTINT; (* growsup, growsdown *)
+
+   TYPE
+      Stack = POINTER TO StackRec;
+      StackRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    align: Types.Size;
+	 END;
+
+   PROCEDURE Init(stack: Stack; baseoff, align: Types.Size; dir: Direction);
+      (* initialize a new stack with the given direction;
+         the initial offset is baseoff,
+	 the general alignment for the stack align
+	 (note that all alignments given to Allocate must be
+	 divisors of this alignment)
+      *)
+
+   PROCEDURE Allocate(stack: Stack; size, align: Types.Size;
+                      autofree: BOOLEAN) : Types.Size;
+      (* allocate size bytes (must be positive) with the given alignment
+	 which must be a divisor of the stack alignment passed to Init;
+	 the allocation must be freed unless autofree is set to TRUE;
+	 in the latter case the allocated space remains allocated until
+	 the stack is closed;
+	 the stack offset is returned
+      *)
+
+   PROCEDURE Free(stack: Stack; offset: Types.Size);
+      (* undo the allocation at the given location *)
+
+   PROCEDURE Close(stack: Stack);
+      (* close the stack; Allocate & Free are no longer permitted
+         for stack
+      *)
+
+   PROCEDURE AllocateClosed(stack: Stack; size : Types.Size) : Types.Size;
+      (* Allocate permanent storage after the stack is closed;
+	 This is useful if we want to save only those registers that
+	 are actually trashed. We don't know this until we generated
+	 code for the whole block, but at this point normal stack
+	 allocations don't work.
+      *)
+
+   PROCEDURE GetSize(stack: Stack) : Types.Size;
+      (* return next aligned offset beyond the allocated area;
+         this is the size of allocated area if baseoff is 0;
+	 TBD: this procedure is not properly named in case of
+	 a non-zero baseoff;
+	 this function must not be called for stacks that have
+	 not been closed yet;
+	 note that AllocateClosed is also inhibited after the
+	 first invocation of GetSize
+      *)
+
+END CompilerStackAllocations.

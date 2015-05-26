@@ -1,0 +1,865 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FragmentedS.om,v 1.1 2001/03/03 08:54:46 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FragmentedS.om,v $
+   Revision 1.1  2001/03/03 08:54:46  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FragmentedStreams;
+
+   IMPORT Disciplines, Events, Iterators, Priorities, RelatedEvents,
+      Resources, Services, Streams, Texts;
+
+   TYPE
+      Label = POINTER TO LabelRec;
+      Fragment = POINTER TO FragmentRec;
+      FragmentRec =
+	 RECORD
+	    cpos: Streams.Count; (* current position *)
+	    index: INTEGER; (* fragment index *)
+	    newfrag: Fragment;
+	    prev, next: Fragment;
+	    labels: Label; (* list of labels attached to this frag *)
+	 END;
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (FragmentRec)
+	    object: Disciplines.Object;
+	    minsize, maxsize: Streams.Count;
+	    fixed, removed: BOOLEAN;
+	 END;
+      Text = POINTER TO TextRec;
+      TextRec =
+	 RECORD
+	    (FragmentRec)
+	    size: Streams.Count; (* current size *)
+	    textpos: Streams.Count; (* start position in textbuf *)
+	 END;
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    pos: Streams.Count; (* current position as seen from outside *)
+	    length: Streams.Count; (* current stream length *)
+	       (* invariants: pos >= 0, length >= pos *)
+	    noffrags: INTEGER;
+	    textbuf: Streams.Stream;
+	    twritepos: Streams.Count; (* next writing pos in textbuf *)
+	    fragcount: INTEGER; (* number of fragments *)
+	    head, tail: Fragment;
+	    current: Fragment; (* current fragment *)
+	       (* invariant: pos points into current, if # NIL,
+		  and there is at least one byte to be read
+	       *)
+	    newlabels: Label; (* labels for current position *)
+	 END;
+   CONST
+      caps = {Streams.read, Streams.write, Streams.bufio, Streams.seek,
+	 Streams.tell, Streams.holes};
+   VAR
+      if: Streams.Interface;
+      type: Services.Type;
+
+   TYPE
+      LabelRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    s: Stream;
+	    fragment: Fragment;
+	    relpos: Streams.Count; (* relative position in fragment *)
+	    next: Label; (* list of not yet fully attached labels *)
+	 END;
+
+   TYPE
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	    (* will be attached to objects passed to IncludeObject;
+	       note that we do not permit objects to be included
+	       in more than one stream
+	    *)
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    s: Stream; fragment: Object;
+	 END;
+   VAR
+      odid: Disciplines.Identifier;
+
+   CONST
+      (* iterator modes *)
+      returnAllUnfixedObjects = 0;
+      returnObjectsWithUnknownSize = 1;
+
+   CONST
+      cannotReadUnfixedObject = 0;
+      cannotWriteUnfixedObject = 1;
+      invalidPosition = 2;
+      errors = 3;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[cannotReadUnfixedObject] := "cannot read unfixed object";
+      errormsg[cannotWriteUnfixedObject] := "cannot write unfixed object";
+      errormsg[invalidPosition] := "invalid stream position";
+   END InitErrorHandling;
+
+   PROCEDURE Error(s: Stream; code: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.message := errormsg[code];
+      event.type := error;
+      event.errorcode := code;
+      RelatedEvents.Raise(s, event);
+   END Error;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE CreateStream(VAR s: Stream; base: Streams.Stream);
+      VAR
+	 news: Stream;
+   BEGIN
+      NEW(news); RelatedEvents.QueueEvents(news);
+      Services.Init(news, type);
+      Streams.Init(news, if, caps, Streams.nobuf);
+      news.pos := 0; news.length := 0; news.noffrags := 0;
+      news.textbuf := base; news.twritepos := 0;
+      Resources.DependsOn(news.textbuf, news);
+      news.head := NIL; news.tail := NIL; news.fragcount := 0;
+      news.current := NIL; news.newlabels := NIL;
+      s := news;
+   END CreateStream;
+
+   PROCEDURE AttachObject(s: Stream; object: Disciplines.Object;
+			  fragment: Object);
+      VAR
+	 included: BOOLEAN;
+	 od: ObjectDiscipline;
+   BEGIN
+      included := Disciplines.Seek(object, odid, od); ASSERT(~included);
+      NEW(od); od.id := odid; od.s := s; od.fragment := fragment;
+      Disciplines.Add(object, od);
+   END AttachObject;
+
+   PROCEDURE FindObject(object: Disciplines.Object;
+			VAR s: Stream; VAR fragment: Object);
+      VAR
+	 ok: BOOLEAN;
+	 od: ObjectDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(object, odid, od); ASSERT(ok);
+      s := od.s; fragment := od.fragment;
+   END FindObject;
+
+   PROCEDURE SetCurrentFragment(s: Stream; frag: Fragment);
+      (* set s.current to frag but assure that the invariant
+	 of s.current is hold
+      *)
+      VAR
+	 size: Streams.Count;
+   BEGIN
+      LOOP
+	 IF frag = NIL THEN EXIT END;
+	 IF frag IS Text THEN
+	    size := frag(Text).size;
+	 ELSE
+	    size := frag(Object).minsize;
+	 END;
+	 IF size > 0 THEN EXIT END;
+      END;
+      ASSERT((frag # NIL) &
+		  (s.pos >= frag.cpos) & (s.pos < frag.cpos + size) OR
+	       (frag = NIL) & (s.pos = s.length));
+      s.current := frag;
+   END SetCurrentFragment;
+
+   PROCEDURE AttachLabels(s: Stream; frag: Fragment);
+      (* attach list of new labels to current writing position *)
+      VAR
+	 label, next: Label;
+   BEGIN
+      IF s.newlabels # NIL THEN
+	 label := s.newlabels; s.newlabels := NIL;
+	 WHILE label # NIL DO
+	    label.fragment := frag;
+	    label.relpos := s.pos - frag.cpos;
+	    next := label.next;
+	    label.next := frag.labels; frag.labels := label;
+	    label := next;
+	 END;
+      END;
+   END AttachLabels;
+
+   PROCEDURE GetLabelPos(label: Label;
+			 VAR frag: Fragment; VAR rpos: Streams.Count);
+   BEGIN
+      IF label.fragment = NIL THEN
+	 frag := NIL; rpos := 0;
+      ELSE
+	 WHILE label.fragment.newfrag # NIL DO
+	    label.fragment := label.fragment.newfrag;
+	 END;
+	 frag := label.fragment; rpos := label.relpos;
+	 ASSERT((frag IS Text) OR ~frag(Object).removed);
+      END;
+   END GetLabelPos;
+
+   PROCEDURE AppendFrag(s: Stream; frag: Fragment);
+   BEGIN
+      frag.index := s.noffrags; INC(s.noffrags);
+      frag.newfrag := NIL;
+      frag.next := NIL; frag.prev := s.tail;
+      IF s.head = NIL THEN
+	 s.head := frag;
+      ELSE
+	 s.tail.next := frag;
+      END;
+      s.tail := frag;
+      frag.labels := NIL;
+   END AppendFrag;
+
+   PROCEDURE InternalFragDistance(s: Stream; frag1, frag2: Fragment;
+			          rpos1, rpos2: Streams.Count;
+			          VAR minsize, maxsize: Streams.Count;
+				  VAR reversed: BOOLEAN);
+      (* return the distance between frag1 and frag2 under
+	 consideration of the relative positions rpos1 and rpos2;
+	 frag1 and/or frag2 may be NIL: in this case the stream
+	 end is taken;
+	 set reversed to TRUE if frag2 preceeds frag1
+      *)
+      VAR
+	 min, max: Streams.Count;
+	 tmpfrag: Fragment; tmppos: Streams.Count;
+	 frag: Fragment;
+   BEGIN
+      min := 0; max := 0; reversed := FALSE;
+      IF (frag1 # NIL) OR (frag2 # NIL) THEN
+	 IF (frag1 = NIL) OR (frag2 # NIL) & (frag1.index > frag2.index) THEN
+	    tmpfrag := frag1; frag1 := frag2; frag2 := tmpfrag;
+	    tmppos := rpos1; rpos1 := rpos2; rpos2 := tmppos;
+	    reversed := TRUE;
+	 END;
+	 frag := frag1;
+	 WHILE frag # frag2 DO
+	    IF frag IS Text THEN
+	       WITH frag: Text DO
+		  INC(min, frag.size); INC(max, frag.size);
+	       END;
+	    ELSE
+	       WITH frag: Object DO
+		  INC(min, frag.minsize); INC(max, frag.maxsize);
+	       END;
+	    END;
+	    frag := frag.next;
+	 END;
+      END;
+      minsize := min + rpos2 - rpos1; maxsize := max + rpos2 - rpos1;
+   END InternalFragDistance;
+
+   PROCEDURE FragDistance(s: Stream; frag1, frag2: Fragment;
+			  rpos1, rpos2: Streams.Count;
+			  VAR minsize, maxsize: Streams.Count);
+      (* return the distance between frag1 and frag2 under
+	 consideration of the relative positions rpos1 and rpos2;
+	 frag1 and/or frag2 may be NIL: in this case the stream
+	 end is taken
+      *)
+      VAR
+	 reversed: BOOLEAN;
+   BEGIN
+      InternalFragDistance(s, frag1, frag2, rpos1, rpos2,
+			   minsize, maxsize, reversed);
+   END FragDistance;
+
+   PROCEDURE FragDifference(s: Stream; frag1, frag2: Fragment;
+			    rpos1, rpos2: Streams.Count;
+			    VAR mindiff, maxdiff: Streams.Count);
+      (* return the difference between the positions of frag1 and frag2
+	 under consideration of the relative positions rpos1 and rpos2;
+	 frag1 and/or frag2 may be NIL: in this case the stream
+	 end is taken
+      *)
+      VAR
+	 reversed: BOOLEAN;
+	 mindist, maxdist: Streams.Count;
+   BEGIN
+      InternalFragDistance(s, frag1, frag2, rpos1, rpos2,
+			   mindist, maxdist, reversed);
+      IF reversed THEN
+	 mindiff := - mindist; maxdiff := - maxdist;
+      ELSE
+	 mindiff := mindist; maxdiff := maxdist;
+      END;
+   END FragDifference;
+
+   PROCEDURE InternalReduceObjectSizeRange(s: Stream; obj: Object;
+			                   minsize, maxsize: Streams.Count);
+      VAR
+	 diff: Streams.Count;
+	 frag: Fragment;
+   BEGIN
+      ASSERT((minsize >= obj.minsize) & (maxsize <= obj.maxsize));
+      IF (minsize # obj.minsize) OR (maxsize # obj.maxsize) THEN
+	 diff := minsize - obj.minsize;
+	 obj.minsize := minsize; obj.maxsize := maxsize;
+	 IF diff > 0 THEN
+	    INC(s.length, diff);
+	    IF s.pos > obj.cpos THEN
+	       INC(s.pos, diff);
+	    END;
+	    frag := obj.next;
+	    WHILE frag # NIL DO
+	       INC(frag.cpos, diff);
+	       frag := frag.next;
+	    END;
+	 END;
+      END;
+   END InternalReduceObjectSizeRange;
+
+   PROCEDURE IterateObjects(it: Iterators.Iterator;
+			    ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 frag: Fragment;
+   BEGIN
+      WITH ref: Stream DO
+	 frag := ref.head;
+	 WHILE frag # NIL DO
+	    IF frag IS Object THEN
+	       WITH frag: Object DO
+		  IF (mode = returnAllUnfixedObjects) OR
+			(frag.minsize # frag.maxsize) THEN
+		     Iterators.Yield(it, frag.object);
+		  END;
+	       END;
+	    END;
+	    frag := frag.next;
+	 END;
+      END;
+   END IterateObjects;
+
+   (* === Streams interface =============================================== *)
+
+   PROCEDURE ReadBuf(s: Streams.Stream; VAR buf: ARRAY OF BYTE;
+		     off, cnt: Streams.Count) : Streams.Count;
+      VAR
+	 rpos: Streams.Count; (* reading position in textbuf *)
+	 left: Streams.Count; (* number of bytes left to read in current frag *)
+	 advanced: Streams.Count; (* s.pos - frag.cpos *)
+	 frag: Text;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 IF (s.pos >= s.length) OR (s.current = NIL) OR
+	       ~(s.current IS Text) OR (cnt <= 0) THEN
+	    IF (s.current # NIL) & (s.current IS Object) THEN
+	       Error(s, cannotReadUnfixedObject);
+	    END;
+	    RETURN 0
+	 END;
+	 frag := s.current(Text);
+	 advanced := s.pos - frag.cpos;
+	 ASSERT((s.pos >= frag.cpos) & (advanced < frag.size));
+	 left := frag.size - advanced;
+	 rpos := advanced + frag.textpos;
+	 IF cnt > left THEN
+	    cnt := left;
+	 END;
+	 ok := Streams.Seek(s.textbuf, rpos, Streams.fromStart); ASSERT(ok);
+	 ok := Streams.ReadPart(s.textbuf, buf, off, cnt); ASSERT(ok);
+	 INC(s.pos, cnt);
+	 IF cnt = left THEN
+	    SetCurrentFragment(s, s.current.next);
+	 END;
+	 RETURN cnt
+      END;
+   END ReadBuf;
+
+   PROCEDURE WriteBuf(s: Streams.Stream; VAR buf: ARRAY OF BYTE;
+		      off, cnt: Streams.Count) : Streams.Count;
+      VAR
+	 wpos: Streams.Count;
+	 frag: Text;
+	 advanced, left: Streams.Count;
+	 extending: BOOLEAN;
+	 label: Label;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 IF cnt <= 0 THEN
+	    RETURN 0
+	 END;
+	 IF s.current # NIL THEN
+	    IF s.current IS Object THEN
+	       (* write operations are not permitted as long
+		  objects have not been fixed
+	       *)
+	       Error(s, cannotWriteUnfixedObject);
+	       RETURN 0
+	    END;
+	    frag := s.current(Text);
+	    advanced := s.pos - frag.cpos;
+	    ASSERT((s.pos >= frag.cpos) & (advanced < frag.size));
+	    left := frag.size - advanced;
+	    wpos := advanced + frag.textpos;
+	    IF cnt > left THEN
+	       cnt := left;
+	    END;
+	    extending := FALSE;
+	 ELSE
+	    ASSERT(s.pos = s.length);
+	    wpos := s.twritepos;
+	    frag := NIL;
+	    IF (s.tail # NIL) & (s.tail IS Text) THEN
+	       frag := s.tail(Text);
+	       IF wpos # frag.textpos + frag.size THEN
+		  (* may happen if one of the objects has been fixed
+		     in between
+		  *)
+		  frag := NIL;
+	       END;
+	    END;
+	    IF frag = NIL THEN
+	       NEW(frag);
+	       frag.cpos := s.length;
+	       frag.size := 0; frag.textpos := s.twritepos;
+	       AppendFrag(s, frag);
+	    END;
+	    INC(s.twritepos, cnt);
+	    extending := TRUE;
+	 END;
+	 ok := Streams.Seek(s.textbuf, wpos, Streams.fromStart); ASSERT(ok);
+	 ok := Streams.WritePart(s.textbuf, buf, off, cnt); ASSERT(ok);
+	 IF extending THEN
+	    AttachLabels(s, frag);
+	 END;
+	 INC(s.pos, cnt);
+	 IF (s.current # NIL) & (left = cnt) THEN
+	    SetCurrentFragment(s, s.current.next);
+	 END;
+	 IF extending THEN
+	    INC(frag.size, cnt);
+	    INC(s.length, cnt);
+	 END;
+      END;
+      RETURN cnt
+   END WriteBuf;
+
+   PROCEDURE Read(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN ReadBuf(s, byte, 0, 1) = 1
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN WriteBuf(s, byte, 0, 1) = 1
+   END Write;
+
+   PROCEDURE Seek(s: Streams.Stream; cnt: Streams.Count;
+		  whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 pos: Streams.Count;
+	 frag: Fragment;
+	 size: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 CASE whence OF
+	 | Streams.fromStart: pos := cnt;
+	 | Streams.fromPos:   pos := s.pos + cnt;
+	 | Streams.fromEnd:   pos := s.length + cnt;
+	 END;
+	 IF (pos < 0) OR (pos > s.length) THEN
+	    Error(s, invalidPosition);
+	    RETURN FALSE
+	 END;
+	 IF pos = s.length THEN
+	    s.current := NIL; s.pos := pos; RETURN TRUE
+	 END;
+	 IF (s.current # NIL) & (s.current.cpos <= pos) THEN
+	    frag := s.current;
+	 ELSE
+	    frag := s.head;
+	 END;
+	 LOOP
+	    IF frag = NIL THEN EXIT END;
+	    IF frag.cpos = pos THEN EXIT END;
+	    IF frag.next = NIL THEN
+	       IF frag IS Text THEN
+		  size := frag(Text).size;
+	       ELSE
+		  size := frag(Object).minsize;
+	       END;
+	       IF frag.cpos + size > pos THEN EXIT END;
+	    END;
+	    IF frag.next.cpos > pos THEN EXIT END;
+	    frag := frag.next;
+	 END;
+	 s.pos := pos; SetCurrentFragment(s, frag);
+	 RETURN TRUE
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 cnt := s.pos; RETURN TRUE
+      END;
+   END Tell;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+   BEGIN
+      NEW(if);
+      if.bufread := ReadBuf; if.bufwrite := WriteBuf;
+      if.read := Read; if.write := Write;
+      if.seek := Seek; if.tell := Tell;
+      Services.CreateType(type, "FragmentedStreams.Stream", "Streams.Stream");
+      odid := Disciplines.Unique();
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Create(VAR s: Stream);
+      VAR
+	 text: Streams.Stream;
+   BEGIN
+      Texts.Open(text); CreateStream(s, text);
+   END Create;
+
+   PROCEDURE Open(VAR s: Stream; base: Streams.Stream);
+   BEGIN
+      ASSERT(base # NIL);
+      CreateStream(s, base);
+      Resources.DependsOn(s, base);
+   END Open;
+
+   PROCEDURE CreateLabel(VAR label: Label);
+   BEGIN
+      NEW(label);
+      label.s := NIL; label.fragment := NIL; label.relpos := 0;
+   END CreateLabel;
+
+   PROCEDURE AttachLabel(s: Stream; label: Label);
+   BEGIN
+      ASSERT((label.s = NIL) & (s # NIL));
+      label.s := s;
+      IF s.current # NIL THEN
+	 label.fragment := s.current;
+	 label.next := label.fragment.labels;
+	 label.fragment.labels := label;
+	 label.relpos := s.pos - s.current.cpos;
+      ELSE
+	 label.next := s.newlabels;
+	 s.newlabels := label;
+      END;
+   END AttachLabel;
+
+   PROCEDURE Attached(label: Label) : BOOLEAN;
+   BEGIN
+      RETURN label.s # NIL
+   END Attached;
+
+   PROCEDURE IncludeObject(s: Stream; object: Disciplines.Object;
+			   minsize, maxsize: Streams.Count);
+      VAR
+	 frag: Object;
+   BEGIN
+      ASSERT(s.pos = s.length);
+      ASSERT((minsize >= 0) & (maxsize >= minsize));
+      NEW(frag); frag.object := object;
+      frag.minsize := minsize; frag.maxsize := maxsize;
+      frag.cpos := s.length;
+      frag.fixed := FALSE; frag.removed := FALSE;
+      AppendFrag(s, frag);
+      AttachLabels(s, frag);
+      INC(s.length, frag.minsize); INC(s.pos, frag.minsize);
+      AttachObject(s, object, frag);
+   END IncludeObject;
+
+   PROCEDURE Distance(label1, label2: Label;
+		      VAR mindist, maxdist: Streams.Count);
+      VAR
+	 min, max: Streams.Count;
+	 s: Stream;
+	 frag1, frag2: Fragment;
+	 rpos1, rpos2: Streams.Count;
+   BEGIN
+      ASSERT((label1.s # NIL) & (label2.s # NIL) & (label1.s = label2.s));
+      s := label1.s;
+      GetLabelPos(label1, frag1, rpos1);
+      GetLabelPos(label2, frag2, rpos2);
+      FragDistance(s, frag1, frag2, rpos1, rpos2, min, max);
+      ASSERT((min >= 0) & (max >= 0) & (min <= max));
+      mindist := min; maxdist := max;
+   END Distance;
+
+   PROCEDURE Difference(label1, label2: Label;
+		        VAR mindiff, maxdiff: Streams.Count);
+      VAR
+	 min, max: Streams.Count;
+	 s: Stream;
+	 frag1, frag2: Fragment;
+	 rpos1, rpos2: Streams.Count;
+   BEGIN
+      ASSERT((label1.s # NIL) & (label2.s # NIL) & (label1.s = label2.s));
+      s := label1.s;
+      GetLabelPos(label1, frag1, rpos1);
+      GetLabelPos(label2, frag2, rpos2);
+      FragDifference(s, frag1, frag2, rpos1, rpos2, min, max);
+      ASSERT(ABS(min) <= ABS(max));
+      mindiff := min; maxdiff := max;
+   END Difference;
+
+   PROCEDURE ObjectDistance(object: Disciplines.Object; label: Label;
+			    VAR mindist, maxdist: Streams.Count);
+      VAR
+	 s: Stream;
+	 frag1: Object; frag2: Fragment;
+	 rpos2: Streams.Count;
+	 min, max: Streams.Count;
+   BEGIN
+      FindObject(object, s, frag1);
+      ASSERT(s = label.s);
+      GetLabelPos(label, frag2, rpos2);
+      FragDistance(s, frag1, frag2, 0, rpos2, min, max);
+      ASSERT((min >= 0) & (max >= 0) & (min <= max));
+      mindist := min; maxdist := max;
+   END ObjectDistance;
+
+   PROCEDURE ObjectDifference(object: Disciplines.Object; label: Label;
+			      VAR mindiff, maxdiff: Streams.Count);
+      VAR
+	 s: Stream;
+	 frag1: Object; frag2: Fragment;
+	 rpos2: Streams.Count;
+	 min, max: Streams.Count;
+   BEGIN
+      FindObject(object, s, frag1);
+      ASSERT(s = label.s);
+      GetLabelPos(label, frag2, rpos2);
+      FragDifference(s, frag1, frag2, 0, rpos2, min, max);
+      ASSERT(ABS(min) <= ABS(max));
+      mindiff := min; maxdiff := max;
+   END ObjectDifference;
+
+   PROCEDURE GetSizeRange(object: Disciplines.Object;
+			  VAR minsize, maxsize: Streams.Count);
+      VAR
+	 obj: Object;
+	 s: Stream;
+   BEGIN
+      FindObject(object, s, obj);
+      minsize := obj.minsize;
+      maxsize := obj.maxsize;
+   END GetSizeRange;
+
+   PROCEDURE SizeFixed(object: Disciplines.Object) : BOOLEAN;
+      VAR
+	 obj: Object;
+	 s: Stream;
+   BEGIN
+      FindObject(object, s, obj);
+      RETURN obj.minsize = obj.maxsize
+   END SizeFixed;
+
+   PROCEDURE ReduceObjectSizeRange(object: Disciplines.Object;
+			           minsize, maxsize: Streams.Count);
+      VAR
+	 obj: Object;
+	 s: Stream;
+   BEGIN
+      FindObject(object, s, obj);
+      InternalReduceObjectSizeRange(s, obj, minsize, maxsize);
+   END ReduceObjectSizeRange;
+
+   PROCEDURE SetObjectSize(object: Disciplines.Object; size: Streams.Count);
+      VAR
+	 obj: Object;
+	 s: Stream;
+   BEGIN
+      FindObject(object, s, obj);
+      InternalReduceObjectSizeRange(s, obj, size, size);
+   END SetObjectSize;
+
+   PROCEDURE FixObject(object: Disciplines.Object);
+      VAR
+	 s: Stream;
+	 obj: Object; text: Text;
+	 offset: Streams.Count;
+	 size: Streams.Count;
+	 last, label: Label;
+   BEGIN
+      FindObject(object, s, obj);
+      (* check that object size is fixed already *)
+      ASSERT(obj.minsize = obj.maxsize);
+      (* protect against multiple calls of FixObject for the same object *)
+      ASSERT(~obj.fixed & ~obj.removed);
+      size := obj.minsize;
+      IF size > 0 THEN
+	 (* replace object fragment by text fragment *)
+	 NEW(text);
+	 text.labels := obj.labels; obj.labels := NIL;
+	 text.index := obj.index;
+	 text.size := size;
+	 text.textpos := s.twritepos; INC(s.twritepos, size);
+	 text.prev := obj.prev; text.next := obj.next;
+	 text.cpos := obj.cpos;
+	 IF obj.prev = NIL THEN
+	    s.head := text;
+	 ELSE
+	    obj.prev.next := text;
+	 END;
+	 IF obj.next = NIL THEN
+	    s.tail := text;
+	 ELSE
+	    obj.next.prev := text;
+	 END;
+	 obj.newfrag := text;
+	 obj.fixed := TRUE;
+	 IF s.current = obj THEN
+	    SetCurrentFragment(s, text);
+	 END;
+	 (* seek to new text fragment *)
+	 s.pos := text.cpos; SetCurrentFragment(s, text);
+      ELSE
+	 ASSERT(size = 0);
+	 (* redirect labels that are pointing to obj *)
+	 IF obj.labels # NIL THEN
+	    IF obj.next = NIL THEN
+	       (* we have to return the labels to s.newlables *)
+	       label := obj.labels;
+	       WHILE label # NIL DO
+		  label.fragment := NIL;
+		  last := label; label := label.next;
+	       END;
+	       last.next := s.newlabels; s.newlabels := obj.labels;
+	       obj.labels := NIL;
+	    END;
+	 END;
+	 obj.newfrag := obj.next;
+	 (* remove fragment *)
+	 IF s.current = obj THEN
+	    SetCurrentFragment(s, obj.next);
+	 END;
+	 IF obj.prev = NIL THEN
+	    s.head := obj.next;
+	 ELSE
+	    obj.prev.next := obj.next;
+	 END;
+	 IF obj.next = NIL THEN
+	    s.tail := obj.prev;
+	    offset := s.length;
+	 ELSE
+	    obj.next.prev := obj.prev;
+	    offset := obj.next.cpos;
+	 END;
+	 obj.removed := TRUE;
+      END;
+   END FixObject;
+
+   PROCEDURE Length(s: Stream; VAR minlen, maxlen: Streams.Count);
+      VAR
+	 frag: Fragment;
+	 diffsum: Streams.Count;
+   BEGIN
+      minlen := s.length;
+      frag := s.head; diffsum := 0;
+      WHILE frag # NIL DO
+	 IF frag IS Object THEN
+	    WITH frag: Object DO
+	       INC(diffsum, frag.maxsize - frag.minsize);
+	    END;
+	 END;
+	 frag := frag.next;
+      END;
+      maxlen := minlen + diffsum;
+   END Length;
+
+   PROCEDURE GetUnfixedObjects(s: Stream; VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(it, IterateObjects, s, returnAllUnfixedObjects);
+   END GetUnfixedObjects;
+
+   PROCEDURE NumberOfUnfixedObjects(s: Stream) : INTEGER;
+      VAR
+	 frag: Fragment;
+	 count: INTEGER;
+   BEGIN
+      frag := s.head; count := 0;
+      WHILE frag # NIL DO
+	 IF frag IS Object THEN
+	    INC(count);
+	 END;
+	 frag := frag.next;
+      END;
+      RETURN count
+   END NumberOfUnfixedObjects;
+
+   PROCEDURE GetObjectsWithUnknownSize(s: Stream; VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(it, IterateObjects, s, returnObjectsWithUnknownSize);
+   END GetObjectsWithUnknownSize;
+
+   PROCEDURE NumberOfObjectsWithUnknownSize(s: Stream) : INTEGER;
+      VAR
+	 frag: Fragment;
+	 count: INTEGER;
+   BEGIN
+      frag := s.head; count := 0;
+      WHILE frag # NIL DO
+	 IF frag IS Object THEN
+	    WITH frag: Object DO
+	       IF frag.minsize < frag.maxsize THEN
+		  INC(count);
+	       END;
+	    END;
+	 END;
+	 frag := frag.next;
+      END;
+      RETURN count
+   END NumberOfObjectsWithUnknownSize;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END FragmentedStreams.

@@ -1,0 +1,198 @@
+
+
+
+UTlimm'eszoOnbeesr(o3n)System:  21 April 1994 Release 0.4 Ulm's OTbiemreoznonSeyss(t3e)m
+
+
+NNAAMMEE
+       Timezones - abstraction for time zones
+
+SSYYNNOOPPSSIISS
+       TYPE Name = ARRAY 12 OF CHAR;
+       TYPE Offset = Scales.Value;
+       TYPE Timezone = POINTER TO TimezoneRec;
+       TYPE TimezoneRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             baseName:   Name;
+          END;
+       TYPE Glimpse = POINTER TO GlimpseRec;
+       TYPE GlimpseRec =
+          RECORD
+             (Objects.ObjectRec)
+             name:       Name;
+             offset:     Offset;
+             isDst:      BOOLEAN;
+             lastChange,
+             nextChange: Times.Time;
+          END;
+       VAR utc: Timezone;
+       VAR local: Timezone;
+
+       TYPE LookupProc =
+          PROCEDURE (tz: Timezone; at: Times.Time; VAR glimpse: GlimpseRec);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             unsteady:   BOOLEAN;
+             lookup:     LookupProc;
+             stdGlimpse: Glimpse;
+          END;
+       TYPE InitProc = PROCEDURE (tz: Timezone) : Interface;
+       TYPE FindProc =
+          PROCEDURE (name: ARRAY OF CHAR;
+                      VAR tz: Timezone; VAR glimpse: GlimpseRec) : BOOLEAN;
+
+       PROCEDURE GetOffset(tz: Timezone; at: Times.Time) : Scales.Value;
+       PROCEDURE Unsteady(tz: Timezone) : BOOLEAN;
+       PROCEDURE Lookup(tz: Timezone; at: Times.Time; VAR glimpse: GlimpseRec);
+       PROCEDURE FindOffset(name: ARRAY OF CHAR; VAR offset: Offset) : BOOLEAN;
+       PROCEDURE Find(name: ARRAY OF CHAR;
+                      VAR tz: Timezone; VAR glimpse: GlimpseRec) : BOOLEAN;
+
+       PROCEDURE Init(tz: Timezone; if: Interface);
+       PROCEDURE DelayInit(tz: Timezone; init: InitProc);
+       PROCEDURE Declare(find: FindProc);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       A  time  zone  is  a persistent object that can tell how a
+
+
+
+Release 0.5       Last change: 16 September 1996                1
+
+
+
+
+
+UTlimm'eszoOnbeesr(o3n)System:  21 April 1994 Release 0.4 Ulm's OTbiemreoznonSeyss(t3e)m
+
+
+       local time differs from universal time (aka Greenwich mean
+       time).   We  want  to  keep time values uniform around the
+       globe; location dependent, however, their  interpretation.
+
+       Throughout this module, _o_f_f_s_e_t values are given in seconds
+       relative to GMT.  Timezones can be either steady, in which
+       case  each  access  to them will yield the same result, or
+       unsteady.  A look at a time zone  at  a  certain  time  is
+       called a glimpse.
+
+       _U_n_s_t_e_a_d_y tells if _t_z is unsteady.
+
+       _G_e_t_O_f_f_s_e_t  returns  the offset defined by _t_z for the given
+       time _a_t_, or some basic offset in case _a_t is NNIILL..
+
+       _L_o_o_k_u_p stores a complete timezone status (glimpse)  of  _t_z
+       at  a  given  time  _a_t in _g_l_i_m_p_s_e_.  _a_t may be NNIILL to get a
+       glimpse  containing   the   basic   offset.    Note   that
+       _g_l_i_m_p_s_e_._l_a_s_t_C_h_a_n_g_e  or  _g_l_i_m_p_s_e_._n_e_x_t_C_h_a_n_g_e might be NNIILL if
+       these times do not exist or can not be determined.
+
+       _F_i_n_d_O_f_f_s_e_t searches among the time zones known to the sys­
+       tem  for a glimpse named _n_a_m_e_.  If such a glimpse could be
+       found, the corresponding offset is stored  in  _o_f_f_s_e_t  and
+       TTRRUUEE is returned, otherwise FFAALLSSEE..
+
+       _F_i_n_d_T_i_m_e_z_o_n_e  searches  among  the time zones known to the
+       system for a glimpse named _n_a_m_e_.  If such  a  glimpse  and
+       time  zone  could  be  found  they  are stored in _t_z resp.
+       _g_l_i_m_p_s_e and TTRRUUEE is returned, otherwise FFAALLSSEE..
+
+       The variable _u_t_c contains a time zone representing univer­
+       sal time itself.
+
+       _l_o_c_a_l contains a local time zone which is normally defined
+       by the system, to be most likely appropriate at  the  sys­
+       tem's location, but may be reset any time.
+
+       New  time  zones  must  be initialized either with _I_n_i_t or
+       _D_e_l_a_y_I_n_i_t_.  The interface _i_f must contain either _l_o_o_k_u_p if
+       _i_f_._u_n_s_t_e_a_d_y  is TTRRUUEE,, or _s_t_d_G_l_i_m_p_s_e otherwise.  _s_t_d_G_l_i_m_p_s_e
+       can also be provided in the former case if  _l_o_o_k_u_p  should
+       not  be  called with _a_t = NNIILL..  If _D_e_l_a_y_I_n_i_t is used, _i_n_i_t
+       will be called when _t_z is first accessed to supply a valid
+       interface.   This  is  intended  mostly for the benefit of
+       implementations of default time zones,  like  _l_o_c_a_l_,  that
+       might  be  expensive  to  initialize, but can guarantee to
+       work, switching to an  alternative  in  case  of  problems
+       rather than reporting an error during initialization.
+
+       _D_e_c_l_a_r_e arranges for _f_i_n_d to be called when time zones are
+       searched for.  The last declared function will  be  called
+       first.
+
+
+
+
+Release 0.5       Last change: 16 September 1996                2
+
+
+
+
+
+UTlimm'eszoOnbeesr(o3n)System:  21 April 1994 Release 0.4 Ulm's OTbiemreoznonSeyss(t3e)m
+
+
+       Time  zones  are persistent.  Thus, _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._R_e_a_d
+       and _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._W_r_i_t_e are valid operations  on  time
+       zones.   If a _R_e_a_d operation causes a projection onto type
+       _T_i_m_e_z_o_n_e to take place (due to foreign modules that  can't
+       be loaded), the time zone will be mapped to universal time
+       _(_u_t_c_)_.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Invalid time  zone  implementations  can  lead  to  failed
+       assertions:
+
+       ·      Some  of the interface components and other parame­
+              ters must be non-NNIILL.
+
+       ·      Interface procedures must  not  call  the  timezone
+              accessing  operations  of  _T_i_m_e_z_o_n_e_s  for their own
+              timezone.
+
+SSEEEE AALLSSOO
+       _D_a_t_e_s_(_3_)               date and time conversions
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   abstraction for persistent objects
+       _T_i_m_e_s_(_3_)               reference scale for  time  measure­
+                              ment systems
+       _U_n_i_x_T_i_m_e_z_o_n_e_s_(_3_)       implementation  of  timezones known
+                              by the system
+
+AAUUTTHHOORR
+       Martin Hasch, University of Ulm
+       some minor revisions are due to Andreas Borchert,  Univer­
+       sity of Ulm
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 16 September 1996                3
+
+

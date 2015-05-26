@@ -1,0 +1,204 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Daemons 3 "Last change: 20 April 2007" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Daemons \- offer services across networks
+.SH SYNOPSIS
+.Pg
+TYPE Daemon = POINTER TO DaemonRec;
+TYPE DaemonRec = RECORD (Services.ObjectRec) END;
+TYPE ServiceForChannel = PROCEDURE (daemon: Daemon; inOut: Streams.Stream);
+.sp 0.7
+PROCEDURE Start(daemon: Daemon; plugin: Networks.Address;
+                serviceForChannel: ServiceForChannel): BOOLEAN;
+PROCEDURE Create(VAR daemon: Daemon; plugin: Networks.Address;
+      serviceForChannel: ServiceForChannel;
+      errors: RelatedEvents.Object): BOOLEAN;
+.sp 0.3
+.Pe
+.SH DESCRIPTION
+.I Daemons
+manages network daemons that provide services across the network
+using self-defined protocols.
+Each daemon is associated with a port other parties can connect to.
+On each incoming connect a dedicated task running a procedure
+of type \fIServiceForChannel\fP is spawned that is
+responsible for the dialogue with the connecting party.
+.LP
+.I Start
+starts a daemon that runs in a newly created task and
+listens to port \fIplugin\fP. Note that \fIdaemon\fP is to
+be created by the caller.
+.I Create
+creates and starts a daemon that runs in a newly created task and
+listens to port \fIplugin\fP.
+.LP
+Daemons may be shut down by terminating them (see \fIResources(3)\fP).
+The dialogue running procedures of type \fIServiceForChannel\fP
+are expected to finish when their daemon object terminates.
+They must not call \fITasks.Terminate\fP but have to return
+as they are run by \fIJobs(3)\fP.
+.SH DIAGNOSTICS
+.I Daemons
+has no error event types of its own.
+Error events generated by the underlying modules during creation time
+are passed to \fIerrors\fP, otherwise to the \fIdaemon\fP object.
+.SH "SEE ALSO"
+.Tb Resources(3)
+.Tp Networks(3)
+general abstraction for network connections
+.Tp Resources(3)
+cooperative handling of shared objects
+.Te
+.SH AUTHOR
+Sven Lutz, some minor revisions are due to Andreas F. Borchert
+.\" ---------------------------------------------------------------------------
+.\" $Id: Daemons.3,v 1.3 2007/04/20 12:54:01 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Daemons.3,v $
+.\" Revision 1.3  2007/04/20 12:54:01  borchert
+.\" errors parameter added to Create
+.\"
+.\" Revision 1.2  2000/06/20 07:55:27  lutz
+.\" Exportierte Prozedur Create hinzugefuegt.
+.\"
+.\" Revision 1.1  2000/05/05  15:13:04  lutz
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

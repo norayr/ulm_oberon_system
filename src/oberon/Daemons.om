@@ -1,0 +1,191 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Daemons.om,v 1.4 2004/09/13 21:08:44 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: Daemons.om,v $
+   Revision 1.4  2004/09/13 21:08:44  borchert
+   bug fix: Conditions.Incl was missing for softTermination
+
+   Revision 1.3  2004/09/13 14:39:06  borchert
+   support of Process.TerminateSoftly added
+
+   Revision 1.2  2000/06/20 08:28:13  lutz
+   added exported procedure Create
+
+   Revision 1.1  2000/06/20  07:32:50  lutz
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Sven Lutz, April 1999
+   ----------------------------------------------------------------------------
+*)
+MODULE Daemons;
+
+   IMPORT Conclusions, Conditions, Coroutines, EventConditions, Events, Jobs,
+      Networks, Process, RelatedEvents, Resources, Services, Streams, SYSTEM,
+      Tasks;
+
+   TYPE
+      Daemon = POINTER TO DaemonRec;
+      (* One structure for each daemon group. May be expanded by the
+         client for additional information shared by all parties.
+      *)
+      DaemonRec =
+         RECORD
+            (Services.ObjectRec)
+         END;
+
+      ServiceForChannel = PROCEDURE (daemon: Daemon;
+            inOut: Streams.Stream);
+      (* For communication with the connected party.
+         daemon may carry additional information common to all parties.
+         The procedure must terminate when daemon terminates.
+      *)
+
+      Job = POINTER TO JobRec;
+      JobRec =
+         RECORD
+            (Jobs.JobRec)
+            serviceForChannel: ServiceForChannel;
+            daemon: Daemon;
+            inOut: Streams.Stream;
+         END;
+
+   VAR
+      type: Services.Type;
+
+   PROCEDURE ServeChannel(job: Jobs.Job);
+   BEGIN
+      WITH job: Job DO
+         job.serviceForChannel(job.daemon, job.inOut)
+      END
+   END ServeChannel;
+
+   PROCEDURE ConnectionManager(VAR cr: Coroutines.Coroutine;
+                               daemon: Daemon; port: Networks.Address;
+                               serviceForChannel: ServiceForChannel;
+			       VAR ok: BOOLEAN);
+      (* this procedure spawns itself as a coroutine (cr) and
+         waits for new parties to connect via port to daemon. For each
+         new party serviceForChannel is started as a job;
+         ok is set to TRUE, iff a socket can be opened on port.
+         errors are related to daemon.
+      *)
+      VAR
+         socket: Networks.Socket;
+            (* here the parties connect to the Daemon *)
+         newConnection,
+            (* a party establishes a new connection via socket *)
+         terminationMsgAvailable: Conditions.Condition;
+            (* the daemongroup shall terminate *)
+	 softTermination: Conditions.Condition;
+	    (* becomes TRUE when Process.TerminateSoftly was called *)
+         conditions: Conditions.ConditionSet;
+            (* the conditions ConnectionManager is waiting for *)
+         s: Streams.Stream;
+            (* communication to a new party is done via this stream *)
+         errors: RelatedEvents.Object;
+         event: Events.Event;
+            (* catches Event for termination of daemongroup *)
+	 termEvent: Events.EventType; (* signals state change (according
+	    to Resources) of the daemon *)
+         job: Job;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      RelatedEvents.Forward(errors, daemon);
+      (* register port address, so that clients may connect to *)
+      ok :=  Networks.Listen(socket, port, daemon);
+      IF ~ok THEN RETURN END;
+      SYSTEM.CRSPAWN(cr);
+      Networks.CreateAcceptCondition(newConnection, socket);
+      Resources.TakeInterest(daemon, termEvent);
+      EventConditions.Create(terminationMsgAvailable, termEvent);
+      EventConditions.Create(softTermination, Process.softTermination);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, newConnection);
+      Conditions.Incl(conditions, terminationMsgAvailable);
+      Conditions.Incl(conditions, softTermination);
+      LOOP
+         Tasks.WaitForOneOf(conditions);
+         IF EventConditions.TestAndGet(terminationMsgAvailable, event) OR
+	       EventConditions.TestAndGet(softTermination, event) THEN
+            EXIT
+         END;
+         WHILE Conditions.Test(newConnection, errors) &
+               ~RelatedEvents.EventsPending(errors) &
+               Networks.Accept(socket, s, Streams.linebuf) DO
+            NEW(job); job.serviceForChannel := serviceForChannel;
+            job.daemon := daemon; job.inOut := s;
+            Jobs.Submit(job, ServeChannel)
+         END
+      END;
+      EventConditions.Drop(newConnection);
+      EventConditions.Drop(terminationMsgAvailable);
+      EventConditions.Drop(softTermination);
+      Networks.Release(socket);
+      Tasks.Terminate
+   END ConnectionManager;
+
+   PROCEDURE Start(daemon: Daemon; plugin: Networks.Address;
+                   serviceForChannel: ServiceForChannel): BOOLEAN;
+      (* Starts a daemon that runs in a newly created task and listens to
+         port plugin. Note that daemon is to be created by the caller.
+         For each connected party serviceForChannel is started as job.
+      *)
+      VAR
+	 daemonType: Services.Type;
+         cr: Coroutines.Coroutine;
+         ok: BOOLEAN;
+         task: Tasks.Task;
+   BEGIN
+      Services.GetType(daemon, daemonType);
+      ASSERT(Services.IsExtensionOf(daemonType, type));
+      ConnectionManager(cr, daemon, plugin, serviceForChannel, ok);
+      IF ok THEN Tasks.Create(task, cr) END;
+      RETURN ok
+   END Start;
+
+   PROCEDURE Create(VAR daemon: Daemon; plugin: Networks.Address;
+                    serviceForChannel: ServiceForChannel;
+		    errors: RelatedEvents.Object): BOOLEAN;
+      (* starts a daemon that runs in a newly created task and listens to
+         port plugin.
+         For each connected party serviceForChannel is started as job.
+      *)
+      VAR
+	 d: Daemon;
+	 ok: BOOLEAN;
+   BEGIN
+      NEW(d);
+      Services.Init(d, type);
+      RelatedEvents.QueueEvents(d);
+      RelatedEvents.Save(d);
+      RelatedEvents.Forward(d, errors);
+      ok := Start(daemon, plugin, serviceForChannel);
+      RelatedEvents.Restore(d);
+      IF ok THEN
+	 daemon := d;
+      END;
+      RETURN ok
+   END Create;
+
+BEGIN
+   Services.CreateType(type, "Daemons.Daemon", "")
+END Daemons.

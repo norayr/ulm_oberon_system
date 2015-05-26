@@ -1,0 +1,84 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Oberon8Chars;
+
+   IMPORT CompilerErrors, CompilerObjects, RelatedEvents, Streams, Write;
+
+   TYPE
+      Value = CHAR;
+
+   PROCEDURE Read(s: Streams.Stream; VAR charval: Value;
+                  loc: CompilerObjects.Location;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 maxdigits = 2;
+      VAR
+	 nonzero: BOOLEAN;
+	 ok: BOOLEAN;
+	 ch: CHAR;
+	 digit: SHORTINT;
+	 length: INTEGER;
+	 digits: ARRAY maxdigits OF SHORTINT;
+	 i: INTEGER;
+	 val: INTEGER;
+	 es: Streams.Stream;
+   BEGIN
+      nonzero := FALSE; length := 0;
+      LOOP
+	 ok := Streams.ReadByte(s, ch); ASSERT(ok);
+	 IF ch = "X" THEN EXIT END;
+	 ASSERT((ch >= "0") & (ch <= "9") OR (ch >= "A") & (ch <= "F"));
+	 IF ch # "0" THEN nonzero := TRUE END;
+	 IF nonzero THEN
+	    IF ch >= "A" THEN
+	       digit := SHORT(ORD(ch) - ORD("A") + 10);
+	    ELSE
+	       digit := SHORT(ORD(ch) - ORD("0"));
+	    END;
+	    IF length < maxdigits THEN
+	       digits[length] := digit;
+	    END;
+	    INC(length);
+	 END;
+      END;
+      IF length > maxdigits THEN
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+	 Write.StringS(es, "character constant exceeds maximal value");
+	 CompilerErrors.Close(es, errors);
+	 charval := 0X; RETURN FALSE
+      END;
+      IF length = 0 THEN charval := 0X; RETURN TRUE END;
+
+      val := 0; i := 0;
+      WHILE i < length DO
+	 val := val * 10H + digits[i]; INC(i);
+      END;
+      charval := CHR(val);
+      RETURN TRUE
+   END Read;
+
+END Oberon8Chars.

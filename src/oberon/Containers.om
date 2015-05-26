@@ -1,0 +1,386 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Containers.om,v 1.3 1996/11/28 10:55:27 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Containers.om,v $
+   Revision 1.3  1996/11/28  10:55:27  borchert
+   - bug fix: Obtain called cont.if.insert
+   - error messages improved (support of Errors.Write added)
+
+   Revision 1.2  1996/11/21  19:17:09  borchert
+   - extended error handling
+   - Transaction is no longer merely a Services.Object
+   - some identifiers renamed
+   - source code reformatted
+   - more checks to Init added
+
+   Revision 1.1  1996/11/21  15:09:32  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   original version is due to Werner Stanglow
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Containers;
+
+   IMPORT Errors, Events, Objects, PersistentDisciplines, Priorities,
+      RelatedEvents, SYS := SYSTEM, Services, Streams, Transactions, Write;
+
+   TYPE
+      Container = POINTER TO ContainerRec;
+
+   TYPE
+      Transaction = Transactions.Transaction;
+      Ident = LONGINT;
+      Object = PersistentDisciplines.Object;
+
+   CONST
+      first = 0; last = 1; this = 2; pred = 3; succ = 4;
+   TYPE
+      SearchDir = SHORTINT; (* first..succ *)
+
+   TYPE
+      InsertProc = PROCEDURE (cont: Container; trans: Transaction;
+                              VAR id: Ident; object: Object) : BOOLEAN;
+      DeleteProc = PROCEDURE (cont: Container; trans: Transaction;
+                              id: Ident) : BOOLEAN;
+      ReplaceProc = PROCEDURE (cont: Container; trans: Transaction;
+                               id: Ident; object: Object) : BOOLEAN;
+      ObtainProc = PROCEDURE (cont: Container; trans: Transaction;
+                              id: Ident; VAR object: Object) : BOOLEAN;
+      ElementsProc = PROCEDURE (cont: Container; trans: Transaction;
+                                VAR nelems: LONGINT) : BOOLEAN;
+      GetAnchorProc = PROCEDURE (cont: Container; trans: Transaction;
+                                 VAR id: Ident) : BOOLEAN;
+      SetAnchorProc = PROCEDURE (cont: Container; trans: Transaction;
+                                 id: Ident) : BOOLEAN;
+      FindProc = PROCEDURE (cont: Container; trans: Transaction;
+                            dir: SearchDir; VAR id: Ident) : BOOLEAN;
+      ReorganizeProc = PROCEDURE (cont: Container;
+                                  trans: Transaction) : BOOLEAN;
+      CloseProc = PROCEDURE (cont: Container) : BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+         RECORD
+            (Objects.ObjectRec)
+            insert: InsertProc;
+            delete: DeleteProc;
+            replace: ReplaceProc;
+            obtain: ObtainProc;
+            elements: ElementsProc;
+            find: FindProc;
+            reorganize: ReorganizeProc;
+            setAnchor: SetAnchorProc;
+            getAnchor: GetAnchorProc;
+            close: CloseProc;
+         END;
+
+   CONST
+      insert = 0; delete = 1; replace = 2; obtain = 3;
+      elements = 4; find = 5; reorganize = 6;
+      setAnchor = 7; getAnchor = 8; close = 9;
+   TYPE
+      Capability = SHORTINT; (* insert..close *)
+      Operation = SHORTINT;  (* insert..close *)
+      CapabilitySet = SET;   (* OF Capability *)
+
+   TYPE
+      ContainerRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	    caps: CapabilitySet;
+	    closed: BOOLEAN;
+	 END;
+
+   CONST
+      notSupported = 0;    (* not supported by underlying implementation *)
+      badParams = 1;       (* invalid parameter for Find *)
+      alreadyClosed = 2;   (* all operations are invalid after Close *)
+      operationFailed = 3; (* underlying implementation returned FALSE *)
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* notSupported..operationFailed *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec)
+            errcode: ErrorCode;
+	    operation: Operation;
+	    trans: Transaction;
+         END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE Error(cont: Container; errcode: ErrorCode;
+                   operation: Operation; trans: Transaction);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.message := errormsg[errcode];
+      event.type := error;
+      event.errcode := errcode;
+      event.operation := operation;
+      event.trans := trans;
+      RelatedEvents.Raise(cont, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.errcode = operationFailed THEN
+	    CASE event.operation OF
+	    | insert:      Write.StringS(s, "insert");
+	    | delete:      Write.StringS(s, "delete");
+	    | replace:     Write.StringS(s, "replace");
+	    | obtain:      Write.StringS(s, "obtain");
+	    | elements:    Write.StringS(s, "elements");
+	    | find:        Write.StringS(s, "find");
+	    | reorganize:  Write.StringS(s, "reorganize");
+	    | setAnchor:   Write.StringS(s, "setAnchor");
+	    | getAnchor:   Write.StringS(s, "getAnchor");
+	    | close:       Write.StringS(s, "close");
+	    END;
+	    Write.StringS(s, " operation on container failed");
+	 ELSE
+	    Write.StringS(s, event.message);
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE Check(ok: BOOLEAN;
+		   cont: Container;
+		   operation: Operation;
+                   trans: Transaction) : BOOLEAN;
+      (* return ok but raise the given error event if ok is FALSE *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      IF ~ok THEN
+	 Error(cont, operationFailed, operation, trans);
+      END;
+      RETURN ok
+   END Check;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[notSupported] := "operation not supported for this container";
+      errormsg[badParams] := "invalid parameters";
+      errormsg[alreadyClosed] := "container is already closed";
+      errormsg[operationFailed] := "operation on container failed";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "Containers.Container", "");
+      InitErrorHandling;
+   END InitModule;
+
+   PROCEDURE Init(cont: Container; if: Interface);
+      VAR
+	 type: Services.Type;
+
+      PROCEDURE AddCap(cap: Capability; present: BOOLEAN);
+      BEGIN
+	 IF present THEN
+	    INCL(cont.caps, cap);
+	 END;
+      END AddCap;
+
+   BEGIN
+      ASSERT(cont.if = NIL);
+      ASSERT(if # NIL);
+      Services.GetType(cont, type); ASSERT(type # NIL);
+
+      cont.closed := FALSE;
+      cont.caps := {};
+      AddCap(insert, if.insert # NIL);
+      AddCap(delete, if.delete # NIL);
+      AddCap(replace, if.replace # NIL);
+      AddCap(obtain, if.obtain # NIL);
+      AddCap(elements, if.elements # NIL);
+      AddCap(find, if.find # NIL);
+      AddCap(reorganize, if.reorganize # NIL);
+      AddCap(setAnchor, if.setAnchor # NIL);
+      AddCap(getAnchor, if.getAnchor # NIL);
+      AddCap(close, if.close # NIL);
+      ASSERT(cont.caps # {}); (* otherwise, it would be pretty useless *)
+
+      cont.if := if;
+      RelatedEvents.QueueEvents(cont);
+   END Init;
+
+   PROCEDURE Close(cont: Container) : BOOLEAN;
+   BEGIN
+      IF SYS.TAS(cont.closed) THEN
+	 Error(cont, alreadyClosed, close, NIL); RETURN FALSE
+      END;
+      IF close IN cont.caps THEN
+	 RETURN Check(cont.if.close(cont), cont, close, NIL)
+      ELSE
+	 RETURN TRUE
+      END;
+   END Close;
+
+   PROCEDURE Capabilities(cont: Container) : CapabilitySet;
+   BEGIN
+      RETURN cont.caps
+   END Capabilities;
+
+   PROCEDURE Insert(cont: Container; trans: Transaction;
+                    VAR id: Ident; object: Object) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, insert, trans); RETURN FALSE
+      ELSIF insert IN cont.caps THEN
+	 RETURN Check(cont.if.insert(cont, trans, id, object),
+	              cont, insert, trans)
+      ELSE
+	 Error(cont, notSupported, insert, trans); RETURN FALSE
+      END;
+   END Insert;
+
+   PROCEDURE Delete(cont: Container; trans: Transaction;
+                    id: Ident) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, delete, trans); RETURN FALSE
+      ELSIF delete IN cont.caps THEN
+	 RETURN Check(cont.if.delete(cont, trans, id),
+	              cont, delete, trans)
+      ELSE
+	 Error(cont, notSupported, delete, trans); RETURN FALSE
+      END;
+   END Delete;
+
+   PROCEDURE Replace(cont: Container; trans: Transaction;
+                     id: Ident; object: Object) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, replace, trans); RETURN FALSE
+      ELSIF replace IN cont.caps THEN
+	 RETURN Check(cont.if.replace(cont, trans, id, object),
+	              cont, replace, trans)
+      ELSE
+	 Error(cont, notSupported, replace, trans); RETURN FALSE
+      END;
+   END Replace;
+
+   PROCEDURE Obtain(cont: Container; trans: Transaction;
+                    id: Ident; VAR object: Object) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, obtain, trans); RETURN FALSE
+      ELSIF obtain IN cont.caps THEN
+	 RETURN Check(cont.if.obtain(cont, trans, id, object),
+	              cont, obtain, trans)
+      ELSE
+	 Error(cont, notSupported, obtain, trans); RETURN FALSE
+      END;
+   END Obtain;
+
+   PROCEDURE Elements(cont: Container; trans: Transaction;
+                      VAR nelems: LONGINT) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, elements, trans); RETURN FALSE
+      ELSIF elements IN cont.caps THEN
+	 RETURN Check(cont.if.elements(cont, trans, nelems),
+	              cont, elements, trans)
+      ELSE
+	 Error(cont, notSupported, elements, trans); RETURN FALSE
+      END;
+   END Elements;
+
+   PROCEDURE Find(cont: Container; trans: Transaction; dir: SearchDir;
+                  VAR id: Ident) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, find, trans); RETURN FALSE
+      ELSIF find IN cont.caps THEN
+	 RETURN Check(cont.if.find(cont, trans, dir, id),
+	              cont, find, trans)
+      ELSE
+	 Error(cont, notSupported, find, trans); RETURN FALSE
+      END;
+   END Find;
+
+   PROCEDURE Reorganize(cont: Container; trans: Transaction) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, reorganize, trans); RETURN FALSE
+      ELSIF reorganize IN cont.caps THEN
+	 RETURN Check(cont.if.reorganize(cont, trans),
+	              cont, reorganize, trans)
+      ELSE
+	 Error(cont, notSupported, reorganize, trans); RETURN FALSE
+      END;
+   END Reorganize;
+
+   PROCEDURE SetAnchor(cont: Container; trans: Transaction;
+                       id: Ident) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, setAnchor, trans); RETURN FALSE
+      ELSIF setAnchor IN cont.caps THEN
+	 RETURN Check(cont.if.setAnchor(cont, trans, id),
+	              cont, setAnchor, trans)
+      ELSE
+	 Error(cont, notSupported, setAnchor, trans); RETURN FALSE
+      END;
+   END SetAnchor;
+
+   PROCEDURE GetAnchor(cont: Container; trans: Transaction;
+                       VAR id: Ident) : BOOLEAN;
+   BEGIN
+      IF cont.closed THEN
+	 Error(cont, alreadyClosed, getAnchor, trans); RETURN FALSE
+      ELSIF getAnchor IN cont.caps THEN
+	 RETURN Check(cont.if.getAnchor(cont, trans, id),
+	              cont, getAnchor, trans)
+      ELSE
+	 Error(cont, notSupported, getAnchor, trans); RETURN FALSE
+      END;
+   END GetAnchor;
+
+   PROCEDURE Exchange(cont: Container; trans: Transaction; id: Ident;
+                      new: Object; VAR old: Object) : BOOLEAN;
+   BEGIN
+      RETURN Obtain(cont, trans, id, old) & Replace(cont, trans, id, new)
+   END Exchange;
+
+   PROCEDURE Remove(cont: Container; trans: Transaction;
+                    id: Ident; VAR object: Object) : BOOLEAN;
+   BEGIN
+      RETURN Obtain(cont, trans, id, object) & Delete(cont, trans, id)
+   END Remove;
+
+BEGIN
+   InitModule;
+END Containers.

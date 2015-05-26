@@ -1,0 +1,170 @@
+-------------------------------------------------------------------------------
+             Summary About the Oberon Language Differences Between
+     the Current Implementations of ETH Zuerich and the University of Ulm
+-------------------------------------------------------------------------------
+                      Andreas Borchert, University of Ulm
+			 borchert@mathematik.uni-ulm.de
+				 July 1994
+-------------------------------------------------------------------------------
+
+References:
+
+[Wirth88]	Niklaus Wirth, "The Programming Language Oberon",
+		Software--Practice and Experience, vol 18, no 7, pp 671-690,
+		July 1988
+
+[Wirth89a]	Niklaus Wirth, "Corrections: The Programming Language Oberon",
+		Software--Practice and Experience, vol 19, no 1,
+		January 1989
+
+[Wirth89b]	Niklaus Wirth, "The Programming Language Oberon",
+		Report 111, ETH Zuerich, Institut fuer Computersysteme,
+		September 1989
+
+[Reiser92]	Martin Reiser, Niklaus Wirth, "Programming in Oberon",
+		Addison-Wesley, New York, 1992
+
+[Borchert94]	Andreas Borchert, "Report of Ulm's Oberon Compiler",
+		in Ulm's Oberon System Reference, pp. 53-60,
+		Universitaet Ulm, February 1994
+
+INTRODUCTION
+
+Ulm's Oberon Compiler for the m68k processor has been developed in
+the first half of 1989 in conformance to [Wirth88] and [Wirth89a].
+In September 1989, a major revision of the Oberon language was published
+in [Wirth89b]. The main difference between [Wirth88] and [Wirth89b]
+is the merge of the definition and implementation part to one
+compilation unit. Some additional revisions of minor importance
+have been introduced in the report contained in [Reiser92].
+
+Wirth's decision to replace the definition part by a browser tool
+which extracts marked declarations from an implementation part is
+debatable. Even some members of the ETH Oberon development teams
+would still prefer the original variant. There are a couple of
+reasons for the separation in the tradition of Modula-2:
+
+- A definition part has its own time stamp and may be frozen and protected. 
+  Compare this with the joined compilation unit: changes of the
+  marked declarations can be done accidently and are usually detected
+  too late on the compilation of clients.
+
+- Sometimes, there exist several implementation parts for one definition.
+  It's easy to check these implementations against a frozen definition
+  but how to do this without a definition?
+
+- The extraction presented by a browser is not necessarily consistent,
+  i.e. it may use identifiers which are neither imported nor declared.
+
+- At least the browser of the Zuerich Oberon System doesn't extract
+  any comments.
+
+For these reasons we still support the original variant. Additionally,
+some restrictions (see below) were introduced in [Wirth89b]. Probably,
+these restrictions didn't harm the Zuerich Oberon system but allowed to
+keep the Zurich Oberon compilers simple. Well, at the time of
+[Wirth89b] a significant part of Ulm's Oberon Library was already
+written which makes use of these features and there are some good
+reasons to keep them. At least the *language* (not necessarily the
+compiler) is simpler without these restrictions.  On the other side, a
+lot of minor revisions (mainly syntax changes) were accepted and built
+into Ulm's Oberon Compiler.
+
+Please note that despite to the list of differences not even a
+tiny feature has been newly added to the Oberon language. It's just
+a selective adaptation of the numerous Zuerich revisions.
+
+LANGUAGE DIFFERENCES
+
+The following list gives the differences between [Reiser92] and [Borchert94]:
+References to the Oberon Report are given by -> and followed by section
+numbers.
+
+1.	-> 4, 11. There are two types of compilation units:
+	definitions and modules. Consequently, we don't support
+	export marks:
+
+		CompilationUnit = module | definition .
+		definition = DEFINITION ident ";" [ImportList]
+			DefSequence END ident "." .
+		DefSequence = { CONST { ConstantDeclaration ";" } |
+			TYPE { TypeDeclaration ";" } |
+			VAR { VariableDeclaration ";" } }
+			{ ProcedureHeading ";" } .
+
+	This corresponds to [Wirth88] except that we have adapted
+	the relaxed declaration ordering of [Wirth89b].
+
+2.	-> 10.1. The type of an actual parameter may be an extension
+	of the type of associated formal parameter even in case of
+	pointer types. This conforms to [Wirth88].
+
+3.	-> 9.1. Records may not be assigned if they contain unknown
+	private parts. This conforms to [Wirth88].
+
+4.	-> 6.4. NEW(p) guarantees on return p to be valid and not equal
+	to NIL. Event handling gets initiated if there is not enough
+	memory available which usually leads to program termination.
+	This corresponds to [Wirth88] and avoids program text which
+	is cluttered up with otherwise necessary tests.
+
+5.	-> 12. BYTE belongs to the set of standard types (like INTEGER)
+	and isn't exported by SYSTEM.
+
+6.	-> 12. If ARRAY OF BYTE is given as formal parameter all
+	types of actual parameters are valid. This holds for
+	value and reference parameters.
+
+7.	-> 12. SIZE doesn't belong to the set of standard functions
+	and is exported by SYSTEM.
+
+8.	-> 8.2.2. DIV and MOD are defined even for negative operands
+	on the right side. Following rules hold in conformance to
+	[Wirth88] and [Wirth89b]:
+
+			x = (x DIV y) * y + (x MOD y)
+		0 <= (x MOD y) < y    or   y < (x MOD y) <= 0
+
+9.	-> 3. Comments may be nested. This conforms to the Zuerich
+	implementations (see Project Oberon, p. 385) but not to any
+	of the reports.
+
+DIFFERENCES OF THE SYSTEM MODULE
+
+Each Oberon implementor is free to decide about the contents of SYSTEM.
+Modules importing SYSTEM are therefore implementation-dependent.
+Again, the differences are given in respect to [Reiser92]. More
+information about the newly introduced items in SYSTEM can be found
+in [Borchert94].
+
+1.	CC has been removed.
+
+2.	New types:
+
+	INT16			2-byte-integer; note that INTEGER occupies
+				4 bytes
+	ADDRESS			LONGINT-compatible address which is
+				traced by the garbage collector
+	UNTRACEDADDRESS		LONGINT-compatible address which will
+				be ignored by the garbage collector
+
+3.	New procedures:
+
+	CRSPAWN(cr)		create new coroutine with the calling
+				procedure as body
+	CRSWITCH(cr)		coroutine switch to cr
+	HALT(exitcode)		causes immediate exit without cleanup
+	WCLEAR(ptr, n)		clears n 4-byte-words
+	WMOVE(from, to, n)	copies n 4-byte-words from `from' to `to'
+
+4.	New functions:
+
+	TAS(boolvar)		atomic test-and-set operation: sets
+				boolvar to TRUE and returns old value
+	UNIXCALL(syscall, d0, d1, arg...)
+				returns BOOLEAN-value and allows
+				all system calls (except signal & fork)
+	UNIXFORK(pid)		executes fork system call and
+				returns boolean value
+	UNIXSIGNAL(signo, p, old, error)
+				interfaces signal handling system call

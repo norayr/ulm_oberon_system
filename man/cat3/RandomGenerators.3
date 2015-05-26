@@ -1,0 +1,201 @@
+RandomGenerators(3)           Ulm's Oberon System          RandomGenerators(3)
+
+
+
+[1mNAME[0m
+       RandomGenerators -  general abstraction for pseudo random number gener-
+       ation
+
+[1mSYNOPSIS[0m
+       TYPE Sequence = POINTER TO SequenceRec;
+       TYPE SequenceRec = RECORD (Services.ObjectRec) END;
+       TYPE Int32ValSProc = PROCEDURE (sequence: Sequence): Types.Int32;
+       TYPE LongRealValSProc = PROCEDURE (sequence: Sequence): LONGREAL;
+       TYPE RewindSequenceProc = PROCEDURE (sequence: Sequence);
+       TYPE RestartSequenceProc = PROCEDURE (sequence, seed: Sequence);
+       TYPE SetValSProc = PROCEDURE (sequence: Sequence; value: Operations.Operand);
+       CONST int32ValS = 0; longRealValS = 1; rewindSequence = 2; restartSequence = 3;
+       TYPE CapabilitySet = SET; (* of [int32ValS..restartSequence] *)
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             int32ValS: Int32ValSProc;
+             longRealValS: LongRealValSProc;
+             rewindSequence: RewindSequenceProc;
+             restartSequence: RestartSequenceProc;
+          END;
+
+       VAR std: Sequence;  (* default sequence *)
+       VAR seed: Sequence; (* sequence of seed values *)
+       VAR unpredictable: Sequence; (* initially NIL *)
+
+       PROCEDURE Init(sequence: Sequence; if: Interface; caps: CapabilitySet);
+       PROCEDURE Capabilities(sequence: Sequence): CapabilitySet;
+       PROCEDURE RewindSequence(sequence : Sequence);
+       PROCEDURE RestartSequence(sequence, seed: Sequence);
+       PROCEDURE Int32Val(): Types.Int32;
+       PROCEDURE Int32ValS(sequence: Sequence): Types.Int32;
+       PROCEDURE LongRealVal(): LONGREAL;
+       PROCEDURE LongRealValS(sequence: Sequence): LONGREAL;
+       PROCEDURE RealVal(): REAL;
+       PROCEDURE RealValS(sequence: Sequence): REAL;
+       PROCEDURE Val(low, high: LONGINT): LONGINT;
+       PROCEDURE ValS(sequence: Sequence; low, high: LONGINT): LONGINT;
+       PROCEDURE Flip(): BOOLEAN;
+       PROCEDURE FlipS(sequence: Sequence): BOOLEAN;
+       PROCEDURE Support(type: Services.Type; setValS: SetValSProc);
+       PROCEDURE SetVal(value: Operations.Operand);
+       PROCEDURE SetValS(sequence: Sequence; value: Operations.Operand);
+
+
+[1mDESCRIPTION[0m
+       [4mRandomGenerators[24m provides a general interface  for  the  generation  of
+       pseudo  random numbers.  It also provides a linear congruential genera-
+       tor taken from Knuth, [4mSeminumerical[24m [4mAlgorithms[24m,  Third  Edition,  Sect.
+       3.6, as a default implementation.
+
+       [4mstd[24m  is  a  sequence  predefined by the default implementation that can
+       (and probably should) be replaced by any convenient alternative,  like,
+       e.g.,  a  sequence  from [4mSubtractiveRandomGenerator(3)[24m.  It serves as a
+       default for all procedures without a [4msequence[24m argument.
+
+       [4mseed[24m is a sequence of seed values useful to initialize other sequences.
+       By default, it depends on the system clock at program initialization in
+       a half-hearted effort to get something different each time a program is
+       run.   A  better  job  will  be  done  if  a more sophisticated system-
+       dependent true random generator like [4mUnixSeeds(3)[24m  is  imported,  which
+       will replace this sequence.
+
+       [4munpredictable[24m  is, if non-[1mNIL[22m, to be considered as a sequence of fairly
+       unpredictable values that is based upon good seed values and a  genera-
+       tor  like [4mSurfRandomGenerators(3)[24m.  The current version of [4mUnixSeeds(3)[0m
+       attempts to initialize this sequence, if imported.
+
+       [4mInit[24m initializes a newly created sequence and associates  it  with  the
+       given  interface  [4mif[24m  and  set  of  capabilities [4mcaps[24m.  At least one of
+       [4mint32ValS[24m or [4mlongRealValS[24m must be in [4mcaps[24m and for  each  capability  in
+       [4mcaps[24m  a  corresponding  interface procedure must be defined in [4mif[24m.  The
+       interface procedures are expected to meet the specifications following:
+
+       [4mint32ValS[24m: [1mPROCEDURE[22m([4msequence[24m: [4mSequence[24m) : [4mTypes.Int32[24m;
+            return a uniformly distributed random 32 bit integer value.
+       [4mlongRealValS[24m: [1mPROCEDURE[22m([4msequence[24m: [4mSequence[24m) : [4mLONGREAL[24m;
+            return  an  approximately  uniformly  distributed  random [1mLONGREAL[0m
+            value in the half-open interval [0, 1).  The distribution  of  the
+            most significant bits will have the greatest impact on the distri-
+            bution of integer values constructed from such values.
+       [4mrewindSequence[24m: [1mPROCEDURE[22m([4msequence[24m: [4mSequence[24m);
+            allow to re-examine the sequence from the beginning.  Only  deter-
+            ministic generators will implement this.
+       [4mrestartSequence[24m: [1mPROCEDURE[22m([4msequence,[24m [4mseed[24m: [4mSequence[24m);
+            restart  a  sequence with new seed values, supplied by [4mseed[24m.  Only
+            generators benefiting from seed values will implement this.
+
+       [4mCapabilities[24m returns the set of capabilities of [4msequence[24m.
+
+       [4mRewindSequence[24m allows to re-examine the sequence, if supported  by  the
+       implementation.  It must not be called unless [4mrewindSequence[24m is a capa-
+       bility of [4msequence[24m.
+
+       [4mRestartSequence[24m restarts a sequence with new seed  values  supplied  by
+       [4mseed[24m, if supported by the implementation.  It must not be called unless
+       [4mrestartSequence[24m is a capability of [4msequence[24m.
+
+       [4mInt32Val[24m returns a random 32 bit integer value, [4mVal[24m  returns  a  random
+       [1mLONGINT  [22mvalue  in the range from [4mlow[24m up to [4mhigh[24m inclusively, where [4mlow[0m
+       must be less or equal to [4mhigh[24m, [4mFlip[24m returns a random boolean value, and
+       [4mLongRealVal[24m  and  [4mRealVal[24m return random real values greater or equal to
+       zero and less than one.  All these functions iterate the [4mstd[24m  sequence.
+       Their  dual  versions,  [4mInt32ValS[24m, [4mValS[24m, [4mFlipS[24m, [4mLongRealValS[24m, and [4mReal-[0m
+       [4mValS[24m, each iterate the sequence specified by the first parameter.
+
+       [4mRandomGenerators[24m defines a service for the creation of random values of
+       a  specific  type.  With [4mSupport[24m, a service provider can bind an imple-
+       mentation of [4msetValS[24m to the specified type.  The interface procedure is
+       expected to meet the specification following:
+
+       [4msetValS[24m: [1mPROCEDURE[22m([4msequence[24m: [4mSequence[24m; [4mvalue[24m: [4mOperations.Operand[24m);
+            store  a  random value obtained from [4msequence[24m into [4mvalue[24m, which is
+            supposed to be initialized already.  The range of the type  speci-
+            fied by [4mop[24m has to be determined by the service provider.
+
+       [4mSetVal[24m  and  [4mSetValS[24m  store  random values obtained from [4mstd[24m or a given
+       sequence, respectively, into [4mvalue,[24m which is supposed to be initialized
+       already.
+
+[1mEXAMPLE[0m
+       Following  example shows how a service provider for random complex num-
+       bers may be implemented:
+
+       Suppose, a module called [4mComplexNumbers[24m defines a type for complex num-
+       bers:
+
+       TYPE ComplexNumber = POINTER TO ComplexNumberRec;
+       TYPE ComplexNumberRec =
+          RECORD
+             (Operations.OperandRec)
+             real: LONGREAL;
+             imag: LONGREAL;
+          END;
+
+       Now an implementation of the service can be realized as follows:
+
+       MODULE RandComplexNumbers;
+
+          IMPORT ComplexNumbers, Math, RandomGenerators, Services;
+
+          VAR
+             complexType: Services.Type;
+
+          PROCEDURE RandComplexNumber(sequence: RandomGenerators.Sequence;
+                                      value: Operations.Operand);
+             VAR
+                arg: LONGREAL;
+          BEGIN
+             WITH value: ComplexNumbers.ComplexNumber DO
+                arg := 2. * Math.pi * RandomGenerators.LongRealValS(sequence);
+                value.real := Math.CosL(arg);
+                value.imag := Math.SinL(arg);
+             END;
+          END RandComplexNumber;
+
+       BEGIN
+          Services.SeekType("ComplexNumbers.ComplexNumber", complexType);
+          ASSERT(complexType # NIL);
+          RandomGenerators.Support(complexType, RandComplexNumber);
+       END RandComplexNumbers.
+
+       Applications may now import [4mRandComplexNumbers[24m and generate random com-
+       plex numbers with an absolute value of  one  by  calling  [4mRandomGenera-[0m
+       [4mtors.SetValS[24m or [4mRandomGenerators.SetVal[24m.
+
+[1mDIAGNOSTICS[0m
+       All  of  the  following  errors lead to failed assertions: Calling [4mInit[0m
+       without at least one of [4mint32ValS[24m or [4mlongRealValS[24m in [4mcaps[24m or with capa-
+       bilities  not  matched  by  corresponding interface procedures; calling
+       [4mRewindSequence[24m or [4mRestartSequence[24m with a sequence  lacking  the  corre-
+       sponding  capability;  calling  [4mVal[24m or [4mValS[24m with a value of [4mlow[24m greater
+       than [4mhigh[24m.
+
+[1mAUTHOR[0m
+       Frank B.J. Fischer, extended by Martin Hasch and Andreas Borchert
+
+[1mSEE ALSO[0m
+       [4mBBS(3)[24m                          implementation of the Blum,  Blum,  and
+                                       Shub pseudo random number generator
+       [4mSubtractiveRandomGenerator(3)[24m   pseudo  random number generator that is
+                                       based on the subtractive method
+       [4mSurfRandomGenerators(3)[24m         implementation of SURF, a simple unpre-
+                                       dictable  random  function that is rea-
+                                       sonably fast
+       [4mUnixSeeds(3)[24m                    generation of seed  values  in  a  UNIX
+                                       environment
+
+[1mBUGS[0m
+       John  von  Neumann (1951): Anyone who considers arithmetical methods of
+       producing random digits is, of course, in a state of sin.
+
+
+
+Release 0.5              Last change: 11 December 2004     RandomGenerators(3)

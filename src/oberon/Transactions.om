@@ -1,0 +1,249 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Transaction.om,v 1.2 1996/11/28 11:03:16 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Transaction.om,v $
+   Revision 1.2  1996/11/28  11:03:16  borchert
+   - bug fix: Abort was calling trans.if.commit
+   - Mode renamed to AccessSpecification
+
+   Revision 1.1  1996/11/20  18:09:08  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   initial idea and manual page developed by Werner Stanglow
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Transactions;
+
+   IMPORT ConstStrings, Events, Iterators, Objects, PersistentDisciplines,
+      Priorities, RelatedEvents, Shards, Services;
+
+   TYPE
+      Transaction = POINTER TO TransactionRec;
+      Object = Services.Object;
+
+   TYPE
+      AccessSpecification = PersistentDisciplines.Object;
+
+   CONST
+      defined = 0; begun = 1; committed = 2; aborted = 3;
+   TYPE
+      State = SHORTINT; (* defined..aborted *)
+
+      AttachProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+			      obj: Object; aspec: AccessSpecification) : BOOLEAN;
+      AttachedProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+				obj: Object) : BOOLEAN;
+      GetAttachedProc = PROCEDURE (trans: Transaction;
+				   auth: Shards.Lid;
+				   VAR it: Iterators.Iterator) : BOOLEAN;
+      TransProc = PROCEDURE (trans: Transaction;
+			     auth: Shards.Lid) : BOOLEAN;
+      GetStateProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+				VAR state: State) : BOOLEAN;
+      GetNameProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+			       VAR name: ConstStrings.String) : BOOLEAN;
+      TakeInterestProc =
+	 PROCEDURE (trans: Transaction; auth: Shards.Lid;
+		    VAR eventType: Events.EventType) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec);
+	    attach: AttachProc;
+	    attachable: AttachProc;
+	    attached: AttachedProc;
+	    getAttached: GetAttachedProc;
+	    begin: TransProc;
+	    commit: TransProc;
+	    abort: TransProc;
+	    release: TransProc;
+	    getState: GetStateProc;
+	    getName: GetNameProc;
+	    takeInterest: TakeInterestProc;
+	 END;
+
+   TYPE
+      TransactionRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	 END;
+
+   TYPE
+      (* these events are raised (if requested only) *after*
+         the indicated state transition
+      *)
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    state: State; (* begun, committed, or aborted *)
+	    trans: Transaction;
+	 END;
+
+   CONST
+      beginFailed = 0; commitFailed = 1; abortFailed = 2;
+      attachFailed = 3; releaseFailed = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* beginFailed..releaseFailed *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+      RECORD
+	 (Events.EventRec);
+	 errcode: ErrorCode;
+	 trans: Transaction;
+      END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE Check(ok: BOOLEAN; trans: Transaction;
+                   code: ErrorCode) : BOOLEAN;
+      (* return ok but raise the given error event if ok is FALSE *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      IF ~ok THEN
+	 NEW(event);
+	 event.message := errormsg[code];
+	 event.type := error;
+	 event.trans := trans;
+	 RelatedEvents.Raise(trans, event);
+      END;
+      RETURN ok
+   END Check;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.Ignore(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[beginFailed]   := "begin of transaction failed";
+      errormsg[commitFailed]  := "commit of transaction failed";
+      errormsg[abortFailed]   := "abort of transaction failed";
+      errormsg[attachFailed]  := "unable to attach object given transaction";
+      errormsg[releaseFailed] := "release of transaction failed";
+   END InitErrorHandling;
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "Transactions.Transaction", "");
+      InitErrorHandling;
+   END InitModule;
+
+   PROCEDURE Init(trans: Transaction; if: Interface);
+      VAR
+	 type: Services.Type;
+   BEGIN
+      ASSERT(trans.if = NIL);
+      ASSERT((if # NIL) &
+	    (if.attach # NIL) & (if.attachable # NIL) &
+	    (if.attached # NIL) & (if.getAttached # NIL) &
+	    (if.begin # NIL) & (if.commit # NIL) &
+	    (if.abort # NIL) & (if.release # NIL) &
+	    (if.getState # NIL) & (if.takeInterest # NIL));
+	 (* note that if.getName may be NIL *)
+      Services.GetType(trans, type); ASSERT(type # NIL);
+      trans.if := if;
+      RelatedEvents.QueueEvents(trans);
+   END Init;
+
+   PROCEDURE Release(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN Check(trans.if.release(trans, auth), trans, releaseFailed)
+   END Release;
+
+   (* defining and examining the set of attached objects *)
+
+   PROCEDURE Attach(trans: Transaction; auth: Shards.Lid;
+		    obj: Object; aspec: AccessSpecification) : BOOLEAN;
+   BEGIN
+      RETURN Check(trans.if.attach(trans, auth, obj, aspec),
+		   trans, attachFailed)
+   END Attach;
+
+   PROCEDURE Attached(trans: Transaction; auth: Shards.Lid;
+		      obj: Object) : BOOLEAN;
+   BEGIN
+      RETURN trans.if.attached(trans, auth, obj)
+   END Attached;
+
+   PROCEDURE Attachable(trans: Transaction; auth: Shards.Lid;
+			obj: Object; aspec: AccessSpecification) : BOOLEAN;
+   BEGIN
+      RETURN trans.if.attachable(trans, auth, obj, aspec)
+   END Attachable;
+
+   PROCEDURE GetAttached(trans: Transaction; auth: Shards.Lid;
+			 VAR it: Iterators.Iterator) : BOOLEAN;
+   BEGIN
+      RETURN trans.if.getAttached(trans, auth, it)
+   END GetAttached;
+
+   (* transaction primitives *)
+
+   PROCEDURE Begin(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN Check(trans.if.begin(trans, auth), trans, beginFailed)
+   END Begin;
+
+   PROCEDURE Commit(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN Check(trans.if.commit(trans, auth), trans, commitFailed)
+   END Commit;
+
+   PROCEDURE Abort(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN Check(trans.if.abort(trans, auth), trans, abortFailed)
+   END Abort;
+
+   (* further requests *)
+
+   PROCEDURE GetName(trans: Transaction; auth: Shards.Lid;
+		     VAR name: ConstStrings.String) : BOOLEAN;
+   BEGIN
+      IF trans.if.getName = NIL THEN
+	 name := NIL; RETURN TRUE
+      ELSE
+	 RETURN trans.if.getName(trans, auth, name)
+      END;
+   END GetName;
+
+   PROCEDURE GetState(trans: Transaction; auth: Shards.Lid;
+		      VAR state: State) : BOOLEAN;
+   BEGIN
+      RETURN trans.if.getState(trans, auth, state)
+   END GetState;
+
+   PROCEDURE TakeInterest(trans: Transaction;
+                          auth: Shards.Lid;
+			  VAR eventType: Events.EventType) : BOOLEAN;
+   BEGIN
+      RETURN trans.if.takeInterest(trans, auth, eventType)
+   END TakeInterest;
+
+BEGIN
+   InitModule;
+END Transactions.

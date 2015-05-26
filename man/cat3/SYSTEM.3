@@ -1,0 +1,330 @@
+
+
+
+SYSTEM(3)              Ulm's Oberon System              SYSTEM(3)
+
+
+NNAAMMEE
+       SYSTEM  -  system-dependent built-ins of Ulm's Oberon Com­
+       piler
+
+SSYYNNOOPPSSIISS
+       TYPE INT16 = (* 2-byte integer type *);
+       TYPE ADDRESS = (* LONGINT-compatible & traced by the GC *);
+       TYPE UNTRACEDADDRESS = (* LONGINT-compatible & ignored by the GC *);
+       TYPE COROUTINE = (* coroutine of Ulm's coroutine scheme *);
+
+       (* function procedures *)
+       PROCEDURE ADR(VAR variable: AnyType) : ADDRESS;
+       PROCEDURE BIT(address: LONGINT; n: LONGINT) : BOOLEAN;
+       PROCEDURE LSH(value, n: LONGINT) : LONGINT;
+       PROCEDURE ROT(value, n: LONGINT) : LONGINT;
+       PROCEDURE SIZE(type: AnyTypeName) : LONGINT;
+       PROCEDURE TAS(VAR flag: BOOLEAN) : BOOLEAN;
+       PROCEDURE VAL(type: AnyTypeName; value: AnyType) : type;
+
+       (* proper procedures *)
+       PROCEDURE GET(address: LONGINT; VAR variable: AnyBasicType);
+       PROCEDURE PUT(address: LONGINT; value: AnyBasicType);
+       PROCEDURE HALT(exitcode: LONGINT);
+       PROCEDURE MOVE(VAR fromVariable, toVariable: AnyType; n: LONGINT);
+       PROCEDURE WMOVE(from, to: LONGINT; n: LONGINT);
+       PROCEDURE WCLEAR(address: LONGINT; n: LONGINT);
+       PROCEDURE NEW(VAR ptr: AnyPointerType; n: LONGINT);
+
+       (* Ulm's coroutine scheme *)
+       PROCEDURE CRSPAWN(VAR cr: COROUTINE);
+       PROCEDURE CRSWITCH(cr: COROUTINE);
+
+       (* UNIX system calls *)
+       PROCEDURE UNIXCALL(syscall: INTEGER; VAR d0, d1: LONGINT;
+                          arg1, arg2, ...: LONGINT) : BOOLEAN;
+       PROCEDURE UNIXFORK(VAR pid: LONGINT) : BOOLEAN;
+       PROCEDURE UNIXSIGNAL(signo: INTEGER; p: PROCEDURE;
+                            VAR old: PROCEDURE; VAR error: INTEGER) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       SSYYSSTTEEMM is a built-in module of the compiler which  is  not
+       searched  for in the compilation environment.  Each Oberon
+       implementation is free to decide  about  the  contents  of
+       SSYYSSTTEEMM.   Modules importing SSYYSSTTEEMM are therefore implemen­
+       tation-dependent.
+
+       Because these procedures are implemented by  the  compiler
+       they  do  not  necessarily  follow  the strong declaration
+       semantics of the  Oberon  language.   SSIIZZEE,  for  example,
+       takes  the  name  of  a  type, and NNEEWW accepts any pointer
+       variable but nothing else.  Some ad-hoc  type  names  have
+       been  used  in  the  synopsis to describe the semantics of
+       parameters:
+
+
+
+Release 0.5          Last change: 27 May 2000                   1
+
+
+
+
+
+SYSTEM(3)              Ulm's Oberon System              SYSTEM(3)
+
+
+       ·      _A_n_y_T_y_p_e means that the  parameter  may  be  of  any
+              type.  AARRRRAAYY OOFF BBYYTTEE is something similar.
+
+       ·      _A_n_y_P_o_i_n_t_e_r_T_y_p_e describes an arbitrary pointer type.
+              Addresses  (i.e.   AADDDDRREESSSS,   UUNNTTRRAACCEEDDAADDDDRREESSSS,   or
+              LLOONNGGIINNTT are not permitted here).
+
+       ·      _A_n_y_B_a_s_i_c_T_y_p_e  specifies  that any of the base types
+              may  be  given,  i.e.  SSHHOORRTTIINNTT,  IINNTT1166,   IINNTTEEGGEERR,
+              LLOONNGGIINNTT,  RREEAALL,  LLOONNGGRREEAALL,  BBOOOOLLEEAANN, CCHHAARR, SSEETT, and
+              BBYYTTEE are accepted but not arrays,  records,  point­
+              ers, or procedure types.
+
+       ·      _A_n_y_T_y_p_e_N_a_m_e  tells  that  a  type identifier may be
+              given (but not an elaborate type construction).
+
+       Note that parameters which are  named  _v_a_r_i_a_b_l_e  accept  a
+       variable but not an arbitrary designator.
+
+   TTyyppeess
+       Ulm's  Oberon Compiler implements SSHHOORRTTIINNTT as 1-byte inte­
+       ger and IINNTTEEGGEERR as 4-byte integer.   To  fill  the  rarely
+       needed  gap, a 2-byte integer is provided by IINNTT1166.  SSHHOORRTT
+       of an IINNTT1166-value yields a SSHHOORRTTIINNTT, and LLOONNGG  returns  an
+       IINNTTEEGGEERR.   But  note that neither SSHHOORRTT of an IINNTTEEGGEERR, nor
+       LLOONNGG of a SSHHOORRTTIINNTT return an IINNTT1166-value.  This is  neces­
+       sary to preserve the standard semantics of SSHHOORRTT and LLOONNGG.
+       Conversions to an IINNTT1166-value may be achieved by VVAALL.
+
+       AADDDDRREESSSS and UUNNTTRRAACCEEDDAADDDDRREESSSS are to be preferred over  LLOONN­­
+       TTIINNTT for holding address values.  Note that unlike the ETH
+       implementations AADDRR does not return  a  LLOONNGGIINNTT-value  but
+       AADDDDRREESSSS.   Ulm's  Oberon  Compiler  produces  tables which
+       allow the garbage collection to follow pointer and address
+       references.   AADDDDRREESSSS-values  will  be  recognized  by the
+       garbage collection, i.e. the objects they  point  to  will
+       keep  alive  if  the address belongs to a living structure
+       and the addresses will be updated automatically by copying
+       garbage  collectors  (see  _S_y_s_S_t_o_r_a_g_e_(_3_)).  This works not
+       only when addresses point to the beginning  of  an  object
+       (like  ordinary  pointers)  but  also  if they point to an
+       arbitrary component of an object.
+
+       Variables of type UUNNTTRRAACCEEDDAADDDDRREESSSS are fine to hold address
+       values  but are never looked at by the garbage collection.
+       This is useful for addresses returned by the address space
+       management (see _M_e_m_o_r_y_(_3_)).  Both, AADDDDRREESSSS and UUNNTTRRAACCEEDDAADD­­
+       DDRREESSSS, are compatible to LLOONNGGIINNTT.  Nevertheless, the  com­
+       piler  feels  free  to  emit  warnings  when addresses are
+       assigned to LLOONNGGIINNTT because this is generally to  be  con­
+       sidered as an unsafe technique.
+
+       Note  that  because  of portability problems none of these
+       types should be used directly.  It is recommended  to  use
+
+
+
+Release 0.5          Last change: 27 May 2000                   2
+
+
+
+
+
+SYSTEM(3)              Ulm's Oberon System              SYSTEM(3)
+
+
+       the  type  declarations  of  _T_y_p_e_s_(_3_)  which may be easily
+       adapted to any implementation of Oberon.
+
+   FFuunnccttiioonn pprroocceedduurreess
+       AADDRR returns  the  address  of  the  given  variable.   BBIITT
+       returns  the  _n-th bit of the 32-bit word at _a_d_d_r_e_s_s.  LLSSHH
+       shifts _v_a_l_u_e (which is always seen as 32-bit value)  by  _n
+       bits logically to the left.  Logically means that the sign
+       bit is not treated special.  Shifts to the right side  may
+       be  achieved  by  giving a negative value of _n.  RROOTT works
+       like LLSSHH but rotates _v_a_l_u_e, i.e. bits  which  are  shifted
+       out appear on the other side again.
+
+       SSIIZZEE  returns  the  number  of bytes which are occupied by
+       objects of the given type.  Note that the size of  compos­
+       ite types is sometimes larger than the sum of the sizes of
+       the parts.
+
+       TTAASS is an atomic operation which sets  ffllaagg  to  TTRRUUEE  and
+       returns the old value of ffllaagg.  TTAASS allows to avoid criti­
+       cal regions to be entered twice:
+
+       (* enter critical region only if flag was not set *)
+       IF ~SYSTEM.TAS(flag) THEN
+          (* critical region *)
+          flag := FALSE;
+       END;
+
+
+       VVAALL allows a large number of system-dependent type conver­
+       sions.   It  permits any numerical type to be converted to
+       any other numerical type.  Other type conversions are sup­
+       ported  only  if  both, _t_y_p_e and the type of _v_a_l_u_e, occupy
+       the same number of bytes.
+
+   PPrrooppeerr pprroocceedduurreess
+       GGEETT and PPUUTT allow to access  memory  at  arbitrary  memory
+       addresses.   HHAALLTT  works  like the standard procedure HHAALLTT
+       but does not initiate any termination handling  (see  _P_r_o_­
+       _c_e_s_s_(_3_)).  It should be used in emergencies only.
+
+       MMOOVVEE  copies _n bytes of _f_r_o_m to _t_o.  MMOOVVEE does not check _n
+       against the length of _f_r_o_m or _t_o.  WWMMOOVVEE copies  _n  4-byte
+       words  from  _f_r_o_m  to _t_o.  Note that WWMMOOVVEE takes addresses
+       while MMOOVVEE works for  variables  only.   WWCCLLEEAARR  zeroes  _n
+       4-byte words beginning at _a_d_d_r_e_s_s.
+
+       NNEEWW  allocates  _n  bytes  and  returns the address in _p_t_r.
+       This variant of NNEEWW does not allocate  a  type  tag  (i.e.
+       type  tests and type guards are not permitted for _p_t_r) and
+       the allocated data is considered as  pointer-free  by  the
+       garbage collection.
+
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   3
+
+
+
+
+
+SYSTEM(3)              Ulm's Oberon System              SYSTEM(3)
+
+
+   UUllmm''ss ccoorroouuttiinnee sscchheemmee
+       CCRRSSPPAAWWNN creates and returns a new coroutine _c_r which takes
+       the calling procedure as body.  The new coroutine is  ini­
+       tially  suspended  and  the  callee  returns  immediately.
+       CCRRSSWWIITTCCHH allows to switch to another coroutine.  Note that
+       CCRRSSWWIITTCCHH  causes some variables of _C_o_r_o_u_t_i_n_e_s_(_3_) to be set
+       automatically.  Further, CCRRSSWWIITTCCHH needs usually not to  be
+       called because of _T_a_s_k_s_(_3_).
+
+   IInntteerrffaaccee ttoo UUNNIIXX
+       UUNNIIXXCCAALLLL offers an interface to all UNIX system calls with
+       the exception of _f_o_r_k_(_2_) and _s_i_g_v_e_c_(_2_) which  are  covered
+       by  UUNNIIXXFFOORRKK  and  UUNNIIXXSSIIGGNNAALL.   The  system  call  number
+       _s_y_s_c_a_l_l which may be imported from _S_y_s_(_3_) must be  a  con­
+       stant value.  The values of _d_0 and _d_1 will be put into the
+       equally named registers, and, after the call,  the  values
+       of  the  registers  _d_0  and  _d_1 will be copied back to the
+       variables.  The return value or error code (see  _e_r_r_n_o_(_2_))
+       is  usually found in _d_0.  An arbitrary number of arguments
+       may be given which must follow C-conventions,  i.e.  inte­
+       gers  should  be  passed  as  4-byte  integers (IINNTTEEGGEERR or
+       LLOONNGGIINNTT), and array or structure references  as  addresses
+       (AADDDDRREESSSS  or  UUNNTTRRAACCEEDDAADDDDRREESSSS) but not as pointers.  UUNNIIXX­­
+       CCAALLLL returns TTRRUUEE on success and FFAALLSSEE if  the  carry  bit
+       has  been  set by the kernel.  Note that all common system
+       calls are covered by  the  library  (e.g.  _S_y_s_I_O_(_3_),  _S_y_s_­
+       _F_i_l_e_(_3_), _S_y_s_I_P_C_(_3_), _S_y_s_S_o_c_k_e_t_s_(_3_) etc).
+
+       UUNNIIXXFFOORRKK  performs  a  _f_o_r_k_(_2_)  operation, and returns, on
+       success, a positive _p_i_d value to the  parent  process  and
+       zero  to the child process.  _p_i_d contains in case of fail­
+       ures (return  of  FFAALLSSEE)  the  error  number.   Note  that
+       _S_y_s_P_r_o_c_e_s_s_(_3_) should usually be used instead.
+
+       UUNNIIXXSSIIGGNNAALL registers _p as new reaction for the signal num­
+       ber _s_i_g_n_o. Values of 0 (default reaction)  or  1  (ignore)
+       are  legal for _p.  On success, UUNNIIXXSSIIGGNNAALL returns TTRRUUEE and
+       returns the old reaction in _o_l_d.  In case of failures, the
+       error number is returned in _e_r_r_o_r.
+
+DDIIAAGGNNOOSSTTIICCSS
+       With  the  exception  of the UNIX system calls there is no
+       checking performed at runtime by  code  generated  by  the
+       compiler.  So use these calls at your own risk.
+
+SSEEEE AALLSSOO
+       _S_y_s_(_3_)               collection  of  all  supported system
+                            call numbers
+       _S_y_s_C_o_n_v_e_r_s_i_o_n_s_(_3_)    conversions of Oberon records into  C
+                            structures  and  vice  versa  (may be
+                            needed for system calls)
+       _S_y_s_T_y_p_e_s_(_3_)          collection of types which  correspond
+                            to  C type definitions which are used
+                            for system calls
+
+
+
+Release 0.5          Last change: 27 May 2000                   4
+
+
+
+
+
+SYSTEM(3)              Ulm's Oberon System              SYSTEM(3)
+
+
+       _U_n_t_a_g_g_e_d_S_t_o_r_a_g_e_(_3_)   allocation of storage  which  is  not
+                            covered by the garbage collection
+
+BBUUGGSS
+       CCCC is not supported by Ulm's Oberon Compiler.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5          Last change: 27 May 2000                   5
+
+

@@ -1,0 +1,198 @@
+
+
+
+CompilerKeys(3)        Ulm's Oberon System        CompilerKeys(3)
+
+
+NNAAMMEE
+       CompilerKeys  -  keys  that  identify dependencies of com­
+       piler-generated objects
+
+SSYYNNOOPPSSIISS
+       TYPE Value = POINTER TO ValueRec;
+       TYPE ValueRec =
+          RECORD
+             (PersistentObjects.ObjectRec)
+             time: Times.Time; (* date of creation *)
+             unique1, unique2: INTEGER; (* hopefully unique *)
+          END;
+       TYPE Key = POINTER TO KeyRec;
+       TYPE KeyRec =
+          RECORD
+             (Keys.ValueRec)
+             modname: ConstStrings.String;
+             defsrcid, modsrcid: ConstStrings.String;
+             genkey: Value;
+             arch: Architectures.Architecture;
+             archkey: Value;
+          END;
+       TYPE Set = POINTER TO SetRec;
+       TYPE SetRec = RECORD (PersistentDisciplines.ObjectRec) END;
+       VAR key: Keys.Key; (* for Key *)
+
+       PROCEDURE CreateValue(VAR value: Value);
+
+       PROCEDURE Create(VAR key: Key; modname: ConstStrings.String);
+       PROCEDURE CreateCopy(VAR key: Key; orig: Key);
+
+       PROCEDURE ValueToString(value: Value; VAR string: ConstStrings.String);
+       PROCEDURE StringToValue(string: Streams.Stream; VAR value: Value);
+
+       PROCEDURE CreateSet(VAR set: Set);
+       PROCEDURE CreateSetCopy(VAR set: Set; orig: Set);
+       PROCEDURE Incl(set: Set; key: Key);
+       PROCEDURE InclSet(set, keys: Set);
+       PROCEDURE Union(VAR set: Set; set1, set2: Set);
+       PROCEDURE Lookup(set: Set; modname: ConstStrings.String;
+                  VAR key: Key) : BOOLEAN;
+       PROCEDURE GetKeys(set: Set; VAR it: Iterators.Iterator);
+       PROCEDURE Compatible(set1, set2: Set) : BOOLEAN;
+       PROCEDURE CompatibleWith(key: Key; set: Set) : BOOLEAN;
+       PROCEDURE CombineKeys(key1: Key; key2: Key; VAR combined: Key) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _C_o_m_p_i_l_e_r_K_e_y_s supports the identification  of  dependencies
+       of  compiler-generated  objects. They allow to assure that
+       all objects that are loaded into  one  address  space  are
+       compatible  to each other. The basic idea is simple: Every
+       interface compiled gets a new key of its own and a set  of
+       keys  it depends on (is empty if no modules are imported).
+
+
+
+Release 0.5         Last change: 6 April 2000                   1
+
+
+
+
+
+CompilerKeys(3)        Ulm's Oberon System        CompilerKeys(3)
+
+
+       Compiler objects generated from  sources  (definitions  or
+       modules) that other modules include the keys of the corre­
+       sponding interface objects into their own set. Compatibil­
+       ity  is given if there is never more than one key per mod­
+       ule involved.
+
+       Example: Modules _A, _B, and _C. _B and _C import  from  _A.  On
+       compiling  the  public  interfaces, the compiler generates
+       the keys _a_1, _b_1, and _c_1 for _A, _B, and _C, respectively.  On
+       compiling  the  modules,  _A  has a key set of {{_a_1}}, _B {{_a_1,
+       _b_1}}, and _C {{_a_1, _c_1}}. These three  modules  can  be  safely
+       combined with a joint key set of {{_a_1, _b_1, _c_1}}.  If _A and _B
+       are recompiled but not _C we would yield a key set of  {{_a_2}}
+       for  _A  and  {{_a_2,  _b_2}}  for  _B. A combination with the old
+       object of _C yields a key set of {{_a_1, _a_2,  _b_2,  _c_1}}.   This
+       key  set  contains two keys of module _A (_a_1 and _a_2) and is
+       therefore invalid because the modules  and _C were compiled
+       for  different  interfaces of _A.  This example was simpli­
+       fied to show the general idea.   _C_o_m_p_i_l_e_r_K_e_y_s  supports  a
+       model   that  differentiates  architecture-dependent  from
+       architecture-independent keys and that honors  the  possi­
+       bility  of  interface  updates by the corresponding module
+       (necessary to support Oberon with separated definition and
+       module).
+
+       _C_r_e_a_t_e_V_a_l_u_e  creates  a  object of type _C_o_m_p_i_l_e_r_K_e_y_s_._V_a_l_u_e
+       that consists of a  time  stamp  and  two  integer  values
+       returned  by  a pseudo random generator that are hopefully
+       unique. Note that the pseudo random numbers  are  returned
+       by  _R_a_n_d_o_m_G_e_n_e_r_a_t_o_r_s_(_3_) which allows better algorithms and
+       better seed values to be plugged in.  These  objects  pro­
+       vide uniqueness beyond that of source ids because the same
+       source may be compiled using different compilation options
+       and different environments.
+
+       _C_r_e_a_t_e creates an object of type _C_o_m_p_i_l_e_r_K_e_y_s_._K_e_y for _m_o_d_­
+       _n_a_m_e.  With the exception of _m_o_d_n_a_m_e all components of _k_e_y
+       are  set  to  NNIILL and should be initialized shortly there­
+       after.  Later,  keys  are  expected  to  remain  constant.
+       Instead _C_r_e_a_t_e_C_o_p_y may be used for copying and modifying a
+       key while leaving its original untouched.
+
+       _V_a_l_u_e_T_o_S_t_r_i_n_g and _S_t_r_i_n_g_T_o_V_a_l_u_e convert a value (triple of
+       timestamp  and  two  random values) into a constant string
+       and vice versa. This may be useful for conversion of  keys
+       into  a human-readable representation (as done by _c_d_b_d_(_1_),
+       for example).  Note, however, that both procedures  expect
+       the timestamp to be in a time range supported by _D_a_t_e_s_(_3_).
+
+       Key sets are collections of keys with a upper limit of one
+       key  per module.  _C_r_e_a_t_e_S_e_t may be used to create an empty
+       key set. Later on, key sets may grow only in a  consistent
+       way  using _I_n_c_l, _n_c_l_S_e_t, and _U_n_i_o_n: Keys added must belong
+       to modules not yet  added,  or  they  must  be  compatible
+
+
+
+Release 0.5         Last change: 6 April 2000                   2
+
+
+
+
+
+CompilerKeys(3)        Ulm's Oberon System        CompilerKeys(3)
+
+
+       upgrades  from an architecture-independent to an architec­
+       ture-dependent key.  _C_r_e_a_t_e_S_e_t_C_o_p_y creates an  independent
+       copy of _o_r_i_g.
+
+       _L_o_o_k_u_p  allows to lookup single keys by module and _G_e_t_K_e_y_s
+       permits to iterate all members of a key set.
+
+       Compatibility of key sets or key  set  extensions  may  be
+       tested  using  _C_o_m_p_a_t_i_b_l_e  (checking two sets against each
+       other) and _C_o_m_p_a_t_i_b_l_e_W_i_t_h  (checking  one  key  against  a
+       set).   These  tests  are  useful prior adding new keys or
+       sets to an existing set  as  compatbility  violations  are
+       treated  as  fatal  errors (an event of a failed assertion
+       would be raised).
+
+       _C_o_m_b_i_n_e_K_e_y_s may be used to check the compatibility of  two
+       single  keys,  and returns, if successful, the combination
+       of them.
+
+       The exported variable _k_e_y is a key of _K_e_y_s_(_3_)  defining  a
+       total  order  relation on objects of type _C_o_m_p_i_l_e_r_K_e_y_s_._K_e_y
+       that compares  keys  using  its  components  in  following
+       order:  module name (alphabetically), time stamp of archi­
+       tecture-independent key (using _O_p_e_r_a_t_i_o_n_s_._C_o_m_p_a_r_e),  their
+       architecture  (alphabetically) and the second timestamp in
+       case of architecture-dependent keys.
+
+DDIIAAGGNNOOSSTTIICCSS
+       All BBOOOOLLEEAANN-valued  functions  return  FFAALLSSEE  in  case  of
+       errors  or  incompatibility.   Assertions  check that that
+       keys to be included to a set are compatible to it.
+
+SSEEEE AALLSSOO
+       _A_r_c_h_i_t_e_c_t_u_r_e_s_(_3_)       classification of  hardware  archi­
+                              tectures
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   operations for persistent objects
+       _K_e_y_s_(_3_)                total order relations
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 6 April 2000                   3
+
+

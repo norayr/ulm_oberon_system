@@ -1,0 +1,213 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CDBCheckout.om,v 1.1 2004/09/10 21:22:50 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: CDBCheckout.om,v $
+   Revision 1.1  2004/09/10 21:22:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CDBCheckoutSource;
+
+   IMPORT Args := UnixArguments, BoolArgs, CDBNodeProxies, CDBSources,
+      CompilerSources, Conclusions, ConstStrings, Errors, Iterators, Names,
+      Paths, PersistentObjects, PrivateShards, Process, RelatedEvents,
+      RemoteCDBNames, RemoteEvents, RemoteIterators, RemoteNames,
+      RemoteObjects, RemoteStreams, Services, Shards, Storage, Streams,
+      StringArgs, Strings, StrListArgs, TranslucentNames, UniqueNames,
+      UnixEnvironment, UnixFiles, UnixNames, Write;
+
+   VAR
+      errors: RelatedEvents.Object;
+      basedir: ARRAY 512 OF CHAR;
+      auth: Shards.Lid;
+      lidType: Services.Type;
+      kinds: SET;
+      intensity: INTEGER;
+
+   PROCEDURE CreateTranslucentDir(VAR basedir: ARRAY OF CHAR;
+                                  wdir: ARRAY OF CHAR);
+      VAR
+	 rnode, wnode, tnode: Names.Node;
+	 name: ConstStrings.String;
+   BEGIN
+      IF ~Paths.GetNode(basedir, auth, errors, rnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF ~Paths.GetNode(wdir, auth, errors, wnode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      TranslucentNames.Create(tnode, rnode, wnode, auth, auth, NIL,
+	 TranslucentNames.unsorted);
+      RelatedEvents.Forward(Names.root, errors);
+      IF ~UniqueNames.Insert(Names.root, tnode, auth, name) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      ConstStrings.Extract(basedir, name);
+   END CreateTranslucentDir;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+	 nextbd: ARRAY 512 OF CHAR;
+	 firstbd: BOOLEAN;
+   BEGIN
+      firstbd := TRUE;
+      IF ~UnixEnvironment.String("CDB_BASEDIR", basedir) THEN
+	 basedir := "pub/cdb/oberon";
+      END;
+      Args.Init("[-a auth] {-b basedir} [-D] [-M] {module}");
+      kinds := {};
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a":
+	    Args.FetchString(filename); CreateLid(auth, filename);
+	 | "b":
+	    IF firstbd THEN
+	       Args.FetchString(basedir);
+	       firstbd := FALSE;
+	    ELSE
+	       Args.FetchString(nextbd);
+	       CreateTranslucentDir(basedir, nextbd);
+	    END;
+	 | "D":
+	    INCL(kinds, CompilerSources.definition);
+	 | "M":
+	    INCL(kinds, CompilerSources.module);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      IF (auth = NIL) & UnixEnvironment.String("CDB_AUTH", filename) THEN
+	 CreateLid(auth, filename);
+      END;
+      IF kinds = {} THEN
+	 kinds := {CompilerSources.definition, CompilerSources.module};
+      END;
+   END ProcessArguments;
+
+   PROCEDURE LoadThem;
+      VAR
+	 modname: ARRAY 512 OF CHAR;
+	 src: CompilerSources.Source;
+
+      PROCEDURE Load(modname: ARRAY OF CHAR;
+                     kind: CompilerSources.SourceKind; suffix: ARRAY OF CHAR);
+	 VAR
+	    filename: ARRAY 512 OF CHAR;
+	    path: ARRAY 512 OF CHAR;
+	    in, out: Streams.Stream;
+	    ok: BOOLEAN;
+      BEGIN
+	 IF ~(kind IN kinds) THEN RETURN END;
+	 IF ~CDBSources.Create(src, basedir, modname, kind, auth, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, modname); RETURN
+	 END;
+	 RelatedEvents.Forward(src, errors);
+	 IF ~CompilerSources.Open(src, in) THEN
+	    Conclusions.Conclude(errors, Errors.error, modname); RETURN
+	 END;
+	 RelatedEvents.Forward(in, errors);
+	 COPY(modname, filename);
+	 Strings.Concatenate(filename, suffix);
+	 IF ~UnixFiles.Open(out, filename,
+		  UnixFiles.write+UnixFiles.create, Streams.onebuf,
+		  errors) THEN
+	    Streams.Release(in);
+	    Conclusions.Conclude(errors, Errors.error, ""); RETURN
+	 END;
+	 RelatedEvents.Forward(out, errors);
+	 ok := Streams.Copy(in, out, -1);
+	 Streams.Release(in); Streams.Release(out);
+	 IF ~ok THEN
+	    Conclusions.Conclude(errors, Errors.error, modname); RETURN
+	 END;
+      END Load;
+
+      PROCEDURE LoadModule(modname: ARRAY OF CHAR);
+      BEGIN
+	 Load(modname, CompilerSources.definition, ".od");
+	 Load(modname, CompilerSources.module, ".om");
+      END LoadModule;
+
+      PROCEDURE LoadAllModules;
+	 VAR
+	    dirnode: Names.Node;
+	    it: Iterators.Iterator;
+	    modname: ConstStrings.String;
+	    module: ARRAY 512 OF CHAR;
+	    path: ARRAY 512 OF CHAR;
+      BEGIN
+	 COPY(basedir, path);
+	 Strings.Concatenate(path, Paths.separator);
+	 Strings.Concatenate(path, "modules");
+	 IF ~Paths.GetNode(path, auth, errors, dirnode) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, basedir);
+	 END;
+	 RelatedEvents.Forward(dirnode, errors);
+	 IF ~Names.GetMembers(dirnode, auth, it) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, basedir);
+	 END;
+	 WHILE Iterators.Get(it, modname) DO
+	    ConstStrings.Extract(module, modname);
+	    LoadModule(module);
+	 END;
+      END LoadAllModules;
+
+   BEGIN (* LoadThem *)
+      IF Args.GetArg(modname) THEN
+	 REPEAT
+	    LoadModule(modname);
+	 UNTIL ~Args.GetArg(modname);
+      ELSE
+	 LoadAllModules;
+      END;
+   END LoadThem;
+
+BEGIN
+   intensity := Storage.Intensity(8);
+   Services.SeekType("Shards.Lid", lidType);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   ProcessArguments;
+   LoadThem;
+   Process.TerminateSoftly;
+   IF Conclusions.errors > 0 THEN
+      Process.Exit(Process.indicateFailure);
+   ELSE
+      Process.Exit(Process.indicateSuccess);
+   END;
+END CDBCheckoutSource.

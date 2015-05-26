@@ -1,0 +1,768 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Scan.om,v 1.3 2005/02/09 09:57:43 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Scan.om,v $
+   Revision 1.3  2005/02/09 09:57:43  borchert
+   bug fix: overflows on reading integer values are no longer ignored
+
+   Revision 1.2  1994/07/05 12:51:15  borchert
+   bug fix: ReadInt didn't process lower case hex digits correctly
+
+   Revision 1.1  1994/02/23  07:46:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 6/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Scan;
+
+   (* formatted scanning;
+      Scan.F[0-9] reads from Streams.stdin
+
+      formats are close to those of scanf(3)
+   *)
+
+   IMPORT ASCII, Reals, Sets, StreamDisciplines, Streams, SYS := SYSTEM;
+
+   (* === private part ============================================= *)
+
+   PROCEDURE In(in: Streams.Stream; VAR fmt: ARRAY OF CHAR; nargs: INTEGER;
+		VAR p1,p2,p3,p4,p5,p6,p7,p8,p9: ARRAY OF BYTE);
+      CONST
+	 maxargs = 9;	(* maximal number of arguments *)
+	 fmtcmd = "%";
+	 escape = "\";
+	 setsize = MAX(SET) + 1;
+      VAR
+	 arglen: ARRAY maxargs OF LONGINT;
+	 nextarg: INTEGER;	(* next argument to be taken *)
+	 fmtindex: LONGINT;	(* current position in format string *)
+	 fmtchar: CHAR;		(* last character read by Next() *)
+	 white: Sets.CharSet;	(* white space *)
+	 count: INTEGER;	(* # of items read *)
+	 ch: CHAR;		(* last character read by Read() *)
+	 continue: BOOLEAN;	(* continue main loop? *)
+	 unget: BOOLEAN;	(* if on: return ungetch on next Read() *)
+	 ungetch: CHAR;
+	 eof: BOOLEAN;		(* eof detected? *)
+
+      PROCEDURE Read() : BOOLEAN;
+      BEGIN
+	 IF ~eof THEN
+	    IF unget THEN
+	       ch := ungetch;
+	       unget := FALSE;
+	    ELSE
+	       eof := ~Streams.ReadByte(in, ch);
+	       ungetch := ch;
+	    END;
+	 END;
+	 RETURN ~eof
+      END Read;
+
+      PROCEDURE Unget;
+      BEGIN
+	 IF ~eof THEN
+	    unget := TRUE;
+	 END;
+      END Unget;
+
+      PROCEDURE Next() : BOOLEAN;
+      BEGIN
+	 IF fmtindex < LEN(fmt) THEN
+	    fmtchar := fmt[fmtindex]; INC(fmtindex);
+	    IF fmtchar = 0X THEN
+	       fmtindex := LEN(fmt);
+	       RETURN FALSE
+	    ELSE
+	       RETURN TRUE
+	    END;
+	 ELSE
+	    fmtchar := 0X;
+	    RETURN FALSE
+	 END;
+      END Next;
+
+      PROCEDURE Int(VAR int: LONGINT; base: INTEGER) : BOOLEAN;
+
+	 PROCEDURE ValidDigit(ch: CHAR) : BOOLEAN;
+	 BEGIN
+	    RETURN (ch >= "0") & (ch <= "9") OR
+		   (base = 16) & (CAP(ch) >= "A") & (CAP(ch) <= "F")
+	 END ValidDigit;
+
+      BEGIN
+	 int := 0;
+	 REPEAT
+	    int := int * base;
+	    IF (fmtchar >= "0") & (fmtchar <= "9") THEN
+	       INC(int, ORD(fmtchar) - ORD("0"));
+	    ELSIF (base = 16) &
+		  (CAP(fmtchar) >= "A") & (CAP(fmtchar) <= "F") THEN
+	       INC(int, 10 + ORD(CAP(fmtchar)) - ORD("A"));
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 UNTIL ~Next() OR ~ValidDigit(fmtchar);
+	 RETURN TRUE
+      END Int;
+
+      PROCEDURE Escape() : CHAR;
+	 VAR
+	    hexcharval: LONGINT;   (* \digitsX character *)
+      BEGIN
+	 CASE fmtchar OF
+	 | "0".."9", "A".."F":
+		IF ~Int(hexcharval, 16) THEN
+		   continue := FALSE;
+		   RETURN 0X
+		END;
+		DEC(fmtindex);
+		RETURN CHR(hexcharval)
+	 | "b": RETURN 08X  (* back space *)
+	 | "e": RETURN 1BX  (* escape *)
+	 | "f": RETURN 0CX  (* form feed *)
+	 | "n": RETURN 0AX  (* newline *)
+	 | "q": RETURN "'"
+	 | "Q": RETURN ASCII.quote
+	 | "r": RETURN 0DX  (* carriage return *)
+	 | "t": RETURN 09X  (* horizontal tab *)
+	 | "&": RETURN 07X  (* bell *)
+	 ELSE
+	    RETURN fmtchar
+	 END;
+      END Escape;
+
+      PROCEDURE SetSize;
+	 VAR
+	    index: INTEGER;
+      BEGIN
+	 index := 0;
+	 WHILE index < nargs DO
+	    CASE index OF
+	    | 0: arglen[index] := LEN(p1);
+	    | 1: arglen[index] := LEN(p2);
+	    | 2: arglen[index] := LEN(p3);
+	    | 3: arglen[index] := LEN(p4);
+	    | 4: arglen[index] := LEN(p5);
+	    | 5: arglen[index] := LEN(p6);
+	    | 6: arglen[index] := LEN(p7);
+	    | 7: arglen[index] := LEN(p8);
+	    | 8: arglen[index] := LEN(p9);
+	    END;
+	    INC(index);
+	 END;
+      END SetSize;
+
+      PROCEDURE Access(par: INTEGER; at: LONGINT; val: BYTE);
+      BEGIN
+	 CASE par OF
+	 | 0: p1[at] := val;
+	 | 1: p2[at] := val;
+	 | 2: p3[at] := val;
+	 | 3: p4[at] := val;
+	 | 4: p5[at] := val;
+	 | 5: p6[at] := val;
+	 | 6: p7[at] := val;
+	 | 7: p8[at] := val;
+	 | 8: p9[at] := val;
+	 END;
+      END Access;
+
+      PROCEDURE Convert(from: ARRAY OF BYTE; to: INTEGER);
+	 VAR
+	    i: LONGINT;
+      BEGIN
+	 i := 0;
+	 WHILE i < arglen[to] DO
+	    Access(to, i, from[i]); INC(i);
+	 END;
+      END Convert;
+
+      PROCEDURE Skip() : BOOLEAN;
+      BEGIN
+	 WHILE Read() & Sets.CharIn(white, ch) DO
+	 END;
+	 Unget;
+         RETURN ~eof
+      END Skip;
+
+      PROCEDURE Match(match: CHAR) : BOOLEAN;
+      BEGIN
+	 IF match = " " THEN
+	    RETURN Skip()
+	 ELSE
+	    IF ~Read() THEN
+	       RETURN FALSE
+	    END;
+	    RETURN ch = match
+	 END;
+      END Match;
+
+      PROCEDURE Format() : BOOLEAN;
+
+	 VAR
+	    assign: BOOLEAN;
+	    width: LONGINT;
+
+	 PROCEDURE NextArg(VAR index: INTEGER) : BOOLEAN;
+	 BEGIN
+	    IF nextarg < nargs THEN
+	       index := nextarg; INC(nextarg); RETURN TRUE
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 END NextArg;
+
+	 PROCEDURE Flags() : BOOLEAN;
+	 BEGIN
+	    assign := TRUE;
+	    REPEAT
+	       CASE fmtchar OF
+	       | "*":   assign := FALSE;
+	       ELSE
+		  RETURN TRUE
+	       END;
+	    UNTIL ~Next();
+	    RETURN FALSE (* unexpected end *)
+	 END Flags;
+
+	 PROCEDURE Width() : BOOLEAN;
+	 BEGIN
+	    IF (fmtchar >= "0") & (fmtchar <= "9") THEN
+	       RETURN Int(width, 10)
+	    ELSE
+	       width := 0;
+	       RETURN TRUE
+	    END;
+	 END Width;
+
+	 PROCEDURE Conversion() : BOOLEAN;
+
+	    VAR
+	       scanset: Sets.CharSet;
+
+	    PROCEDURE ReadInt(base: INTEGER) : BOOLEAN;
+	       VAR
+		  val: LONGINT;
+		  int: INTEGER;
+		  short: SHORTINT;
+		  i: INTEGER;
+		  digit: INTEGER;
+		  more: BOOLEAN;
+		  intarg: INTEGER;
+		  anydigits: BOOLEAN;
+		  sign: INTEGER;
+		  lastmaxdigit: INTEGER; (* last digit of MIN/MAX INTEGER *)
+		  maxdivbase: INTEGER; (* MIN/MAX INTEGER DIV base *)
+	    BEGIN
+	       IF ~Skip() THEN RETURN FALSE END;
+	       val := 0;
+	       i := 0;
+	       more := TRUE; anydigits := FALSE;
+	       IF ~Read() THEN RETURN FALSE END;
+	       IF ch = "-" THEN
+		  sign := -1;
+		  IF ~Read() THEN RETURN FALSE END;
+		  INC(i);
+	       ELSE
+		  IF ch = "+" THEN
+		     IF ~Read() THEN RETURN FALSE END;
+		     INC(i);
+		  END;
+		  sign := 1;
+	       END;
+	       IF sign > 0 THEN
+		  lastmaxdigit := MAX(INTEGER) MOD base;
+		  maxdivbase := MAX(INTEGER) DIV base;
+	       ELSE
+		  lastmaxdigit := ABS(MIN(INTEGER) MOD base - base);
+		  maxdivbase := MIN(INTEGER) DIV base + 1;
+	       END;
+	       WHILE ((i < width) OR (width = 0)) &
+		     ((ch >= "0") & (ch <= "7") OR
+		      (base >= 10) & (ch >= "8") & (ch <= "9") OR
+		      (base = 16) & (CAP(ch) >= "A") & (CAP(ch) <= "F")) &
+		      more DO
+		  anydigits := TRUE;
+		  IF (ch >= "0") & (ch <= "9") THEN
+		     digit := ORD(ch) - ORD("0");
+		  ELSE
+		     digit := ORD(CAP(ch)) - ORD("A") + 10;
+		  END;
+		  (* check for overflows *)
+		  IF sign > 0 THEN
+		     IF (val > maxdivbase) OR
+			   (val = maxdivbase) & (digit > lastmaxdigit) THEN
+			RETURN FALSE
+		     END;
+		  ELSE
+		     IF (val < maxdivbase) OR
+			   (val = maxdivbase) & (digit > lastmaxdigit) THEN
+			RETURN FALSE
+		     END;
+		  END;
+		  val := val * base + sign * digit;
+		  IF ~Read() THEN
+		     more := FALSE;
+		  END;
+		  INC(i);
+	       END;
+	       IF more THEN
+		  Unget;
+	       END;
+	       IF ~anydigits THEN
+		  RETURN FALSE
+	       END;
+	       IF assign THEN
+		  IF ~NextArg(intarg) THEN RETURN FALSE END;
+		  IF arglen[intarg] = SYS.SIZE(SHORTINT) THEN
+		     IF (val >= MIN(SHORTINT)) & (val <= MAX(SHORTINT)) THEN
+			short := SHORT(SHORT(val));
+			Convert(short, intarg);
+		     ELSE
+			RETURN FALSE
+		     END;
+		  ELSIF arglen[intarg] = SYS.SIZE(INTEGER) THEN
+		     IF (val >= MIN(INTEGER)) & (val <= MAX(INTEGER)) THEN
+			int := SHORT(val);
+			Convert(int, intarg);
+		     ELSE
+			RETURN FALSE
+		     END;
+		  ELSIF arglen[intarg] = SYS.SIZE(LONGINT) THEN
+		     Convert(val, intarg);
+		  ELSE
+		     RETURN FALSE
+		  END;
+		  INC(count);
+	       END;
+	       RETURN TRUE
+	    END ReadInt;
+
+	    PROCEDURE ReadReal() : BOOLEAN;
+	       CONST
+		  maxdigits = Reals.maxlongdignum;
+	       VAR
+		  realval: LONGREAL; realarg: INTEGER; long: BOOLEAN;
+		  mantissa: LONGREAL;
+		  neg: BOOLEAN;
+		  i: INTEGER;
+		  anydigits: BOOLEAN;
+		  digits: ARRAY maxdigits OF CHAR;
+		  index: INTEGER; (* of digits *)
+		  leading: BOOLEAN;
+		  expseen: BOOLEAN; decptseen: BOOLEAN;
+		  exponent: INTEGER;
+		  exp: INTEGER; expsign: INTEGER;
+		  more: BOOLEAN;
+	    BEGIN
+	       IF ~Skip() OR ~Read() THEN RETURN FALSE END;
+	       i := 0;
+	       IF ch = "-" THEN
+		  neg := TRUE;
+		  IF ~Read() THEN RETURN FALSE END;
+		  INC(i);
+	       ELSE
+		  neg := FALSE;
+		  IF ch = "+" THEN
+		     IF ~Read() THEN RETURN FALSE END;
+		     INC(i);
+		  END;
+	       END;
+	       anydigits := FALSE; index := 0; expseen := FALSE;
+	       decptseen := FALSE; exponent := -1; leading := TRUE;
+	       more := TRUE;
+	       WHILE more & ((i < width) OR (width = 0)) DO
+		  INC(i);
+		  IF (ch >= "0") & (ch <= "9") THEN
+		     IF expseen THEN
+			exp := exp * 10 + ORD(ch) - ORD("0");
+		     ELSE
+			anydigits := TRUE;
+			IF ~leading OR (ch # "0") THEN
+			   IF (index+1 < maxdigits) THEN
+			      digits[index] := ch; INC(index);
+			   END;
+			   IF ~decptseen THEN
+			      INC(exponent);
+			   END;
+			   leading := FALSE;
+			ELSIF decptseen THEN
+			   DEC(exponent);
+			END;
+		     END;
+		  ELSIF ch = "." THEN
+		     IF decptseen THEN
+			more := FALSE;
+		     ELSE
+			decptseen := TRUE;
+		     END;
+		  ELSIF (ch = "e") OR (ch = "E") OR
+			(ch = "d") OR (ch = "D") THEN
+		     IF expseen THEN
+			more := FALSE;
+		     ELSIF anydigits THEN
+			exp := 0;
+			expseen := TRUE;
+			expsign := 1;
+		     ELSE
+			more := FALSE;
+		     END;
+		  ELSIF ((ch = "+") OR (ch = "-")) & expseen & (exp = 0) THEN
+		     IF ch = "-" THEN
+			expsign := -1;
+		     END;
+		  ELSE
+		     more := FALSE;
+		  END;
+		  more := more & Read();
+	       END;
+	       digits[index] := 0X;
+	       IF ~eof THEN
+		  Unget;
+	       END;
+	       IF ~anydigits THEN RETURN FALSE END;
+	       IF assign THEN
+		  IF ~NextArg(realarg) THEN RETURN FALSE END;
+		  IF arglen[realarg] = SYS.SIZE(REAL) THEN
+		     long := FALSE;
+		  ELSIF arglen[realarg] = SYS.SIZE(LONGREAL) THEN
+		     long := TRUE;
+		  ELSE
+		     RETURN FALSE
+		  END;
+		  IF index = 0 THEN
+		     (* no non-zero digits *)
+		     realval := 0;
+		  ELSE
+		     Reals.Convert(digits, 10, neg, mantissa);
+		     IF expseen THEN
+			INC(exponent, expsign * exp);
+		     END;
+		     realval := mantissa * Reals.Power(10, exponent);
+		  END;
+		  IF long THEN
+		     Convert(realval, realarg);
+		  ELSE
+		     Convert(SHORT(realval), realarg);
+		  END;
+		  INC(count);
+	       END;
+	       RETURN TRUE
+	    END ReadReal;
+
+	    PROCEDURE ReadString(withscanset: BOOLEAN) : BOOLEAN;
+	       VAR
+		  i: INTEGER;
+		  index: INTEGER;
+		  more: BOOLEAN;
+
+	       PROCEDURE Get() : BOOLEAN;
+	       BEGIN
+		  IF ~Read() THEN RETURN FALSE END;
+		  IF Sets.CharIn(scanset, ch) THEN
+		     RETURN TRUE
+		  ELSE
+		     Unget;
+		     RETURN FALSE
+		  END;
+	       END Get;
+
+	    BEGIN
+	       IF assign & ~NextArg(index) THEN RETURN FALSE END;
+	       IF ~withscanset & ~Skip() THEN RETURN FALSE END;
+	       IF ~withscanset THEN
+		  scanset := white; Sets.Complement(scanset);
+	       END;
+	       i := 0;
+	       WHILE (~assign OR (i+1 < arglen[index])) &
+		     ((i < width) OR (width = 0)) & Get() DO
+		  IF assign THEN
+		     Access(index, i, ch);
+		  END;
+		  INC(i);
+	       END;
+	       IF assign THEN
+		  Access(index, i, 0X);
+		  IF (i > 0) OR ~eof THEN
+		     INC(count);
+		  END;
+	       END;
+	       RETURN TRUE
+	    END ReadString;
+
+	    PROCEDURE ReadCharSet(VAR charset: Sets.CharSet) : BOOLEAN;
+	       VAR
+		  first: BOOLEAN;
+		  complement: BOOLEAN;
+		  low, high: CHAR;
+
+	       PROCEDURE Range(VAR low, high: CHAR) : BOOLEAN;
+	       BEGIN
+		  IF fmtchar # "]" THEN
+		     IF (fmtchar = "\") & Next() THEN
+			fmtchar := Escape();
+		     END;
+		     low := fmtchar; high := fmtchar;
+		     IF Next() & (fmtchar = "-") & Next() THEN
+			IF (fmtchar = "\") & Next() THEN
+			   fmtchar := Escape();
+			END;
+			high := fmtchar;
+			RETURN Next()
+		     END;
+		     RETURN TRUE
+		  ELSE
+		     RETURN FALSE
+		  END;
+	       END Range;
+
+	    BEGIN
+	       (* fmtchar = "[" *)
+	       Sets.InitSet(charset);
+	       IF ~Next() THEN RETURN FALSE END;
+	       IF fmtchar = "^" THEN
+		  complement := TRUE;
+		  IF ~Next() THEN RETURN FALSE END;
+	       ELSE
+		  complement := FALSE;
+	       END;
+	       IF fmtchar = "]" THEN
+		  Sets.InclChar(charset, fmtchar);
+		  IF ~Next() THEN RETURN FALSE END;
+	       END;
+	       WHILE Range(low, high) DO
+		  IF low <= high THEN
+		     WHILE low <= high DO
+			Sets.InclChar(charset, low);
+			low := CHR(ORD(low)+1);
+		     END;
+		  ELSE
+		     Sets.InclChar(charset, low);
+		     Sets.InclChar(charset, "-");
+		     Sets.InclChar(charset, high);
+		  END;
+	       END;
+	       IF complement THEN
+		  Sets.Complement(charset);
+	       END;
+	       RETURN fmtchar = "]"
+	    END ReadCharSet;
+
+	    PROCEDURE ReadChar() : BOOLEAN;
+	       VAR
+		  charg: INTEGER;
+	    BEGIN
+	       IF ~Read() THEN RETURN FALSE END;
+	       IF assign THEN
+		  IF ~NextArg(charg) THEN RETURN FALSE END;
+		  IF arglen[charg] = SYS.SIZE(CHAR) THEN
+		     Access(charg, 0, ch);
+		  ELSE
+		     RETURN FALSE
+		  END;
+		  INC(count);
+	       END;
+	       RETURN TRUE
+	    END ReadChar;
+
+	 BEGIN
+	    CASE fmtchar OF
+	    | "c": RETURN ReadChar()
+	    | "d": RETURN ReadInt(10)
+	    | "e",
+	      "f",
+	      "g": RETURN ReadReal()
+	    | "o": RETURN ReadInt(8)
+	    | "s": RETURN ReadString(FALSE)
+	    | "x": RETURN ReadInt(16);
+	    | "[": RETURN ReadCharSet(scanset) & ReadString(TRUE)
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 END Conversion;
+
+      BEGIN (* Format *)
+	 IF ~Next() THEN RETURN FALSE END;
+	 IF fmtchar = fmtcmd THEN RETURN Match(fmtcmd) END;
+	 RETURN Flags() & Width() & Conversion()
+      END Format;
+
+   BEGIN (* In *)
+      unget := FALSE;
+      SetSize;
+      count := 0;
+      nextarg := 0;
+      fmtindex := 0; eof := FALSE;
+      StreamDisciplines.GetWhiteSpace(in, white);
+      continue := TRUE;
+      WHILE continue & Next() DO
+	 IF fmtchar = fmtcmd THEN
+	    continue := Format();
+	 ELSIF (fmtchar = escape) & Next() THEN
+	    continue := Match(Escape());
+	 ELSE
+	    continue := Match(fmtchar);
+	 END;
+      END;
+      IF nextarg < nargs THEN
+	 (* Error(TooManyArgs); *)
+      END;
+      in.count := count;
+      IF unget & ~Streams.Back(in) THEN END;
+   END In;
+
+   (* === public part ============================================== *)
+
+   PROCEDURE F(fmt: ARRAY OF CHAR);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 0,  x,x,x,x,x,x,x,x,x);
+   END F;
+
+   PROCEDURE F1(fmt: ARRAY OF CHAR; VAR p1: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 1, p1, x,x,x,x,x,x,x,x);
+   END F1;
+
+   PROCEDURE F2(fmt: ARRAY OF CHAR; VAR p1, p2: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 2, p1,p2, x,x,x,x,x,x,x);
+   END F2;
+
+   PROCEDURE F3(fmt: ARRAY OF CHAR; VAR p1, p2, p3: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 3, p1,p2,p3, x,x,x,x,x,x);
+   END F3;
+
+   PROCEDURE F4(fmt: ARRAY OF CHAR; VAR p1, p2, p3, p4: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 4, p1,p2,p3,p4, x,x,x,x,x);
+   END F4;
+
+   PROCEDURE F5(fmt: ARRAY OF CHAR; VAR p1, p2, p3, p4, p5: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 5, p1,p2,p3,p4,p5, x,x,x,x);
+   END F5;
+
+   PROCEDURE F6(fmt: ARRAY OF CHAR; VAR p1, p2, p3, p4, p5, p6: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 6, p1,p2,p3,p4,p5,p6, x,x,x);
+   END F6;
+
+   PROCEDURE F7(fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 7, p1,p2,p3,p4,p5,p6,p7, x,x);
+   END F7;
+
+   PROCEDURE F8(fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7, p8: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(Streams.stdin, fmt, 8, p1,p2,p3,p4,p5,p6,p7,p8, x);
+   END F8;
+
+   PROCEDURE F9(fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7, p8, p9: ARRAY OF BYTE);
+   BEGIN
+      In(Streams.stdin, fmt, 9, p1,p2,p3,p4,p5,p6,p7,p8,p9);
+   END F9;
+
+
+   PROCEDURE S(in: Streams.Stream; fmt: ARRAY OF CHAR);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 0, x,x,x,x,x,x,x,x,x);
+   END S;
+
+   PROCEDURE S1(in: Streams.Stream; fmt: ARRAY OF CHAR; VAR p1: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 1, p1, x,x,x,x,x,x,x,x);
+   END S1;
+
+   PROCEDURE S2(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 2, p1,p2, x,x,x,x,x,x,x);
+   END S2;
+
+   PROCEDURE S3(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 3, p1,p2,p3, x,x,x,x,x,x);
+   END S3;
+
+   PROCEDURE S4(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 4, p1,p2,p3,p4, x,x,x,x,x);
+   END S4;
+
+   PROCEDURE S5(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 5, p1,p2,p3,p4,p5, x,x,x,x);
+   END S5;
+
+   PROCEDURE S6(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 6, p1,p2,p3,p4,p5,p6, x,x,x);
+   END S6;
+
+   PROCEDURE S7(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 7, p1,p2,p3,p4,p5,p6,p7, x,x);
+   END S7;
+
+   PROCEDURE S8(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7, p8: ARRAY OF BYTE);
+      VAR x: INTEGER;
+   BEGIN
+      In(in, fmt, 8, p1,p2,p3,p4,p5,p6,p7,p8, x);
+   END S8;
+
+   PROCEDURE S9(in: Streams.Stream; fmt: ARRAY OF CHAR;
+		VAR p1, p2, p3, p4, p5, p6, p7, p8, p9: ARRAY OF BYTE);
+   BEGIN
+      In(in, fmt, 9, p1,p2,p3,p4,p5,p6,p7,p8,p9);
+   END S9;
+
+END Scan.

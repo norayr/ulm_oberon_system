@@ -1,0 +1,132 @@
+
+
+
+SysStorage(3)          Ulm's Oberon System          SysStorage(3)
+
+
+NNAAMMEE
+       SysStorage  -  storage allocator with copying garbage col­
+       lector
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_y_s_S_t_o_r_a_g_e is a possible implementation of  the  interface
+       of _S_t_o_r_a_g_e_(_3_).
+
+       Additionally,  this  version also implements the _U_n_t_a_g_g_e_d_­
+       _S_t_o_r_a_g_e_(_3_) interface.
+
+       The current implementation  utilizes  _S_y_s_M_e_m_o_r_y_._M_a_p  which
+       allows  to  allocate  memory at arbitrary memory locations
+       and _M_e_m_o_r_y_(_3_) which manages  the  address  space.   During
+       startup,  _S_y_s_S_t_o_r_a_g_e  initializes _M_e_m_o_r_y_(_3_) and calls _M_e_m_­
+       _o_r_y_._S_e_t_P_a_g_e_S_i_z_e.  Further, _S_y_s_S_t_o_r_a_g_e  examines  the  seg­
+       ments of _S_y_s_S_e_g_m_e_n_t_s_(_3_) and registers them by calling _M_e_m_­
+       _o_r_y_._R_e_s_e_r_v_e_R_e_g_i_o_n.
+
+       _S_y_s_S_t_o_r_a_g_e supports growing  stacks  and  redzone  protec­
+       tions.  For this to work, it defines a handler for _S_y_s_S_i_g_­
+       _n_a_l_s_._S_I_G_S_E_G_V which checks all  memory  access  faults  for
+       being stack extensions.  The event component _f_i_x_e_d will be
+       set to TTRRUUEE if the address which caused the  failure  will
+       be valid afterwards.
+
+       A copying garbage collector is available. During a garbage
+       collection, all  global  data  and  coroutine  stacks  are
+       scanned  for pointers refering to dynamic storage objects.
+       All objects within reach are  copied  into  a  new  memory
+       location  and  the  corresponding  pointer values are cor­
+       rected.
+
+       When very large objects are requested  (e.g.  object  size
+       greater than the system's page size), _S_y_s_S_t_o_r_a_g_e checks if
+       it is advantageous to treat them in a  special  way  which
+       makes  it possible that such objects need not be copied by
+       the garbage collector and the amount of memory needed  for
+       running a garbage collection is reduced.
+
+       For  best  address  space  utilization  in  case  of large
+       objects, it is recommended  to  request  sizes  which  are
+       (nearly) a power of 2.
+
+       After  a  garbage  collection,  the old memory regions are
+       deallocated   using   _M_e_m_o_r_y_._R_e_l_e_a_s_e_R_e_g_i_o_n   and   _S_y_s_M_e_m_­
+       _o_r_y_._U_n_m_a_p.  _S_y_s_S_t_o_r_a_g_e also looks for coroutines which can
+       not be activated and is responsible for  the  deallocation
+       of  their  stacks.  In that case, _S_y_s_I_n_t_e_r_r_u_p_t_s_._i_n_t_e_r_r_u_p_t_s
+       is updated.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _S_y_s_S_t_o_r_a_g_e raises _S_t_o_r_a_g_e_._o_u_t_O_f_M_e_m_o_r_y short before running
+       out of memory.
+
+
+
+Release 0.5        Last change: 9 November 1995                 1
+
+
+
+
+
+SysStorage(3)          Ulm's Oberon System          SysStorage(3)
+
+
+       _P_r_o_c_e_s_s_._e_n_d_O_f_G_a_r_b_a_g_e_C_o_l_l_e_c_t_i_o_n is guaranteed to be raised,
+       if _P_r_o_c_e_s_s_._s_t_a_r_t_O_f_G_a_r_b_a_g_e_C_o_l_l_e_c_t_i_o_n has been  before,  but
+       it  may  occur  that  _P_r_o_c_e_s_s_._s_t_a_r_t_O_f_G_a_r_b_a_g_e_C_o_l_l_e_c_t_i_o_n  is
+       raised and and no garbage  collection  can  be  performed.
+       This happens when _S_y_s_I_n_t_e_r_r_u_p_t_s_._i_n_t_e_r_r_u_p_t_s is not 00, or if
+       there is not enough storage left to run a  collection.   A
+       garbage collection is also rejected, if the current prior­
+       ity is higher  than  _P_r_i_o_r_i_t_i_e_s_._s_t_o_r_a_g_e  (_P_r_o_c_e_s_s_._s_t_a_r_t_O_f_­
+       _G_a_r_b_a_g_e_C_o_l_l_e_c_t_i_o_n is not raised).
+
+       This  implementation  does not use _C_o_r_o_u_t_i_n_e_s_._t_a_g to iden­
+       tify coroutines.
+
+SSEEEE AALLSSOO
+       _C_o_r_o_u_t_i_n_e_s_(_3_)        exports  _C_o_r_o_u_t_i_n_e_s_._t_a_g  which  marks
+                            coroutines
+       _M_e_m_o_r_y_(_3_)            address space management
+       _P_r_i_o_r_i_t_i_e_s_(_3_)        event priority system
+       _S_t_o_r_a_g_e_(_3_)           storage  allocating interface for the
+                            compiler
+       _S_y_s_I_n_t_e_r_r_u_p_t_s_(_3_)     bookkeeping about interrupted  corou­
+                            tines
+       _S_y_s_M_e_m_o_r_y_(_3_)         Oberon  interface  to _m_m_a_p_(_2_) related
+                            calls
+       _S_y_s_S_e_g_m_e_n_t_s_(_3_)       list of reserved memory regions
+       _S_y_s_S_i_g_n_a_l_s_(_3_)        event manager of _S_y_s_S_i_g_n_a_l_s_._S_I_G_S_E_G_V
+       _U_n_t_a_g_g_e_d_S_t_o_r_a_g_e_(_3_)   interface for storage not affected by
+                            garbage collection
+       Andreas Borchert, _R_e_p_o_r_t _o_f _U_l_m_'_s _O_b_e_r_o_n _C_o_m_p_i_l_e_r, Univer­
+       sity of Ulm, SAI
+
+FFIILLEESS
+       _/_d_e_v_/_z_e_r_o        is used  as  memory  object  for  _S_y_s_M_e_m_­
+                        _o_r_y_._M_a_p.   _S_y_s_S_t_o_r_a_g_e fails completely if
+                        this file cannot be opened.
+
+AADDAAPPTTAATTIIOONN
+       Hansjörg Nägele, University of Ulm
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5        Last change: 9 November 1995                 2
+
+

@@ -1,0 +1,322 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH UnixPipes 3 "Last change: 4 February 2005" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+UnixPipes \- initiate I/O to/from a process
+.SH SYNOPSIS
+.Pg
+CONST read = UnixFiles.read; write = UnixFiles.write;
+.sp 0.7
+TYPE Mode = UnixFiles.Mode;
+TYPE Pipe = POINTER TO PipeRec;
+TYPE PipeRec = 
+   RECORD
+      (Streams.StreamRec)
+      (* read-only components *)
+      pid: SysProcess.ProcessId; (* process id of shell *)
+      status: SysProcess.Status; (* set after close *)
+      interrupted: BOOLEAN; (* EINTR occurred? *)
+      (* read/write component *)
+      retry: BOOLEAN; (* retry on interrupts? *)
+   END;
+.sp 0.7
+TYPE Child = POINTER TO ChildRec;
+TYPE ChildRec = RECORD (Disciplines.DisciplineRec) END;
+.sp 0.7
+PROCEDURE Open(VAR pipe: Streams.Stream;
+               command: ARRAY OF CHAR; mode: Mode; bufmode: Streams.BufMode;
+               errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE Spawn(VAR pipe: Streams.Stream;
+                readfd, writefd, childfd: SysIO.File;
+                pathname: ARRAY OF CHAR;
+                argv: SysArgs.Arguments;
+                mode: Mode; bufmode: Streams.BufMode;
+                errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE Spawn3(command: ARRAY OF CHAR;
+                 bufmode: Streams.BufMode; (* of stdin *)
+                 VAR stdin, stdout, stderr: Streams.Stream;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE CreateChild(VAR child: Child);
+PROCEDURE AddPipeline(child: Child;
+                      readfd, writefd, childfd: SysIO.File;
+                      mode: Mode; bufmode: Streams.BufMode;
+                      VAR pipe: Streams.Stream);
+PROCEDURE SpawnChild(child: Child;
+                     pathname: ARRAY OF CHAR;
+                     argv: SysArgs.Arguments;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I Open
+creates a pipe between the calling process and the command to
+be executed.
+.I command
+is a 0X-terminated string containing a shell command line.
+.I mode
+specifies the I/O mode, either
+.I read
+for reading or
+.I write
+for writing.
+The buffering mode (see \fIStreams(3)\fP) is given by \fIbufmode\fP;
+\fIStreams.onebuf\fP should be taken for pipes opened in \fIread\fP
+mode and by default for \fIwrite\fP modes,
+\fIStreams.linebuf\fP may be appropriate for logs and other
+line-oriented pipes in \fIwrite\fP mode.
+The resulting stream pointer will be returned in
+.IR pipe .
+The command interpreter is the system's default shell,
+which on UNIX systems most likely will be "/bin/sh".
+.PP
+.I Spawn
+offers a more flexible interface that requires the caller to setup the
+pipe (using, for example, \fISysIO.Pipe\fP).  \fIchildfd\fP will be
+setup (using \fISysIO.Dup2\fP) by the child as the file descriptor
+that is connected to the pipe.  This is usually 0 or 1 (depending
+on \fImode\fP) but sometimes other file descriptors are to be used
+(3 for the \fIcheckpassword\fP interface by Dan J. Bernstein,
+for example). \fIpathname\fP and \fIargv\fP will be passed to
+\fISysProcess.Exec\fP. \fIUnixArgs(3)\fP is recommended to build an
+argument list. This allows to circumvent the interpretation of a command
+line by the shell and thereby avoiding the security threat of malicious
+shell meta characters.
+.PP
+An even more general interface is provided by \fICreateChild\fP,
+\fIAddPipeline\fP, and \fISpawnChild\fP as these procedures allow to set up
+an arbitrary number of pipelines between the parent process and
+the to be created child process. \fICreateChild\fP simply creates a
+child reference. \fIAddPipeline\fP adds another pipeline with
+parameters that are similar to those of \fISpawn\fP. \fIAddPipeline\fP
+must be called at least once. \fISpawnChild\fP actually forks off
+the child. All pipelines returned by \fIAddPipeline\fP are of
+type \fIPipe\fP and hence allow to retrieve the termination status
+of the child after the stream is closed.
+.PP
+.I Spawn3
+invokes \fIcommand\fP and sets up three pipelines for standard
+input, standard output, and standard error of the child process.
+Note that just \fIstdin\fP will be of type \fIPipe\fP as
+\fIstdout\fP and \fIstderr\fP come from \fIPipeReaders(3)\fP
+to avoid deadlocks.
+.PP
+Note that \fIUnixPipes\fP defines an empty handler
+for \fISysSignals.PIPE\fP.
+.SH DIAGNOSTICS
+.IR Open ,
+.IR Spawn ,
+.IR Spawn3 ,
+and
+.I SpawnChild
+return
+.B FALSE
+and relate their error events to \fIerrors\fP in case of failures.
+.LP
+Errors during the access of the stream are converted
+into events of \fIRelatedEvents(3)\fP.
+By default, these events are being queued.
+.LP
+.I UnixPipes
+uses some interruptible system calls.
+By default,
+operations are tried again in case of interruptions.
+Optionally,
+the \fIretry\fP field may be set to \fBFALSE\fP.
+In this case interruptions may lead to error events.
+The \fIinterrupt\fP field indicates whether the last
+operation was interrupted or not.
+.SH "SEE ALSO"
+.IR PipeReaders(3) ,
+.IR Process(3) ,
+.IR RelatedEvents(3) ,
+.IR Streams(3) ,
+.IR SysIO(3) ,
+.IR SysSignals(3) ,
+.IR UnixArgs(3)
+.\" ---------------------------------------------------------------------------
+.\" $Id: UnixPipes.3,v 1.14 2005/02/04 21:07:53 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: UnixPipes.3,v $
+.\" Revision 1.14  2005/02/04 21:07:53  borchert
+.\" support of multiple pipelines added
+.\"
+.\" Revision 1.13  2005/02/03 15:16:26  borchert
+.\" Process.{ProcessId,Status} changed to SysProcess.{ProcessId,Status}
+.\"
+.\" Revision 1.12  2003/07/10 09:28:46  borchert
+.\" typos fixed
+.\"
+.\" Revision 1.11  2001/04/30 08:22:14  borchert
+.\" Open and Spawn extended with bufmode parameter
+.\"
+.\" Revision 1.10  2000/11/12 22:36:44  borchert
+.\" Spawn added
+.\"
+.\" Revision 1.9  1997/10/04  16:54:46  martin
+.\" Open does not use environment parameter SHELL.  Statement fixed.
+.\"
+.\" Revision 1.8  1996/09/16  15:41:14  borchert
+.\" - SysSignals.PIPE is handled by UnixPipes (by an empty handler)
+.\" - some minor typos corrected
+.\"
+.\" Revision 1.7  1992/03/24  09:23:19  borchert
+.\" Pipes renamed to UnixPipes
+.\"
+.\" Revision 1.6  1992/02/18  07:44:33  borchert
+.\" Files renamed to UnixFiles
+.\"
+.\" Revision 1.5  1992/01/15  07:26:23  borchert
+.\" retry & interrupted added to Pipes.Pipe
+.\"
+.\" Revision 1.4  1991/11/22  09:16:46  borchert
+.\" errors parameter added
+.\"
+.\" Revision 1.3  1991/11/18  08:12:23  borchert
+.\" new event handling (RelatedEvents)
+.\" BUGS: Signals.PIPE problem added
+.\"
+.\" Revision 1.2  1991/06/19  16:07:27  borchert
+.\" pipe is now of type Streams.Stream
+.\"
+.\" Revision 1.1  90/08/31  17:02:16  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

@@ -1,0 +1,95 @@
+PathConditions(3)             Ulm's Oberon System            PathConditions(3)
+
+
+
+[1mNAME[0m
+       PathConditions - wait until a path of [4mNames(3)[24m becomes valid
+
+[1mSYNOPSIS[0m
+       TYPE Condition = POINTER TO ConditionRec;
+       TYPE ConditionRec = RECORD (Conditions.ConditionRec) END;
+
+       CONST noRoot = 0; invalidPath = 1; serverFailure = 2;
+       CONST accessFailed = 3; termination = 4;
+       CONST errors = 5;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Create(VAR cond: Condition; path: ARRAY OF CHAR;
+                        root: Names.Node; auth: Shards.Lid);
+       PROCEDURE CreateCS(VAR cond: Condition; path: ConstStrings.String;
+                          root: Names.Node; auth: Shards.Lid);
+       PROCEDURE GetNode(cond: Condition; VAR node: Names.Node;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mPathConditions[24m  offers  conditions  which allow to wait until a path of
+       [4mNames(3)[24m becomes valid.  As in [4mPaths(3)[24m, a path is a string whose  com-
+       ponents are separated by [4mPaths.separator[24m (a slash).
+
+       [4mCreate[24m  and  [4mCreateCS[24m  create  a condition which evaluates to [1mTRUE [22mwhen
+       [4mpath[24m (taken relatively to [4mroot[24m) becomes accessible  or  a  fatal  error
+       occurs (see below).  The authorization lid [4mauth[24m is passed to all opera-
+       tions of [4mNames(3)[24m, namely [4mNames.GetNode[24m and  [4mNames.TakeInterest[24m.   Note
+       that  this  condition cannot be recycled, i.e. if it once becomes [1mTRUE[22m,
+       it remains [1mTRUE[22m.
+
+       Please note that all conditions by [4mPathConditions[24m are  aborted  if  the
+       process terminates, i.e. if [4mProcess.termination[24m or [4mProcess.softTermina-[0m
+       [4mtion[24m is raised.  This allows the tasks associated with  each  condition
+       to terminate as well.
+
+       [4mGetNode[24m  waits  for  [4mcond[24m  becoming  [1mTRUE  [22m(if  this  has not been done
+       already), and returns on success the node, or, in case of fatal errors,
+       relates all error events to [4merrors[24m.
+
+[1mDIAGNOSTICS[0m
+       If  [4mPathConditions[24m  is  enforced  to abort a condition, it forwards the
+       error events of [4mNames(3)[24m and generates always an  error  event  of  its
+       own:
+       [4mnoRoot[24m          The  [4mroot[24m parameter of [4mCreate[24m or [4mCreateCS[24m is terminated
+                       (see [4mResources(3)[24m).
+       [4minvalidPath[24m     One of the intermediate components  of  [4mpath[24m  does  not
+                       have the [4mNames.domainCap[24m capability.
+       [4mserverFailure[24m   The [4mNames(3)[24m implementation of one of the nodes of [4mpath[0m
+                       did not return error events of [4mNames(3)[24m.  This makes it
+                       impossible  to  distinguish  between [4mNames.nodeNotFound[0m
+                       and other access failures.
+       [4maccessFailed[24m    [4mPathConditions[24m was unable to access  one  of  the  path
+                       components  --  probably due to insufficient authoriza-
+                       tion.
+       [4mtermination[24m     The condition is aborted because [4mProcess.termination[24m or
+                       [4mProcess.softTermination[24m is raised.
+       Note  that  error  events of [4mPathConditions[24m include the path if printed
+       with [4mErrors.Write[24m or [4mConclusions.Conclude[24m.
+
+[1mSEE ALSO[0m
+       [4mTasks(3)[24m           synchronisation primitives
+       [4mNames(3)[24m           abstraction for name hierarchies
+       [4mPaths(3)[24m           accessing objects by paths
+       [4mProcess(3)[24m         process termination events
+       [4mRelatedEvents(3)[24m   error handling
+
+[1mBUGS[0m
+       [4mPathConditions[24m shares the path component separator  with  [4mPaths(3)[24m  but
+       not  the  interpretation that pairs of separators are considered as one
+       separator which is part of the name of a component.  Instead, sequences
+       of separators are taken as one separator.
+
+       [4mPathConditions[24m expects from all implementations of [4mNames(3)[24m with domain
+       capability that terminated objects (see [4mResources(3)[24m) vanish  automati-
+       cally  together  with  the  correct  generation  of  member  events  if
+       requested to do so.  Otherwise, the conditions  of  [4mPathConditions[24m  may
+       hang longer than expected.
+
+
+
+Release 0.5               Last change: 21 August 2006        PathConditions(3)

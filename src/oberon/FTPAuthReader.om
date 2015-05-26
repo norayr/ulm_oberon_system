@@ -1,0 +1,152 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPAuthRead.om,v 1.1 2001/05/08 07:31:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPAuthRead.om,v $
+   Revision 1.1  2001/05/08 07:31:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPAuthReader;
+
+   IMPORT ConstStrings, Disciplines, FTPCommands, FTPResponses, FTPSessions,
+      Messages, Strings;
+
+   TYPE
+      AuthHandlerProc =
+	 PROCEDURE (session: FTPSessions.Session;
+		    VAR message: ARRAY OF CHAR) : BOOLEAN;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    name, password: ARRAY 64 OF CHAR;
+	    handler: AuthHandlerProc;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   (* === FTPSessions handler ========================================== *)
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+      VAR
+	 session: FTPSessions.Session;
+	 sdisc: SessionDiscipline;
+	 command: ConstStrings.String;
+	 response: FTPResponses.Response;
+	 msg: ARRAY 128 OF CHAR;
+   BEGIN (* Handler *)
+      IF ~(message IS FTPSessions.Message) THEN RETURN END;
+      session := object(FTPSessions.Session);
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN RETURN END;
+      WITH message: FTPSessions.Message DO
+	 command := message.request.command;
+	 IF (command # FTPCommands.user) &
+	       (command # FTPCommands.pass) &
+	       (command # FTPCommands.acct) THEN
+	    RETURN
+	 END;
+	 session.authorized := FALSE;
+	 IF message.request.param = NIL THEN
+	    FTPResponses.Create(response, 500,
+	       "Parameter missing. Please login with name and password.");
+	 ELSIF command = FTPCommands.user THEN
+	    Strings.Read(sdisc.name, message.request.param);
+	    FTPResponses.Create(response, 331, "User name accepted.");
+	    sdisc.password := ""; session.authorized := FALSE;
+	 ELSIF sdisc.name = "" THEN
+	    FTPResponses.Create(response, 503,
+	       "Please provide a user name first.");
+	 ELSIF command = FTPCommands.pass THEN
+	    Strings.Read(sdisc.password, message.request.param);
+	    IF sdisc.handler(session, msg) THEN
+	       FTPResponses.Create(response, 230, msg);
+	       session.authorized := TRUE;
+	    ELSE
+	       FTPResponses.Create(response, 530, msg);
+	       session.authorized := FALSE;
+	    END;
+	 ELSE (* command = FTPCommands.acct *)
+	    FTPResponses.Create(response, 500,
+	       "ACCT command was not requested.");
+	 END;
+	 IF response # NIL THEN message.response := response END;
+      END;
+   END Handler;
+
+   (* === module initialization ======================================= *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      sdid := Disciplines.Unique();
+   END InitModule;
+
+   (* === exported procedures ========================================= *)
+
+   PROCEDURE AddHandler(session: FTPSessions.Session;
+			handler: AuthHandlerProc);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      NEW(sdisc); sdisc.id := sdid;
+      sdisc.name := ""; sdisc.password := ""; sdisc.handler := handler;
+      Disciplines.Add(session, sdisc);
+      Messages.InstallHandler(session, Handler);
+   END AddHandler;
+
+   PROCEDURE Authorized(session: FTPSessions.Session) : BOOLEAN;
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN RETURN FALSE END;
+      RETURN (sdisc.name # "") & (sdisc.password # "")
+   END Authorized;
+
+   PROCEDURE GetUserName(session: FTPSessions.Session;
+			 VAR name: ARRAY OF CHAR);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 COPY(sdisc.name, name);
+      ELSE
+	 name[0] := 0X;
+      END;
+   END GetUserName;
+
+   PROCEDURE GetPassword(session: FTPSessions.Session;
+			 VAR password: ARRAY OF CHAR);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 COPY(sdisc.password, password);
+      ELSE
+	 password[0] := 0X;
+      END;
+   END GetPassword;
+
+BEGIN
+   InitModule;
+END FTPAuthReader.

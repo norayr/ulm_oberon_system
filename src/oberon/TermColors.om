@@ -1,0 +1,167 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermColors;
+
+   (* support of a simple color scheme that follows the ANSI standard *)
+
+   IMPORT Disciplines, Objects, Streams;
+
+   CONST
+      (* standard set of 8 colors *)
+      black = 0;
+      red = 1;
+      green = 2;
+      yellow = 3;
+      blue = 4;
+      magenta = 5;
+      cyan = 6;
+      white = 7;
+      colors = 8;
+   TYPE
+      Color = SHORTINT; (* 0..colors-1 *)
+      ColorName = ARRAY 8 OF CHAR;
+   VAR
+      name: ARRAY colors OF ColorName;
+
+   TYPE
+      SetPairProc =
+	 PROCEDURE (s: Streams.Stream; foreground, background: Color);
+      SetColorProc =
+	 PROCEDURE (s: Streams.Stream; color: Color);
+      ResetProc = PROCEDURE (s: Streams.Stream);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    set: SetPairProc;
+	    setForeground: SetColorProc;
+	    setBackground: SetColorProc;
+	    reset: ResetProc;
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    if: Interface;
+	    fgcolorKnown, bgcolorKnown: BOOLEAN;
+	    fgcolor, bgcolor: Color;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   PROCEDURE Init(s: Streams.Stream; if: Interface);
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      ASSERT((if # NIL) &
+	 (if.set # NIL) &
+	 (if.setForeground # NIL) & (if.setBackground # NIL) &
+	 (if.reset # NIL));
+      NEW(sd); sd.id := sdid;
+      sd.if := if; sd.fgcolorKnown := FALSE; sd.bgcolorKnown := FALSE;
+      Disciplines.Add(s, sd);
+   END Init;
+
+   PROCEDURE Supported(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      RETURN Disciplines.Seek(s, sdid, sd)
+   END Supported;
+
+   PROCEDURE Set(s: Streams.Stream; foreground, background: Color);
+      (* switch to the given foreground/background pair *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(s, sdid, sd) THEN
+	 sd.if.set(s, foreground, background);
+	 sd.fgcolor := foreground; sd.fgcolorKnown := TRUE;
+	 sd.bgcolor := background; sd.bgcolorKnown := TRUE;
+      END;
+   END Set;
+
+   PROCEDURE SetForeground(s: Streams.Stream; foreground: Color);
+      (* set foreground color; attempt to keep background color *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(s, sdid, sd) THEN
+	 sd.if.setForeground(s, foreground);
+	 sd.fgcolor := foreground; sd.fgcolorKnown := TRUE;
+      END;
+   END SetForeground;
+
+   PROCEDURE SetBackground(s: Streams.Stream; background: Color);
+      (* set background color; attempt to keep foreground color *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(s, sdid, sd) THEN
+	 sd.if.setBackground(s, background);
+	 sd.bgcolor := background; sd.bgcolorKnown := TRUE;
+      END;
+   END SetBackground;
+
+   PROCEDURE Get(s: Streams.Stream;
+                 VAR foreground, background: Color) : BOOLEAN;
+      (* returns last foreground/background pair passed to Set;
+	 returns FALSE if Set has not been invoked yet or after a Reset
+      *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(s, sdid, sd) THEN RETURN FALSE END;
+      IF ~sd.fgcolorKnown OR ~sd.bgcolorKnown THEN RETURN FALSE END;
+      foreground := sd.fgcolor;
+      background := sd.bgcolor;
+      RETURN TRUE
+   END Get;
+
+   PROCEDURE Reset(s: Streams.Stream);
+      (* return to default colors *)
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(s, sdid, sd) THEN
+	 sd.if.reset(s);
+	 sd.fgcolorKnown := FALSE; sd.bgcolorKnown := FALSE;
+      END;
+   END Reset;
+
+BEGIN
+   sdid := Disciplines.Unique();
+   name[black] := "black";
+   name[red] := "red";
+   name[green] := "green";
+   name[yellow] := "yellow";
+   name[blue] := "blue";
+   name[magenta] := "magenta";
+   name[cyan] := "cyan";
+   name[white] := "white";
+END TermColors.

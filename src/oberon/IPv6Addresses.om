@@ -1,0 +1,467 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv6Address.om,v 1.3 2006/08/11 15:05:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv6Address.om,v $
+   Revision 1.3  2006/08/11 15:05:26  borchert
+   - IsAnyAddr & SetAnyAddr added
+   - bug fix: conversion of port values fixed for port numbers >= 8000H
+
+   Revision 1.2  2004/04/02 18:42:17  borchert
+   SocketAddress is now a record and not a pointer
+
+   Revision 1.1  2004/03/04 14:26:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IPv6Addresses;
+
+   IMPORT Errors, Events, IPv4Addresses, Objects, RelatedEvents, Sets,
+      StreamDisciplines, Streams, Strings, SysConversions, SysSockets, Types,
+      Write;
+
+   CONST
+      nbytes = 16;
+   TYPE
+      Address = ARRAY nbytes OF CHAR;
+      PortNumber = IPv4Addresses.PortNumber;
+      SocketAddress =
+	 RECORD
+	    (Objects.ObjectRec)
+	    host: Address;
+	    portnum: PortNumber;
+	 END;
+
+   CONST
+      addrlen = 32; (* size of struct sockaddr_in6 in <sys/socket.h> *)
+   TYPE
+      SysAddress = ARRAY addrlen OF BYTE;
+   CONST
+      addressFmt = "iS/iS/ii/16:cC/iL/iL";
+   TYPE
+      FullAddress =
+	 RECORD
+	    family: INTEGER;         (* sa_family_t     sin6_family; *)
+	    port: INTEGER;           (* in_port_t       sin6_port; *)
+	    flowinfo: INTEGER;       (* uint32_t        sin6_flowinfo; *)
+	    addr: Address;           (* struct in6_addr sin6_addr; *)
+	    scopeid: INTEGER;        (* uint32_t        sin6_scope_id; *)
+	    srcid: INTEGER;          (* uint32_t        __sin6_src_id; *)
+	 END;
+   VAR
+      compiledAddressFmt: SysConversions.Format;
+
+   (* textual representations of IPv6 addresses are covered by
+      RFC 1884, section 2.2
+   *)
+
+   CONST
+      invalidInputChar = 0;
+      multipleDoubleColons = 1;
+      unexpectedEOF = 2;
+      valueOutOfRange = 3;
+      tripleColon = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* invalidInputChar... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    pos: Streams.Count;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[invalidInputChar] := "invalid input character in IPv6 address";
+      errormsg[multipleDoubleColons] :=
+	 "multiple :: tokens within an IPv6 address";
+      errormsg[unexpectedEOF] :=
+	 "unexpected end of IPv6 address";
+      errormsg[valueOutOfRange] :=
+	 "one of 16-bit values of the IPv6 address is out of range";
+      errormsg[tripleColon] :=
+	 "three or more consecutive colons found in the IPv6 address";
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   pos: Streams.Count);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.pos := pos;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE GetPort(address: SocketAddress) : INTEGER;
+      VAR
+	 val: INTEGER;
+   BEGIN
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    val := address.portnum;
+      | Types.littleEndian:
+	    val := address.portnum DIV 256 MOD 256 +
+		   address.portnum MOD 256 * 256;
+      END;
+      (* val is to be considered unsigned *)
+      IF val < 0 THEN
+	 val := 10000H + val;
+	 ASSERT(val > 0);
+      END;
+      RETURN val
+   END GetPort;
+
+   PROCEDURE SetPort(VAR address: SocketAddress; portnum: INTEGER);
+   BEGIN
+      (* convert a 16 bit unsigned value into a 16 bit signed value *)
+      ASSERT((portnum >= 0) & (portnum < 10000H));
+      IF portnum >= 8000H THEN
+	 portnum := portnum - 10000H;
+      END;
+      CASE Types.byteorder OF
+      | Types.bigEndian:
+	    address.portnum := Types.ToInt16(portnum);
+      | Types.littleEndian:
+	    address.portnum :=
+	       Types.ToInt16(portnum DIV 256 MOD 256 + portnum MOD 256 * 256);
+      END;
+   END SetPort;
+
+   PROCEDURE IsAnyAddr(address: Address) : BOOLEAN;
+      (* is address.host equivalent to IN6ADDR_ANY? *)
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < nbytes DO
+	 IF address[i] # 0X THEN RETURN FALSE END;
+	 INC(i);
+      END;
+      RETURN TRUE
+   END IsAnyAddr;
+
+   PROCEDURE SetAnyAddr(VAR address: Address);
+      (* set address.host to IN6ADDR_ANY *)
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < nbytes DO
+	 address[i] := 0X;
+	 INC(i);
+      END;
+   END SetAnyAddr;
+
+   PROCEDURE ConvertToSys(address: SocketAddress; VAR sysaddr: SysAddress);
+      VAR
+	 fulladdress: FullAddress;
+   BEGIN
+      fulladdress.family := SysSockets.afINET6;
+      fulladdress.port := address.portnum;
+      fulladdress.addr := address.host;
+      fulladdress.flowinfo := 0;
+      fulladdress.scopeid := 0;
+      fulladdress.srcid := 0;
+      SysConversions.ByFmtToC(fulladdress, sysaddr, compiledAddressFmt);
+   END ConvertToSys;
+
+   PROCEDURE ConvertFromSys(sysaddr: SysAddress; VAR address: SocketAddress);
+      VAR
+	 fulladdress: FullAddress;
+   BEGIN
+      SysConversions.ByFmtFromC(sysaddr, fulladdress, compiledAddressFmt);
+      address.portnum := Types.ToInt16(fulladdress.port);
+      address.host := fulladdress.addr;
+   END ConvertFromSys;
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR ipaddr: Address) : BOOLEAN;
+      CONST
+	 nbytes = 16;
+      TYPE
+	 Chunk = Types.Int32;
+      VAR
+	 chunks: ARRAY nbytes DIV 2 OF Chunk;
+	 chunk: Chunk;
+	 eof: BOOLEAN;
+	 ch: CHAR;
+	 pos: Streams.Count;
+	 errorsSeen: BOOLEAN;
+      CONST
+	 eofSY = 0;
+	 errorSY = 1;
+	 colonSY = 2;
+	 doublecolonSY = 3;
+	 chunkSY = 4;
+      TYPE
+	 Symbol = SHORTINT;
+      VAR
+	 sy: Symbol;
+
+      PROCEDURE NextCh;
+      BEGIN
+	 IF eof THEN
+	    ch := 0X;
+	 ELSIF Streams.ReadByte(s, ch) THEN
+	    INC(pos);
+	 ELSE
+	    eof := TRUE; ch := 0X;
+	 END;
+      END NextCh;
+
+      PROCEDURE SkipWhiteSpace;
+	 VAR
+	    whitespace: Sets.CharSet;
+      BEGIN
+	 pos := 0;
+	 StreamDisciplines.GetWhiteSpace(s, whitespace);
+	 LOOP
+	    IF ~Streams.ReadByte(s, ch) THEN eof := TRUE; EXIT END;
+	    INC(pos);
+	    IF ~Sets.CharIn(whitespace, ch) THEN EXIT END;
+	 END;
+      END SkipWhiteSpace;
+
+      PROCEDURE GetSy;
+      BEGIN
+	 IF eof THEN
+	    sy := eofSY; RETURN
+	 END;
+	 CASE ch OF
+	 | ":":
+	    NextCh;
+	    IF ch = ":" THEN
+	       sy := doublecolonSY;
+	       NextCh;
+	       IF ch = ":" THEN
+		  Error(s, tripleColon, pos);
+		  sy := errorSY;
+	       END;
+	    ELSE
+	       sy := colonSY;
+	    END;
+	 | "0".."9", "A".."F", "a".."f":
+	    chunk := 0;
+	    LOOP
+	       CASE ch OF
+	       | "0".."9":
+		     chunk := chunk * 10H + ORD(ch) - ORD("0");
+	       | "A".."F":
+		     chunk := chunk * 10H + ORD(ch) - ORD("A") + 10;
+	       | "a".."f":
+		     chunk := chunk * 10H + ORD(ch) - ORD("a") + 10;
+	       ELSE
+		  EXIT
+	       END;
+	       NextCh;
+	    END;
+	    IF chunk > 0FFFFH THEN
+	       Error(s, valueOutOfRange, pos);
+	       errorsSeen := TRUE;
+	       chunk := 0FFFFH;
+	    END;
+	    sy := chunkSY;
+	 ELSE
+	    sy := errorSY;
+	 END;
+      END GetSy;
+
+      PROCEDURE Parse;
+	 VAR
+	    index: INTEGER;
+	    doubleColonSeen: BOOLEAN;
+	    doubleColonSeenAt: INTEGER;
+	    ok: BOOLEAN;
+	    len: INTEGER;
+	    i, j: INTEGER;
+      BEGIN
+	 index := 0; doubleColonSeen := FALSE;
+	 LOOP
+	    IF sy = doublecolonSY THEN
+	       IF doubleColonSeen THEN
+		  Error(s, multipleDoubleColons, pos);
+		  errorsSeen := TRUE;
+		  RETURN
+	       END;
+	       doubleColonSeen := TRUE;
+	       doubleColonSeenAt := index;
+	       GetSy;
+	    ELSIF sy = colonSY THEN
+	       GetSy;
+	    ELSIF sy = chunkSY THEN
+	       chunks[index] := chunk; INC(index);
+	       IF index = LEN(chunks) THEN EXIT END;
+	       GetSy;
+	    ELSIF (sy = eofSY) OR (sy = errorSY) THEN
+	       IF ~doubleColonSeen THEN
+		  IF sy = eofSY THEN
+		     Error(s, unexpectedEOF, pos);
+		  ELSE
+		     Error(s, invalidInputChar, pos);
+		  END;
+		  errorsSeen := TRUE;
+		  RETURN
+	       END;
+	       EXIT
+	    END;
+	 END;
+	 IF ~eof THEN ok := Streams.Back(s); ASSERT(ok) END;
+	 IF errorsSeen THEN RETURN END;
+	 IF doubleColonSeen THEN
+	    len := index - doubleColonSeenAt;
+	    (* move chunk[doubleColonSeenAt..index-1]
+	       to chunk[LEN(chunks)-1-len..LEN(chunks)-1]
+	    *)
+	    j := LEN(chunks)-1; i := index - 1;
+	    WHILE j >= doubleColonSeenAt DO
+	       IF len > 0 THEN
+		  chunks[j] := chunks[i]; DEC(j); DEC(i); DEC(len);
+	       ELSE
+		  chunks[j] := 0; DEC(j);
+	       END;
+	    END;
+	 ELSE
+	    ASSERT(index = LEN(chunks));
+	 END;
+	 index := 0;
+	 WHILE index < LEN(chunks) DO
+	    ipaddr[2*index] := CHR(chunks[index] DIV 256 MOD 256);
+	    ipaddr[2*index+1] := CHR(chunks[index] MOD 256);
+	    INC(index);
+	 END;
+      END Parse;
+
+   BEGIN (* ReadText *)
+      eof := FALSE; errorsSeen := FALSE; SkipWhiteSpace;
+      IF eof THEN RETURN FALSE END;
+      GetSy; Parse;
+      IF errorsSeen THEN RETURN FALSE END;
+      RETURN TRUE
+   END ReadText;
+
+   PROCEDURE WriteText(s: Streams.Stream; ipaddr: Address);
+      TYPE
+	 Chunk = Types.Int32;
+      VAR
+	 chunks: ARRAY nbytes DIV 2 OF Chunk;
+	 index: INTEGER;
+	 chunk: Chunk;
+	 (* maximal length of zeroes found so far *)
+	 maxStart: INTEGER; maxLen: INTEGER; maxDefined: BOOLEAN;
+	 (* current interval of zeroes *)
+	 start, len: INTEGER; intervalDefined: BOOLEAN;
+
+      PROCEDURE CheckMax;
+      BEGIN
+	 IF (len > 0) & ~maxDefined OR (maxLen < len) THEN
+	    maxStart := start; maxLen := len; maxDefined := TRUE;
+	 END;
+      END CheckMax;
+
+      PROCEDURE GetChunk(i: INTEGER) : Chunk;
+      BEGIN
+	 RETURN ORD(ipaddr[2*i]) * 256 + ORD(ipaddr[2*i+1])
+      END GetChunk;
+
+      PROCEDURE WriteHex(chunk: Chunk);
+	 VAR
+	    digit: Chunk;
+      BEGIN
+	 IF chunk = 0 THEN
+	    Write.CharS(s, "0");
+	 ELSE
+	    IF chunk DIV 16 > 0 THEN
+	       WriteHex(chunk DIV 16);
+	    END;
+	    digit := chunk MOD 16;
+	    IF digit >= 10 THEN
+	       Write.CharS(s, CHR(ORD("A") + digit - 10));
+	    ELSE
+	       Write.CharS(s, CHR(ORD("0") + digit));
+	    END;
+	 END;
+      END WriteHex;
+
+   BEGIN (* WriteText *)
+      maxDefined := FALSE; intervalDefined := FALSE;
+      index := 0;
+      WHILE index < LEN(chunks) DO
+	 chunk := GetChunk(index); chunks[index] := chunk;
+	 IF chunk = 0 THEN
+	    IF intervalDefined THEN
+	       INC(len);
+	    ELSE
+	       start := index; len := 1; intervalDefined := TRUE;
+	    END;
+	 ELSIF intervalDefined THEN
+	    CheckMax; intervalDefined := FALSE;
+	 END;
+	 INC(index);
+      END;
+      IF intervalDefined THEN
+	 CheckMax;
+      END;
+      index := 0;
+      WHILE index < LEN(chunks) DO
+	 IF maxDefined & (index = maxStart) THEN
+	    Write.CharS(s, ":"); index := maxStart + maxLen;
+	    IF index = LEN(chunks) THEN
+	       Write.CharS(s, ":");
+	    END;
+	 ELSE
+	    IF index > 0 THEN
+	       Write.CharS(s, ":");
+	    END;
+	    WriteHex(chunks[index]);
+	    INC(index);
+	 END;
+      END;
+   END WriteText;
+
+   PROCEDURE CreateAddress(VAR ipaddr: Address; text: ARRAY OF CHAR);
+      VAR
+	 ok: BOOLEAN;
+	 s: Streams.Stream;
+	 addr: Address;
+   BEGIN
+      Strings.Open(s, text);
+      ok := ReadText(s, addr);
+      ASSERT(ok);
+      Streams.Release(s);
+      ipaddr := addr;
+   END CreateAddress;
+
+BEGIN
+   InitErrorHandling;
+   SysConversions.Compile(compiledAddressFmt, addressFmt);
+END IPv6Addresses.

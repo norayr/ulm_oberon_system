@@ -1,0 +1,2425 @@
+(* Ulm's Oberon Library
+   Copyright(C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or(at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: I386LinuxOb.om,v 1.5 2008/10/17 09:22:27 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: I386LinuxOb.om,v $
+   Revision 1.5  2008/10/17 09:22:27  borchert
+   bug fix: diffreg was not released in the implementation of CRSPAWN
+            (this happened when the procedure around CRSPAWN had an
+            open array parameter, causing diffreg not to be released)
+
+   Revision 1.4  2005/02/07 23:45:14  borchert
+   bug fix: records(or arrays) with a size of 124 bytes caused
+            Storage.left to be incremented as 124+4 = 128 was
+            represented as 8 bit signed integer in the SUB
+            instruction
+
+   Revision 1.3  2005/02/07 22:23:55  borchert
+   - set SA_RESTORER for sigaction(required to work around a
+     Linux kernel bug)
+   - invoke Storage.AllocateWithTag for large objects
+     (even if enough space is left in Storage.left)
+   (changes by Christian Ehrhardt)
+
+   Revision 1.2  2004/09/10 11:50:26  borchert
+   import list minimized
+
+   Revision 1.1  2004/09/07 10:08:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE I386LinuxOberonBuiltIns; (* Christian Ehrhardt *)
+
+   IMPORT CodeGen := I386ObCodeGen, CompilerErrors, CompilerObjects,
+      ConstStrings, Emit := I386Emit, EmitErrors := I386OberonEmitErrors,
+      FragmentedStreams, Gen := I386OpCodeGenerator,
+      GenTypes := I386OberonGenTypes, I386BuiltIns := I386ObBuiltIns,
+      I386FPURegisters, I386OberonBuiltIns, I386OberonProcedures,
+      OA := I386OberonAnalyzer, Ob32 := Oberon32i, OberonStdProcedures,
+      OberonUlmProcedures, Op := I386Operands, PC := I386OberonContexts,
+      Pentium := I386Instructions, Regs := CompilerRegisters, RelatedEvents,
+      Reloc := CompilerRelocations, Res := I386OberonResults,
+      StackAlloc := CompilerStackAllocations, Streams, Sym := OberonSymbols,
+      Sym32 := Oberon32iSymbols, SYSTEM,
+      TmpPtrs := CompilerTemporaryPointers, UnixOberonProcedures, Write;
+	   
+   CONST
+      sysexit = 1;
+      sysfork = 2;
+      syssigaction = 174;  (* Actually sys_rt_sigaction *)
+
+      (* i386 Hardware supports only 4k(2^12) and 4M(2^22) pages.
+       * The latter is only used by the kernel and probably not a
+       * good idea for alignment. *)
+      pagesize = 4096;
+
+      crrecordlen = 32;
+      contextsize = crrecordlen-8;
+
+      (* Coroutine Record:
+       * CoroutineRec = RECORD
+       *    interrupts : LONGINT;
+       *    started    : LONGINT;
+       *    ucontext   : ARRAY contextsize of BYTE
+       * END;
+       *
+       * Currently ucontext is the following record:
+       * UcontextRec = RECORD
+       *    ebp : LONGINT;
+       *    esp : LONGINT;
+       *    eip : LONGINT;
+       *    padding : ARRAY OF BYTE
+       * END;
+       *)
+
+      crints       = 0;
+      crstarted    = 4;
+      crbaseoffset = 8;
+      crtopoffset  = 12;
+      creipoffset  = 16;
+
+   CONST
+      (* struct sigaction layout:
+       * sizeof(sigset_t) BYTEs sa_mask.
+       * 1 LONGINT sa_restorer: Should always be NULL.
+       * 1 LONGINT sa_flags: All flags cleared.
+       * 1 LONGINT sa_handler: The signal handler.
+       *)
+       sigsetbytes = 8;
+       sigactwords = 3+(sigsetbytes+3) DIV 4;
+       sigflags = 00C000004H;   (* SA_ONSTACK | SA_SIGINFO | SA_RESTORER *)
+
+   CONST
+      dummytagsize = 20; (* 5 words. *)
+
+
+   VAR
+      reg2param : ARRAY 8 OF Op.Register;
+
+   TYPE
+      ProcContext = PC.Context;
+
+   PROCEDURE FixupLoc(at : Sym.Attribute) : CompilerObjects.Location;
+   BEGIN
+      WHILE at.loc = NIL DO
+	 IF at.leftop # NIL THEN
+	    at := at.leftop;
+	 ELSIF at.rightop # NIL THEN
+	    at := at.rightop;
+         ELSE
+            RETURN NIL
+	 END;
+      END;
+      RETURN at.loc;
+   END FixupLoc;
+
+   (* NOTE: Cut&Paste from I386CodeGen *)
+   PROCEDURE SetMode(reg : Regs.Value; type : Sym.Type);
+      VAR
+         new : Regs.Mode;
+   BEGIN
+      new := Regs.stdM;
+      CASE type.form OF
+      | Sym.pointer:
+         IF type.taggedptr THEN
+            new := Regs.ptrM;
+         END;
+      | Sym.address:
+         IF type.traced THEN
+            new := Regs.addrM;
+         END;
+      ELSE
+      END;
+      Regs.SetMode(reg, new);
+   END SetMode;
+
+   PROCEDURE RegCommit(set : Regs.RegSet; val : Regs.Value);
+   BEGIN
+      TmpPtrs.Commit(val);
+   END RegCommit;
+
+
+   (* BIG NOTE! When you use two Traced Registers for size one of them
+    * must be tag! The allocated Address is in edx. *)
+   PROCEDURE Allocate(proc : PC.Context; at : Sym.Attribute;
+                       paramreg : Regs.Value; size : Op.Operand;
+		       tag : Regs.Value; own : Regs.Owner);
+      VAR
+         storage, lhs : Op.Operand;
+	 ref : Reloc.SymRef;
+	 reg, ax, bx, cx, dx, sizereg : Regs.Value;
+	 regarr : ARRAY 10 OF Regs.Value;
+	 possible : ARRAY 10 OF SET;
+	 sizeadd, len : INTEGER;
+	 req : Reloc.RelocRequest;
+	 ok : BOOLEAN;
+	 alloc, allocend, newloop : FragmentedStreams.Label;
+	 dummytag : BOOLEAN;
+      CONST
+	 smallObjectLimit = 4000;
+   BEGIN
+      storage := NIL;
+      dummytag := tag = NIL;
+      sizeadd := 4; (* TAG *)
+      IF dummytag THEN
+         INC(sizeadd, dummytagsize);
+      END;
+      storage := Op.MemOp0(4, 0, 4);
+      NEW(ref);
+      ConstStrings.Create(ref.modname, "Storage");
+      ConstStrings.Create(ref.symname, "left");
+      Reloc.Create(req, proc.s, Reloc.addSym, ref);
+      Op.RelocOpen(storage, req);
+      Regs.CreateValue(ax, proc.regs, own, Regs.stdM);
+      Regs.AddConstraint(ax, {Gen.genax});
+      Regs.LoadReg(ax, {Gen.genax});
+      regarr[0] := ax; possible[0] := {Gen.genax};
+      Regs.CreateValue(bx, proc.regs, own, Regs.stdM);
+      Regs.AddConstraint(bx, {Gen.genbx});
+      Regs.LoadReg(bx, {Gen.genbx});
+      regarr[1] := bx; possible[1] := {Gen.genbx};
+      Regs.CreateValue(cx, proc.regs, own, Regs.stdM);
+      Regs.AddConstraint(cx, {Gen.gencx});
+      Regs.LoadReg(cx, {Gen.gencx});
+      regarr[2] := cx; possible[2] := {Gen.gencx};
+      Regs.CreateValue(dx, proc.regs, own, Regs.stdM);
+      Regs.AddConstraint(dx, {Gen.gendx});
+      Regs.LoadReg(dx, {Gen.gendx});
+      regarr[3] := dx; possible[3] := {Gen.gendx};
+      len := 4;
+      IF size.reg1 # NIL THEN
+         regarr[len] := size.reg1;
+         possible[len] := Regs.GetConstraint(size.reg1);
+	 INC(len);
+      END;
+      IF size.reg2 # NIL THEN
+         regarr[len] := size.reg2;
+	 possible[len] := Regs.GetConstraint(size.reg2);
+	 INC(len);
+      END;
+      IF tag # NIL THEN
+         regarr[len] := tag;
+	 possible[len] := Regs.GetConstraint(tag);
+	 INC(len);
+      END;
+      IF paramreg # NIL THEN
+         regarr[len] := paramreg;
+	 possible[len] := Regs.GetConstraint(paramreg);
+	 INC(len);
+      END;
+      ok := Regs.PrepareInstruction(len, regarr, possible);
+      (* We are about to allocate memory which may cause a garbage collection.
+       * This means that all registers must be commited. *)
+      Regs.Foreach(proc.regs, RegCommit);
+      Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(ax, 4), storage);
+      storage.disp := 4;
+      Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(dx, 4), storage);
+      FragmentedStreams.CreateLabel(newloop);
+      FragmentedStreams.AttachLabel(proc.s, newloop);
+      FragmentedStreams.CreateLabel(alloc);
+      FragmentedStreams.CreateLabel(allocend);
+      Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(bx, 4), Op.RegOp(ax, 4));
+      Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(cx, 4), Op.RegOp(dx, 4));
+      IF Op.Loc(size) IN {Op.immediate, Op.immediateDyn} THEN
+         ASSERT((size.data # NIL) & (size.data.kind = Op.integerConst));
+	 IF size.data.intval > smallObjectLimit - sizeadd THEN
+	    Emit.Jump(proc.s, alloc);
+	 END;
+	 Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(bx, 4),
+	    Op.ImmInt(size.data.intval + sizeadd));
+      ELSE
+	 Emit.Instr2(proc.s, Pentium.CMP, size,
+	 	      Op.ImmInt(smallObjectLimit - sizeadd));
+	 Emit.JumpCC(proc.s, alloc, Pentium.JG - Pentium.JCC);
+	 Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(bx, 4), size);
+	 Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(bx, 4),
+		      Op.ImmInt(sizeadd));
+      END;
+      (* Note: This only works if the allocated size is less than 2^31
+       * minus a few bytes(2^63 on 64 bit machines). But Note that JC
+       * (jump carry) doesn't work if the first of the two sub Instructions
+       * above sets it. *)
+      Emit.JumpCC(proc.s, alloc, Pentium.JS-Pentium.JCC);
+      storage.disp := 0;
+      storage.memsz := 8;
+      Emit.Instr3(proc.s, Pentium.CMPXCHG8B, Op.Reg2Op(ax, dx, 4),
+                   storage, Op.Reg2Op(bx, cx, 4));
+      Emit.JumpCC(proc.s, newloop, Pentium.JNZ-Pentium.JCC);
+      Regs.DestroyOwnedValue(ax, own);
+      Regs.DestroyOwnedValue(bx, own);
+      Regs.DestroyOwnedValue(cx, own);
+      Regs.DestroyOwnedValue(dx, own);
+      Regs.EnterLevel(proc.regs);
+      dx := NIL; ax := NIL; cx := NIL;
+      Regs.CreateValue(dx, proc.regs, own, Regs.addrM);
+      Regs.LoadReg(dx, {Gen.gendx});
+      Regs.CreateValue(ax, proc.regs, own, Regs.stdM);
+      Regs.LoadReg(ax, {Gen.genax});
+      (* Store the tag at the start of the allocated area. *)
+      IF dummytag THEN
+         Regs.CreateValue(cx, proc.regs, own, Regs.stdM);
+         Regs.LoadReg(cx, {Gen.gencx});
+         Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(cx, 4), size);
+         Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(dx, 4), Op.RegOp(ax, 4));
+	 Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(ax, 4),
+	              Op.MemOp2(dx, cx, 4, 4, 0, 1));
+         Emit.Instr2(proc.s, Pentium.MOV,
+	              Op.MemOp1(ax, 4, GenTypes.sizeoff, 0), Op.RegOp(cx, 4));
+	 Emit.Instr2(proc.s, Pentium.ADD,
+	              Op.MemOp1(ax, 4, GenTypes.sizeoff, 0),
+	              Op.ImmInt(sizeadd - 4));
+	 Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(cx, 4), Op.RegOp(cx, 4));
+	 Emit.Instr2(proc.s, Pentium.MOV,
+	              Op.MemOp1(ax, 4, GenTypes.moduleoff, 0),
+		      Op.RegOp(cx, 4));
+	 Emit.Instr2(proc.s, Pentium.MOV,
+	              Op.MemOp1(ax, 4, GenTypes.typenooff, 0),
+		      Op.RegOp(cx, 4));
+	 Emit.Instr2(proc.s, Pentium.MOV,
+	              Op.MemOp1(ax, 4, GenTypes.hierlenoff, 0),
+		      Op.RegOp(cx, 4));
+	 Emit.Instr2(proc.s, Pentium.MOV,
+	              Op.MemOp1(ax, 4, GenTypes.pointeroff, 0),
+		      Op.ImmInt(GenTypes.sentinel));
+	 Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(dx, 4, 0, 0),
+		      Op.RegOp(ax, 4));
+	 Regs.DestroyOwnedValue(cx, own);
+      ELSE
+	 Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(dx, 4), Op.RegOp(ax, 4));
+	 Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(dx, 4, 0, 0),
+		      Op.RegOp(tag, 4));
+      END;
+      Regs.DestroyOwnedValue(ax, own);
+      Emit.Instr2(proc.s, Pentium.ADD, Op.RegOp(dx, 4), Op.ImmInt(4));
+      Regs.SetMode(dx, Regs.ptrM);
+      IF paramreg = NIL THEN
+	 lhs := CodeGen.GenDesignator(proc, at, Gen.StdRegs, own);
+      ELSE
+         lhs := Op.MemOp1(paramreg, 4, 0, 0);
+      END;
+      Emit.Instr2(proc.s, Pentium.MOV, lhs, Op.RegOp(dx, 4));
+      Regs.DestroyOwnedValue(dx, own);
+      IF paramreg = NIL THEN
+	 Regs.DestroyOwnedValue(lhs.reg1, own);
+	 Regs.DestroyOwnedValue(lhs.reg2, own);
+      END;
+      Regs.LeaveLevel(proc.regs);
+      Regs.DoneLevel(proc.regs);
+      Emit.Jump(proc.s, allocend);
+      FragmentedStreams.AttachLabel(proc.s, alloc);
+      Regs.EnterLevel(proc.regs);
+      reg := paramreg;
+      IF paramreg = NIL THEN
+	 lhs := CodeGen.GenDesignator(proc, at, Gen.StdRegs, own);
+	 lhs.memsz := 4;
+	 Regs.CreateValue(reg, proc.regs, own, Regs.addrM);
+	 Regs.LoadReg(reg, Gen.StdRegs);
+	 Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(reg, 4), lhs);
+	 Regs.DestroyOwnedValue(lhs.reg1, own);
+	 Regs.DestroyOwnedValue(lhs.reg2, own);
+      END;
+      CASE Op.Loc(size) OF
+      | Op.immediate, Op.immediateDyn:
+         Emit.Instr1(proc.s, Pentium.PUSH,
+	    Op.ImmInt(size.data.intval + sizeadd));
+      | Op.memory:
+         Regs.CreateValue(sizereg, proc.regs, own, Regs.stdM);
+	 Regs.LoadReg(sizereg, Gen.StdRegs);
+	 Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(sizereg, 4), size);
+	 Emit.Instr2(proc.s, Pentium.ADD, Op.RegOp(sizereg, 4),
+	              Op.ImmInt(sizeadd));
+         Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(sizereg, 4));
+	 Regs.DestroyOwnedValue(sizereg, own);
+      | Op.register:
+	 Emit.Instr2(proc.s, Pentium.ADD, size, Op.ImmInt(sizeadd));
+         Emit.Instr1(proc.s, Pentium.PUSH, size);
+      END;
+      IF dummytag THEN
+	 Emit.Instr1(proc.s, Pentium.PUSH, Op.ImmInt(0));
+      ELSE
+	 Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(tag, 4));
+      END;
+      Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(reg, 4));
+      IF paramreg = NIL THEN
+	 Regs.DestroyOwnedValue(reg, own);
+      END;
+      NEW(ref);
+      ConstStrings.Create(ref.modname, "Storage");
+      ConstStrings.Create(ref.symname, "AllocateWithTag");
+      Emit.CallExtern(proc.s, proc.regs, ref);
+      Regs.UntracedValue(reg, Gen.gensp);
+      Emit.Instr2(proc.s, Pentium.ADD, Op.RegOp(reg, 4),
+                   Op.ImmInt(12));
+      Regs.LeaveLevel(proc.regs);
+      Regs.DoneLevel(proc.regs);
+      FragmentedStreams.AttachLabel(proc.s, allocend);
+   END Allocate;
+
+
+   PROCEDURE GenBuiltIn(proc : ProcContext; at : Sym.Attribute;
+			 possible : SET; caller : Regs.Owner) : Op.Operand;
+      VAR
+	 lhs, rhs, syscallnr, result, errno : Op.Operand;
+	 op, opreg, dope, op2, sizeop, tagop, lenop, lenop2 : Op.Operand;
+	 param, tmp : Sym.Attribute;
+	 rset : SET;
+	 noerr, lab, lab2, beyond, start : FragmentedStreams.Label;
+	 cs : Streams.Stream;
+	 i, j, scale : INTEGER;
+	 own : Regs.Owner;
+	 reg1 : Gen.Register;
+	 diffreg, reg, reg2, tag, lenreg, tmpreg, crreg, crtop, crbase, sizereg, sp, bp : Regs.Value;
+	 ctxt : CodeGen.BoolContext;
+	 regarr : ARRAY 10 OF Regs.Value;
+	 possibles : ARRAY 10 OF SET;
+	 ok : BOOLEAN;
+	 type : OberonStdProcedures.StdProc;
+	 typ, typ2 : Sym.Type;
+	 var : CodeGen.VarDesc;
+	 attype : Sym.Type;
+	 req : Reloc.RelocRequest;
+	 ref : Reloc.SymRef;
+	 sym, mod : ConstStrings.String;
+	 pl : Sym.ParamList;
+	 val, base, dim, size, len, len2, offset2, offset : LONGINT;
+	 params : ARRAY 7 OF Sym.Attribute;
+	 errors : BOOLEAN;
+	 instr : Gen.Mnemonic;
+
+      PROCEDURE ToReg(reg1 : Gen.Register; VAR op : Op.Operand;
+		       caller : Regs.Owner);
+	 VAR
+	    reg : Regs.Value;
+	    opreg : Op.Operand;
+      BEGIN
+         reg := NIL;
+	 CASE Op.Loc(op) OF
+	 | Op.register:
+	    ASSERT(op.reg1 # NIL);
+	    Regs.LoadReg(op.reg1, {reg1});
+	    Regs.AddConstraint(op.reg1, {reg1});
+	    RETURN;
+         | Op.immediate:
+	    ASSERT(op.immsz = 4);
+         | Op.immediateDyn:
+	    ASSERT(op.immsz <= 4);
+	 END;
+	 ASSERT(op.reg1 = NIL);
+	 Regs.CreateValue(reg, proc.regs, caller, Regs.stdM);
+	 Regs.LoadReg(reg, {reg1});
+	 Regs.AddConstraint(reg, {reg1});
+	 opreg := Op.RegOp(reg, 4);
+	 Emit.Instr2(proc.s, Pentium.MOV, opreg, op);
+	 op := opreg;
+      END ToReg;
+
+      PROCEDURE CheckVar(op : Op.Operand; at : Sym.Attribute;
+                          VAR errors : BOOLEAN);
+	 VAR
+	    reg1 : Gen.Register;
+	    ok : BOOLEAN;
+      BEGIN
+	 IF Op.Loc(op) # Op.memory THEN
+	    CompilerErrors.Raise(proc.errors, FixupLoc(at), "variable expected");
+	    errors := TRUE;
+	 END;
+      END CheckVar;
+
+      PROCEDURE CheckArg(at : Sym.Attribute; VAR errors : BOOLEAN);
+         VAR
+	    type : Sym.Type;
+      BEGIN
+         type := NIL;
+         Sym32.GetType(at, type);
+	 IF ~(type.form IN {Sym.set, Sym.pointer, Sym.integer, Sym.cardinal, Sym.address, Sym.proceduretype}) THEN
+	    CompilerErrors.Raise(proc.errors, FixupLoc(at),
+				  "integer or address expected");
+	    errors := TRUE;
+	 END;
+      END CheckArg;
+      
+   BEGIN
+      lhs := NIL; rhs := NIL;
+      ASSERT(at.proc.type.builtin);
+      own := Regs.GetOwner(proc.regs);
+      IF at.proc.type.builtinproc IS UnixOberonProcedures.StdProcedure THEN
+	 CASE at.proc.type.builtinproc(UnixOberonProcedures.StdProcedure).stdproc OF
+	 | UnixOberonProcedures.unixcall:
+	    errors := FALSE;
+	    rset := {Gen.genax};
+	    ASSERT(at.paramcnt <= 9);
+	    ASSERT(at.paramcnt >= 3);
+            param := at.firstparam; ASSERT(param # NIL);
+	    i := 0;
+	    WHILE param # NIL DO
+	       CheckArg(param, errors);
+	       params[i] := param;
+	       param := param.next;
+	       INC(i);
+	       IF i = 1 THEN
+	          CheckArg(param, errors);
+		  param := param.next; ASSERT(param # NIL); (* result d0 *)
+		  CheckArg(param, errors);
+		  param := param.next;
+	       END;
+	    END;
+	    ASSERT(i = at.paramcnt - 2);
+	    IF at.paramcnt = 9 THEN
+	       Regs.UntracedValue(reg, Gen.genbp);
+	       Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(reg, 4));
+	    END;
+	    
+            (* Now generate all arguments. params[6] will end up in
+	     * %ebp but we can't do this now because we'll need
+	     * %ebp to generate the other value. To solve this
+	     * Problem we push %ebp and pop it right befor we call
+	     * the kernel.
+	     *)
+	    WHILE i > 0 DO
+	       DEC(i);
+	       (* Now generate the ninth argument(params[6]) and PUSH it. *)
+	       IF i = 6 THEN
+	          ASSERT(at.paramcnt = 9);
+		  op := CodeGen.GenExpr(proc, params[6], TRUE,
+		                         Gen.StdRegs, own);
+                  IF params[6].type.form IN {Sym.pointer, Sym.address} THEN
+                     (* XXX Implementation Restriction. Should be fixed. *)
+		     CompilerErrors.Raise(proc.errors, FixupLoc(params[6]),
+		        "implementation restriction: no address allowed here");
+		     Regs.DestroyOwnerOnError(proc.regs, own);
+		     RETURN Op.Error();
+                  END;
+		  IF ~Op.IsError(op) THEN
+		     IF Op.Loc(op) IN {Op.immediate, Op.immediateDyn} THEN
+			op.immsz := 4;
+		     ELSE
+			op.memsz := 4;
+		     END;
+		     Emit.Instr1(proc.s, Pentium.PUSH, op);
+		     Regs.DestroyOwnedValue(op.reg1, own);
+		     Regs.DestroyOwnedValue(op.reg2, own);
+		  ELSE
+		     errors := TRUE;
+		  END;
+	       ELSE
+	          op := CodeGen.GenExpr(proc, params[i], TRUE,
+		                         {reg2param[i]}, own);
+		  IF ~Op.IsError(op) THEN
+		     ToReg(reg2param[i], op, own);
+                     SetMode(op.reg1, params[i].type);
+		     regarr[i] := op.reg1;
+		     possibles[i] := {reg2param[i]};
+		  ELSE
+		     errors := TRUE;
+		  END;
+	       END;
+	    END;
+	    IF errors THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+            (* Check that everything except the ninth argument is in place. *)
+	    i := at.paramcnt - 2;
+	    IF at.paramcnt = 9 THEN
+	       DEC(i);
+	    END;
+	    ok := Regs.PrepareInstruction(i, regarr, possibles); ASSERT(ok);
+	    Regs.UntracedValue(reg, Gen.genbp);
+	    IF at.paramcnt = 9 THEN
+	       (* In this case the ninth param is on top of the stack,
+	        * followed by the saved value of %ebp. *)
+	       Emit.Instr1(proc.s, Pentium.POP, Op.RegOp(reg, 4));
+	    END;
+	    Emit.Instr1(proc.s, Pentium.INT, Op.ImmIntFixed(080H, 1));
+	    IF at.paramcnt = 9 THEN
+	       (* Restore %ebp befor we do anything else. *)
+	       Emit.Instr1(proc.s, Pentium.POP, Op.RegOp(reg, 4));
+	    END;
+	    i := 1;
+	    WHILE(i < at.paramcnt - 2) & (i < 6) DO
+	       (* Destroy everything except the syscall result. *)
+	       Regs.DestroyOwnedValue(regarr[i], own);
+	       INC(i);
+	    END;
+            Regs.SetMode(regarr[0], Regs.stdM);
+	    IF(at.firstparam.next.mode IN Sym.designatorModes) THEN
+	       result := CodeGen.GenDesignator(proc, at.firstparam.next,
+						Gen.StdRegs, own);
+	       CheckVar(result, at.firstparam.next, errors);
+	    ELSE
+	       errors := TRUE;
+	    END;
+	    IF errors OR Op.IsError(result) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    syscallnr := Op.RegOp(regarr[0], 4);
+	    Emit.Instr2(proc.s, Pentium.MOV, result, syscallnr);
+	    Emit.Instr2(proc.s, Pentium.CMP, result, Op.ImmInt(-1023));
+	    FragmentedStreams.CreateLabel(beyond);
+	    (* Note: JC == JNAE. *)
+            Emit.JumpCC(proc.s, beyond, Pentium.JC-Pentium.JCC);
+	    (* The result is negativ but greater than -1024, i.e. the
+	     * systemcall produced an error. *)
+	    Emit.Instr1(proc.s, Pentium.NEG, result);
+	    Emit.Instr0(proc.s, Pentium.CLC);
+	    FragmentedStreams.AttachLabel(proc.s, beyond);
+	    Regs.DestroyOwnedValue(regarr[0], own);
+	    Regs.DestroyOwnedValue(result.reg1, own);
+	    Regs.DestroyOwnedValue(result.reg2, own);
+	    RETURN Op.CCOp(Pentium.JC-Pentium.JCC);
+	 | UnixOberonProcedures.unixfork:
+	    ASSERT(at.paramcnt = 1);
+	    ASSERT(at.firstparam # NIL);
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, {Gen.genax});
+	    Regs.AddConstraint(reg, {Gen.genax});
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4),
+	                 Op.ImmInt(sysfork));
+	    Emit.Instr1(proc.s, Pentium.INT, Op.ImmIntFixed(080H, 1));
+	    op := CodeGen.GenDesignator(proc, at.firstparam, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op;
+	    END;
+	    Emit.Instr2(proc.s, Pentium.MOV, op, Op.RegOp(reg, 4));
+            Emit.Instr2(proc.s, Pentium.CMP, Op.RegOp(reg, 4), Op.ImmInt(0));
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.DestroyOwnedValue(op.reg2, own);
+	    Regs.DestroyOwnedValue(reg, own);
+	    RETURN Op.CCOp(Pentium.JNL-Pentium.JCC);
+	 | UnixOberonProcedures.unixsignal:
+	    (* We allow an additional 5th Parameter that is used as the
+	     * signal mask. Note that this is not supported by higher layers. *)
+	    errors := FALSE;
+	    ASSERT(at.paramcnt IN {4, 5});
+	    param := at.firstparam;
+	    ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, {reg2param[1]}, own);
+	    CheckArg(param, errors);
+	    IF errors OR Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    IF Op.Loc(op) IN {Op.immediate, Op.immediateDyn} THEN
+	       Regs.CreateValue(regarr[0], proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(regarr[0], {reg2param[1]});
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(regarr[0], 4), op);
+               SetMode(regarr[0], param.type);
+	    ELSE
+	       ASSERT(Op.Loc(op) = Op.register);
+	       regarr[0] := op.reg1;
+	    END;
+            Regs.AddConstraint(regarr[0], {reg2param[1]});
+	    possibles[0] := {reg2param[1]};
+	    param := param.next;
+	    ASSERT(param # NIL);
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.StdRegs);
+	    Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(reg, 4),
+	                 Op.RegOp(reg, 4));
+	    op2 := Op.ImmIntFixed(sigflags, 4);
+	    IF at.paramcnt > 4 THEN
+	       op2 := CodeGen.GenExpr(proc, param.next.next.next, TRUE,
+	                               Gen.StdRegs, own);
+	       CheckArg(param.next.next.next, errors);
+	       IF errors OR Op.IsError(op2) THEN
+	          Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN Op.Error();
+	       END;
+	    END;
+	    i := 0;
+	    WHILE i < sigactwords - 3 DO
+	       INC(i);
+	       Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(reg, 4));
+	    END;
+	    NEW(ref);
+	    ConstStrings.Create(ref.modname, "_rt");
+	    ConstStrings.Create(ref.symname, "_sigreturn");
+	    Reloc.Create(req, proc.s, Reloc.addSym, ref);
+	    op := Op.ImmIntFixed(0, 4(* address *));
+	    Op.RelocOpen(op, req);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+	    Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(reg, 4));
+	    Regs.DestroyOwnedValue(reg, own);
+	    Emit.Instr1(proc.s, Pentium.PUSH, op2);
+	    Regs.DestroyOwnedValue(op2.reg1, own);
+	    Regs.DestroyOwnedValue(op2.reg2, own);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    CheckArg(param, errors);
+	    IF errors OR Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    IF Op.Loc(op) = Op.immediateDyn THEN
+	       op.immsz := 4;
+	    END;
+	    Emit.Instr1(proc.s, Pentium.PUSH, op);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.UntracedValue(reg, Gen.gensp);
+	    Regs.CreateValue(regarr[1], proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(regarr[1], {reg2param[2]});
+	    Regs.AddConstraint(regarr[1], {reg2param[2]});
+	    possibles[1] := {reg2param[2]};
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(regarr[1], 4),
+	                 Op.RegOp(reg, 4));
+	    Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(reg, 4),
+	                 Op.ImmInt(sigactwords * 4));
+	    Regs.CreateValue(regarr[2], proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(regarr[2], {reg2param[3]});
+	    Regs.AddConstraint(regarr[2], {reg2param[3]});
+	    possibles[2] := {reg2param[3]};
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(regarr[2], 4),
+	                 Op.RegOp(reg, 4));
+	    Regs.CreateValue(regarr[3], proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(regarr[3], {reg2param[4]});
+	    Regs.AddConstraint(regarr[3], {reg2param[4]});
+	    possibles[3] := {reg2param[4]};
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(regarr[3], 4),
+	                 Op.ImmInt(sigsetbytes));
+	    Regs.CreateValue(regarr[4], proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(regarr[4], {Gen.genax});
+	    Regs.AddConstraint(regarr[4], {Gen.genax});
+	    possibles[4] := {Gen.genax};
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(regarr[4], 4),
+	                 Op.ImmInt(syssigaction));
+	    ok := Regs.PrepareInstruction(5, regarr, possibles); ASSERT(ok);
+	    Emit.Instr1(proc.s, Pentium.INT, Op.ImmIntFixed(080H, 1));
+	    Regs.DestroyOwnedValue(regarr[0], own); (* signo *)
+	    Regs.DestroyOwnedValue(regarr[1], own); (* newacct *)
+	    Regs.DestroyOwnedValue(regarr[2], own); (* oldacct *)
+	    Regs.DestroyOwnedValue(regarr[3], own); (* sigset_t bytes *)
+	    Regs.RemoveConstraint(regarr[4]);
+	    param := param.next; ASSERT(param # NIL);
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.StdRegs);
+	    Regs.UntracedValue(reg2, Gen.gensp);
+            Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4),
+	                 Op.MemOp1(reg2, 4, 0, 0));
+	    Emit.Instr2(proc.s, Pentium.ADD, Op.RegOp(reg2, 4),
+	                 Op.ImmInt(2*4*sigactwords));
+	    op := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    CheckArg(param, errors);
+	    IF errors OR Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    Emit.Instr2(proc.s, Pentium.MOV, op, Op.RegOp(reg, 4));
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.DestroyOwnedValue(op.reg2, own);
+	    Regs.DestroyOwnedValue(reg, own);
+            param := param.next; ASSERT(param # NIL);
+	    op := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    CheckArg(param, errors);
+	    IF errors OR Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    op.memsz := 4;
+	    Emit.Instr2(proc.s, Pentium.MOV, op, Op.RegOp(regarr[4], 4));
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.DestroyOwnedValue(op.reg2, own);
+	    (* Note: JC == JNAE. *)
+	    Emit.Instr2(proc.s, Pentium.CMP, Op.RegOp(regarr[4], 4), Op.ImmInt(-1023));
+	    Regs.DestroyOwnedValue(regarr[4], own);
+	    RETURN Op.CCOp(Pentium.JC-Pentium.JCC);
+	 END;
+      ELSIF at.proc.type.builtinproc IS OberonStdProcedures.StdProcedure THEN
+	 type := at.proc.type.builtinproc(OberonStdProcedures.StdProcedure).stdproc;
+	 CASE type OF
+	 | OberonStdProcedures.abs:
+	    op := CodeGen.GenExpr(proc, at.firstparam, TRUE, possible, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CASE Op.Loc(op) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(op.data # NIL);
+	       CASE op.data.kind OF
+	       | Op.integerConst:
+		  IF op.data.intval < 0 THEN
+		     op.data.intval := - op.data.intval;
+		  END;
+               | Op.realConst:
+		  IF op.data.realval < 0 THEN
+		     op.data.realval := - op.data.realval;
+		  END;
+	       END;
+            | Op.register:
+	       (* GNU SUPEROPT output *)
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, Gen.StdRegs);
+	       opreg := Op.RegOp(reg, 4(* INTEGER *));
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, op);
+	       Emit.Instr2(proc.s, Pentium.SAR, opreg, Op.ImmIntFixed(31, 1));
+	       Emit.Instr2(proc.s, Pentium.ADD, op, opreg);
+	       Emit.Instr2(proc.s, Pentium.XOR, op, opreg);
+	       Regs.DestroyOwnedValue(reg, own);
+	       Regs.Chown(op.reg1, caller);
+	    | Op.fpuRegister:
+	       I386FPURegisters.Instr1(proc.s, Pentium.FABS, op);
+	    END;
+	    RETURN op;
+	 | OberonStdProcedures.adr:
+	    ASSERT(possible # {});
+	    op := CodeGen.GenDesignator(proc, at.firstparam, possible, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            ASSERT(Op.Loc(op) = Op.memory);
+	    IF(op.reg1 # NIL) & (op.reg2 = NIL) & (op.disp = 0) &
+	       (op.dispsz = 0) THEN
+	       Regs.Chown(op.reg1, caller);
+               op := Op.RegOp(op.reg1, 4(* address *));
+               Regs.SetMode(op.reg1, Regs.addrM);
+	       RETURN op;
+            END;
+	    IF(op.reg1 = NIL) & (op.reg2 # NIL) &
+	       (op.disp = 0) & (op.dispsz = 0) THEN
+               Op.Scale(op, scale);
+               IF scale = 1 THEN
+		  Regs.Chown(op.reg2, caller);
+	          op := Op.RegOp(op.reg2, 4(* address *));
+                  Regs.SetMode(op.reg1, Regs.addrM);
+		  RETURN op;
+               END;
+            END;
+	    (* We could special case a displacement only Operand here,
+	     * but this requires us to transfer relocations from a
+	     * displacement to immediate data. *)
+	    IF(op.reg1 # NIL) & Regs.RegCode(op.reg1, reg1) &
+	       (reg1 IN possible) THEN
+	       reg := op.reg1;
+            ELSIF(op.reg2 # NIL) & Regs.RegCode(op.reg2, reg1) &
+	       (reg1 IN possible) THEN
+	       reg := op.reg2;
+            ELSE
+	       Regs.CreateValue(reg, proc.regs, own, Regs.addrM);
+	       Regs.LoadReg(reg, possible);
+	    END;
+	    opreg := Op.RegOp(reg, 4(* address *));
+	    Regs.Chown(reg, caller);
+	    op.memsz := 4;
+	    Emit.Instr2(proc.s, Pentium.LEA, opreg, op);
+	    IF op.reg1 # reg THEN
+	       Regs.DestroyOwnedValue(op.reg1, own);
+	    END;
+	    IF op.reg2 # reg THEN
+	       Regs.DestroyOwnedValue(op.reg2, own);
+	    END;
+	    RETURN opreg;
+	 | OberonStdProcedures.ash, OberonStdProcedures.lsh,
+	   OberonStdProcedures.rot:
+	    param := at.firstparam;
+	    ASSERT((param # NIL) & (param.next # NIL));
+	    ASSERT(param.type.form IN {Sym.integer, Sym.cardinal, Sym.address, Sym.set});
+	    rhs := CodeGen.GenExpr(proc, param.next, TRUE, {Gen.gencx}, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+	    IF Op.Loc(rhs) IN {Op.immediate, Op.immediateDyn} THEN
+	       ASSERT(rhs.data.kind = Op.integerConst);
+               CASE type OF
+	       | OberonStdProcedures.lsh:
+	          IF ABS(rhs.data.intval) > 31 THEN
+		     RETURN Op.ImmInt(0);
+		  END;
+	       | OberonStdProcedures.rot:
+	          rhs.data.intval := rhs.data.intval MOD 32;
+	       | OberonStdProcedures.ash:
+	          IF rhs.data.intval > 31 THEN
+		     RETURN Op.ImmInt(0);
+		  ELSIF rhs.data.intval < - 31 THEN
+		     rhs.data.intval := -31;
+		  END;
+	       END;
+	       op := CodeGen.GenExpr(proc, param, TRUE, possible, caller);
+	       IF Op.IsError(op) THEN
+		  Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN op
+	       END;
+	       IF Op.Loc(op) IN { Op.immediate, Op.immediateDyn} THEN
+	          Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(reg, possible);
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+		  op := Op.RegOp(reg, 4);
+	       END;
+	       op2 := Op.ImmIntFixed(ABS(rhs.data.intval), 1);
+	       IF rhs.data.intval < 0 THEN
+		  CASE type OF
+		  | OberonStdProcedures.ash:
+		     Emit.Instr2(proc.s, Pentium.SAR, op, op2);
+		  | OberonStdProcedures.lsh:
+		     Emit.Instr2(proc.s, Pentium.SHR, op, op2);
+		  | OberonStdProcedures.rot:
+		     Emit.Instr2(proc.s, Pentium.ROR, op, op2);
+		  END;
+	       ELSE
+		  CASE type OF
+		  | OberonStdProcedures.ash:
+		     Emit.Instr2(proc.s, Pentium.SAL, op, op2);
+		  | OberonStdProcedures.lsh:
+		     Emit.Instr2(proc.s, Pentium.SHL, op, op2);
+		  | OberonStdProcedures.rot:
+		     Emit.Instr2(proc.s, Pentium.ROL, op, op2);
+		  END;
+	       END;
+	       Regs.Chown(op.reg1, caller);
+	       RETURN op;
+	    END;
+	    ASSERT(possible # {});
+	    rset := possible - {Gen.gencx};
+	    IF rset = {} THEN
+	       rset := Gen.StdRegs - {Gen.gencx};
+	    END;
+	    Regs.AddConstraint(rhs.reg1, {Gen.gencx});
+	    op := CodeGen.GenExpr(proc, param, TRUE, rset, caller);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+	    IF Op.Loc(op) IN { Op.immediate, Op.immediateDyn} THEN
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, rset);
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+	       op := Op.RegOp(reg, 4);
+	    END;
+	    CASE type OF
+	    | OberonStdProcedures.rot:
+	       Emit.Instr2(proc.s, Pentium.AND, rhs, Op.ImmInt(31));
+	       rhs.memsz := 1;
+	       Emit.Instr2(proc.s, Pentium.ROL, op, rhs);
+	    | OberonStdProcedures.lsh, OberonStdProcedures.ash:
+	       FragmentedStreams.CreateLabel(lab);
+	       FragmentedStreams.CreateLabel(beyond);
+	       Emit.Instr2(proc.s, Pentium.CMP, rhs, Op.ImmInt(0));
+	       Emit.JumpCC(proc.s, beyond, Pentium.JZ-Pentium.JCC);
+	       Emit.JumpCC(proc.s, lab, Pentium.JG-Pentium.JCC);
+	       Regs.EnterLevel(proc.regs);
+	       Emit.Instr1(proc.s, Pentium.NEG, rhs);
+	       FragmentedStreams.CreateLabel(lab2);
+	       Emit.Instr2(proc.s, Pentium.CMP, rhs, Op.ImmInt(32));
+	       Emit.JumpCC(proc.s, lab2, Pentium.JB - Pentium.JCC);
+	       Regs.EnterLevel(proc.regs);
+	       CASE type OF
+	       | OberonStdProcedures.lsh:
+		  Emit.Instr2(proc.s, Pentium.SHR, op, Op.ImmInt(1));
+	       | OberonStdProcedures.ash:
+	          Emit.Instr2(proc.s, Pentium.SAR, op, Op.ImmInt(1));
+	       END;
+	       Emit.Instr2(proc.s, Pentium.MOV, rhs, Op.ImmInt(31));
+	       Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       FragmentedStreams.AttachLabel(proc.s, lab2);
+	       CASE type OF
+	       | OberonStdProcedures.lsh:
+		  Emit.Instr2(proc.s, Pentium.SHR, op, Op.RegOp(rhs.reg1, 1));
+	       | OberonStdProcedures.ash:
+	          Emit.Instr2(proc.s, Pentium.SAR, op, Op.RegOp(rhs.reg1, 1));
+	       END;
+               Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       Emit.Jump(proc.s, beyond);
+
+	       FragmentedStreams.AttachLabel(proc.s, lab);
+
+	       Regs.EnterLevel(proc.regs);
+	       FragmentedStreams.CreateLabel(lab2);
+	       Emit.Instr2(proc.s, Pentium.CMP, rhs, Op.ImmInt(32));
+	       Emit.JumpCC(proc.s, lab2, Pentium.JB - Pentium.JCC);
+	       Regs.EnterLevel(proc.regs);
+	       CASE type OF
+	       | OberonStdProcedures.lsh:
+		  Emit.Instr2(proc.s, Pentium.SHL, op, Op.ImmInt(1));
+	       | OberonStdProcedures.ash:
+	          Emit.Instr2(proc.s, Pentium.SAL, op, Op.ImmInt(1));
+	       END;
+	       Emit.Instr2(proc.s, Pentium.MOV, rhs, Op.ImmInt(31));
+	       Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       FragmentedStreams.AttachLabel(proc.s, lab2);
+	       CASE type OF
+	       | OberonStdProcedures.lsh:
+		  Emit.Instr2(proc.s, Pentium.SHL, op, Op.RegOp(rhs.reg1, 1));
+	       | OberonStdProcedures.ash:
+	          Emit.Instr2(proc.s, Pentium.SAL, op, Op.RegOp(rhs.reg1, 1));
+	       END;
+               Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       FragmentedStreams.AttachLabel(proc.s, beyond);
+	    END;
+	    Regs.DestroyOwnedValue(rhs.reg1, own);
+
+	    Regs.LoadReg(op.reg1, possible);
+	    ASSERT(op.reg2 = NIL);
+            SetMode(op.reg1, at.type);
+	    Regs.Chown(op.reg1, caller);
+	    RETURN Op.RegOp(op.reg1, 4);
+	 | OberonStdProcedures.assert:
+	    ASSERT((at.paramcnt = 1) OR(at.paramcnt = 2));
+	    ASSERT(at.firstparam # NIL);
+	    NEW(ctxt);
+	    ctxt.target := NIL;
+	    ctxt.setaction := CodeGen.setNever;
+	    ctxt.neg := FALSE;
+	    ctxt.falselab := NIL;
+	    FragmentedStreams.CreateLabel(ctxt.truelab);
+	    CodeGen.GenBool(proc, at.firstparam, ctxt);
+	    Regs.EnterLevel(proc.regs);
+	    IF at.firstparam.next # NIL THEN
+	       op := CodeGen.GenExpr(proc, at.firstparam.next, TRUE, Gen.StdRegs, own);
+	    ELSE
+	       op := Op.ImmInt(0);
+	    END;
+	    EmitErrors.Assertion(proc, at.loc, op);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.LeaveLevel(proc.regs);
+	    Regs.DoneLevel(proc.regs);
+	    FragmentedStreams.AttachLabel(proc.s, ctxt.truelab);
+	    RETURN NIL;
+	 | OberonStdProcedures.bit:
+	    ASSERT(at.paramcnt = 2);
+	    param := at.firstparam;
+	    lhs := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+	    rhs := CodeGen.GenExpr(proc, param.next, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+            IF Op.Loc(rhs) = Op.register THEN
+	       FragmentedStreams.CreateLabel(noerr);
+	       Emit.Instr2(proc.s, Pentium.CMP, rhs, Op.ImmInt(32));
+	       Emit.JumpCC(proc.s, noerr, Pentium.JB-Pentium.JCC);
+	       Regs.EnterLevel(proc.regs);
+	       EmitErrors.RangeCheck(proc, at.loc, rhs, Op.ImmInt(31));
+	       Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       FragmentedStreams.AttachLabel(proc.s, noerr);
+            END;
+	    Emit.Instr2(proc.s, Pentium.BT, lhs, rhs);
+	    Regs.DestroyOwnedValue(rhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg2, own);
+	    RETURN Op.CCOp(Pentium.JC-Pentium.JCC);
+	 | OberonStdProcedures.cap:
+	    ASSERT((at.paramcnt = 1) & (at.firstparam # NIL));
+	    op := CodeGen.GenExpr(proc, at.firstparam, TRUE, possible, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            (* The parameter should be a character, i.e. it can't
+	     * by dynamic *)
+            CASE Op.Loc(op) OF
+	    | Op.immediate:
+	       ASSERT(op.data.kind = Op.charConst);
+	       op.data.charval := CAP(op.data.charval);
+	    | Op.register:
+	       Emit.Instr2(proc.s, Pentium.AND, op, Op.ImmInt(255-32));
+	    END;
+	    IF op.reg1 # NIL THEN
+	       Regs.Chown(op.reg1, caller);
+	    END;
+	    RETURN op;
+	 | OberonStdProcedures.chr:
+	    ASSERT((at.paramcnt = 1) & (at.firstparam # NIL));
+	    rset := possible * Gen.LowByteRegs;
+	    IF rset = {} THEN
+	       rset := Gen.LowByteRegs;
+	    END;
+	    op := CodeGen.GenExpr(proc, at.firstparam, TRUE, rset, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CASE Op.Loc(op) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(op.data.kind = Op.integerConst);
+	       IF(op.data.intval > 255) OR(op.data.intval < 0) THEN
+		  CompilerErrors.Raise(proc.errors, FixupLoc(at.firstparam),
+					"constant out of range");
+                  Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN Op.Error();
+               ELSE
+		  RETURN Op.ImmChar(CHR(op.data.intval));
+	       END;
+	    | Op.register:
+	       IF op.memsz > 1 THEN
+	          IF op.memsz >= 4 THEN
+		     op.memsz := 4;
+                  ELSE
+		     Regs.AddConstraint(op.reg1, Gen.LowByteRegs);
+		  END;
+		  Emit.Instr2(proc.s, Pentium.CMP, op, Op.ImmInt(255));
+		  FragmentedStreams.CreateLabel(noerr);
+		  Emit.JumpCC(proc.s, noerr, Pentium.JNA-Pentium.JCC);
+		  Regs.EnterLevel(proc.regs);
+		  EmitErrors.RangeCheck(proc, at.loc, op, Op.ImmInt(255));
+		  Regs.LeaveLevel(proc.regs);
+		  Regs.DoneLevel(proc.regs);
+		  FragmentedStreams.AttachLabel(proc.s, noerr);
+		  Regs.RemoveConstraint(op.reg1);
+	       END;
+	       Regs.Chown(op.reg1, caller);
+               Regs.SetMode(op.reg1, Regs.stdM);
+	       RETURN Op.RegOp(op.reg1, 1);
+	    END;
+	 | OberonStdProcedures.copy:
+	    (* Like a string assignment but open arrays are allowed *)
+	    ASSERT((at.paramcnt = 2) & (at.firstparam # NIL));
+	    param := at.firstparam;
+	    ASSERT((param.next # NIL) & (param.next.type.form = Sym.array) &
+	            (param.next.type.element.form = Sym.char));
+	    Regs.CreateValue(lenreg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(lenreg, {Gen.gencx});
+	    Regs.AddConstraint(lenreg, {Gen.gencx});
+	    lhs := CodeGen.GenDesignator(proc, param.next, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    IF param.next.type.dyn THEN
+	       tmp := param.next;
+	       offset := 0;
+	       WHILE tmp.mode = Sym.indexAt DO
+		  INC(offset);
+		  tmp := tmp.designator;
+	       END;
+	       NEW(var);
+	       var.mode := CodeGen.stackM;
+	       var.ident := tmp.ident;
+	       lenop := CodeGen.GenVar(proc, var, FALSE, Gen.StdRegs, own);
+	       INC(lenop.disp, Ob32.pointerSize + offset * Ob32.int32Size);
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(lenreg, 4), lenop);
+	       Regs.DestroyOwnedValue(lenop.reg1, own);
+	       Regs.DestroyOwnedValue(lenop.reg2, own);
+	       lenop := Op.RegOp(lenreg, 4);
+	    ELSE
+	       len := Sym32.GetSize(proc.module, param.next.type, proc.errors);
+	       lenop := Op.ImmInt(len);
+	    END;
+	    rhs := CodeGen.GenExpr(proc, param, FALSE, Gen.StdRegs, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    CASE Op.Loc(rhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       (* Character constant assigned to string *)
+	       lhs.memsz := 1; rhs.immsz := 1;
+	       Emit.Instr2(proc.s, Pentium.MOV, lhs, rhs);
+	       INC(lhs.disp);
+	       CASE Op.Loc(lenop) OF
+	       | Op.register:
+		  FragmentedStreams.CreateLabel(beyond);
+		  Emit.Instr2(proc.s, Pentium.CMP, lenop, Op.ImmInt(1));
+		  Emit.JumpCC(proc.s, beyond, Pentium.JE-Pentium.JCC);
+		  Emit.Instr2(proc.s, Pentium.MOV, lhs, Op.ImmInt(0));
+		  FragmentedStreams.AttachLabel(proc.s, beyond);
+	       | Op.immediateDyn:
+		  IF len > 1 THEN
+		     Emit.Instr2(proc.s, Pentium.MOV, lhs, Op.ImmInt(0));
+		  END;
+	       END;
+	       (* We don't call GenStringOp in this branch, i.e. we
+	        * have to destroy registers. *)
+	       Regs.DestroyOwnedValue(lhs.reg1, own);
+	       Regs.DestroyOwnedValue(lhs.reg2, own);
+	       Regs.DestroyOwnedValue(lenop.reg1, own);
+	       Regs.DestroyOwnedValue(lenop.reg2, own);
+	       IF lenreg # lenop.reg1 THEN
+	          Regs.DestroyOwnedValue(lenreg, own);
+	       END;
+	    | Op.memory:
+	       IF param.type.dyn THEN
+		  IF Op.Loc(lenop) = Op.immediateDyn THEN
+		     Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(lenreg, 4),
+				  lenop);
+		     lenop := Op.RegOp(lenreg, 4);
+		  END;
+		  ASSERT(Op.Loc(lenop) = Op.register);
+		  tmp := param;
+		  offset := 0;
+		  WHILE tmp.mode = Sym.indexAt DO
+		     INC(offset);
+		     tmp := tmp.designator;
+		  END;
+		  NEW(var);
+		  var.mode := CodeGen.stackM;
+		  var.ident := tmp.ident;
+		  lenop2 := CodeGen.GenVar(proc, var, FALSE, Gen.StdRegs, own);
+		  INC(lenop2.disp, Ob32.pointerSize + offset * Ob32.int32Size);
+		  FragmentedStreams.CreateLabel(beyond);
+		  Emit.Instr2(proc.s, Pentium.CMP, lenop, lenop2);
+		  Emit.JumpCC(proc.s, beyond, Pentium.JL-Pentium.JCC);
+		  Emit.Instr2(proc.s, Pentium.MOV, lenop, lenop2);
+		  FragmentedStreams.AttachLabel(proc.s, beyond);
+		  Regs.DestroyOwnedValue(lenop2.reg1, own);
+		  Regs.DestroyOwnedValue(lenop2.reg2, own);
+	       ELSE
+		  len2 := Sym32.GetSize(proc.module, param.type, proc.errors);
+	          CASE Op.Loc(lenop) OF
+		  | Op.immediateDyn:
+		     lenop := Op.RegOp(lenreg, 4);
+		     IF len2 <= len THEN
+		        len := len2;
+		     END;
+		     Emit.Instr2(proc.s, Pentium.MOV, lenop, Op.ImmInt(len));
+		  | Op.register:
+		     FragmentedStreams.CreateLabel(beyond);
+		     Emit.Instr2(proc.s, Pentium.CMP, lenop, Op.ImmInt(len2));
+                     Emit.JumpCC(proc.s, beyond, Pentium.JL-Pentium.JCC);
+		     Emit.Instr2(proc.s, Pentium.MOV, lenop, Op.ImmInt(len2));
+		     FragmentedStreams.AttachLabel(proc.s, beyond);
+		  END;
+	       END;
+	       ASSERT(Op.Loc(lenop) = Op.register);
+	       Emit.Instr1(proc.s, Pentium.DECR, lenop);
+	       CodeGen.GenStringOp(proc, Pentium.MOVS, {Gen.rep}, lhs,
+	                            rhs, lenop, 1, FALSE, own);
+	       Regs.UntracedValue(reg, Gen.gendi);
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(reg, 1, 0, 0),
+	                    Op.ImmInt(0));
+	    END;
+	    RETURN NIL;
+	 | OberonStdProcedures.dec, OberonStdProcedures.inc:
+	    param := at.firstparam;
+	    ASSERT(param # NIL);
+	    op := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+	    IF at.paramcnt > 1 THEN
+	       rset := Gen.StdRegs;
+	       IF op.memsz = 1 THEN
+		  rset := Gen.LowByteRegs;
+	       END;
+	       ASSERT(at.paramcnt = 2);
+	       ASSERT(param.next # NIL);
+	       rhs := CodeGen.GenExpr(proc, param.next, TRUE, rset, own);
+	       IF Op.IsError(rhs) THEN
+	          Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN rhs
+	       END;
+               IF Op.Loc(rhs) IN {Op.immediate, Op.immediateDyn} THEN
+		  ASSERT(rhs.data.kind = Op.integerConst);
+		  IF op.memsz < rhs.immsz THEN
+		     CompilerErrors.Raise(proc.errors, FixupLoc(param.next),
+					   "constant out of range");
+                     Regs.DestroyOwnerOnError(proc.regs, own);
+		     RETURN NIL;
+		  END;
+	       ELSE
+                  rhs.memsz := op.memsz;
+	       END;
+	       IF rhs.reg1 # NIL THEN
+	          Regs.AddConstraint(rhs.reg1, rset);
+               END;
+	       CASE type OF
+	       | OberonStdProcedures.dec:
+		  Emit.Instr2(proc.s, Pentium.SUB, op, rhs);
+	       | OberonStdProcedures.inc:
+		  Emit.Instr2(proc.s, Pentium.ADD, op, rhs);
+               END;
+               Regs.DestroyOwnedValue(rhs.reg1, own);
+            ELSE
+	       CASE type OF
+	       | OberonStdProcedures.dec:
+	          Emit.Instr1(proc.s, Pentium.DECR, op);
+	       | OberonStdProcedures.inc:
+	          Emit.Instr1(proc.s, Pentium.INCR, op);
+               END;
+	    END;
+            Regs.DestroyOwnedValue(op.reg1, own);
+            Regs.DestroyOwnedValue(op.reg2, own);
+	    RETURN NIL;
+	 | OberonStdProcedures.entier:
+	    param := at.firstparam; ASSERT(param # NIL);
+	    ASSERT(at.paramcnt = 1);
+	    ASSERT(param.type.form = Sym.real);
+	    rhs := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.Loc(rhs) IN { Op.immediate, Op.immediateDyn } THEN
+	       IF rhs.data.kind = Op.realConst THEN
+		  RETURN Op.ImmInt(ENTIER(rhs.data.realval));
+	       END;
+	    END;
+	    IF Op.Loc(rhs) # Op.fpuRegister THEN
+	       rhs := CodeGen.LoadFPUReg(proc, rhs, param.type.form,
+	       				  rhs.memsz, own);
+	    END;
+	    ASSERT(Op.Loc(rhs) = Op.fpuRegister);
+	    offset := StackAlloc.Allocate(proc.stack, 4, 4, FALSE);
+	    Regs.UntracedValue(reg, Gen.genbp);
+	    (* Storing twice is as fast as copying and doesn't require
+	       a register. *)
+	    Emit.Instr1(proc.s, Pentium.FNSTCW, Op.MemOp1(reg, 2, offset, 0));
+	    Emit.Instr1(proc.s, Pentium.FNSTCW, Op.MemOp1(reg, 2, offset+2, 0));
+	    Emit.Instr2(proc.s, Pentium.ORI, Op.MemOp1(reg, 2, offset, 0),
+	    		 Op.ImmInt(0C00H));
+	    Emit.Instr2(proc.s, Pentium.XOR, Op.MemOp1(reg, 2, offset, 0),
+	    		 Op.ImmInt(0800H));
+	    Emit.Instr1(proc.s, Pentium.FLDCW, Op.MemOp1(reg, 2, offset, 0));
+	    Regs.CreateValue(reg2, proc.regs, own, Regs.stdM);
+	    Regs.SaveReg(reg2);
+	    ok := Regs.StackOffset(reg2, offset2);
+	    I386FPURegisters.StoreInt(rhs.reg1, proc.s, Op.MemOp1(reg, 4, offset2, 0));
+	    Emit.Instr1(proc.s, Pentium.FLDCW, Op.MemOp1(reg, 2, offset+2, 0));
+	    StackAlloc.Free(proc.stack, offset);
+	    Regs.Chown(reg2, caller);
+	    RETURN Op.RegOp(reg2, 4);
+	 | OberonStdProcedures.excl, OberonStdProcedures.incl:
+	    param := at.firstparam; ASSERT(param # NIL);
+	    ASSERT((at.paramcnt = 2) & (param.next # NIL));
+            rhs := CodeGen.GenExpr(proc, param.next, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+	    lhs := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            CASE Op.Loc(rhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(rhs.data.kind = Op.integerConst);
+	       CASE type OF
+	       | OberonStdProcedures.incl:
+		  rhs := Op.ImmInt(ASH(1, rhs.data.intval));
+	       | OberonStdProcedures.excl:
+		  (* NOTE: ~(1<<x) = -1 - (1<<x) *)
+		  rhs := Op.ImmInt(-1 - ASH(1, rhs.data.intval));
+	       END;
+	    | Op.register:
+	       FragmentedStreams.CreateLabel(noerr);
+	       Regs.AddConstraint(rhs.reg1, {Gen.gencx});
+	       Emit.Instr2(proc.s, Pentium.CMP, rhs, Op.ImmInt(31));
+	       Emit.JumpCC(proc.s, noerr, Pentium.JNA-Pentium.JCC);
+	       Regs.EnterLevel(proc.regs);
+	       EmitErrors.RangeCheck(proc, at.loc, rhs, Op.ImmInt(31));
+	       Regs.LeaveLevel(proc.regs);
+	       Regs.DoneLevel(proc.regs);
+	       FragmentedStreams.AttachLabel(proc.s, noerr);
+	       rhs.memsz := 1;
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, Gen.StdRegs);
+	       opreg := Op.RegOp(reg, 4(* SET *));
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, Op.ImmInt(1));
+	       Emit.Instr2(proc.s, Pentium.SAL, opreg, rhs);
+	       Regs.DestroyOwnedValue(rhs.reg1, own);
+	       Regs.DestroyOwnedValue(rhs.reg2, own);
+	       IF type = OberonStdProcedures.excl THEN
+		  Emit.Instr1(proc.s, Pentium.NOT, opreg);
+	       END;
+	       rhs := opreg;
+            END;
+	    CASE type OF
+	    | OberonStdProcedures.incl:
+	       Emit.Instr2(proc.s, Pentium.ORI, lhs, rhs);
+	    | OberonStdProcedures.excl:
+	       Emit.Instr2(proc.s, Pentium.AND, lhs, rhs);
+	    END;
+	    Regs.DestroyOwnedValue(rhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg2, own);
+	    RETURN NIL;
+	 | OberonStdProcedures.get:
+	    param := at.firstparam;
+	    ASSERT((at.paramcnt = 2) & (param # NIL) & (param.next # NIL));
+	    Sym32.GetType(param.next, attype);
+	    size := Sym32.GetSize(proc.module, attype, proc.errors);
+	    lhs := CodeGen.GenDesignator(proc, param.next, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            ASSERT((size <= 4) OR((size = 8) & (attype.form = Sym.real)));
+	    lhs.memsz := size;
+	    rhs := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    CASE Op.Loc(rhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(rhs.data.kind = Op.integerConst);
+	       op2 := Op.MemOp0(size, rhs.data.intval, 0);
+	    | Op.register:
+	       ASSERT(rhs.reg1 # NIL);
+	       op2 := Op.MemOp1(rhs.reg1, size, 0, 0);
+	    END;
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    IF size <= 1 THEN
+	       Regs.LoadReg(reg, Gen.LowByteRegs);
+	       Regs.AddConstraint(reg, Gen.LowByteRegs);
+	    ELSE
+	       Regs.LoadReg(reg, Gen.StdRegs);
+	    END;
+	    IF size = 8 THEN
+	       ASSERT(Op.Loc(op2) = Op.memory);
+	       opreg := Op.RegOp(reg, 4);
+	       op2.memsz := 4;
+	       lhs.memsz := 4;
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, op2);
+	       Emit.Instr2(proc.s, Pentium.MOV, lhs, opreg);
+	       INC(op2.disp, 4);
+	       INC(lhs.disp, 4);
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, op2);
+	       Emit.Instr2(proc.s, Pentium.MOV, lhs, opreg);
+	    ELSE
+	       opreg := Op.RegOp(reg, size);
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, op2);
+	       Emit.Instr2(proc.s, Pentium.MOV, lhs, opreg);
+	    END;
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg2, own);
+	    Regs.DestroyOwnedValue(rhs.reg1, own);
+	    Regs.DestroyOwnedValue(reg, own);
+	    RETURN NIL;
+	 | OberonStdProcedures.halt:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op)  THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    IF Op.Loc(op) IN {Op.immediate, Op.immediateDyn} THEN
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, Gen.StdRegs);
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+	       op := Op.RegOp(reg, 4);
+	    END;
+	    Emit.Instr1(proc.s, Pentium.PUSH, op);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    NEW(ref);
+	    ConstStrings.Create(ref.modname, "Process");
+	    ConstStrings.Create(ref.symname, "Exit");
+	    Emit.CallExtern(proc.s, proc.regs, ref);
+	    RETURN NIL;
+	 (* | OberonStdProcedures.inc: See OberonStdProcedures.dec *)
+	 (* | OberonStdProcedures.incl: See OberonStdProcedure.excl *)
+	 | OberonStdProcedures.len:
+	    ASSERT(at.paramcnt IN {1,2});
+	    param := at.firstparam; ASSERT(param # NIL);
+	    ASSERT(param.type.form = Sym.array);
+	    rhs := Op.ImmInt(0);
+	    IF param.next # NIL THEN
+	       rhs := CodeGen.GenExpr(proc, param.next, TRUE,
+	                               Gen.StdRegs, own);
+	    END;
+	    IF ~(Op.Loc(rhs) IN {Op.immediate, Op.immediateDyn}) THEN
+	       ASSERT(param.next # NIL);
+	       CompilerErrors.Raise(proc.errors, FixupLoc(param),
+		  "implementation restriction: constant expresion expected");
+	       (* XXX Implementation restriction should be fixed. *)
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    val := rhs.data.intval;
+	    base := 0; tmp := NIL;
+	    IF param.type.dyn THEN
+	       tmp := param;
+	       WHILE tmp.mode = Sym.indexAt DO
+	          tmp := tmp.designator;
+		  INC(base);
+	       END;
+               ASSERT(tmp.mode = Sym.varAt);
+	    END;
+	    dim := -1;
+	    Sym32.GetType(param, typ);
+	    WHILE typ.dyn DO
+	       INC(dim);
+	       typ := typ.element;
+	    END;
+	    IF val > dim THEN  (* The array is of fixed length *)
+	       Sym32.GetType(param, typ);
+	       WHILE val > 0 DO
+	          DEC(val);
+		  typ := typ.element;
+		  IF ~(typ.form = Sym.array) THEN
+		     CompilerErrors.Raise(proc.errors, FixupLoc(param),
+		        "dimension out of range");
+		  END;
+	       END;
+	       ASSERT(typ.length # NIL);
+	       rhs := CodeGen.GenExpr(proc, typ.length, TRUE,
+	                               possible, caller);
+	       ASSERT(Op.Loc(rhs) IN {Op.immediate, Op.immediateDyn});
+	       RETURN rhs;
+	    ELSE
+	       NEW(var);
+	       var.mode := CodeGen.stackM;
+	       var.ident := tmp.ident;
+	       dope := CodeGen.GenVar(proc, var, FALSE, Gen.StdRegs, caller);
+	       INC(dope.disp, Ob32.pointerSize+(base+val)*Ob32.int32Size);
+	       reg := dope.reg1;
+	       IF(reg = NIL) OR ~Regs.Traced(reg) THEN
+		  reg := dope.reg2;
+	       END;
+	       IF(reg = NIL) OR ~Regs.Traced(reg) THEN
+		  Regs.CreateValue(reg, proc.regs, caller, Regs.stdM);
+		  Regs.LoadReg(reg, possible);
+	       END;
+	       opreg := Op.RegOp(reg, 4);
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, dope);
+	       IF dope.reg1 # reg THEN
+		  Regs.DestroyOwnedValue(dope.reg1, caller);
+	       END;
+	       IF dope.reg2 # reg THEN
+		  Regs.DestroyOwnedValue(dope.reg2, caller);
+	       END;
+	       RETURN opreg; 
+	    END;
+	 | OberonStdProcedures.long:
+	    (* With the current implementation there is no need to
+	     * do any type conversions for LONG *)
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, possible, caller);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CASE Op.Loc(op) OF
+	    | Op.immediate:
+	       ASSERT(op.immsz = 4);
+            | Op.immediateDyn:
+	       ASSERT(op.immsz <= 4);
+            | Op.register:
+               ASSERT(op.memsz = 4);
+	    END;
+	    RETURN op;
+	 (* | OberonStdProcedures.lsh: See OberonStdProcedures.ash *)
+	 (* | OberonStdProcedures.max, OberonStdProcedures.min:
+	    Handled by Oberon32iBuiltIns *)
+	 | OberonStdProcedures.move:
+	    ASSERT(at.paramcnt = 3);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    rhs := CodeGen.GenExpr(proc, param, TRUE, {Gen.gensi}, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+            CASE Op.Loc(rhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(rhs.data.kind = Op.integerConst);
+	       rhs := Op.MemOp0(1, rhs.data.intval, 0);
+            | Op.register:
+	       ASSERT(rhs.reg1 # NIL);
+	       rhs := Op.MemOp1(rhs.reg1, 1, 0, 0);
+	    END;
+	    param := param.next; ASSERT(param # NIL);
+	    lhs := CodeGen.GenExpr(proc, param, TRUE, {Gen.gendi}, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            CASE Op.Loc(lhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(lhs.data.kind = Op.integerConst);
+	       lhs := Op.MemOp0(1, lhs.data.intval, 0);
+            | Op.register:
+	       ASSERT(lhs.reg1 # NIL);
+	       lhs := Op.MemOp1(lhs.reg1, 1, 0, 0);
+	    END;
+            param := param.next; ASSERT(param # NIL);
+            op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CodeGen.GenStringOp(proc, Pentium.MOVS, {Gen.rep},
+				 lhs, rhs, op, 1, TRUE, own);
+	    (* GenStringOp will destroy the registers. *)
+            RETURN NIL;
+	 | OberonStdProcedures.new, OberonStdProcedures.sysnew:
+	    ASSERT(at.paramcnt >= 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    sizeop := NIL;
+	    IF type = OberonStdProcedures.sysnew THEN
+	       ASSERT((at.paramcnt = 2) & (param.next # NIL));
+	       sizeop := CodeGen.GenExpr(proc, param.next, TRUE,
+	                                  {Gen.gendi, Gen.gensi}, own);
+	       IF Op.IsError(sizeop) THEN
+	          Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN sizeop;
+	       END;
+	       CASE Op.Loc(sizeop) OF
+	       | Op.immediate, Op.immediateDyn:
+                  ASSERT(op.data.kind = Op.integerConst);
+                  IF op.data.intval MOD 4 # 0 THEN
+		     INC(op.data.intval, 4 - op.data.intval MOD 4);
+		  END;
+               | Op.register:
+	          Emit.Instr2(proc.s, Pentium.ADD, sizeop, Op.ImmInt(3));
+		  Emit.Instr2(proc.s, Pentium.AND, sizeop, Op.ImmInt(-4));
+	       END;
+	    ELSE
+	       ASSERT(at.paramcnt = 1);
+	    END;
+	    typ := param.type;
+	    ASSERT(typ.form = Sym.pointer);
+	    IF(param.mode = Sym.varAt) & (param.ident.varkind = Sym.refParam) &
+	       (typ.reftype.form = Sym.record) THEN
+	       IF sizeop # NIL THEN  (* dummytag *)
+                  lhs := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+		  Regs.CreateValue(reg, proc.regs, own, Regs.addrM);
+		  Regs.LoadReg(reg, {Gen.gensi});
+		  lhs.memsz := 4;
+		  Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(reg, 4), lhs);
+		  Regs.DestroyOwnedValue(lhs.reg1, own);
+		  Regs.DestroyOwnedValue(lhs.reg2, own);
+		  Allocate(proc, NIL, reg, sizeop, NIL, own);
+		  Regs.DestroyOwnedValue(reg, own);
+		  Regs.DestroyOwnedValue(sizeop.reg1, own);
+		  Regs.DestroyOwnedValue(sizeop.reg2, own);
+	       ELSE
+	          NEW(var);
+		  var.mode := CodeGen.stackM;
+		  var.ident := param.ident;
+		  op := CodeGen.GenVar(proc, var, FALSE, Gen.StdRegs, own);
+		  Regs.CreateValue(tag, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(tag, {Gen.gendi});
+		  Regs.CreateValue(reg, proc.regs, own, Regs.addrM);
+		  Regs.LoadReg(reg, {Gen.gensi});
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+		  INC(op.disp, 4);
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(tag, 4), op);
+		  Regs.DestroyOwnedValue(op.reg1, own);
+		  Regs.DestroyOwnedValue(op.reg2, own);
+		  Allocate(proc, NIL, reg,
+			    Op.MemOp1(tag, 4, GenTypes.sizeoff, 0), tag, own);
+		  Regs.DestroyOwnedValue(tag, own);
+		  Regs.DestroyOwnedValue(reg, own);
+	       END;
+	    ELSE
+	       tag := NIL;
+	       IF sizeop = NIL THEN
+		  size := Sym32.GetSize(proc.module, typ.reftype, proc.errors);
+		  tagop := GenTypes.GenTag(proc, typ.reftype);
+		  Regs.CreateValue(tag, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(tag, {Gen.gendi, Gen.gensi});
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(tag, 4), tagop);
+		  sizeop := Op.ImmInt(size);
+	       END;
+	       Allocate(proc, param, NIL, sizeop, tag, own);
+	       IF tag = NIL THEN
+		  Regs.DestroyOwnedValue(sizeop.reg1, own);
+		  Regs.DestroyOwnedValue(sizeop.reg2, own);
+	       ELSE
+		  Regs.DestroyOwnedValue(tag, own);
+	       END;
+	    END;
+	    RETURN NIL;
+	 | OberonStdProcedures.odd:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    lhs := CodeGen.GenExpr(proc, param, FALSE, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+	    Emit.Instr2(proc.s, Pentium.TEST, lhs, Op.ImmInt(1));
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg2, own);
+	    RETURN Op.CCOp(Pentium.JNZ-Pentium.JCC);
+	 | OberonStdProcedures.ord:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.LowByteRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CASE Op.Loc(op) OF
+	    | Op.immediate,Op.immediateDyn:
+	       ASSERT(op.data.kind = Op.integerConst);
+	       op := Op.ImmInt(op.data.intval);
+	    | Op.register:
+	       ASSERT(op.reg1 # NIL);
+               Regs.RemoveConstraint(op.reg1);
+               op.memsz := 4;
+               Emit.Instr2(proc.s, Pentium.AND, op, Op.ImmInt(255));
+	    END;
+	    IF op.reg1 # NIL THEN
+	       Regs.Chown(op.reg1, caller);
+            END;
+	    IF op.reg2 # NIL THEN
+	       Regs.Chown(op.reg2, caller);
+            END;
+	    RETURN op;
+	 | OberonStdProcedures.put:
+	    ASSERT(at.paramcnt = 2);
+	    param := at.firstparam;
+	    ASSERT((param # NIL) & (param.next # NIL));
+	    Sym32.GetType(param.next, attype);
+	    size := Sym32.GetSize(proc.module, attype, proc.errors);
+	    rset := Gen.StdRegs;
+	    IF size <= 1 THEN
+	       rset := Gen.LowByteRegs;
+	    END;
+	    rhs := CodeGen.GenExpr(proc, param.next, TRUE, rset, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+            IF(size <= 1) & (Op.Loc(rhs) = Op.register) THEN
+	       Regs.AddConstraint(rhs.reg1, Gen.LowByteRegs);
+	    END;
+	    lhs := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            CASE Op.Loc(lhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(op.data.kind = Op.integerConst);
+	       lhs := Op.MemOp0(size, op.data.intval, 0);
+            | Op.register:
+	       ASSERT(lhs.reg1 # NIL);
+	       lhs := Op.MemOp1(lhs.reg1, size, 0, 0);
+	    END;
+	    IF attype.form = Sym.real THEN
+	       rhs := CodeGen.LoadFPUReg(proc, rhs, attype.form, size, own);
+	       lhs.memsz := size;
+	       I386FPURegisters.StoreReal(rhs.reg1, proc.s, lhs);
+	       Regs.DestroyOwnedValue(lhs.reg1, own);
+	    ELSE
+	       CASE Op.Loc(rhs) OF
+	       | Op.memory, Op.register:
+		  rhs.memsz := size;
+	       | Op.immediate:
+		  rhs.immsz := size;
+	       | Op.immediateDyn:
+	       END;
+	       Emit.Instr2(proc.s, Pentium.MOV, lhs, rhs);
+	       Regs.DestroyOwnedValue(lhs.reg1, own);
+	       Regs.DestroyOwnedValue(rhs.reg1, own);
+	    END;
+	    RETURN NIL;
+	 (* | OberonStdProcedures.rot: See OberonStdProcedures.ash *)
+	 | OberonStdProcedures.short:
+	    (* With the current implementation there is no need for
+	     * type conversions we just return the LONGINT value but we
+	     * must check that the result fits into SHORT. SHORTREALs
+	     * just get truncated. *)
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, possible, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+	    Sym32.GetType(at, attype);
+	    IF attype.form = Sym.real THEN
+	       RETURN op;
+	    END;
+            IF Sym32.GetSize(proc.module, attype, proc.errors) = 1 THEN
+	       CASE Op.Loc(op) OF
+	       | Op.immediate, Op.immediateDyn:
+		  IF(op.immsz > 1) THEN
+		     CompilerErrors.Raise(proc.errors, FixupLoc(param),
+					   "constant out of range");
+                     Regs.DestroyOwnerOnError(proc.regs, own);
+                     RETURN Op.Error();
+		  END;
+               | Op.register:
+	          (* We extend the lowest byte of the source operand into
+		   * a 4 byte register. Then we compare it to
+		   * the original value to check if SHORT is actually ok. *)
+		  Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(reg, Gen.LowByteRegs);
+		  Regs.AddConstraint(reg, Gen.LowByteRegs);
+		  opreg := Op.RegOp(reg, 4);
+		  (* Create a copy of the original value *)
+		  Emit.Instr2(proc.s, Pentium.MOV, opreg, op);
+		  (* Sign/Zero extend the lowest byte *)
+		  op2 := Op.RegOp(reg, 1);
+		  CASE param.type.form OF
+		  | Sym.integer, Sym.address:
+		     Emit.Instr2(proc.s, Pentium.MOVSX, opreg, op2);
+		  | Sym.cardinal:
+		     Emit.Instr2(proc.s, Pentium.MOVZX, opreg, op2);
+		  END;
+		  (* Generate a run time error if the original value
+		   * and the extension of the lowest byte don't match. *)
+		  FragmentedStreams.CreateLabel(noerr);
+		  Emit.Instr2(proc.s, Pentium.CMP, opreg, op);
+		  Emit.JumpCC(proc.s, noerr, Pentium.JE-Pentium.JCC);
+		  Regs.EnterLevel(proc.regs);
+		  EmitErrors.Conversion(proc, at.loc, op);
+		  Regs.LeaveLevel(proc.regs);
+		  Regs.DoneLevel(proc.regs);
+		  FragmentedStreams.AttachLabel(proc.s, noerr);
+		  Regs.DestroyOwnedValue(reg, own);
+	       END;
+	    END;
+	    IF op.reg1 # NIL THEN
+	       Regs.Chown(op.reg1, caller);
+	    END;
+	    RETURN op;
+	 (* | OberonStdProcedures.size: Handled by Oberon32iBuiltIns *)
+	 | OberonStdProcedures.val:
+	    (* NOTE: This is a simplified implementation that allows
+	     * more conversions than oc. However, all portable conversions
+	     * allowed by oc should work as advertized. *)
+	    ASSERT(at.paramcnt = 2);
+	    param := at.firstparam;
+            Sym32.GetType(param, typ);
+	    size := Sym32.GetSize(proc.module, typ, proc.errors);
+	    param := param.next;
+	    Sym32.GetType(param, typ2);
+	    (* Note: Sym.char is numeric. This differs from the oc
+	     * implementation. *)
+	    IF typ2.form IN Sym.numeric + {Sym.set, Sym.char, Sym.byte} THEN
+	       op := CodeGen.GenExpr(proc, param, TRUE, Gen.LowByteRegs, own);
+	       IF Op.IsError(op) THEN
+	          Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN op;
+	       END;
+	       IF typ2.form = Sym.real THEN
+		  ASSERT(Op.Loc(op) = Op.fpuRegister);
+		  IF(typ.form = Sym.real) THEN
+		     RETURN op;
+		  END;
+	       ELSIF Op.Loc(op) = Op.immediateDyn THEN
+	          Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(reg, Gen.LowByteRegs);
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+		  op := Op.RegOp(reg, 4);
+	       ELSIF Op.Loc(op) = Op.immediate THEN
+	          Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(reg, Gen.LowByteRegs);
+		  Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(reg, 4),
+		               Op.RegOp(reg, 4));
+		  ASSERT(op.immsz IN {1,2,4});
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, op.immsz),
+		               op);
+		  op := Op.RegOp(reg, 4);
+	       END;
+	       IF(Op.Loc(op) = Op.fpuRegister) & (size = 4) THEN
+		  Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.SaveReg(reg);
+		  Regs.UntracedValue(reg2, Gen.genbp);
+		  ok := Regs.StackOffset(reg, offset); ASSERT(ok);
+		  I386FPURegisters.StoreReal(op.reg1, proc.s,
+		  			      Op.MemOp1(reg2, 4, offset, 0));
+		  op := Op.RegOp(reg, 4);
+               ELSIF(Op.Loc(op) = Op.fpuRegister) & (size = 8) THEN
+	          (* Nothing *)
+	       ELSIF(typ.form IN Sym.numeric + {Sym.set})
+	             & ~(Op.Loc(op) = Op.fpuRegister) THEN
+		  op.memsz := 4;
+	       ELSE
+	          IF ~(size IN {1,2,4}) OR(Op.Loc(op) = Op.fpuRegister)  THEN
+		     CompilerErrors.Raise(proc.errors, at.loc,
+		                           "type conversion not supported");
+		     Regs.DestroyOwnerOnError(proc.regs, own);
+		     RETURN Op.Error();
+		  END;
+		  op.memsz := size;
+	       END;
+	       IF typ.form IN Sym.structured THEN
+		  len := size;
+		  IF len < 4 THEN
+		     len := 4;
+		  END;
+		  (*
+		     Note: This is a hack. This means that we reserve
+		     len bytes for each SYSTEM.VAL cast to a structured
+		     value. It would be best to just not support this because
+		     this is the only way to write an Expression of Record
+		     Type. However, Math.om makes use of this and oc supported
+		     it.
+		   *)
+		  offset := StackAlloc.Allocate(proc.stack, len, 4, TRUE);
+		  Regs.UntracedValue(reg, Gen.genbp);
+		  op2 := Op.MemOp1(reg, len, offset, 0);
+		  CASE Op.Loc(op) OF
+		  | Op.fpuRegister:
+		     I386FPURegisters.StoreReal(op.reg1, proc.s, op2);
+		  | Op.register:
+		     op.memsz := 4;
+		     Emit.Instr2(proc.s, Pentium.MOV, op2, op);
+		     Regs.DestroyOwnedValue(op.reg1, own);
+		  END;
+		  RETURN op2;
+	       END;
+	       IF Op.Loc(op) # Op.fpuRegister THEN
+		  Regs.Chown(op.reg1, caller);
+		  SetMode(op.reg1, at.type);
+	       END;
+	       RETURN op;
+	    ELSE
+	       ASSERT(Sym32.GetSize(proc.module, typ2, proc.errors) = size);
+	       op := CodeGen.GenExpr(proc, param, FALSE, Gen.StdRegs, own);
+	       IF typ.form = Sym.real THEN
+		  ASSERT(size IN {4,8});
+		  I386FPURegisters.CreateValue(reg, proc.fpuregs);
+		  op := CodeGen.LoadFPUReg(proc, op, Sym.real, size, own);
+	       ELSIF typ.form IN Sym.numeric + {Sym.set,Sym.char,Sym.byte} THEN
+	          ASSERT(size IN {1,2,4});
+	          Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(reg, Gen.LowByteRegs);
+		  Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(reg, 4),
+		               Op.RegOp(reg, 4));
+		  op.memsz := size;
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, size), op);
+		  Regs.DestroyOwnedValue(op.reg1, own);
+		  Regs.DestroyOwnedValue(op.reg2, own);
+		  IF typ.form IN {Sym.char, Sym.byte} THEN
+		     op := Op.RegOp(reg, 1);
+		  ELSE 
+		     op := Op.RegOp(reg, 4);
+		  END;
+                  SetMode(reg, at.type);
+	       END;
+	       IF Op.Loc(op) # Op.fpuRegister THEN
+		  IF op.reg1 # NIL THEN
+		     Regs.Chown(op.reg1, caller);
+		  END;
+		  IF op.reg2 # NIL THEN
+		     Regs.Chown(op.reg2, caller);
+		  END;
+	       END;
+	       RETURN op;
+	    END;
+         END;
+      ELSIF at.proc.type.builtinproc IS OberonUlmProcedures.StdProcedure THEN
+	 type := at.proc.type.builtinproc(OberonUlmProcedures.StdProcedure).stdproc;
+	 CASE type OF
+	 | OberonUlmProcedures.crspawn:
+	    ASSERT((proc.ident.class = Sym.procedureC) &
+	            (OA.ProcedureLevel(proc.ident) = 3) &
+		    (proc.ident.type.restype = NIL));
+	    ASSERT(at.paramcnt > 0);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    IF param.next # NIL THEN
+	       sizeop := CodeGen.GenExpr(proc, param.next, TRUE,
+	                                 Gen.StdRegs, own);
+	       IF Op.IsError(sizeop) THEN
+	          Regs.DestroyOwnerOnError(proc.regs, own);
+		  RETURN NIL
+	       END;
+	       IF Op.Loc(sizeop) IN {Op.immediate, Op.immediateDyn} THEN
+	          Regs.CreateValue(sizereg, proc.regs, own, Regs.stdM);
+		  Regs.LoadReg(sizereg, Gen.StdRegs);
+		  Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(sizereg, 4),
+		              sizeop);
+		  sizeop := Op.RegOp(sizereg, 4);
+	       END;
+	    ELSE
+	       Regs.CreateValue(sizereg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(sizereg, Gen.StdRegs);
+	       sizeop := Op.RegOp(sizereg, 4);
+	       op := Op.MemOp0(4, 0, 4);
+	       NEW(ref);
+	       ConstStrings.Create(ref.modname, "Coroutines");
+	       ConstStrings.Create(ref.symname, "defaultsize");
+	       Reloc.Create(req, proc.s, Reloc.addSym, ref);
+	       Op.RelocOpen(op, req);
+	       Emit.Instr2(proc.s, Pentium.MOV, sizeop, op);
+	    END;
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.StdRegs);
+	    Regs.UntracedValue(sp, Gen.gensp);
+	    Regs.UntracedValue(bp, Gen.genbp);
+	    size := OA.DataBlockSize(NIL, proc.ident.type, NIL);
+	    (* Add 8 bytes for %eip and %ebp(copied) *)
+	    Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(reg, 4),
+	                Op.MemOp1(bp, 4, 8+size, 0));
+	    Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(reg, 4),
+	                Op.RegOp(sp, 4));
+	    Emit.Instr2(proc.s, Pentium.LEA, sizeop, Op.MemOp2(sizeop.reg1,
+	                reg, 4, crrecordlen+pagesize-1, 0, 1));
+	    Emit.Instr2(proc.s, Pentium.AND, sizeop, Op.ImmInt(-pagesize));
+	    (* Uff. Size(page aligned) is in size. The total number of bytes
+	     * to be copied from the old stack is in reg.
+	     *)
+	    (* Space for the pointer. This avoids a TmpPointer. *)
+	    Emit.Instr1(proc.s, Pentium.PUSH, Op.ImmIntFixed(0, 4));
+	    (* crreg used as a temporary register here. *)
+	    Regs.CreateValue(crreg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(crreg, Gen.StdRegs);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(crreg, 4),
+	                Op.RegOp(sp, 4));
+	    (* mode : SHORTINT *)
+	    Emit.Instr1(proc.s, Pentium.PUSH, Op.ImmIntFixed(-1, 4)); 
+	    (* size : Size *)
+	    Emit.Instr1(proc.s, Pentium.PUSH, sizeop);
+	    (* VAR ptr : Address *)
+	    Emit.Instr1(proc.s, Pentium.PUSH, Op.RegOp(crreg, 4));
+	    Regs.DestroyOwnedValue(crreg, own);
+	    NEW(ref);
+	    ConstStrings.Create(ref.modname, "Storage");
+	    ConstStrings.Create(ref.symname, "AllocateStack");
+	    Emit.CallExtern(proc.s, proc.regs, ref);
+	    Regs.DestroyOwnedValue(sizeop.reg1, own);
+	    Regs.UntracedValue(sp, Gen.gensp);
+	    Emit.Instr2(proc.s, Pentium.ADD, Op.RegOp(sp, 4), Op.ImmInt(12));
+	    Regs.CreateValue(crreg, proc.regs, own, Regs.addrM);
+	    Regs.LoadReg(crreg, Gen.StdRegs);
+	    (* POP the top of the allocated stack. *)
+	    Emit.Instr1(proc.s, Pentium.POP, Op.RegOp(crreg, 4));
+	    Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(crreg, 4),
+	                 Op.ImmInt(crrecordlen));
+	    lhs := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    Emit.Instr2(proc.s, Pentium.MOV, lhs, Op.RegOp(crreg, 4));
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(lhs.reg2, own);
+	    ASSERT(tmpreg = NIL);
+	    Regs.CreateValue(tmpreg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(tmpreg, Gen.StdRegs);
+	    Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(tmpreg, 4),
+	                Op.RegOp(tmpreg, 4));
+	    (* interrupts *)
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(crreg, 4, crints, 0),
+	                Op.RegOp(tmpreg, 4));
+	    (* started *)
+	    Emit.Instr2(proc.s, Pentium.MOV,
+	                Op.MemOp1(crreg, 4, crstarted, 0),
+	                Op.RegOp(tmpreg, 4));
+	    op := Op.MemOp0(4, 0, 4);
+	    NEW(ref);
+	    ConstStrings.Create(ref.modname, "Coroutines");
+	    ConstStrings.Create(ref.symname, "tag");
+	    Reloc.Create(req, proc.s, Reloc.addSym, ref);
+	    Op.RelocOpen(op, req);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(tmpreg, 4), op);
+            Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(crreg, 4, -4, 0),
+	                Op.RegOp(tmpreg, 4));
+	    Regs.DestroyOwnedValue(tmpreg, own);
+	    tmpreg := NIL;
+	    Regs.DestroyOwnedValue(op.reg1, own);
+            (* Ok. Saving the context should be really cheap. Traced
+	     * registers must be saved by the caller anyway, flags need
+	     * not be saved. We only store %ebp, %esp and %eip.
+	     *)
+	    Regs.CreateValue(crbase, proc.regs, own, Regs.addrM);
+	    Regs.LoadReg(crbase, Gen.StdRegs);
+	    (* Add 12 bytes for: coroutine tag and %eip/%ebp *)
+	    Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(crbase, 4),
+	                Op.MemOp1(crreg, 4, -(12+size), 0));
+	    Emit.Instr2(proc.s, Pentium.MOV,
+	                Op.MemOp1(crreg, 4, crbaseoffset, 0),
+			Op.RegOp(crbase, 4));
+	    Regs.CreateValue(crtop, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(crtop, {Gen.gendi});
+	    Emit.Instr2(proc.s, Pentium.LEA, Op.RegOp(crtop, 4),
+	                Op.MemOp1(crreg, 4, -4, 0));
+	    Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(crtop, 4),
+	                Op.RegOp(reg, 4));
+	    Emit.Instr2(proc.s, Pentium.MOV,
+	                Op.MemOp1(crreg, 4, crtopoffset, 0),
+			Op.RegOp(crtop, 4));
+	    Regs.CreateValue(tmpreg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(tmpreg, {Gen.gensi});
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(tmpreg, 4),
+	                Op.RegOp(sp, 4));
+	    CodeGen.GenStringOp(proc, Pentium.MOVS, {Gen.rep},
+	                        Op.MemOp1(crtop, 4, 0, 0),
+				Op.MemOp1(tmpreg, 4, 0, 0),
+				Op.RegOp(reg, 4), 1, FALSE, own);
+	    (* Fix dynamic arrays. Everything else is accessed relative to
+	     * the base pointer. *)
+	    diffreg := NIL;
+	    pl := proc.ident.type.paramlist;
+	    WHILE pl # NIL DO
+	       IF (pl.type.form = Sym.array) &
+		     (pl.paramkind = Sym.valueParam) & pl.type.dyn THEN
+		  IF diffreg = NIL THEN
+		     Regs.CreateValue(diffreg, proc.regs, own, Regs.stdM);
+		     Regs.LoadReg(diffreg, Gen.StdRegs);
+		     Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(diffreg, 4),
+		                 Op.RegOp(crbase, 4));
+		     Emit.Instr2(proc.s, Pentium.SUB, Op.RegOp(diffreg, 4),
+		                 Op.RegOp(bp, 4));
+		  END;
+                  offset := OA.VarOffset(pl);
+		  Emit.Instr2(proc.s, Pentium.ADD,
+		              Op.MemOp1(crbase, 4, offset, 0),
+			      Op.RegOp(diffreg, 4));
+	       END;
+	       pl := pl.next;
+	    END;
+	    IF diffreg # NIL THEN
+	       Regs.DestroyOwnedValue(diffreg, own);
+	    END;
+	    ConstStrings.Create(mod, "RTErrors");
+	    ConstStrings.Create(sym, "CoroutineReturn");
+	    (* Fix return pointer to make sure that an error
+	     * handler is called. *)
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(crbase, 4, 4, 0),
+	                 CodeGen.GenSymVal(proc, {}, mod, sym, own, FALSE));
+	    (* Store zero as old base pointer. SysStacks will recognize
+	     * the end of the call chain if this is the case. *)
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(crbase, 4, 0, 0),
+	                 Op.ImmInt(0));
+	    Regs.DestroyOwnedValue(crbase, own);
+	    FragmentedStreams.CreateLabel(beyond);
+	    ConstStrings.Init(cs);
+	    Write.StringS(cs, "__CRSPAWN_CONTINUE_");
+	    Write.IntS(cs, PC.Unique(proc), 0);
+	    ConstStrings.Close(cs, sym);
+	    Reloc.NewSymbol(proc.s, sym, beyond);
+	    op := CodeGen.GenSymVal(proc, Gen.StdRegs, NIL, sym, own, FALSE);
+	    ASSERT(Op.Loc(op) IN {Op.immediate, Op.immediateDyn});
+            Emit.Instr2(proc.s, Pentium.MOV,
+	                Op.MemOp1(crreg, 4, creipoffset, 0), op);
+	    Regs.DestroyOwnedValue(crreg, own);
+	    (* Registers must be passed on the stack! *)
+	    Regs.SaveAll(proc.regs);
+	    CodeGen.GenReturn(proc);
+	    FragmentedStreams.AttachLabel(proc.s, beyond);
+	    RETURN NIL
+	 | OberonUlmProcedures.crswitch:
+	    (* CRSWITCH is racy if an interrupt handler is allowed to
+	     * switch Coroutines. As soon as Adi confirms the proposed
+	     * fix I'll implement it. *)
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    ASSERT(Op.Loc(op) = Op.register);
+	    ConstStrings.Create(mod, "Coroutines");
+	    ConstStrings.Create(sym, "current");
+	    op2 := CodeGen.GenSymVal(proc, Gen.StdRegs, mod, sym, own, TRUE);
+            ASSERT(Op.Loc(op2) = Op.register);
+	    reg := op2.reg1;
+	    Regs.CreateValue(crreg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(crreg, Gen.StdRegs);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(crreg, 4),
+	                 Op.MemOp1(reg, 4, 0, 0));
+	    ConstStrings.Create(sym, "source");
+	    op2 := CodeGen.GenSymVal(proc, Gen.StdRegs, mod, sym, own, TRUE);
+	    ASSERT(Op.Loc(op2) = Op.register);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(op2.reg1, 4, 0, 0),
+	                 Op.RegOp(crreg, 4));
+       	    Regs.DestroyOwnedValue(op2.reg1, own);
+	    Regs.MakeUntraced(op.reg1, own); (* Target Coroutine *)
+	    Regs.MakeUntraced(reg, own); (* Address of Coroutines.current *)
+	    Regs.MakeUntraced(crreg, own); (* Current Coroutine *)
+	    Regs.SaveAll(proc.regs);
+	    (* Ok, we have everything in place and the registers are saved.
+	     * Now let's save the current context. *)
+	    Regs.UntracedValue(sp, Gen.gensp);
+	    Regs.UntracedValue(bp, Gen.genbp);
+            Emit.Instr2(proc.s, Pentium.MOV,
+	                 Op.MemOp1(crreg, 4, crbaseoffset, 0),
+			 Op.RegOp(bp, 4));
+            Emit.Instr2(proc.s, Pentium.MOV,
+	                 Op.MemOp1(crreg, 4, crtopoffset, 0),
+			 Op.RegOp(sp, 4));
+	    FragmentedStreams.CreateLabel(beyond);
+	    ConstStrings.Init(cs);
+	    Write.StringS(cs, "__CRSWITCH_CONTINUE_");
+	    Write.IntS(cs, PC.Unique(proc), 0);
+	    ConstStrings.Close(cs, sym);
+	    Reloc.NewSymbol(proc.s, sym, beyond);
+	    op2 := CodeGen.GenSymVal(proc, Gen.StdRegs, NIL, sym, own, FALSE);
+	    ASSERT(Op.Loc(op2) IN {Op.immediate, Op.immediateDyn});
+	    Emit.Instr2(proc.s, Pentium.MOV,
+	                 Op.MemOp1(crreg, 4, creipoffset, 0), op2);
+	    (* Now switch Coroutines current. *)
+	    crreg := op.reg1;
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.MemOp1(reg, 4, 0, 0),
+	                 Op.RegOp(crreg, 4));
+	    (* And restore the context *)
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(sp, 4),
+	                 Op.MemOp1(crreg, 4, crtopoffset, 0));
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(bp, 4),
+	                 Op.MemOp1(crreg, 4, crbaseoffset, 0));
+	    Emit.Instr1(proc.s, Pentium.JMP,
+	                 Op.MemOp1(crreg, 4, creipoffset, 0));
+	    Emit.Instr2(proc.s, Pentium.ORI,
+	                 Op.MemOp1(crreg, 4, crstarted, 0), Op.ImmInt(1));
+            FragmentedStreams.AttachLabel(proc.s, beyond);
+	    RETURN NIL;
+	 | OberonUlmProcedures.halt:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op)  THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    IF Op.Loc(op) IN {Op.immediate, Op.immediateDyn} THEN
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, {Gen.genbx});
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+	       op := Op.RegOp(reg, 4);
+	    END;
+	    ASSERT(Op.Loc(op) = Op.register);
+	    Regs.LoadReg(reg, {Gen.genbx});
+	    Regs.DestroyOwnedValue(reg, own);
+	    Regs.UntracedValue(reg, Gen.genax);
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), Op.ImmInt(sysexit));
+	    Emit.Instr1(proc.s, Pentium.INT, Op.ImmIntFixed(080H, 1));
+	    RETURN NIL;
+	 | OberonUlmProcedures.tas:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    ASSERT(param.type.form = Sym.boolean);
+	    op := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    ASSERT(op.memsz = 1);
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.LowByteRegs);
+	    Regs.AddConstraint(reg, Gen.LowByteRegs);
+	    Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(reg, 4),
+	                 Op.RegOp(reg, 4));
+	    Emit.Instr1(proc.s, Pentium.INCR, Op.RegOp(reg, 4));
+            Emit.Instr2(proc.s, Pentium.XCHG, Op.RegOp(reg, 1), op);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Regs.DestroyOwnedValue(op.reg2, own);
+	    Emit.Instr2(proc.s, Pentium.ORI, Op.RegOp(reg, 1),
+	                 Op.RegOp(reg, 1));
+	    Regs.DestroyOwnedValue(reg, own);
+	    RETURN Op.CCOp(Pentium.JNZ-Pentium.JCC);
+	 | OberonUlmProcedures.wclear:
+	    ASSERT(at.paramcnt = 2);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    lhs := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            CASE Op.Loc(lhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(lhs.data.kind = Op.integerConst);
+	       lhs := Op.MemOp0(4, lhs.data.intval, 0);
+            | Op.register:
+	       ASSERT(lhs.reg1 # NIL);
+	       lhs := Op.MemOp1(lhs.reg1, 4, 0, 0);
+	    END;
+	    param := param.next; ASSERT(param # NIL);
+            op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            IF Op.Loc(op) IN {Op.immediate, Op.immediateDyn} THEN
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, Gen.StdRegs);
+	       opreg := Op.RegOp(reg, 4);
+	       Emit.Instr2(proc.s, Pentium.MOV, opreg, op);
+	       op := opreg;
+	    END;
+            Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.StdRegs);
+	    j := 2;
+	    regarr[0] := op.reg1;
+	    regarr[1] := reg;
+	    possibles[0] := Gen.StdRegs;
+	    possibles[1] := Gen.StdRegs;
+            IF lhs.reg1 # NIL THEN
+	       j := 3;
+	       regarr[2] := lhs.reg1;
+	       possibles[2] := Gen.StdRegs;
+	    END;
+	    ok := Regs.PrepareInstruction(j, regarr, possibles); ASSERT(ok);
+	    opreg := Op.RegOp(reg, 4);
+	    Emit.Instr2(proc.s, Pentium.XOR, opreg, opreg);
+	    FragmentedStreams.CreateLabel(start);
+	    FragmentedStreams.AttachLabel(proc.s, start);
+	    FragmentedStreams.CreateLabel(beyond);
+	    Emit.Instr1(proc.s, Pentium.DECR, op);
+	    Emit.JumpCC(proc.s, beyond, Pentium.JS-Pentium.JCC);
+	    ASSERT(lhs.reg2 = NIL);
+	    lhs.reg2 := op.reg1;
+	    Op.SetScale(lhs, 4);
+	    opreg := Op.RegOp(reg, 4);
+	    Emit.Instr2(proc.s, Pentium.MOV, lhs, opreg);
+            Emit.Jump(proc.s, start);
+	    FragmentedStreams.AttachLabel(proc.s, beyond);
+	    Regs.DestroyOwnedValue(reg, own);
+	    Regs.DestroyOwnedValue(lhs.reg1, own);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    RETURN NIL;
+	 | OberonUlmProcedures.wmove:
+	    ASSERT(at.paramcnt = 3);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    rhs := CodeGen.GenExpr(proc, param, TRUE, {Gen.gensi}, own);
+	    IF Op.IsError(rhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN rhs
+	    END;
+            CASE Op.Loc(rhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(rhs.data.kind = Op.integerConst);
+	       rhs := Op.MemOp0(4, rhs.data.intval, 0);
+            | Op.register:
+	       ASSERT(rhs.reg1 # NIL);
+	       rhs := Op.MemOp1(rhs.reg1, 4, 0, 0);
+	    END;
+	    param := param.next; ASSERT(param # NIL);
+	    lhs := CodeGen.GenExpr(proc, param, TRUE, {Gen.gendi}, own);
+	    IF Op.IsError(lhs) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN lhs
+	    END;
+            CASE Op.Loc(lhs) OF
+	    | Op.immediate, Op.immediateDyn:
+	       ASSERT(lhs.data.kind = Op.integerConst);
+	       lhs := Op.MemOp0(4, lhs.data.intval, 0);
+            | Op.register:
+	       ASSERT(lhs.reg1 # NIL);
+	       lhs := Op.MemOp1(lhs.reg1, 4, 0, 0);
+	    END;
+            param := param.next; ASSERT(param # NIL);
+            op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op
+	    END;
+            CodeGen.GenStringOp(proc, Pentium.MOVS, {Gen.rep},
+				 lhs, rhs, op, 4, TRUE, own);
+	    (* GenStringOp will destroy the registers. *)
+            RETURN NIL;
+	 END;
+      ELSIF at.proc.type.builtinproc IS I386OberonProcedures.StdProcedure THEN
+	 type := at.proc.type.builtinproc(I386OberonProcedures.StdProcedure).stdproc;
+	 CASE type OF
+	 | I386OberonProcedures.getcr:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.StdRegs, own);
+	    IF ~(Op.Loc(op) IN {Op.immediate, Op.immediateDyn}) THEN
+	       CompilerErrors.Raise(proc.errors, at.loc,
+				     "constant expression expected");
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    ASSERT(op.data.kind = Op.integerConst);
+	    IF(op.data.intval < 0) OR(op.data.intval >= 8) THEN
+	       CompilerErrors.Raise(proc.errors, at.loc,
+				     "constant out of range");
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN Op.Error();
+	    END;
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.StdRegs);
+	    ok := Regs.RegCode(reg, reg1); ASSERT(ok);
+	    (* Format for MOV from CRX: 
+	     0000 1111 : 0010 0000 : 11 eee reg
+	     where eee = X, reg = target register *)
+	    Write.ByteS(proc.s, SYSTEM.VAL(BYTE, 00FH));
+	    Write.ByteS(proc.s, SYSTEM.VAL(BYTE, 020H));
+	    Write.ByteS(proc.s, SYSTEM.VAL(BYTE, (24+op.data.intval)*8+reg1));
+	    Regs.Chown(reg, caller);
+	    RETURN Op.RegOp(reg, 4);
+	 | I386OberonProcedures.getfsr:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenDesignator(proc, param, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    ASSERT(Op.Loc(op) = Op.memory);
+	    ASSERT(op.memsz = 4);
+	    op.memsz := 2;
+	    Emit.Instr1(proc.s, Pentium.FNSTCW, op);
+	    Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	    Regs.LoadReg(reg, Gen.LowByteRegs);
+	    Regs.AddConstraint(reg, Gen.LowByteRegs);
+	    Emit.Instr2(proc.s, Pentium.XOR, Op.RegOp(reg, 4), Op.RegOp(reg, 4));
+	    Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 2), op);
+	    op.memsz := 4;
+	    Emit.Instr2(proc.s, Pentium.MOV, op, Op.RegOp(reg, 4));
+	    Regs.DestroyOwnedValue(reg, own);
+	    IF op.reg1 # NIL THEN
+	       Regs.DestroyOwnedValue(op.reg1, own);
+	    END;
+	    IF op.reg2 # NIL THEN
+	       Regs.DestroyOwnedValue(op.reg2, own);
+	    END;
+	    RETURN NIL;
+	 | I386OberonProcedures.setfsr:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, TRUE, Gen.LowByteRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN NIL;
+	    END;
+	    IF Op.Loc(op) IN { Op.immediate, Op.immediateDyn } THEN
+	       Regs.CreateValue(reg, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg(reg, Gen.LowByteRegs);
+	       Emit.Instr2(proc.s, Pentium.MOV, Op.RegOp(reg, 4), op);
+	       op := Op.RegOp(reg, 4);
+	    END;
+	    ASSERT(Op.Loc(op) = Op.register);
+	    offset := StackAlloc.Allocate(proc.stack, 4, 4, FALSE);
+	    Regs.UntracedValue(reg2, Gen.genbp);
+	    op2 := Op.MemOp1(reg2, 2, offset, 0);
+	    Regs.AddConstraint(op.reg1, Gen.LowByteRegs);
+	    op.memsz := 2;
+	    Emit.Instr2(proc.s, Pentium.MOV, op2, op);
+	    Regs.DestroyOwnedValue(op.reg1, own);
+	    Emit.Instr0(proc.s, Pentium.FWAIT);
+	    Emit.Instr1(proc.s, Pentium.FLDCW, op2);
+	    StackAlloc.Free(proc.stack, offset);
+	    RETURN NIL;
+	 | I386OberonProcedures.sqrt, I386OberonProcedures.sin,
+	   I386OberonProcedures.cos:
+	    ASSERT(at.paramcnt = 1);
+	    param := at.firstparam; ASSERT(param # NIL);
+	    op := CodeGen.GenExpr(proc, param, FALSE, Gen.StdRegs, own);
+	    IF Op.IsError(op) THEN
+	       Regs.DestroyOwnerOnError(proc.regs, own);
+	       RETURN op;
+	    END;
+	    op := CodeGen.LoadFPUReg(proc, op, param.type.form, op.memsz, own);
+	    CASE type OF
+	    | I386OberonProcedures.sqrt:
+	       instr := Pentium.FSQRT;
+	    | I386OberonProcedures.sin:
+	       instr := Pentium.FSIN;
+	    | I386OberonProcedures.cos:
+	       instr := Pentium.FCOS;
+	    END;
+	    I386FPURegisters.Instr1(proc.s, instr, op);
+	    RETURN op;
+	 END;
+      ELSE
+	 ASSERT(op # NIL); (* FALSE *)
+      END;
+      ASSERT(op # NIL); (* FALSE *)
+   END GenBuiltIn;
+
+BEGIN
+   reg2param[0] := Gen.genax;
+   reg2param[1] := Gen.genbx;
+   reg2param[2] := Gen.gencx;
+   reg2param[3] := Gen.gendx;
+   reg2param[4] := Gen.gensi;
+   reg2param[5] := Gen.gendi;
+   I386BuiltIns.GenBuiltIn := GenBuiltIn;
+END I386LinuxOberonBuiltIns.

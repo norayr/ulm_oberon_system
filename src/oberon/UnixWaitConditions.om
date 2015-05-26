@@ -1,0 +1,278 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixWaitCon.om,v 1.2 1995/02/07 09:44:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixWaitCon.om,v $
+   Revision 1.2  1995/02/07 09:44:56  borchert
+   - mark all conditions as finished if we don't have any unwaited-for
+     child processes
+   - check against bogus pids added
+
+   Revision 1.1  1994/07/05  13:16:05  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixWaitConditions;
+
+   IMPORT Conditions, Events, LocalSemaphores, Priorities, RelatedEvents,
+      Semaphores, SysProcess, SysSignals, Tasks, Times;
+
+   CONST
+      hashtabsize = 16;
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    pid: SysProcess.ProcessId;
+	    finished: BOOLEAN;          (* process finished? *)
+	    tested: BOOLEAN;            (* already tested for being finished? *)
+	    status: SysProcess.Status;  (* return val of Wait *)
+	    asyncEvent: Events.Event;   (* set by SendEvent *)
+	    removed: BOOLEAN;           (* removed from hash table? *)
+	    next: Condition;            (* next in hash table *)
+	 END;
+      Bucket = ARRAY hashtabsize OF Condition;
+   VAR
+      conditions: Bucket;
+      mutex: Semaphores.Semaphore;
+      domain: Conditions.Domain;
+      asyncInit: BOOLEAN;
+
+   PROCEDURE Find(pid: SysProcess.ProcessId; VAR condition: Condition);
+      VAR
+	 cond: Condition;
+	 index: INTEGER;
+   BEGIN
+      IF pid <= 0 THEN
+	 condition := NIL; RETURN
+      END;
+      index := pid MOD hashtabsize;
+      cond := conditions[index];
+      WHILE (cond # NIL) & (cond.pid # pid) DO
+	 cond := cond.next;
+      END;
+      IF cond # NIL THEN
+	 condition := cond; RETURN
+      END;
+      NEW(cond); Conditions.Init(cond, domain);
+      cond.pid := pid;
+      cond.finished := FALSE;
+      cond.tested := FALSE;
+      cond.asyncEvent := NIL;
+      cond.removed := FALSE;
+      Events.AssertPriority(Priorities.interrupts);
+      Semaphores.P(mutex);
+	 cond.next := conditions[index];
+	 conditions[index] := cond;
+      Semaphores.V(mutex);
+      Events.ExitPriority;
+      condition := cond;
+   END Find;
+
+   PROCEDURE Remove(cond: Condition);
+      VAR
+	 ptr, prev: Condition;
+	 hashval: INTEGER;
+   BEGIN
+      IF ~cond.removed THEN
+	 cond.removed := TRUE;
+	 hashval := cond.pid MOD hashtabsize;
+	 Events.AssertPriority(Priorities.interrupts);
+	 Semaphores.P(mutex);
+	    ptr := conditions[hashval]; prev := NIL;
+	    WHILE (ptr # NIL) & (ptr # cond) DO
+	       prev := ptr; ptr := ptr.next;
+	    END;
+	    IF ptr # NIL THEN
+	       IF prev = NIL THEN
+		  conditions[hashval] := ptr.next;
+	       ELSE
+		  prev.next := ptr.next;
+	       END;
+	    END;
+	 Semaphores.V(mutex);
+	 Events.ExitPriority;
+      END;
+   END Remove;
+
+   PROCEDURE AsyncHandler(event: Events.Event);
+      VAR
+	 pid: SysProcess.ProcessId;
+	 status: SysProcess.Status;
+	 cond: Condition;
+   BEGIN
+      WHILE SysProcess.NonBlockingWait(status, pid, NIL) & (pid # 0) DO
+	 Find(pid, cond);
+	 cond.status := status;
+	 cond.finished := TRUE;
+	 IF cond.asyncEvent # NIL THEN
+	    Events.Raise(cond.asyncEvent); cond.asyncEvent := NIL;
+	 END;
+      END;
+   END AsyncHandler;
+
+   PROCEDURE SendEvent(domain: Conditions.Domain;
+		       condition: Conditions.Condition;
+		       event: Events.Event;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 pid: SysProcess.ProcessId;
+   BEGIN
+      WITH condition: Condition DO
+	 IF condition.finished THEN
+	    RETURN FALSE
+	 ELSE
+	    IF ~condition.tested THEN
+	       pid := condition.pid;
+	       IF SysProcess.NonBlockingWaitFor(pid, condition.status, errors) &
+		     (pid # 0) THEN
+		  condition.finished := TRUE;
+		  RETURN FALSE
+	       END;
+	       condition.tested := TRUE;
+	    END;
+	    condition.asyncEvent := event;
+	    IF ~asyncInit THEN
+	       Events.Handler(SysSignals.CHLD, AsyncHandler);
+	       asyncInit := TRUE;
+	    END;
+	 END;
+      END;
+      RETURN TRUE
+   END SendEvent;
+
+   PROCEDURE Test(domain: Conditions.Domain; condition: Conditions.Condition;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 pid: SysProcess.ProcessId;
+   BEGIN
+      WITH condition: Condition DO
+	 IF condition.finished THEN RETURN TRUE END;
+	 pid := condition.pid;
+	 IF SysProcess.NonBlockingWaitFor(pid, condition.status, errors) THEN
+	    IF pid # 0 THEN
+	       condition.finished := TRUE; RETURN TRUE
+	    ELSE
+	       condition.tested := TRUE;
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    (* Well, it's not our child or it terminated long ago *)
+	    condition.finished := TRUE;
+	    RETURN TRUE
+	 END;
+      END;
+   END Test;
+
+   PROCEDURE Select(domain: Conditions.Domain;
+		    conditionSet: Conditions.ConditionSet;
+		    time: Times.Time;
+		    VAR setOfTrueConditions: Conditions.ConditionSet;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN;
+		    VAR interrupted: BOOLEAN) : BOOLEAN;
+      VAR
+	 status: SysProcess.Status;
+	 ok: BOOLEAN;
+	 pid: SysProcess.ProcessId;
+	 condition: Condition;
+
+      PROCEDURE CheckConds() : BOOLEAN;
+	 VAR
+	    cond: Condition;
+	    finished: BOOLEAN;
+      BEGIN
+	 finished := FALSE;
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, cond) DO
+	    IF cond.finished THEN
+	       Conditions.Incl(setOfTrueConditions, cond);
+	       finished := TRUE;
+	    END;
+	 END;
+	 RETURN finished
+      END CheckConds;
+
+   BEGIN
+      Conditions.CreateSet(setOfTrueConditions);
+      WHILE interrupted OR ~CheckConds() DO
+	 pid := 0;
+	 IF SysProcess.Wait4(pid, status, 0, errors, retry, interrupted) THEN
+	    Find(pid, condition);
+	    condition.status := status;
+	    condition.finished := TRUE;
+	 ELSE
+	    IF interrupted THEN
+	       IF ~retry THEN RETURN FALSE END;
+	    ELSE
+	       (* we don't have any unwaited-for child processes *)
+	       Conditions.ExamineConditions(conditionSet);
+	       WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+		  condition.finished := TRUE;
+	       END;
+	    END;
+	 END;
+      END;
+      RETURN TRUE
+   END Select;
+
+   PROCEDURE Create(VAR condition: Conditions.Condition;
+		    pid: SysProcess.ProcessId);
+      VAR
+	 cond: Condition;
+   BEGIN
+      Find(pid, cond);
+      condition := cond;
+   END Create;
+
+   PROCEDURE FetchStatus(condition: Conditions.Condition;
+			 VAR status: SysProcess.Status);
+   BEGIN
+      WITH condition: Condition DO
+	 IF ~condition.finished THEN
+	    Tasks.WaitFor(condition);
+	 END;
+	 status := condition.status;
+	 Remove(condition);
+      END;
+   END FetchStatus;
+
+   PROCEDURE Init;
+      VAR
+	 if: Conditions.Interface;
+	 desc: Conditions.Description;
+   BEGIN
+      LocalSemaphores.Create(mutex);
+      NEW(if);
+      if.test := Test; if.select := Select; if.sendevent := SendEvent;
+      NEW(desc);
+      desc.caps := {Conditions.async, Conditions.select};
+      desc.internal := FALSE;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+      asyncInit := FALSE;
+   END Init;
+
+BEGIN
+   Init;
+END UnixWaitConditions.

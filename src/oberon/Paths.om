@@ -1,0 +1,259 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Paths.om,v 1.1 1995/12/22 15:12:52 martin Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: Paths.om,v $
+   Revision 1.1  1995/12/22 15:12:52  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Paths;
+
+   IMPORT ConstStrings, Events, Names, Objects, Priorities, RelatedEvents,
+      Shards, Streams;
+
+   CONST
+      separator = "/";
+      (*
+       * Within a path, separator separates path components;
+       * two separators stand for the character itself;
+       * an odd number of separators is evaluated from left to right.
+       *)
+
+   CONST
+      zeroPathLen = 0;		(* insert/delete need a nonempty path *)
+      errorcodes = 1;
+
+   TYPE
+      Path = POINTER TO PathRec;
+      PathRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    component: Names.Name;
+	    next: Path;
+	 END;
+
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[zeroPathLen] := "Paths: insert/delete need a nonempty path";
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: SHORTINT);
+      (* raises an error event; to be called in standard situations *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE Extract(VAR path: ARRAY OF CHAR; VAR name: Names.Name;
+		     VAR iscomp: BOOLEAN): BOOLEAN;
+      (*
+       * Extract the first component of path into name and cut it from path;
+       * iscomp becomes TRUE if the remainder is not empty;
+       * successful if path was not empty.  Path is assumed to be
+       * 0X-terminated.
+       *)
+      VAR
+	 index, tindex: LONGINT;
+	 buf: Streams.Stream;
+	 ch: CHAR;
+   BEGIN
+      IF (path[0] = separator) & (path[1] # separator) THEN
+	 index := 1;
+      ELSE
+	 index := 0;
+      END;
+      ch := path[index];
+      IF ch = 0X THEN
+	 RETURN FALSE
+      END;
+      ConstStrings.Init(buf);
+      WHILE (ch # 0X) & ((ch # separator) OR (path[index+1] = separator)) DO
+	 IF ch = separator THEN
+	    INC(index);
+	 END;
+	 IF ~Streams.WriteByte(buf, ch) THEN END;
+	 INC(index); ch := path[index];
+      END;
+      ConstStrings.Close(buf, name);
+      IF ch = separator THEN
+	 INC(index); ch := path[index];
+      END;
+      path[0] := ch;
+      tindex := 0;
+      WHILE ch # 0X DO
+	 INC(index); INC(tindex);
+	 ch := path[index]; path[tindex] := ch;
+      END;
+      iscomp := tindex # 0;
+      RETURN TRUE
+   END Extract;
+
+   PROCEDURE Convert(path: ARRAY OF CHAR): Path;
+      VAR
+	 name: Names.Name;
+	 iscomp: BOOLEAN;
+	 prev,
+	 this,
+	 result: Path;
+   BEGIN
+      result := NIL;
+      WHILE Extract(path, name, iscomp) DO
+	 NEW(this);
+	 this.component := name;
+	 this.next := NIL;
+	 IF result = NIL THEN
+	    result := this;
+	 ELSE
+	    prev.next := this;
+	 END;
+	 prev := this;
+      END;
+      RETURN result
+   END Convert;
+
+   PROCEDURE GetNodeN(node: Names.Node; path: ARRAY OF CHAR;
+		     auth: Shards.Lid; errors: RelatedEvents.Object;
+		     VAR subnode: Names.Node): BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 tmpnode: Names.Node;
+	 iscomp,
+	 result: BOOLEAN;
+   BEGIN
+      IF node # errors THEN
+	 RelatedEvents.Save(node);
+	 RelatedEvents.Forward(node, errors);
+      END;
+      IF ~Extract(path, name, iscomp) THEN
+	 subnode := node;
+	 result := TRUE;
+      ELSIF iscomp THEN
+	 result := Names.GetNode(node, name, auth, tmpnode) &
+	    GetNodeN(tmpnode, path, auth, errors, subnode)
+      ELSE
+	 result := Names.GetNode(node, name, auth, subnode)
+      END;
+      IF node # errors THEN
+	 RelatedEvents.Restore(node);
+      END;
+      RETURN result
+   END GetNodeN;
+
+   PROCEDURE InsertN(node: Names.Node; path: ARRAY OF CHAR;
+		     subnode: Names.Node;
+		     auth: Shards.Lid; errors: RelatedEvents.Object): BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 tmpnode: Names.Node;
+	 iscomp,
+	 result: BOOLEAN;
+   BEGIN
+      IF node # errors THEN
+	 RelatedEvents.Save(node);
+	 RelatedEvents.Forward(node, errors);
+      END;
+      IF ~Extract(path, name, iscomp) THEN
+	 Error(errors, zeroPathLen);
+	 result := FALSE;
+      ELSIF iscomp THEN
+	 result := Names.GetNode(node, name, auth, tmpnode) &
+	    InsertN(tmpnode, path, subnode, auth, errors)
+      ELSE
+	 result := Names.Insert(node, subnode, name, auth)
+      END;
+      IF node # errors THEN
+	 RelatedEvents.Restore(node);
+      END;
+      RETURN result
+   END InsertN;
+
+   PROCEDURE DeleteN(node: Names.Node; path: ARRAY OF CHAR;
+		     auth: Shards.Lid; errors: RelatedEvents.Object): BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 tmpnode: Names.Node;
+	 iscomp,
+	 result: BOOLEAN;
+   BEGIN
+      IF node # errors THEN
+	 RelatedEvents.Save(node);
+	 RelatedEvents.Forward(node, errors);
+      END;
+      IF ~Extract(path, name, iscomp) THEN
+	 Error(errors, zeroPathLen);
+	 result := FALSE;
+      ELSIF iscomp THEN
+	 result := Names.GetNode(node, name, auth, tmpnode) &
+	    DeleteN(tmpnode, path, auth, errors)
+      ELSE
+	 result := Names.Delete(node, name, auth)
+      END;
+      IF node # errors THEN
+	 RelatedEvents.Restore(node);
+      END;
+      RETURN result
+   END DeleteN;
+
+   PROCEDURE GetNode(path: ARRAY OF CHAR;
+		     auth: Shards.Lid; errors: RelatedEvents.Object;
+		     VAR subnode: Names.Node): BOOLEAN;
+   BEGIN
+      RETURN GetNodeN(Names.root, path, auth, errors, subnode)
+   END GetNode;
+
+   PROCEDURE Insert(path: ARRAY OF CHAR; subnode: Names.Node;
+		     auth: Shards.Lid; errors: RelatedEvents.Object): BOOLEAN;
+   BEGIN
+      RETURN InsertN(Names.root, path, subnode, auth, errors)
+   END Insert;
+
+   PROCEDURE Delete(path: ARRAY OF CHAR;
+		     auth: Shards.Lid; errors: RelatedEvents.Object): BOOLEAN;
+   BEGIN
+      RETURN DeleteN(Names.root, path, auth, errors)
+   END Delete;
+
+END Paths.

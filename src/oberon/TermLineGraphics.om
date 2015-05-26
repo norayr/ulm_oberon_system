@@ -1,0 +1,236 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TermLineGra.om,v 1.1 2004/06/11 12:11:51 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: TermLineGra.om,v $
+   Revision 1.1  2004/06/11 12:11:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermLineGraphics; (* Ralf Beck *)
+
+   (* this module provides routines for simple drawing *)
+   (* operations on ASCII-terminals                    *)
+
+   IMPORT Disciplines, Streams, Strings, Terminals, Write; 
+
+   CONST (* graphics characters *)
+      verticalLine = 0;
+      horizontalLine = 1;
+      lowerRightCorner = 2;
+      upperRightCorner = 3;
+      upperLeftCorner = 4;
+      lowerLeftCorner = 5;
+      cross = 6;
+      leftTee = 7;
+      rightTee = 8;
+      bottomTee = 9;
+      topTee = 10;
+      chars = 11;
+   TYPE
+      Symbol = SHORTINT; (* verticalLine ... *)
+
+   CONST
+      (* character sets *)
+      standard = 0; graphics = 1;
+   TYPE
+      CharacterSet = SHORTINT; (* standard, graphics *)
+
+   TYPE
+      GraphicsChar =
+	 RECORD
+	    set: CharacterSet; (* characer set to use *)
+	    char: CHAR;    (* ASCII code of character *)
+         END;
+
+      CharSet = ARRAY chars OF GraphicsChar; (* set used for drawing *)
+
+      SetProc = PROCEDURE (s: Streams.Stream; charset: CharacterSet);
+
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD                            
+	    (Disciplines.DisciplineRec)
+            charset: CharSet;
+	    setCharset: SetProc;
+         END;
+
+   VAR
+      id: Disciplines.Identifier; (* identifier of discipline *)
+
+   PROCEDURE DefaultSetCharSet(s: Streams.Stream; charset: CharacterSet);
+   END DefaultSetCharSet;
+
+   PROCEDURE CreateDefaultDiscipline(VAR discipline: Disciplines.Discipline);
+      VAR
+	 disc: Discipline;
+	 i: INTEGER;
+   BEGIN
+      NEW(disc);
+      disc.id := id;
+      disc.charset[verticalLine].set := standard;
+      disc.charset[verticalLine].char := "|";
+      disc.charset[horizontalLine].set := standard;
+      disc.charset[horizontalLine].char := "-";
+      i := lowerRightCorner;
+      WHILE i < chars DO
+	 disc.charset[i].set := standard;
+	 disc.charset[i].char := "+";
+	 INC(i);
+      END;
+      disc.setCharset := DefaultSetCharSet;
+      discipline := disc;
+   END CreateDefaultDiscipline;
+
+   PROCEDURE GetDisc(s: Streams.Stream; VAR disc: Discipline);
+   BEGIN
+      IF ~Disciplines.Seek(s, id, disc) THEN
+	 CreateDefaultDiscipline(disc);
+	 Disciplines.Add(s, disc);
+      END;
+   END GetDisc;
+
+   PROCEDURE Init(s: Streams.Stream; charset: CharSet; setCharset: SetProc);
+      (* initialize the graphics charset *)
+      (* must be done by terminal implementation *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      NEW(disc);
+      disc.id := id;
+      disc.charset := charset;
+      IF setCharset # NIL THEN
+	 disc.setCharset := setCharset;
+      ELSE
+	 disc.setCharset := DefaultSetCharSet;
+      END;
+      Disciplines.Add(s, disc);
+   END Init;
+
+   PROCEDURE Supported(s: Streams.Stream) : BOOLEAN;
+      (* return TRUE if line graphics are supported
+	 and not just simulated
+      *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      RETURN Disciplines.Seek(s, id, disc) &
+             (disc.setCharset # DefaultSetCharSet)
+   END Supported;
+
+   PROCEDURE SwitchCharSet(s: Streams.Stream; charset: CharacterSet);
+      (* switch to the given character set *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc); disc.setCharset(s, charset);
+   END SwitchCharSet;
+
+   PROCEDURE GetGraphicalCharacterSet(s: Streams.Stream; VAR charset: CharSet);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc); charset := disc.charset;
+   END GetGraphicalCharacterSet;
+
+   PROCEDURE Draw(s: Streams.Stream; char: Symbol);
+      (* draws a single graphics character *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc);
+      disc.setCharset(s, disc.charset[char].set);
+      Write.CharS(s, disc.charset[char].char);
+      disc.setCharset(s, standard);
+   END Draw;
+
+   PROCEDURE HLine(s: Streams.Stream; line, column, length: INTEGER);
+      (* draws a horizontal line from position (line, column) with *)
+      (* length (length)                                           *)
+      (* HLine doesn't check for validity of parameters            *)
+      VAR
+	 disc: Discipline;
+	 i: INTEGER;
+   BEGIN
+      GetDisc(s, disc);
+      Terminals.SetCursor(s, line, column);
+      disc.setCharset(s, disc.charset[horizontalLine].set);
+      i := 0;
+      WHILE i < length DO
+         Write.CharS(s, disc.charset[horizontalLine].char);
+         INC(i);
+      END;
+      disc.setCharset(s, standard);
+   END HLine;
+
+   PROCEDURE VLine(s: Streams.Stream; line, column, length: INTEGER);
+      (* draws a vertical line from position (line, column) with   *)
+      (* length (length)                                           *)
+      (* VLine doesn't check for validity of parameters            *)
+      (* terminal must be in raw mode for proper operation         *)
+      VAR
+	 disc: Discipline;
+	 i: INTEGER;
+	 status : Terminals.Status;
+   BEGIN
+      GetDisc(s, disc);
+      i := 0;
+      Terminals.GetStatus(s, status);
+      Terminals.SetCursor(s, line, column);
+      disc.setCharset(s, disc.charset[verticalLine].set);
+      WHILE i < length DO
+         Write.CharS(s, disc.charset[verticalLine].char);
+         INC(line); INC(i);
+         IF column = status.columns-1 THEN
+	    IF Terminals.safelastcolumn IN status.characteristics THEN
+	       Terminals.MoveCursor(s, line-1, column, line, column);
+            ELSE
+	       Terminals.MoveCursor(s, line-1, column+1, line, column);
+            END;
+         ELSE
+	    Terminals.MoveCursor(s, line-1, column+1, line, column);
+         END;
+      END;
+      disc.setCharset(s, standard);
+   END VLine;
+
+   PROCEDURE Box(s: Streams.Stream; line, column, lines, columns: INTEGER);
+      (* draw a box starting at position (line, column) with *)
+      (* dimensions (lines, columns)                         *)
+      (* Box doesn't check for validity of parameters        *)
+      (* terminals must be in raw mode for proper operation  *)
+   BEGIN
+      Terminals.SetCursor(s, line, column);
+      Draw(s, upperLeftCorner);
+      HLine(s, line, column+1, columns-2);
+      Draw(s, upperRightCorner);
+      Terminals.SetCursor(s, line+lines-1, column);
+      Draw(s, lowerLeftCorner);
+      HLine(s, line+lines-1, column+1, columns-2);
+      Draw(s, lowerRightCorner);
+      VLine(s, line+1, column+columns-1, lines-2);
+      VLine(s, line+1, column, lines-2);
+   END Box;
+
+BEGIN
+   id := Disciplines.Unique();
+END TermLineGraphics.

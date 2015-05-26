@@ -1,0 +1,98 @@
+RelatedEvents(3)              Ulm's Oberon System             RelatedEvents(3)
+
+
+
+[1mNAME[0m
+       RelatedEvents - relate events to objects
+
+[1mSYNOPSIS[0m
+       TYPE Object = Disciplines.Object;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             object: Object;
+             event: Events.Event;
+          END;
+       TYPE Queue = POINTER TO QueueRec;
+       TYPE QueueRec =
+          RECORD
+             (Objects.ObjectRec)
+             event: Events.Event;
+             next: Queue;
+          END;
+
+       VAR null: Object;
+
+       PROCEDURE GetEventType(object: Object; VAR eventType: Events.EventType);
+       PROCEDURE Forward(from, to: Object);
+       PROCEDURE QueueEvents(object: Object);
+       PROCEDURE Reset(object: Object);
+       PROCEDURE Save(object: Object);
+       PROCEDURE Restore(object: Object);
+       PROCEDURE GetQueue(object: Object; VAR queue: Queue);
+       PROCEDURE EventsPending(object: Object) : BOOLEAN;
+       PROCEDURE AppendQueue(object: Object; queue: Queue);
+       PROCEDURE Raise(object: Object; event: Events.Event);
+
+
+[1mDESCRIPTION[0m
+       Many  events are not to be handled globally but are to be considered in
+       the context of an abstract data type.  [4mRelatedEvents[24m implements  object
+       centered event handling, i.e. the handling of events does not primarily
+       depend on the global event handlers of [4mEvents(3)[24m but on the  object  it
+       is related to.
+
+       [4mRelatedEvents[24m supports four reaction types for related events.  Differ-
+       ent reactions may be active at the same time.  [4mGetEventType[24m returns  an
+       event type for the given object and causes all events related to [4mobject[0m
+       also to be passed (in form of an  indirect  event  of  type  [4mEvent[24m)  to
+       [4mEvents.Raise[24m  with  this event type.  Initially, the priority of [4mevent-[0m
+       [4mType[24m equals [4mPriorities.liberrors[24m [1m+ 1[22m.
+
+       [4mForward[24m requests all incoming events of [4mfrom[24m to  be  forwarded  to  [4mto[24m.
+       [4mQueueEvents[24m puts all events for [4mobject[24m in a queue which can be examined
+       later by [4mGetQueue[24m.  [4mReset[24m undoes previous calls of  [4mGetEventType[24m,  [4mFor-[0m
+       [4mward[24m  and  [4mQueueEvents[24m and causes all subsequent events of [4mobject[24m to be
+       processed by [4mEvents(3)[24m.
+
+       [4mSave[24m and [4mRestore[24m allow to save and restore the reaction  state  of  the
+       given  object  and may be nested.  The reaction state includes all set-
+       tings and the event queue.  [4mSave[24m puts like [4mReset[24m the  object  into  the
+       default state.
+
+       [4mGetQueue[24m  removes and returns the event queue of [4mobject[24m.  [4mEventsPending[0m
+       returns [1mTRUE [22mif there are any events in the queue of [4mobject[24m.   [4mGetQueue[0m
+       and  [4mEventsPending[24m  allow  [4mobject[24m  to be [1mNIL[22m.  [4mAppendQueue[24m forwards all
+       events of [4mqueue[24m to [4mobject[24m.
+
+       By  default  (or  if  [4mobject[24m  equals  [1mNIL[22m),  [4mRaise[24m  passes   [4mevent[24m   to
+       [4mEvents.Raise[24m  for  usual  event handling.  If [4mGetEventType[24m, [4mForward[24m, or
+       [4mQueueEvents[24m have been called for [4mobject[24m, object related event  handling
+       will take place as described above.
+
+       The  object [4mnull[24m acts as a null device like [4mStreams.null[24m: It causes all
+       related events and all operations of [4mRelatedEvents[24m to be ignored.
+
+       [4mRelatedEvents[24m supports [4mForwarders[24m by creating a  backward  chain  which
+       forwards  events from objects which are depended on to dependants, i.e.
+       [4mForwarders.Forward[24m causes events to be forwarded from [4mto[24m to [4mfrom[24m.  This
+       allows  to  react on events independently from the knowledge of forward
+       chains created by [4mForwarders[24m.  Note that this backward chain  does  not
+       lead  to  reference  cycles  due to [4mForward[24m calls which usually forward
+       events from dependants to objects which are depended on.
+
+[1mSEE ALSO[0m
+       [4mConclusions(3)[24m   formatted output of event queues
+       [4mEvents(3)[24m        global event handling
+       [4mForwarders(3)[24m    general forwarding operation
+       [4mPriorities(3)[24m    event priority system
+
+[1mBUGS[0m
+       [4mForward[24m is not protected against reference cycles.  If  [4mForward[24m  points
+       into  the same direction as an implicitly created backward link by [4mFor-[0m
+       [4mwarders.Forward[24m, then events may be delivered twice.
+
+
+
+Release 0.5                Last change: 10 July 2003          RelatedEvents(3)

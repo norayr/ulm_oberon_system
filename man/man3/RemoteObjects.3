@@ -1,0 +1,580 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH RemoteObjects 3 "Last change: 24 August 2005" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+RemoteObjects \- access of remote objects
+.SH SYNOPSIS
+.Pg
+(* access mode *)
+CONST serial = 0;
+CONST parallel = 1;
+.sp 0.3
+(* export mode *)
+CONST standalone = 0;
+CONST linked = 1;
+.sp 0.3
+TYPE AccessMode = SHORTINT; (* serial or parallel *)
+TYPE ExportMode = SHORTINT; (* standalone or linked *)
+.sp 0.7
+CONST serviceName = "RemoteObjects";
+.sp 0.3
+TYPE GetParamsProc = PROCEDURE (object: Services.Object;
+                                VAR params: PersistentObjects.Object;
+                                VAR mode: ExportMode);
+TYPE CreateProxyProc = PROCEDURE (VAR object: Services.Object;
+                                  params: PersistentObjects.Object);
+TYPE RegisterProc = PROCEDURE (object: Services.Object);
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      getParams: GetParamsProc; (* may be NIL *)
+      createProxy: CreateProxyProc;
+      register: RegisterProc; (* may be NIL *)
+      msgHandler: Messages.Handler; (* may be NIL *)
+         (* converts messages into operations *)
+   END;
+.sp 0.3
+TYPE RecoverProc = PROCEDURE (object: Services.Object; errorCode: ErrorCode);
+.sp 0.7
+CONST accessFailed = 0;        (* access to remote object failed *)
+CONST invalidMessage = 1;      (* invalid message received from partner *)
+CONST sendFailed = 2;          (* cannot send message to remote object *)
+CONST receiveFailed = 3;       (* cannot receive message from remote object *)
+CONST connectionBroken = 4;    (* channel was alive and is now broken *)
+CONST invalidPartner = 5;      (* partner doesn't follow protocol *)
+CONST unknownObject = 6;       (* object not known on the other side *)
+CONST droppedObject = 7;       (* connection to remote object is closed *)
+CONST closedConnection = 8;    (* connection has been closed by partner *)
+CONST objectWithdrawn = 9;     (* remote object has been withdrawn *)
+CONST listenerKilled = 10;     (* channel listener has been shut down *)
+CONST unexportableObject = 11; (* given object cannot be exported *)
+CONST unknownType = 12;        (* imported object is of unknown type *)
+CONST unsupportedType = 13;    (* ``RemoteObjects'' service not supported *)
+CONST typeGuardFailure = 14;   (* guard of GuardedImport failed *)
+CONST privateObject = 16;      (* object has no public ports *)
+CONST errors = 16;
+.sp 0.3
+.ne 7v
+TYPE ErrorCode = SHORTINT;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: ErrorCode;
+   END;
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+.sp 0.7
+(* for RemoteXXX modules *)
+PROCEDURE Register(type: Services.Type; if: Interface; access: AccessMode);
+.ne 2v
+PROCEDURE CreateRegistrationCondition(VAR condition: Conditions.Condition;
+                                      proxy: Services.Object);
+.sp 0.7
+(* client side *)
+.ne 2v
+PROCEDURE Import(s: Streams.Stream;
+                 VAR object: Services.Object) : BOOLEAN;
+.ne 2v
+PROCEDURE GuardedImport(s: Streams.Stream; guard: Services.Type;
+                        VAR object: Services.Object) : BOOLEAN;
+.sp 0.7
+(* server side *)
+PROCEDURE Exportable(object: Services.Object) : BOOLEAN;
+PROCEDURE Export(s: Streams.Stream; object: Services.Object) : BOOLEAN;
+PROCEDURE Withdraw(object: Services.Object);
+.sp 0.3
+.ne 3v
+PROCEDURE AddPort(port: Networks.Socket;
+                  address: Networks.Address;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE RemoveAllPorts;
+PROCEDURE CloseAllConnections;
+.sp 0.7
+(* recovery *)
+.ne 2v
+PROCEDURE InstallRecoverHandler(object: Services.Object;
+                                recover: RecoverProc);
+PROCEDURE ReImport(s: Streams.Stream; proxy: Services.Object) : BOOLEAN;
+.ne 2v
+.Pe
+.SH DESCRIPTION
+\fIRemoteObjects\fP allows to operate on remote objects as if
+they would reside locally.
+Additionally, \fIRemoteObjects\fP supports
+the operations of \fIPersistentDisciplines(3)\fP.
+Remote objects are represented locally by proxy objects which
+forward all operations to the original object.
+.PP
+Delegation to remote objects is possible by converting
+operations into persistent messages,
+delivering them over a network connection (see \fINetworks(3)\fP),
+and by converting them back into operations by a
+message handler (see \fIMessages(3)\fP).
+The abstraction-specific conversion of operations into
+messages and vice versa is done by type-specific
+modules which offer the ``RemoteObjects'' service for this
+type (see \fIServices(3)\fP).
+Note that these service providers are pure add-ons \(em
+the original module which represents the abstraction needs
+not to be modified or adapted to allow a distributed use of it.
+.SS "Supporting a type for distribution"
+Modules which provide a ``RemoteObjects'' service
+for a specific type have to register themselves during
+their initialization time by \fIRegister\fP which calls
+\fIServices.Define\fP for them.
+Note that the service does not only cover \fItype\fP
+but all extensions thereof if not overridden by
+more specific service offers (see \fIServices(3)\fP for details).
+.PP
+The access mode determines whether remote calls are to
+be serialized or not.
+Note that even in serial mode there may be parallel calls
+(one from \fIRemoteObjects\fP and at least one locally).
+Thus, serialization is, if necessary, always in the responsibility
+of the abstraction.
+Semaphores (see \fISemaphores(3)\fP and
+\fILocalSemaphores(3)\fP) are recommended for critical regions
+which may be entered by one party only.
+The serial access mode, however, is much more efficient
+than the parallel access mode if all operations have
+to be serialized anyway.
+Consequently, the parallel access mode is useful only,
+if there are no critical regions,
+or if they are not always entered,
+or if they are only entered for short time during a longer operation.
+.PP
+The interface \fIif\fP is expected to meet following specification:
+.Is
+.If getParams "\fIobject\fP: \fIServices.Object\fP; \fBVAR\fP \fIparams\fP: \fIPersistentObjects.Object\fP; \fBVAR\fP \fImode\fP: \fIExportMode\fP"
+this interface procedure is, if provided, called if an object
+is exported for the first time.
+The to be returned persistent parameter object which may be \fBNIL\fP
+is later passed to the \fIcreateProxy\fP
+interface procedure on the importing side.
+The exporting mode is usually \fIlinked\fP.
+That means that proxy objects are later linked to the original object.
+In case of \fIstandalone\fP, no active connection will be maintained,
+i.e. objects created later by \fIcreateProxy\fP cannot delegate
+operations to the original object.
+An example for this technique is \fIRemoteIterators(3)\fP
+which (in some cases) returns in \fIparams\fP all informations
+which are later necessary to perform all operations on the client side.
+Note that this interface procedure is optional and may
+therefore be set to \fBNIL\fP.
+In this case, \fBNIL\fP will be passed later to \fIcreateProxy\fP.
+.If createProxy "\fBVAR\fP \fIobject\fP: \fIServices.Object\fP; \fIparams\fP: \fIPersistentObjects.Object\fP"
+create a proxy object on the client side
+in dependence of \fIparams\fP which has been earlier returned
+by \fIgetParams\fP.
+Note that \fIparams\fP may be \fBNIL\fP.
+Usually, proxy objects should be an extension of the \fItype\fP
+which has been passed to \fIRegister\fP.
+This extension should (in case of an \fIlinked\fP export mode)
+implement all operations of the abstraction of \fItype\fP
+and convert them into messages (see \fIMessages(3)\fP) which are to be sent
+to itself.
+\fIRemoteObjects\fP installs a message handler for proxy objects
+which forwards all messages over the network connection to
+the original object.
+Note that \fIRemoteObjects\fP guarantees that the returned
+message is of the same type as the sent message.
+.If register "\fIobject\fP: \fIServices.Object\fP"
+this interface procedure is, if provided,
+called if the creation of a proxy object is completed.
+This allows to invoke some initial operations on the proxy object
+(e.g. to register itself at the original object).
+It may be wise to block other operations as long as the registration
+is not finished by using the condition which is returned
+by \fICreateRegistrationCondition\fP.
+Note that \fICreateRegistrationCondition\fP is free to return
+\fBNIL\fP if the registration is already finished.
+.If msgHandler "\fIobject\fP: \fIMessages.Object\fP; \fBVAR\fP \fImessage\fP: \fIMessages.Message\fP"
+is a message handler of type \fIMessages.Handler\fP
+which is installed by \fIRemoteObjects\fP on the exporting side.
+This handler has to convert incoming messages into operations.
+Note that the returned message must be of the same type as
+the incoming message,
+otherwise the message is considered as unprocessed message.
+Note that \fImsgHandler\fP is optional and may be specified as \fBNIL\fP.
+.Ef
+.SS "Exporting objects"
+An application which is going to export objects,
+i.e. which is willing to allow other processes to access some of its objects,
+needs to declare at least one port where other processes may direct
+their requests to.
+\fIAddPort\fP adds the given \fIport\fP (which must be a local network address)
+to the list of ports \fIRemoteObjects\fP listens to.
+\fIExport\fP makes the given object accessible from outside and
+writes its address to the given stream
+which may be later read by \fIImport\fP or \fIGuardedImport\fP.
+Note that \fBNIL\fP may be passed to \fIExport\fP and
+therefore later be returned by \fIImport\fP
+or \fIGuardedImport\fP.
+.PP
+Not all extensions of \fIServices.Object\fP are necessarily
+exportable because this depends on the existence of
+an associated service provider.
+\fIExportable\fP allows to test whether a specific object
+can be exported or not.
+.PP
+Note that \fIAddPort\fP and \fIExport\fP lead to the creation of tasks.
+Because of this, the program does not necessarily finish when
+all module bodies have terminated.
+\fIRemoveAllPorts\fP causes \fIRemoteObjects\fP to terminate
+all tasks which listen for new connections but to keep all
+existing connections alive.
+\fICloseAllConnections\fP requests \fIRemoteObjects\fP to
+close all connections gratefully (i.e. with notification of
+the communication partner).
+To terminate all tasks of \fIRemoteObjects\fP,
+\fIRemoveAllPorts\fP should be called before \fICloseAllConnections\fP,
+otherwise new connections could be opened after closing all old connections.
+.PP
+\fIRemoveAllPorts\fP and \fICloseAllConnections\fP should usually be called
+on process termination only and not to close down single services.
+The export status of an object is better rejected by calling \fIWithdraw\fP.
+Note that connections are implicitly closed
+when all proxy objects which use them are dropped (see below).
+.SS "Importing objects"
+\fIImport\fP allows to read an object address from the given stream
+(which has been earlier written by \fIExport\fP)
+and creates a proxy object for it.
+Proxy objects delegate all operations
+(including those of \fIPersistentObjects(3)\fP) to the original object,
+wait for completion, and return the results.
+.PP
+\fIGuardedImport\fP allows to apply a type guard
+to the imported object before it gets assigned to \fIobject\fP.
+\fIGuardedImport\fP returns \fBTRUE\fP only if
+\fIImport\fP would have been successful,
+and the imported object is an extension of \fIguard\fP,
+or it is \fBNIL\fP.
+Thus, \fIGuardedImport\fP works like implicit type tests
+which are possibly applied for pointer assignments
+(where \fBNIL\fP is always accepted) but not like
+type tests or type guards (where \fBNIL\fP would cause
+them to fail with a runtime error).
+.PP
+\fIRemoteObjects\fP supports \fIResources(3)\fP for
+distributed objects:
+.IP \(bu
+Proxy objects terminate when the original object terminates.
+.IP \(bu
+Exported objects becomes unreferenced only when
+no party (either local or remote) uses it.
+.IP \(bu
+Proxy objects which become locally unreferenced
+are being dropped,
+i.e. they will no longer claim any network resources which
+were allocated for them.
+.PP
+\fIRemoteObjects\fP guarantees that re-imports return the same
+proxy object as the first import (as long it has not been dropped).
+If a party imports objects which have been exported by itself,
+the original reference is returned.
+Note that proxy objects may be exported like original objects.
+In this case, importing parties will delegate their
+operations to the original object and not to the exported proxy object.
+Therefore, object identity is preserved independently from
+the number of involved intermediate parties which have
+re-exported that object.
+.SS Recovery
+By default, proxy objects will terminate if the connection to
+the original object gets unrecoverably lost.
+This may be unsatisfactory if it would be possible to re-import
+the object by other methods (and possibly somewhat later).
+In this case, \fIInstallRecoverHandler\fP allows to
+install a recovery procedure \fIrecover\fP for a proxy object
+which will be called in case of broken connections on the client side.
+Note that multiple or invalid calls of \fIInstallRecoverHandler\fP
+are silently ignored.
+The recovery procedure \fIrecover\fP is of type \fIRecoverProc\fP
+and has either to terminate the proxy object (by calling
+\fIResources.Notify\fP) or to successfully re-import
+the given object by using \fIReImport\fP.
+This procedure may block the current task for longer time periods
+and is also free to try re-imports many times.
+.PP
+Proxy objects which are supported by a recovery procedure will
+switch to the state \fIResources.communicationStopped\fP when
+the associated connection breaks.
+Later, when the recovery procedure returns, the state will
+switch to \fIResources.communicationResumed\fP
+in case of successful recovery and to \fIResources.terminated\fP
+otherwise.
+.SH DIAGNOSTICS
+Errors and network failures lead to events.
+All procedures which offer an \fIerrors\fP parameter relate all
+events to this parameter.
+Messages which cannot be delivered or received due to network failures
+carry the associated events in the \fIerrors\fP component.
+Operations of \fIPersistentDisciplines(3)\fP relate error events to
+the proxy object.
+Following error codes are implemented:
+.Tb connectionBroken
+.Tp accessFailed
+\fIRemoteObjects\fP is unable to establish a connection to
+the given network address.
+.Tp closedConnection
+The connection has been gratefully closed by the partner.
+.Tp connectionBroken
+The communication channel was alive and is now broken.
+.Tp droppedObject
+Cannot send further messages because the object was dropped
+(i.e. it became unreferenced).
+.Tp invalidMessage
+An unexpected message which does not follow the protocol
+was received.
+.Tp invalidPartner
+Either the input from the network connection has been garbled,
+or the network partner does not follow the protocol of
+\fIRemoteObjects\fP.
+.Tp listenerKilled
+The associated channel listener has been killed
+by \fICloseAllConnections\fP or due to program termination
+(see \fIProcess(3)\fP).
+.Tp objectWithdrawn
+The remote object has been withdrawn and is no longer accessible
+from outside.
+.Tp receiveFailed
+\fIRemoteObjects\fP has sent the message to the remote object successfully
+but didn't receive a response.
+.Tp sendFailed
+\fIRemoteObjects\fP was unable to send the message to the remote object.
+.Tp typeGuardFailure
+Returned by \fIGuardedImport\fP if the to be imported object
+is neither \fBNIL\fP nor an extension of \fIguard\fP.
+.Tp unexportableObject
+There is no ``RemoteObjects'' service provider for the given
+object and no one could be loaded dynamically
+(see \fIServices(3)\fP and \fILoader(3)\fP).
+.Tp unknownObject
+While a valid network address was given to \fIImport\fP,
+the object is not known on the other side.
+.Tp unknownType
+The imported object is of an unknown type and it was not
+possible to load the associated module dynamically (see \fILoader(3)\fP).
+.Tp unsupportedType
+The imported object is of a type which is locally not
+supported by an associated ``RemoteObjects'' service.
+.Tp privateObject
+An object could not be imported as it has no public ports,
+i.e. \fIAddPort\fP was not called by its owner. One possible
+scenario for this is a process A with public ports that exports
+objects to process B with no public ports. As there exists already
+an open channel between A and B, A has no problem to import objects
+from B as long as they come by request of A (i.e. as parameter of
+a procedure of A that is called by B). However, B cannot make this
+object accessible to other processes as they need to establish their
+own channel to B which fails as B has never opened a port.
+.Te
+.SH "SEE ALSO"
+.Tb PersistentDisciplines(3)
+.Tp genrem(1)
+generator of \fIRemoteObjects\fP provider modules
+.Tp Networks(3)
+abstraction for network addresses and network connections
+.Tp Messages(3)
+persistent messages
+.Tp PersistentDisciplines(3)
+attachment of persistent auxiliary data structures
+.Tp RelatedEvents(3)
+error handling
+.Tp Resources(3)
+general object states and associated events
+.Tp RobustObjects(3)
+implementation of robust proxy objects which take
+advantage of the recovery mechanism
+.Tp Services(3)
+general mechanism for type-independent extensions
+which are to be provided by type-dependent providers
+.Tp Shadows(3)
+callback-mechanism on top of \fIRemoteObjects\fP which
+allows to forward messages from the original object
+to the proxy objects
+.Tp Tasks(3)
+general task management
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: RemoteObjects.3,v 1.10 2005/08/24 07:36:04 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: RemoteObjects.3,v $
+.\" Revision 1.10  2005/08/24 07:36:04  borchert
+.\" privateObject error code added
+.\"
+.\" Revision 1.9  2003/07/10 09:20:45  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.8  1996/11/14 08:15:47  borchert
+.\" - recovery mechanism and reference to RobustObjects added
+.\" - CreateRegistrationCondition added
+.\"
+.\" Revision 1.7  1996/01/04  15:59:19  borchert
+.\" reference to genrem(1) added
+.\"
+.\" Revision 1.6  1995/12/13  17:57:08  borchert
+.\" - register interface procedure added
+.\" - message handler interface procedure is now optional
+.\" - reference to Shadows added
+.\"
+.\" Revision 1.5  1995/12/13  17:24:16  borchert
+.\" major revision of RemoteObjects:
+.\" - exported objects need no longer to be persistent
+.\"   (but extensions of Services.Object)
+.\" - RemoteObjects is now a service of Services, i.e. RemoteXXX modules
+.\"   may now be found dynamically
+.\"
+.\" Revision 1.4  1994/09/12  15:52:20  borchert
+.\" old Import & Export which based on RemoteObjects.Address removed
+.\" ExportAndWrite & ReadAndImport renamed to Export & Import
+.\"
+.\" Revision 1.3  1994/09/08  11:50:34  borchert
+.\" ExportAndWrite & ReadAndImport added
+.\" Export returns an address instead of an object id
+.\" CreateAddress & GetPorts removed
+.\"
+.\" Revision 1.2  1994/08/29  10:05:58  borchert
+.\" parallel access mode added
+.\"
+.\" Revision 1.1  1994/02/14  11:30:10  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

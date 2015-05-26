@@ -1,0 +1,175 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ConstantObj.om,v 1.1 1998/04/24 17:33:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ConstantObj.om,v $
+   Revision 1.1  1998/04/24 17:33:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ConstantObjects;
+
+   IMPORT ConstStrings, Disciplines, Loader, NetIO, PersistentObjects,
+      RelatedEvents, Services, Streams;
+
+   TYPE
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    name: ConstStrings.String;
+	 END;
+   VAR
+      odID: Disciplines.Identifier;
+      if: PersistentObjects.Interface;
+
+   CONST
+      hashtablen = 241;
+   TYPE
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    name: ConstStrings.String;
+	    object: PersistentObjects.Object;
+	    next: Entry;
+	 END;
+   VAR
+      table: ARRAY hashtablen OF Entry;
+
+   (* === name table management =========================================== *)
+
+   PROCEDURE AddObject(object: PersistentObjects.Object;
+                       name: ConstStrings.String);
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      NEW(entry); entry.name := name; entry.object := object;
+      index := name.hashval MOD hashtablen;
+      entry.next := table[index]; table[index] := entry;
+   END AddObject;
+
+   PROCEDURE LookupObject(name: ConstStrings.String;
+                          VAR object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 entry: Entry;
+   BEGIN
+      entry := table[name.hashval MOD hashtablen];
+      WHILE entry # NIL DO
+	 IF ConstStrings.Compare(entry.name, name) = 0 THEN
+	    object := entry.object; RETURN TRUE
+	 END;
+	 entry := entry.next;
+      END;
+      RETURN FALSE
+   END LookupObject;
+
+   PROCEDURE LoadModule(name: ConstStrings.String;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+      (* try to load the module that is given in name *)
+      VAR
+	 modname: ARRAY 512 OF CHAR;
+	 index: INTEGER;
+   BEGIN
+      ConstStrings.Extract(modname, name);
+      index := 0;
+      WHILE (index < LEN(modname)) & (modname[index] # 0X) &
+	    (modname[index] # ".") DO
+	 INC(index);
+      END;
+      IF (index < LEN(modname)) & (modname[index] = ".") THEN
+	 modname[index] := 0X;
+      END;
+      RETURN Loader.Load(modname, errors)
+   END LoadModule;
+
+   (* === PersistentObjects if for ConstantObjects ======================== *)
+
+   PROCEDURE Write(s: Streams.Stream;
+                   object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 disc: ObjectDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(object, odID, disc); ASSERT(ok);
+      RETURN NetIO.WriteConstString(s, disc.name)
+   END Write;
+
+   PROCEDURE CreateAndRead(s: Streams.Stream; create: BOOLEAN;
+                           VAR object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 name: ConstStrings.String;
+	 obj: PersistentObjects.Object;
+   BEGIN
+      IF ~NetIO.ReadConstString(s, name) THEN RETURN FALSE END;
+      IF LookupObject(name, obj) OR
+	    LoadModule(name, s) & LookupObject(name, obj) THEN
+	 (* note that we do not support PersistentObjects.ReadInto *)
+	 ASSERT(create OR (obj = object));
+	 object := obj;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END CreateAndRead;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE ModuleInit;
+   BEGIN
+      odID := Disciplines.Unique();
+      NEW(if);
+      if.create := NIL; if.read := NIL;
+      if.write := Write; if.createAndRead := CreateAndRead;
+   END ModuleInit;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE RegisterType(VAR type: Services.Type;
+                          name, baseName: ARRAY OF CHAR);
+      (* to be called instead of PersistentObjects.RegisterType for
+	 types of constant objects
+      *)
+   BEGIN
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END RegisterType;
+
+   PROCEDURE Init(object: PersistentObjects.Object;
+		  type: Services.Type;
+                  name: ARRAY OF CHAR);
+      (* to be called instead of PersistentObjects.Init for objects
+	 that remain constant and which are created at loading time
+	 of their modules; note that name should be qualified
+      *)
+      VAR
+	 disc: ObjectDiscipline;
+   BEGIN
+      NEW(disc); disc.id := odID;
+      ConstStrings.Create(disc.name, name);
+      Disciplines.Add(object, disc);
+      AddObject(object, disc.name);
+      PersistentObjects.Init(object, type);
+   END Init;
+
+BEGIN
+   ModuleInit;
+END ConstantObjects.

@@ -1,0 +1,761 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StdNodes;
+
+   IMPORT AVLTrees, ConstStrings, Disciplines, Events, IdentKeys, Iterators,
+      Jobs, Keys, LocalSemaphores, Names, Objects, Resources, Semaphores,
+      Services, Shards, SortedBags;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec =
+	 RECORD
+	    (Names.NodeRec)
+	    if: Interface;
+	    links: AVLTrees.AVLTree;
+	    status: Names.Status;
+	    eventType: Events.EventType; (* for TakeInterest *)
+	    mutex: Semaphores.Semaphore;
+	 END;
+   VAR
+      nodeType: Services.Type;
+
+   TYPE
+      Link = POINTER TO LinkRec;
+      LinkRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    name: ConstStrings.String;
+	    node: Names.Node;
+	    parent: Node;
+	 END;
+   VAR
+      linkType: Services.Type;
+
+   TYPE
+      Handle = POINTER TO HandleRec;
+      HandleRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    node: Node;
+	 END;
+
+   TYPE
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    links: SortedBags.Bag; (* of links *)
+	 END;
+   VAR
+      ndid: Disciplines.Identifier;
+
+   TYPE
+      TerminateLinkJob = POINTER TO TerminateLinkJobRec;
+      TerminateLinkJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    link: Link;
+	 END;
+
+   TYPE
+      GetDefaultStatusProc = PROCEDURE (node: Node; VAR status: Names.Status);
+      GetNodeProc = PROCEDURE (node: Node; name: Names.Name;
+                               auth: Shards.Lid;
+			       VAR link: Link;
+			       VAR subnode: Names.Node) : BOOLEAN;
+      AccessProc = PROCEDURE (node: Node; mode: Names.AccessMode;
+                              auth: Shards.Lid;
+			      authorized: BOOLEAN) : BOOLEAN;
+      InsertProc = PROCEDURE (node: Node; subnode: Names.Node;
+                              name: Names.Name;
+			      auth: Shards.Lid;
+			      VAR link: Link) : BOOLEAN;
+      MakeSubnodeProc = PROCEDURE (node: Node; name: Names.Name;
+                                   status: Names.Status;
+				   caps: Names.CapabilitySet;
+				   auth: Shards.Lid;
+				   VAR link: Link;
+				   VAR subnode: Node) : BOOLEAN;
+      DeleteProc = PROCEDURE (node: Node; name: Names.Name;
+			      link: Link;
+                              auth: Shards.Lid) : BOOLEAN;
+      DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid) : BOOLEAN;
+      TerminationHandlerProc = PROCEDURE (node: Node; link: Link) : BOOLEAN;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    getDefaultStatus: GetDefaultStatusProc;
+	    access: AccessProc;
+	    getNode: GetNodeProc;
+	    insert: InsertProc;
+	    makeSubnode: MakeSubnodeProc;
+	    delete: DeleteProc;
+	    destroy: DestroyProc;
+	    terminationHandler: TerminationHandlerProc;
+	 END;
+   CONST
+      stdcaps = {Names.accessCap, Names.statusCap, Names.domainCap,
+	 Names.destroyCap, Names.makeSubnodeCap};
+   VAR
+      stdif: Names.Interface;
+
+   (* === forward declarations ====================================== *)
+
+   PROCEDURE ^Create(VAR node: Node; status: Names.Status;
+                    caps: Names.CapabilitySet);
+
+   (* === Extract if procedures for IdentKeys ======================= *)
+
+   PROCEDURE ExtractIdentFromLink(object: Services.Object;
+                                  key: Keys.Key;
+				  VAR keyval: Keys.Value);
+      VAR
+	 kval: IdentKeys.Value;
+   BEGIN
+      WITH object: Link DO
+	 IdentKeys.CreateValue(kval); kval.ident := object.name;
+	 keyval := kval;
+      END;
+   END ExtractIdentFromLink;
+
+   (* === back reference management ================================= *)
+
+   PROCEDURE GetNodeDiscipline(node: Names.Node; VAR nd: NodeDiscipline);
+   BEGIN
+      IF ~Disciplines.Seek(node, ndid, nd) THEN
+	 NEW(nd); nd.id := ndid;
+	 SortedBags.Create(nd.links, IdentKeys.key);
+	 Disciplines.Add(node, nd);
+      END;
+   END GetNodeDiscipline;
+
+   PROCEDURE InsertBackReference(link: Link; node: Names.Node);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      GetNodeDiscipline(node, nd);
+      SortedBags.Add(nd.links, link);
+      Disciplines.Add(node, nd);
+   END InsertBackReference;
+
+   PROCEDURE RemoveBackReference(link: Link; node: Names.Node);
+      VAR
+	 nd: NodeDiscipline;
+   BEGIN
+      IF Disciplines.Seek(node, ndid, nd) THEN
+	 SortedBags.Remove(nd.links, link);
+      END;
+   END RemoveBackReference;
+
+   (* === auxiliary procedures =========================================== *)
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 entryit: Iterators.Iterator;
+	 link: Link;
+   BEGIN
+      WITH ref: Node DO
+	 ASSERT(ref.links # NIL);
+	 AVLTrees.GetEntries(ref.links, AVLTrees.ascending,
+	    NIL, NIL, entryit);
+	 WHILE Iterators.Get(entryit, link) DO
+	    IF (link.node # NIL) & Resources.Alive(link.node) THEN
+	       Iterators.Yield(it, link.name);
+	    END;
+	 END;
+      END;
+   END IterateMembers;
+
+   PROCEDURE Notify(link: Link; node: Names.Node; state: Names.State);
+      VAR
+	 event: Names.MemberEvent;
+   BEGIN
+      IF link.parent.eventType # NIL THEN
+	 NEW(event); event.type := link.parent.eventType;
+	 event.state := state;
+	 event.name := link.name; event.node := node;
+	 Events.Raise(event);
+      END;
+   END Notify;
+
+   PROCEDURE SuspendLink(link: Link);
+      VAR
+	 ok: BOOLEAN;
+	 node: Names.Node;
+   BEGIN
+      node := link.node;
+      link.node := NIL;
+      Notify(link, node, Names.deleted);
+   END SuspendLink;
+
+   PROCEDURE RemoveLink(link: Link);
+      VAR
+	 keyval: IdentKeys.Value;
+	 ok: BOOLEAN;
+	 node: Names.Node;
+   BEGIN
+      node := link.node; link.node := NIL;
+      IF link.parent # NIL THEN
+	 IdentKeys.CreateValue(keyval); keyval.ident := link.name;
+	 ok := AVLTrees.Remove(link.parent.links, keyval); ASSERT(ok);
+	 IF node # NIL THEN
+	    RemoveBackReference(link, node);
+	    Notify(link, node, Names.deleted);
+	 END;
+      END;
+      link.parent := NIL;
+      Resources.Notify(link, Resources.terminated);
+   END RemoveLink;
+
+   PROCEDURE TerminateLink(job: Jobs.Job);
+      VAR
+	 link: Link;
+	 parent: Node;
+   BEGIN
+      link := job(TerminateLinkJob).link;
+      parent := link.parent;
+      Semaphores.P(parent.mutex);
+      IF (parent.if # NIL) & (parent.if.terminationHandler # NIL) &
+	    parent.if.terminationHandler(parent, link) THEN
+	 SuspendLink(link);
+      ELSE
+	 RemoveLink(link);
+      END;
+      Semaphores.V(parent.mutex);
+   END TerminateLink;
+
+   PROCEDURE TerminateLinks(node: Names.Node);
+      VAR
+	 nd: NodeDiscipline;
+	 it: Iterators.Iterator;
+	 link: Link;
+	 job: TerminateLinkJob;
+   BEGIN
+      (* terminate all links that reference node *)
+      IF Disciplines.Seek(node, ndid, nd) THEN
+	 Disciplines.Remove(node, ndid);
+	 SortedBags.GetEntries(nd.links, SortedBags.ascending,
+	    NIL, NIL, it);
+	 WHILE Iterators.Get(it, link) DO
+	    NEW(job); job.link := link;
+	    Jobs.Submit(job, TerminateLink);
+	 END;
+      END;
+   END TerminateLinks;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 node: Names.Node;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    node := event.resource(Names.Node);
+	    TerminateLinks(node);
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE TerminationHandlerForLinks(event: Events.Event);
+      VAR
+	 link: Link;
+	 parent: Node;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    link := event.resource(Link); parent := link.parent;
+	    IF parent # NIL THEN
+	       Semaphores.P(parent.mutex);
+	       RemoveLink(link);
+	       Semaphores.V(parent.mutex);
+	    END;
+	 END;
+      END;
+   END TerminationHandlerForLinks;
+
+   PROCEDURE CreateOrInitLink(VAR link: Link; parent: Node);
+      VAR
+	 eventType: Events.EventType;
+   BEGIN
+      IF link = NIL THEN
+	 NEW(link); Services.Init(link, linkType);
+      END;
+      Resources.TakeInterest(link, eventType);
+      Events.Handler(eventType, TerminationHandlerForLinks);
+      Resources.DependsOn(link, parent);
+   END CreateOrInitLink;
+
+   PROCEDURE UpdateLink(link: Link; node: Names.Node);
+      VAR
+	 eventType: Events.EventType;
+   BEGIN
+      link.node := node;
+      InsertBackReference(link, node);
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      Notify(link, node, Names.inserted);
+   END UpdateLink;
+
+   PROCEDURE InsertLink(link: Link; name: ConstStrings.String;
+                        parent: Node; node: Names.Node);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      link.name := name; link.parent := parent;
+      ok := AVLTrees.Add(parent.links, link); ASSERT(ok);
+      UpdateLink(link, node);
+   END InsertLink;
+
+   PROCEDURE CreateDefaultStatus(VAR status: Names.StatusRec);
+      VAR
+	 mode: Names.AccessMode;
+   BEGIN
+      mode := 0;
+      WHILE mode < Names.accessmodes DO
+	 status.perm[mode] := NIL;
+	 INC(mode);
+      END;
+   END CreateDefaultStatus;
+
+   (* === Names if procedures ============================================= *)
+
+   PROCEDURE Access(node: Names.Node;
+                    mode: Names.AccessMode; auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 authorized: BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Resources.Alive(node) THEN RETURN FALSE END;
+	 authorized := (node.status = NIL) OR
+	    (node.status.perm[mode] = NIL) OR
+	    Shards.Fits(node.status.perm[mode], auth);
+	 IF (node.if = NIL) OR (node.if.access = NIL) THEN
+	    RETURN authorized
+	 END;
+	 RETURN node.if.access(node, mode, auth, authorized)
+      END;
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node;
+                       auth: Shards.Lid;
+		       VAR status: Names.StatusRec) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.examine, auth) THEN
+	    IF node.status = NIL THEN
+	       CreateDefaultStatus(status);
+	    ELSE
+	       status.perm := node.status.perm;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node;
+		       status: Names.Status;
+                       auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.change, auth) THEN
+	    IF (status = NIL) & (node.if.getDefaultStatus # NIL) THEN
+	       node.if.getDefaultStatus(node, status);
+	    END;
+	    IF status = NIL THEN
+	       node.status := NIL;
+	    ELSE
+	       NEW(node.status); node.status.perm := status.perm;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+                        VAR members: Names.Lister) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.read, auth) THEN
+	    Iterators.Create(members, IterateMembers, node, 0);
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.read, auth) THEN
+	    Semaphores.P(node.mutex);
+	    IF node.eventType = NIL THEN
+	       Events.Define(node.eventType);
+	       Names.InitMemberEventType(node.eventType);
+	    END;
+	    eventType := node.eventType;
+	    Semaphores.V(node.mutex);
+	    RETURN TRUE
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name; auth: Shards.Lid;
+                     VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 link: Link;
+	 ok: BOOLEAN;
+	 found: BOOLEAN;
+	 valid: BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.search, auth) THEN
+	    Semaphores.P(node.mutex);
+	    IdentKeys.CreateValue(keyval); keyval.ident := name;
+	    found := AVLTrees.Get(node.links, keyval, link);
+	    valid := found & (link.node # NIL) & Resources.Alive(link.node);
+	    IF ~found THEN
+	       link := NIL;
+	    END;
+	    IF node.if.getNode # NIL THEN
+	       ok := node.if.getNode(node, name, auth, link, subnode);
+	       IF ok & ~valid THEN
+		  (* the getNode if procedure has the permission to
+		     let subnodes (re-)appear magically in case of a GetNode
+		     request
+		  *)
+		  IF found THEN
+		     UpdateLink(link, subnode);
+		  ELSE
+		     InsertLink(link, name, node, subnode);
+		  END;
+	       END;
+	    ELSE
+	       ok := valid;
+	       IF ok THEN
+		  subnode := link.node;
+	       END;
+	    END;
+	    Semaphores.V(node.mutex);
+	    IF ok THEN
+	       RETURN TRUE
+	    ELSE
+	       IF ~valid THEN
+		  Names.Error(node, Names.nodeNotFound);
+	       END;
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 old, link: Link;
+	 oldnode: Names.Node;
+	 found: BOOLEAN;
+	 ok: BOOLEAN;
+	 exists: BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.search, auth) THEN
+	    Semaphores.P(node.mutex);
+	    IdentKeys.CreateValue(keyval); keyval.ident := name;
+	    found := AVLTrees.Get(node.links, keyval, link);
+	    exists := found & (link.node # NIL) & Resources.Alive(link.node);
+	    IF ~found THEN link := NIL END;
+	    old := link; IF exists THEN oldnode := link.node END;
+	    IF (node.if # NIL) & (node.if.insert # NIL) THEN
+	       ok := node.if.insert(node, subnode, name, auth, link);
+	    ELSE
+	       ok := ~exists;
+	    END;
+	    IF ~ok THEN
+	       IF exists THEN
+		  Names.Error(node, Names.nameExists);
+	       END;
+	       Semaphores.V(node.mutex);
+	       RETURN FALSE
+	    END;
+	    IF (link = NIL) OR (old # link) THEN
+	       CreateOrInitLink(link, node);
+	       IF found THEN
+		  RemoveLink(old);
+	       END;
+	       InsertLink(link, name, node, subnode);
+	    ELSIF exists THEN
+	       IF oldnode # subnode THEN
+		  link.node := oldnode;
+		  SuspendLink(link);
+		  UpdateLink(link, subnode);
+	       END;
+	    ELSE
+	       UpdateLink(link, subnode);
+	    END;
+	    Semaphores.V(node.mutex);
+	    RETURN TRUE
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status;
+			 caps: Names.CapabilitySet; auth: Shards.Lid;
+			 VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 old, link: Link;
+	 oldnode: Names.Node;
+	 found: BOOLEAN;
+	 ok: BOOLEAN;
+	 exists: BOOLEAN;
+	 newsubnode: Node;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.search, auth) THEN
+	    Semaphores.P(node.mutex);
+	    IdentKeys.CreateValue(keyval); keyval.ident := name;
+	    found := AVLTrees.Get(node.links, keyval, link);
+	    exists := found & (link.node # NIL) & Resources.Alive(link.node);
+	    IF ~found THEN link := NIL END;
+	    old := link; IF exists THEN oldnode := link.node END;
+	    IF (node.if # NIL) & (node.if.makeSubnode # NIL) THEN
+	       ok := node.if.makeSubnode(node, name, status, caps, auth,
+			link, newsubnode);
+	    ELSE
+	       IF exists THEN
+		  Semaphores.V(node.mutex);
+		  Names.Error(node, Names.nameExists);
+		  RETURN FALSE
+	       END;
+	       Create(newsubnode, status, caps);
+	       ok := TRUE;
+	    END;
+	    IF ~ok THEN
+	       IF exists THEN
+		  Names.Error(node, Names.nameExists);
+	       END;
+	       Semaphores.V(node.mutex);
+	       RETURN FALSE
+	    END;
+	    subnode := newsubnode;
+	    IF (link = NIL) OR (old # link) THEN
+	       CreateOrInitLink(link, node);
+	       IF found THEN
+		  RemoveLink(old);
+	       END;
+	       InsertLink(link, name, node, subnode);
+	    ELSIF exists THEN
+	       IF oldnode # subnode THEN
+		  link.node := oldnode;
+		  SuspendLink(link);
+		  InsertLink(link, name, node, subnode);
+	       END;
+	    ELSE
+	       UpdateLink(link, subnode);
+	    END;
+	    Semaphores.V(node.mutex);
+	    RETURN TRUE
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 keyval: IdentKeys.Value;
+	 link: Link;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.delete, auth) THEN
+	    Semaphores.P(node.mutex);
+	    IdentKeys.CreateValue(keyval); keyval.ident := name;
+	    IF AVLTrees.Get(node.links, keyval, link) THEN
+	       IF (node.if # NIL) & (node.if.delete # NIL) &
+		     ~node.if.delete(node, name, link, auth) THEN
+		  Semaphores.V(node.mutex);
+		  RETURN FALSE
+	       END;
+	       RemoveLink(link);
+	       Semaphores.V(node.mutex);
+	       RETURN TRUE
+	    ELSE
+	       Semaphores.V(node.mutex);
+	       Names.Error(node, Names.nodeNotFound);
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Delete;
+
+   PROCEDURE Destroy(node: Names.Node; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF Resources.Terminated(node) THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 ELSIF Access(node, Names.destroy, auth) THEN
+	    Resources.Notify(node, Resources.terminated);
+	    RETURN TRUE
+	 ELSE
+	    (* authorization failed *)
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+      END;
+   END Destroy;
+
+   (* === module initialization =========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 service: Services.Service;
+   BEGIN
+      Services.CreateType(nodeType, "StdNodes.Node", "Names.Node");
+      Services.CreateType(linkType, "StdNodes.Link", "");
+      Keys.GetService(IdentKeys.key, service);
+      Keys.Support(service, linkType, ExtractIdentFromLink);
+      ndid := Disciplines.Unique();
+      NEW(stdif);
+      stdif.access := Access;
+      stdif.getStatus := GetStatus;
+      stdif.setStatus := SetStatus;
+      stdif.getMembers := GetMembers;
+      stdif.takeInterest := TakeInterest;
+      stdif.getNode := GetNode;
+      stdif.insert := Insert;
+      stdif.makeSubnode := MakeSubnode;
+      stdif.delete := Delete;
+      stdif.destroy := Destroy;
+   END InitModule;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Init(node: Node; if: Interface;
+		  status: Names.Status;
+                  caps: Names.CapabilitySet;
+		  VAR handle: Handle);
+   BEGIN
+      node.if := if; node.status := status;
+      AVLTrees.Create(node.links, IdentKeys.key);
+      LocalSemaphores.Create(node.mutex);
+      Names.InitNode(node, stdif, caps * stdcaps);
+      node.eventType := NIL;
+      IF (status = NIL) & (if # NIL) & (if.getDefaultStatus # NIL) THEN
+	 if.getDefaultStatus(node, status);
+      END;
+      NEW(handle); handle.node := node;
+   END Init;
+
+   PROCEDURE Create(VAR node: Node; status: Names.Status;
+                    caps: Names.CapabilitySet);
+      VAR
+	 n: Node;
+	 handle: Handle;
+   BEGIN
+      NEW(n); Services.Init(n, nodeType);
+      Init(n, NIL, status, caps, handle);
+      node := n;
+   END Create;
+
+   PROCEDURE ResurrectLink(link: Link; subnode: Names.Node);
+   BEGIN
+      Semaphores.P(link.parent.mutex);
+      ASSERT((link.node = NIL) OR Resources.Terminated(link.node));
+      UpdateLink(link, subnode);
+      Semaphores.V(link.parent.mutex);
+   END ResurrectLink;
+
+   PROCEDURE Lock(handle: Handle);
+   BEGIN
+      Semaphores.P(handle.node.mutex);
+   END Lock;
+
+   PROCEDURE Unlock(handle: Handle);
+   BEGIN
+      Semaphores.V(handle.node.mutex);
+   END Unlock;
+
+BEGIN
+   InitModule;
+END StdNodes.

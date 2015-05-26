@@ -1,0 +1,353 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Listers.om,v 1.2 2005/08/21 21:24:38 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Listers.om,v $
+   Revision 1.2  2005/08/21 21:24:38  borchert
+   bug fix: PrintRange used sd of GenError without fetching
+            it using GetDiscipline. This caused the wrong discipline
+            to be taken in case of foreign sources that are processed
+            as referential text
+
+   Revision 1.1  1998/04/01 19:36:10  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Listers;
+
+   IMPORT CompilerErrors, CompilerObjects, ConstStrings, Disciplines,
+      Iterators, Lines, Objects, Print, Read, RelatedEvents,
+      Sources := CompilerSources, StreamDisciplines, StreamPosKeys, Streams,
+      Strings, SubStreams, Write;
+
+   TYPE
+      WriteLineProc = PROCEDURE (out: Streams.Stream;
+				 line: Streams.Stream;
+		                 lineNumber, lineNumberWidth: Streams.Count;
+				 m1begin, m1end,
+				 m2begin, m2end: Streams.Count) : BOOLEAN;
+      WriteMsgProc = PROCEDURE (out, msg: Streams.Stream) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    writeLine: WriteLineProc;
+	    writeMsg: WriteMsgProc;
+	 END;
+   VAR
+      stdif: Interface;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    if: Interface;
+	    lnwidth: Streams.Count; (* width of line number *)
+	    ltwidth: Streams.Count; (* length of line terminator *)
+	    noflines: Streams.Count; (* number of lines in src *)
+	    lastevent: CompilerErrors.ErrorEvent; (* last event if any *)
+	    lastref: CompilerObjects.Location; (* last ref loc if any *)
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   PROCEDURE GetDiscipline(out: Streams.Stream; VAR sd: StreamDiscipline);
+   BEGIN
+      IF ~Disciplines.Seek(out, sdID, sd) THEN
+	 NEW(sd); sd.id := sdID; sd.if := stdif; sd.lnwidth := 5;
+	 sd.ltwidth := 1; sd.lastevent := NIL; sd.lastref := NIL;
+	 Disciplines.Add(out, sd);
+      END;
+   END GetDiscipline;
+
+   PROCEDURE WriteLine(out: Streams.Stream;
+		       line: Streams.Stream;
+		       lineNumber, lineNumberWidth: Streams.Count;
+		       m1begin, m1end,
+ 		       m2begin, m2end: Streams.Count) : BOOLEAN;
+   BEGIN
+      Print.S2(out, " %*d ", lineNumberWidth, lineNumber);
+      IF out.error THEN RETURN FALSE END;
+      IF ~Streams.Copy(line, out, -1) THEN RETURN FALSE END;
+      Write.LnS(out);
+      RETURN ~out.error
+   END WriteLine;
+
+   PROCEDURE WriteMsg(out, msg: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 sd: StreamDiscipline;
+	 i: Streams.Count;
+   BEGIN
+      ok := Disciplines.Seek(out, sdID, sd); ASSERT(ok);
+      i := 0;
+      IF ~Streams.WriteByte(out, " ") THEN RETURN FALSE END;
+      WHILE (i < sd.lnwidth) & Streams.WriteByte(out, "*") DO
+	 INC(i);
+      END;
+      IF ~Streams.WriteByte(out, " ") THEN RETURN FALSE END;
+      IF ~Streams.Copy(msg, out, -1) THEN RETURN FALSE END;
+      Write.LnS(out);
+      RETURN ~out.error
+   END WriteMsg;
+
+   PROCEDURE Log10(n: Streams.Count) : Streams.Count;
+      VAR
+	 result: Streams.Count;
+   BEGIN
+      ASSERT(n >= 0);
+      result := 0;
+      WHILE n > 0 DO
+	 n := n DIV 10; INC(result);
+      END;
+      RETURN result
+   END Log10;
+
+   PROCEDURE OpenSource(src: Sources.Source;
+			out: Streams.Stream;
+                        VAR s: Streams.Stream) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+	 lineterm: StreamDisciplines.LineTerminator;
+   BEGIN
+      IF ~Sources.Open(src, s) THEN RETURN FALSE END;
+      RelatedEvents.Forward(s, src);
+      Lines.Scan(s);
+      GetDiscipline(out, sd);
+      sd.noflines := Lines.NumberOfLines(s);
+      sd.lnwidth := Log10(sd.noflines);
+      IF sd.lnwidth <= 1 THEN
+	 sd.lnwidth := 2;
+      END;
+      StreamDisciplines.GetLineTerm(s, lineterm);
+      sd.ltwidth := Strings.Len(lineterm);
+      RETURN TRUE
+   END OpenSource;
+
+   PROCEDURE WriteHeader(out: Streams.Stream;
+                         msg1, msg2: ARRAY OF CHAR; src: Sources.Source);
+   BEGIN
+      IF msg1 # "" THEN
+	 Write.StringS(out, msg1);
+	 Write.CharS(out, " ");
+      END;
+      CASE src.header.kind OF
+      | Sources.definition:
+	    Write.StringS(out, "DEFINITION ");
+      | Sources.module, Sources.defmod:
+	    Write.StringS(out, "MODULE ");
+      END;
+      ConstStrings.Write(out, src.header.modname);
+      IF msg2 # "" THEN
+	 Write.CharS(out, " ");
+	 Write.StringS(out, msg2);
+      END;
+      Write.LineS(out, ":");
+   END WriteHeader;
+
+   PROCEDURE GenError(out, s: Streams.Stream; event: CompilerErrors.ErrorEvent);
+      CONST
+	 lineNumberWidth = 5;
+      VAR
+	 newsd, sd: StreamDiscipline;
+	 loc1, loc2, ref: CompilerObjects.Location;
+	 olds: Streams.Stream;
+
+      PROCEDURE EqualLoc(loc1, loc2: CompilerObjects.Location) : BOOLEAN;
+      BEGIN
+	 IF loc1 = loc2 THEN RETURN TRUE END;
+	 IF (loc1 = NIL) # (loc2 = NIL) THEN RETURN FALSE END;
+	 RETURN (loc1.src = loc2.src) &
+	        (loc1.begin = loc2.begin) &
+		(loc1.end = loc2.end)
+      END EqualLoc;
+
+      PROCEDURE Line(loc: CompilerObjects.Location) : Streams.Count;
+	 VAR
+	    line: Lines.Location;
+      BEGIN
+	 Lines.ConvertPos(s, loc.begin, line);
+	 RETURN line.line
+      END Line;
+
+      PROCEDURE SubRange(loc: CompilerObjects.Location;
+                         line: Streams.Count;
+			 VAR mbegin, mend: Streams.Count);
+	 VAR
+	    begin, end: Lines.Location;
+      BEGIN
+	 mbegin := -1; mend := -1;
+	 IF loc = NIL THEN RETURN END;
+	 Lines.ConvertPos(s, loc.begin, begin);
+	 Lines.ConvertPos(s, loc.end, end);
+	 IF begin.line = line THEN
+	    mbegin := begin.pos;
+	 ELSIF (begin.line < line) & (end.line >= line) THEN
+	    mbegin := 0;
+	 END;
+	 IF end.line = line THEN
+	    mend := end.pos;
+	 END;
+	 IF mbegin = mend THEN
+	    (* suppress empty ranges *)
+	    mbegin := -1; mend := -1;
+	 END;
+      END SubRange;
+
+      PROCEDURE PrintRange(loc1, loc2: CompilerObjects.Location);
+	 VAR
+	    begin, end, ref: Lines.Location;
+	    m1begin, m1end, m2begin, m2end: Streams.Count;
+	    startpos, endpos: Streams.Count;
+	    lineNumber: Streams.Count;
+	    line: Streams.Stream;
+	    ok: BOOLEAN;
+	    currentLine: Lines.Location;
+	    sd: StreamDiscipline;
+      BEGIN
+	 GetDiscipline(out, sd);
+	 Lines.ConvertPos(s, loc1.begin, begin);
+	 IF loc2 # NIL THEN
+	    Lines.ConvertPos(s, loc2.end, end);
+	 ELSE
+	    Lines.ConvertPos(s, loc1.end, end);
+	 END;
+	 currentLine := begin; currentLine.pos := 0;
+	 Lines.ConvertLoc(s, currentLine, startpos);
+	 lineNumber := currentLine.line;
+	 WHILE (lineNumber <= end.line) & (lineNumber < sd.noflines) DO
+	    INC(currentLine.line);
+	    Lines.ConvertLoc(s, currentLine, endpos);
+	    IF ~SubStreams.Open(line, s,
+	                        startpos, endpos - sd.ltwidth - startpos,
+				s) THEN
+	       RETURN
+	    END;
+	    SubRange(loc1, lineNumber, m1begin, m1end);
+	    SubRange(loc2, lineNumber, m2begin, m2end);
+	    ok := sd.if.writeLine(out, line, lineNumber + 1, sd.lnwidth,
+				  m1begin, m1end, m2begin, m2end);
+	    Streams.Release(line);
+	    IF ~ok THEN RETURN END;
+	    INC(lineNumber); startpos := endpos;
+	 END;
+      END PrintRange;
+
+   BEGIN (* GenError *)
+      GetDiscipline(out, sd);
+      IF s # NIL THEN
+	 loc1 := event.loc1; loc2 := event.loc2; ref := event.reference;
+	 IF (sd.lastevent = NIL) OR
+	       ~EqualLoc(sd.lastevent.loc1, loc1) OR
+	       ~EqualLoc(sd.lastevent.loc2, loc2) OR
+	       (ref # NIL) & ~EqualLoc(sd.lastevent.reference, ref) THEN
+	    IF EqualLoc(sd.lastref, ref) THEN
+	       ref := NIL; (* suppress repeatition *)
+	    END;
+	    IF (ref # NIL) & (ref.src = loc1.src) THEN
+	       IF Line(loc1) = Line(ref) THEN
+		  IF loc2 = NIL THEN
+		     IF ref.begin < loc1.begin THEN
+			loc2 := loc1; loc1 := ref;
+		     ELSE
+			loc2 := ref;
+		     END;
+		  END;
+		  ref := NIL;
+	       END;
+	    END;
+	    IF ref # NIL THEN
+	       IF ref.src = loc1.src THEN
+		  PrintRange(ref, NIL);
+	       ELSIF (ref.src # NIL) & (ref.src.header # NIL) THEN
+		  olds := s; GetDiscipline(out, sd);
+		  Disciplines.Remove(out, sdID);
+		  GetDiscipline(out, newsd);
+		  newsd.if := sd.if;
+		  IF OpenSource(ref.src, out, s) THEN
+		     WriteHeader(out, "excerpt of", "", ref.src);
+		     PrintRange(ref, NIL);
+		     WriteHeader(out, "", "continued", loc1.src);
+		  END;
+		  Disciplines.Add(out, sd);
+		  s := olds;
+	       END;
+	    END;
+	    PrintRange(loc1, loc2);
+	 END;
+      ELSE
+	 Print.S1(out, "[%7d] ", event.loc1.begin);
+      END;
+      Streams.SetPos(event.longmsg, 0);
+      IF ~sd.if.writeMsg(out, event.longmsg) THEN RETURN END;
+      Streams.SetPos(event.longmsg, 0);
+      sd.lastevent := event;
+      IF event.reference # NIL THEN
+	 sd.lastref := event.reference;
+      END;
+   END GenError;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Init(out: Streams.Stream; if: Interface);
+      VAR
+	 sd: StreamDiscipline;
+   BEGIN
+      ASSERT((if # NIL) & (if.writeLine # NIL) & (if.writeMsg # NIL));
+      NEW(sd); sd.id := sdID; sd.if := if; Disciplines.Add(out, sd);
+   END Init;
+
+   PROCEDURE GenListing(out: Streams.Stream; errors: RelatedEvents.Object);
+      VAR
+	 event: CompilerErrors.ErrorEvent;
+	 it: Iterators.Iterator;
+	 src: Sources.Source;
+	 s: Streams.Stream;
+	 sd: StreamDiscipline;
+   BEGIN (* GenListing *)
+      src := NIL;
+      CompilerErrors.GetSortedErrors(errors, it);
+      WHILE Iterators.Get(it, event) DO
+	 IF src # event.loc1.src THEN
+	    IF src # NIL THEN
+	       Write.LnS(out);
+	       IF s # NIL THEN
+		  Streams.Release(s);
+	       END;
+	    END;
+	    src := event.loc1.src;
+	    WriteHeader(out, "errors in", "", src);
+	    IF ~OpenSource(src, out, s) THEN
+	       Write.LineS(out, " *** warning: source not available ***");
+	       Write.LineS(out, " *** giving stream positions only  ***");
+	       s := NIL;
+	    END;
+	 END;
+	 GenError(out, s, event);
+      END;
+   END GenListing;
+
+BEGIN
+   sdID := Disciplines.Unique();
+   NEW(stdif); stdif.writeLine := WriteLine; stdif.writeMsg := WriteMsg;
+END Listers.

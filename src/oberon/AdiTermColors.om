@@ -1,0 +1,284 @@
+MODULE AdiTermColors;
+
+   IMPORT Read, RelatedEvents, StreamDisciplines, Streams, Strings,
+      SYS := SYSTEM, TermColors, UnixEnvironment, UnixFiles;
+
+   TYPE
+      ColorSetting = POINTER TO ColorSettingRec;
+      ColorSettingRec =
+	 RECORD
+	    (* index within line *)
+	    index: INTEGER;
+	    reset: BOOLEAN;
+	    changefg: BOOLEAN; changebg: BOOLEAN;
+	    fgcolor, bgcolor: TermColors.Color;
+	    next: ColorSetting;
+	 END;
+
+   CONST
+      hashtablen = 32;
+      wordlen = 32;
+   CONST
+      colorizeName = 0;
+      colorizeWord = 1;
+      ignoreCase = 2;
+   TYPE
+      Word = ARRAY wordlen OF CHAR;
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    word: Word;
+	    set: SET; (* of colorizeName, colorizeWord, ignoreCase *)
+	    fgcolor, bgcolor: TermColors.Color;
+	    setfg, setbg: BOOLEAN;
+	    next: Entry;
+	 END;
+   VAR
+      hashtab: ARRAY hashtablen OF Entry;
+
+   PROCEDURE InitHashtab;
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := 0;
+      WHILE index < hashtablen DO
+	 hashtab[index] := NIL;
+	 INC(index);
+      END;
+   END InitHashtab;
+
+   PROCEDURE Hashval(word: ARRAY OF CHAR) : INTEGER;
+      VAR
+	 hashval: LONGINT;
+	 i: INTEGER;
+   BEGIN
+      hashval := 0;
+      i := 0;
+      WHILE (i < LEN(word)) & (word[i] # 0X) DO
+	 hashval := SYS.ROT(hashval, -5) + ORD(word[i]);
+	 INC(i);
+      END;
+      RETURN SHORT(hashval) MOD hashtablen
+   END Hashval;
+
+   PROCEDURE AddWord(word: ARRAY OF CHAR;
+                     set: SET;
+		     fgcolor, bgcolor: TermColors.Color;
+		     setfg, setbg: BOOLEAN);
+      VAR
+	 hashval: INTEGER;
+	 entry: Entry;
+   BEGIN
+      NEW(entry); COPY(word, entry.word);
+      entry.set := set; entry.fgcolor := fgcolor; entry.bgcolor := bgcolor;
+      entry.setfg := setfg; entry.setbg := setbg;
+      hashval := Hashval(word);
+      entry.next := hashtab[hashval];
+      hashtab[hashval] := entry;
+   END AddWord;
+
+   PROCEDURE GetColor(cname: ARRAY OF CHAR) : TermColors.Color;
+      VAR
+	 i: TermColors.Color;
+   BEGIN
+      i := 0;
+      WHILE i < TermColors.colors DO
+	 IF TermColors.name[i] = cname THEN RETURN i END;
+	 INC(i);
+      END;
+      RETURN 0
+   END GetColor;
+
+   PROCEDURE Cap(VAR s: ARRAY OF CHAR);
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := 0;
+      WHILE (index < LEN(s)) & (s[index] # 0X) DO
+	 IF (s[index] >= "a") & (s[index] <= "z") THEN
+	    s[index] := CAP(s[index]);
+	 END;
+	 INC(index);
+      END;
+   END Cap;
+
+   PROCEDURE Lookup(word: ARRAY OF CHAR;
+		    mode: INTEGER;
+                    VAR entry: Entry) : BOOLEAN;
+      VAR
+	 hashval: INTEGER;
+	 p: Entry;
+   BEGIN
+      hashval := Hashval(word);
+      p := hashtab[hashval];
+      WHILE p # NIL DO
+	 IF (p.word = word) & (mode IN p.set) THEN
+	    entry := p; RETURN TRUE
+	 END;
+	 p := p.next;
+      END;
+      Cap(word);
+      hashval := Hashval(word);
+      p := hashtab[hashval];
+      WHILE p # NIL DO
+	 IF (p.word = word) & (ignoreCase IN p.set) & (mode IN p.set) THEN
+	    entry := p; RETURN TRUE
+	 END;
+	 p := p.next;
+      END;
+      RETURN FALSE
+   END Lookup;
+
+   PROCEDURE ProcessConfig(s: Streams.Stream);
+      VAR
+	 cmd: ARRAY 32 OF CHAR;
+	 argc: INTEGER;
+	 args: ARRAY 8 OF Word;
+	 argi: INTEGER;
+	 set: SET;
+   BEGIN
+      LOOP
+	 IF ~Read.FieldS(s, cmd) THEN EXIT END;
+	 argc := 0;
+	 WHILE (argc < LEN(args)) & Read.FieldS(s, args[argc]) DO
+	    INC(argc);
+	 END;
+	 Read.LnS(s);
+	 IF argc > 0 THEN
+	    IF args[0] = "name" THEN
+	       set := {colorizeName};
+	    ELSIF args[0] = "word" THEN
+	       set := {colorizeWord};
+	    ELSIF args[0] = "both" THEN
+	       set := {colorizeName, colorizeWord};
+	    ELSE
+	       set := {};
+	    END;
+	    IF set # {} THEN
+	       argi := 1;
+	       IF args[argi] = "-i" THEN
+		  INCL(set, ignoreCase); INC(argi); Cap(args[argi]);
+	       END;
+	       IF (cmd = "setcolors") & (argc = argi + 3) THEN
+		  (* setcolors [name|word|both] word fg bg *)
+		  AddWord(args[argi], set,
+			  GetColor(args[argi+1]), GetColor(args[argi+2]),
+			  TRUE, TRUE);
+	       ELSIF (cmd = "setfg") & (argc = argi + 2) THEN
+		  (* setfg [name|word|both] word color *)
+		  AddWord(args[argi], set,
+			  GetColor(args[argi+1]), 0,
+			  TRUE, FALSE);
+	       ELSIF (cmd = "setbg") & (argc = argi + 2) THEN
+		  (* setbg [name|word|both] word color *)
+		  AddWord(args[argi], set,
+			  0, GetColor(args[argi+1]),
+			  FALSE, TRUE);
+	       END;
+	    END;
+	 END;
+      END;
+   END ProcessConfig;
+
+   PROCEDURE LoadConfig(filename: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+	    RelatedEvents.null) THEN
+	 RETURN FALSE
+      END;
+      ProcessConfig(s);
+      RETURN TRUE
+   END LoadConfig;
+      
+   PROCEDURE Process(line: ARRAY OF CHAR; VAR colors: ColorSetting);
+      VAR
+	 s: Streams.Stream;
+	 name, word: Word;
+	 entry: Entry;
+	 head, tail: ColorSetting;
+	 pos, begin: Streams.Count;
+	 ch: CHAR;
+	 i: INTEGER; copy: BOOLEAN;
+
+      PROCEDURE Add(index: Streams.Count; reset: BOOLEAN;
+                    changefg, changebg: BOOLEAN;
+		    fgcolor, bgcolor: TermColors.Color);
+	 VAR
+	    setting: ColorSetting;
+      BEGIN
+	 NEW(setting); setting.next := NIL;
+	 setting.index := SHORT(index);
+	 setting.reset := reset;
+	 setting.changefg := changefg;
+	 setting.changebg := changebg;
+	 setting.fgcolor := fgcolor;
+	 setting.bgcolor := bgcolor;
+	 IF tail = NIL THEN
+	    head := setting;
+	 ELSE
+	    tail.next := setting;
+	 END;
+	 tail := setting;
+      END Add;
+
+      PROCEDURE CheckWord;
+      BEGIN
+	 IF i < LEN(word) THEN
+	    word[i] := 0X;
+	 END;
+	 IF Lookup(word, colorizeWord, entry) THEN
+	    Add(begin, FALSE, entry.setfg, entry.setbg,
+	       entry.fgcolor, entry.bgcolor);
+	    Add(pos, TRUE, FALSE, FALSE, 0, 0);
+	 END;
+	 copy := FALSE;
+      END CheckWord;
+
+   BEGIN (* Process *)
+      Strings.Open(s, line); StreamDisciplines.SetFieldSep(s, ":");
+      IF ~Read.FieldS(s, name) THEN RETURN END;
+      head := NIL; tail := NIL;
+      IF Lookup(name, colorizeName, entry) THEN
+	 Add(0, FALSE, entry.setfg, entry.setbg, entry.fgcolor, entry.bgcolor);
+	 Add(Strings.Len(name), TRUE, FALSE, FALSE, 0, 0);
+      END;
+      Streams.GetPos(s, pos);
+      WHILE (pos < LEN(line)) & (line[pos] # 0X) DO
+	 ch := line[pos];
+	 IF (ch >= "a") & (ch <= "z") OR
+	       (ch >= "A") & (ch <= "Z") OR
+	       (ch >= "0") & (ch <= "9") OR
+	       (ch = "-") THEN
+	    IF ~copy THEN
+	       copy := TRUE; begin := pos; i := 0;
+	    END;
+	    IF i < LEN(word) THEN
+	       word[i] := ch; INC(i);
+	    END;
+	 ELSIF copy THEN
+	    CheckWord;
+	 END;
+	 INC(pos);
+      END;
+      IF copy THEN CheckWord END;
+      colors := head;
+   END Process;
+
+   PROCEDURE LoadDefaultConfig;
+      VAR
+	 path: ARRAY 512 OF CHAR;
+   BEGIN
+      InitHashtab;
+      IF LoadConfig(".aditermrc") THEN RETURN END;
+      IF UnixEnvironment.String("HOME", path) THEN
+	 Strings.Concatenate(path, "/.aditermrc");
+	 IF LoadConfig(path) THEN RETURN END;
+      END;
+      IF LoadConfig("/home/adi/aditermrc") THEN RETURN END;
+   END LoadDefaultConfig;
+
+BEGIN
+   LoadDefaultConfig;
+END AdiTermColors.

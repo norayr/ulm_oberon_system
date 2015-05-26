@@ -1,0 +1,600 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Names 3 "Last change: 13 September 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Names \- abstraction for name hierarchies
+.SH SYNOPSIS
+.Pg
+TYPE Name = ConstStrings.String;
+.sp .3v
+TYPE Node = POINTER TO NodeRec;
+TYPE NodeRec = RECORD (Services.ObjectRec) END;
+.sp .3v
+TYPE Lister = Iterators.Iterator;
+.sp .7v
+CONST examine = 0;
+CONST change = 1;
+CONST read = 2;
+CONST search = 3;
+CONST insert = 4;
+CONST delete = 5;
+CONST destroy = 6;
+CONST accessmodes = 7;
+.sp .3v
+TYPE AccessMode = SHORTINT;            (* [examine..destroy] *)
+.sp .3v
+TYPE Permissions = ARRAY accessmodes OF Shards.Pot;
+.sp .3v
+TYPE Status = POINTER TO StatusRec;
+TYPE StatusRec =
+   RECORD
+      (Objects.ObjectRec)
+      perm: Permissions;
+   END;
+.sp .7v
+TYPE AccessProc = PROCEDURE (node: Node; mode: AccessMode;
+                              auth: Shards.Lid): BOOLEAN;
+TYPE GetStatusProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                              VAR status: StatusRec): BOOLEAN;
+TYPE SetStatusProc = PROCEDURE (node: Node; status: Status;
+                              auth: Shards.Lid): BOOLEAN;
+TYPE GetMembersProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                              VAR members: Lister): BOOLEAN;
+TYPE TakeInterestProc = PROCEDURE (node: Node; auth: Shards.Lid;
+                              VAR eventType: Events.EventType): BOOLEAN;
+TYPE GetNodeProc = PROCEDURE (node: Node; name: Name; auth: Shards.Lid;
+                              VAR subnode: Node): BOOLEAN;
+TYPE InsertProc = PROCEDURE (node, subnode: Node; name: Name;
+                              auth: Shards.Lid): BOOLEAN;
+TYPE MakeSubnodeProc = PROCEDURE (node: Node; name: Name; status: Status;
+                                  caps: CapabilitySet; auth: Shards.Lid;
+                                  VAR subnode: Node): BOOLEAN; 
+TYPE DeleteProc = PROCEDURE (node: Node; name: Name;
+                              auth: Shards.Lid): BOOLEAN;
+TYPE DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid): BOOLEAN;
+.sp .7v
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      access:           AccessProc;
+      getStatus:        GetStatusProc;
+      setStatus:        SetStatusProc;
+      getMembers:       GetMembersProc;
+      takeInterest:     TakeInterestProc;
+      getNode:          GetNodeProc;
+      insert:           InsertProc;
+      makeSubnode:      MakeSubnodeProc;
+      delete:           DeleteProc;
+      destroy:          DestroyProc;
+   END;
+.sp .7v
+CONST accessCap = 0;
+CONST statusCap = 1;
+CONST domainCap = 2;
+CONST destroyCap = 3;
+CONST makeSubnodeCap = 4;
+CONST allCaps = {accessCap .. makeSubnodeCap};
+CONST strictCaps = {statusCap, domainCap, makeSubnodeCap};
+.sp .3v
+TYPE CapabilitySet = SET;              (* of [accessCap..destroyCap] *)
+.sp .7v
+CONST inserted = insert;
+CONST deleted = delete;
+.sp .3v
+TYPE State = SHORTINT;                 (* inserted or deleted *)
+TYPE MemberEvent = POINTER TO MemberEventRec;
+TYPE MemberEventRec =
+   RECORD
+      (Events.EventRec)
+      state: State;
+      name: Name;                      (* of inserted/deleted member *)
+      node: Node;
+   END;
+.sp .7v
+VAR root: Node;
+.sp .7v
+TYPE ErrorCode = SHORTINT;
+.sp .3v
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: ErrorCode;
+   END;
+.sp .3v
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp .7v
+PROCEDURE InitNode(node: Node; if: Interface; caps: CapabilitySet);
+PROCEDURE CreateNode(VAR node: Node; status: Status; caps: CapabilitySet);
+PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+.sp .3v
+PROCEDURE Capabilities(node: Node): CapabilitySet;
+PROCEDURE Access(node: Node; mode: AccessMode; auth: Shards.Lid): BOOLEAN;
+PROCEDURE GetStatus(node: Node; auth: Shards.Lid;
+                           VAR status: StatusRec): BOOLEAN;
+PROCEDURE SetStatus(node: Node; status: Status; auth: Shards.Lid): BOOLEAN;
+PROCEDURE GetMembers(node: Node; auth: Shards.Lid;
+                           VAR members: Lister): BOOLEAN;
+PROCEDURE TakeInterest(node: Node; auth: Shards.Lid;
+                           VAR eventType: Events.EventType): BOOLEAN;
+PROCEDURE GetNode(node: Node; name: Name; auth: Shards.Lid;
+                           VAR subnode: Node): BOOLEAN;
+PROCEDURE Insert(node, subnode: Node; name: Name;
+                           auth: Shards.Lid): BOOLEAN;
+PROCEDURE MakeSubnode(node: Node; name: Name;
+                      status: Status; caps: CapabilitySet;
+                      auth: Shards.Lid; VAR subnode: Node): BOOLEAN; 
+PROCEDURE Delete(node: Node; name: Name; auth: Shards.Lid): BOOLEAN;
+PROCEDURE Destroy(node: Node; auth: Shards.Lid): BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I Names
+defines and basically implements an
+abstraction for globally distributable name spaces for objects.
+Name spaces are directed (and in general cycle-free) graphs.
+Nodes in the ``root'' hierarchy as defined in this module can
+belong to other processes (name servers).
+Access to individual
+nodes can be controlled by use of an authorization scheme.
+.PP
+Nodes can have a combination of following capabilities:
+.Tb makeSubnodeCap
+.Tp accessCap
+indicates that an explicit
+access method is present,
+so that results of
+.I Access
+(see below) can be considered authoritative;
+.Tp statusCap
+indicates that status information is maintained;
+.Tp domainCap
+denotes a node's capability to manage subnodes (members);
+.Tp destroyCap
+indicates that an explicit destroy method is present.
+.Tp makeSubnodeCap
+indicates the support of the \fIMakeSubnode\fP operation.
+.Te
+For convenience,
+.I allCaps
+defines a set of all capabilities, and
+.I strictCaps
+defines a set of those capabilities that will
+cause failures of associated methods
+when missing.
+.PP
+A
+.IR status ,
+if maintained,
+contains authorization agents
+(of type
+.IR Shards.Pot )
+controlling the use of following methods:
+.Tb examine
+.Tp examine
+\fIGetStatus\fP
+.Tp change
+\fISetStatus\fP
+.Tp read
+\fIGetMembers\fP, \fITakeInterest\fP
+.Tp search
+\fIGetNode\fP
+.Tp insert
+\fIInsert\fP
+.Tp delete
+\fIDelete\fP
+.Tp destroy
+\fIDestroy\fP
+.Te
+.SS "Procedures of general interest"
+.I Capabilities
+returns capabilities of
+.IR node .
+.PP
+.I Access
+tries to guess whether
+.I node
+would allow a particular access mode
+.IR mode .
+When in doubt,
+e.g. because
+.I node
+has no
+.I access
+capability, result is
+.BR TRUE .
+.PP
+.I GetStatus
+examines the current status of
+.IR node .
+.I SetStatus
+changes the status of
+.IR node .
+.PP
+.I GetMembers
+reads from
+.I node
+all names of current subnodes.
+.PP
+.I TakeInterest
+returns an event type for events notifying changes
+(additions or deletions) of members.
+Different nodes will yield different event types.
+Notification events carry a reference to the domain node
+whose set of members has changed and the name of the member.
+.PP
+.I GetNode
+searches
+.I node
+for a direct subnode named
+.I name.
+.PP
+.I Insert
+inserts name
+.I name
+for subnode
+.I subnode
+into
+.IR node .
+.PP
+.I MakeSubnode
+creates a subnode of the same type as
+.I node
+and inserts it into
+.IR node .
+The initial status is defined by
+.IR status .
+If set to \fBNIL\fP,
+.I subnode
+inherits its status from
+.IR node .
+The set of supported capabilities of
+.I subnode
+is the intersection of
+.I caps
+and those of the corresponding implementation.
+The new subnode is returned in
+.IR subnode .
+.PP
+.I Delete
+deletes name
+.I name
+for an existing subnode of
+.IR node .
+.PP 
+.I Destroy
+terminates
+.I node
+and deletes references to it wherever possible.
+.PP
+.I CreateNode
+can be used to create a node of standard behaviour.
+In that case,
+.I status
+may be
+.B NIL
+if no restrictions are required.
+.SS Example
+This is an example of a procedure printing the names
+of all direct subnodes of a given node to a stream,
+supposed they are publicly visible:
+.Pg
+PROCEDURE PrintMembers(node: Names.Node; s: Streams.Stream);
+   VAR
+      members: Iterators.Iterator;
+      member: Names.Name;
+BEGIN
+   IF Names.domainCap in Names.Capabilities(node) THEN
+      IF Names.GetMembers(node, NIL, members) THEN
+         WHILE Iterators.Get(members, member) DO
+            ConstStrings.Write(s, member); Write.LnS(s);
+         END;
+      ELSE
+         Conclusions.Conclude(node, Errors.error, "PrintMembers");
+      END;
+   END;
+END PrintMembers;
+.Pe
+.SS "Procedures for implementors"
+Implementations other than the standard implementation
+must initialize new instances of nodes using
+.IR InitNode ,
+specifying a set of capabilities
+.I caps
+and an interface
+.I if
+containing following procedures:
+.Is "\fInode\fP: \fINode\fP; "
+.Ic statusCap
+.If getStatus "\fIauth\fP: \fIShards.Lid\fP; \fBVAR\fP \fIstatus\fP: \fIStatusRec\fP" "\fBBOOLEAN\fP"
+copy node's status information into
+.IR status .
+.If setStatus "\fIstatus\fP: \fIStatus\fP; \fIauth\fP: \fIShards.Lid\fP" "\fBBOOLEAN\fP"
+set node's status information to
+.IR status .
+.Ic domainCap
+.If getMembers "\fIauth\fP: \fIShards.Lid\fP; \fBVAR\fP \fImembers\fP: \fILister\fP" "\fBBOOLEAN\fP"
+return in
+.I members
+an iterator that will supply all names of node's direct subnodes.
+.If takeInterest "\fIauth\fP: \fIShards.Lid\fP; \fBVAR\fP \fIeventType\fP: \fIEvents.EventType\fP" "\fBBOOLEAN\fP"
+return in
+.I eventType
+a type for events notifying changes of members of
+.IR node .
+.If getNode "\fIname\fP: \fIName\fP; \fIauth\fP: \fIShards.Lid\fP; \fBVAR\fP \fIsubnode: Node\fP" "\fBBOOLEAN\fP"
+return in
+.I subnode
+node's subnode named
+.IR name .
+.If insert "\fIsubnode\fP: \fINode\fP; \fIname\fP: \fIName\fP; \fIauth\fP: \fIShards.Lid\fP" "\fBBOOLEAN\fP"
+insert subnode
+.I subnode
+by name
+.I name
+into node.
+.If delete "\fIname\fP: \fIName\fP; \fIauth\fP: \fIShards.Lid\fP" "\fBBOOLEAN\fP"
+delete name
+.I name
+from node.
+.Ic makeSubnodeCap
+.If makeSubnode "\fIname\fP: \fIName\fP; \fIstatus\fP: \fIStatus\fP; \fIcaps\fP: \fICapabilitySet\fP; \fIauth\fP: \fIShards.Lid\fP; \fBVAR\fP \fIsubnode\fP: \fINode\fP" "\fBBOOLEAN\fP"
+create a subnode of the own implementation and insert it under the
+given name into
+.IR node .
+The status is to be inherited from
+.I node
+unless a non-\fBNIL\fP status is given.
+.Ic destroyCap
+.If destroy "\fIauth\fP: \fIShards.Lid\fP" "\fBBOOLEAN\fP"
+check authorization to destroy node;
+clean up if appropriate.
+.Ef
+.PP
+Trivial implementations (i.e. those with an empty set of capabilities)
+may pass a \fBNIL\fP value for \fIif\fP to \fIInitNode\fP.
+.PP
+Implementors are free to share the builtin
+.I Error
+procedure to raise error events as defined below.
+.SH DIAGNOSTICS
+All procedures return
+.B TRUE
+on success,
+otherwise
+.BR FALSE .
+Errors are related to nodes and queued by default;
+their priority is
+.IR Priorities.liberrors .
+.PP
+Following error codes are currently implemented:
+.Tb serverFailure
+.Tp noPermission
+operation was not permitted
+.Tp badAccessMode
+illegal access mode
+.Tp noStatus
+node does not maintain a status
+.Tp noDomain
+node is not a domain
+.Tp nodeNotFound
+node could not be found
+.Tp nodeDestroyed
+node has been destroyed
+.Tp nameExists
+name is already in use
+.Tp nodeBusy
+node busy, possible deadlock situation
+.Tp cyclicLink
+operation would cause a cyclic link
+(not detected by some implementations)
+.Tp serverFailure
+name server failure
+.Tp noSubDomain
+\fIMakeSubnode\fP is not supported by this node
+.Tp unknownError
+.I Error
+was called with unknown error code
+.Te
+.sp .3v
+.SH "SEE ALSO"
+.Tb PersistentObjects(3)
+.Tp ConstStrings(3)
+handling of arbitrarily long strings
+.Tp Iterators(3)
+sequential access of data structures
+.Tp NamedObjects(3)
+add \fINames\fP functionality to arbitrary objects
+.Tp Paths(3)
+resolving string constants into name paths
+.Tp PathConditions(3)
+wait until a path of \fINames\fP becomes valid
+.Tp PersistentNodes(3)
+persistent directory nodes
+.Tp Services(3)
+type-independent definition of extensions
+.Tp RelatedEvents(3)
+error event handling
+.Tp RemoteNames(3)
+support of \fIRemoteObjects(3)\fP for \fINames\fP
+.Tp Resources(3)
+object termination handling
+.Tp Shards(3)
+abstraction for authorization protocols
+.Tp UniqueNames(3)
+supply unique names
+.Tp UnixNames(3)
+imports the public root
+.Te
+.SH AUTHOR
+Martin Hasch, University of Ulm,
+.br
+\fIMakeSubnode\fP was added by Andreas Borchert
+.\" ---------------------------------------------------------------------------
+.\" $Id: Names.3,v 1.7 2004/09/13 12:30:33 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Names.3,v $
+.\" Revision 1.7  2004/09/13 12:30:33  borchert
+.\" - note added that NIL may be passed for if to InitNode
+.\"   in case of trivial implementations
+.\" - one of tables fixed
+.\"
+.\" Revision 1.6  2004/04/08 21:33:52  borchert
+.\" MakeSubnode added
+.\"
+.\" Revision 1.5  2003/07/10 09:08:28  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.4  1998/04/05 11:48:52  martin
+.\" missing BOOLEAN return types in specifications added
+.\" CreateNode description moved to "general interest" subsection
+.\"
+.\" Revision 1.3  1996/08/23  20:56:21  martin
+.\" clarification re MemberEvents added
+.\"
+.\" Revision 1.2  1996/07/22  10:49:49  martin
+.\" Headline corrected: Names is an abstraction for name hierarchies.
+.\"
+.\" Revision 1.1  1995/04/13  08:41:39  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------
+.\" Martin Hasch, Oct 1994
+.\" ---------------------------------------------------------------------------

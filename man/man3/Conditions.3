@@ -1,0 +1,515 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Conditions 3 "Last change: 13 September 1996" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Conditions \- general interface for wait conditions
+.SH SYNOPSIS
+.Pg
+TYPE Domain = POINTER TO DomainRec;
+TYPE DomainRec = RECORD (Disciplines.ObjectRec) END;
+TYPE Condition = POINTER TO ConditionRec;
+TYPE ConditionRec = RECORD (Disciplines.ObjectRec) END;
+TYPE ConditionSet = POINTER TO ConditionSetRec;
+TYPE ConditionSetRec = RECORD (Objects.ObjectRec) END;
+.sp 0.3
+CONST select = 0; timelimit = 1; async = 2; timecond = 3; preconditions = 4;
+TYPE CapabilitySet = SET; (* OF [select..preconditions] *)
+TYPE SelectProc = PROCEDURE (domain: Domain; conditionSet: ConditionSet;
+                             time: Times.Time;
+                             VAR setOfTrueConditions: ConditionSet;
+                             errors: RelatedEvents.Object;
+                             retry: BOOLEAN;
+                             VAR interrupted: BOOLEAN) : BOOLEAN;
+TYPE TestProc = PROCEDURE (domain: Domain; condition: Condition;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+TYPE SendEventProc = PROCEDURE (domain: Domain; condition: Condition;
+                                event: Events.Event;
+                                errors: RelatedEvents.Object) : BOOLEAN;
+TYPE GetTimeProc = PROCEDURE (domain: Domain; conditionSet: ConditionSet;
+                              VAR nextTime: Times.Time;
+                              VAR nextCond: Condition;
+                              errors: RelatedEvents.Object);
+TYPE PreConditionsProc = PROCEDURE (domain: Domain; condition: Condition;
+                                    VAR preconds: ConditionSet;
+                                    errors: RelatedEvents.Object) : BOOLEAN;
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      test: TestProc;
+      select: SelectProc;
+      sendevent: SendEventProc;
+      gettime: GetHintProc;
+      preconditions: PreConditionsProc;
+   END;
+TYPE Description = POINTER TO DescriptionRec;
+TYPE DescriptionRec =
+   RECORD
+      (Objects.ObjectRec)
+      caps: CapabilitySet;
+      internal: BOOLEAN;
+   END;
+.sp 0.3
+TYPE GetTimeOfNextTryProc = PROCEDURE (iteration: INTEGER;
+                                       VAR time: Times.Time);
+.sp 0.7
+PROCEDURE InitDomain(domain: Domain; if: Interface; desc: Description);
+PROCEDURE Init(condition: Condition; domain: Domain);
+.sp 0.3
+PROCEDURE WaitFor(conditionSet: ConditionSet;
+                  VAR setOfTrueConditions: ConditionSet;
+                  errors: RelatedEvents.Object);
+PROCEDURE Test(condition: Condition; errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.3
+PROCEDURE CreateSet(VAR conditionSet: ConditionSet);
+PROCEDURE Incl(conditionSet: ConditionSet; condition: Condition);
+PROCEDURE Excl(conditionSet: ConditionSet; condition: Condition);
+PROCEDURE Union(result: ConditionSet; set: ConditionSet);
+PROCEDURE Union3(VAR result: ConditionSet; set1, set2: ConditionSet);
+PROCEDURE In(conditionSet: ConditionSet; condition: Condition) : BOOLEAN;
+PROCEDURE Card(conditionSet: ConditionSet) : INTEGER;
+PROCEDURE ExamineConditions(conditionSet: ConditionSet);
+PROCEDURE GetNextCondition(conditionSet: ConditionSet;
+                           VAR condition: Condition) : BOOLEAN;
+.sp 0.3
+PROCEDURE SetGetTimeOfNextTryProc(p: GetTimeOfNextTryProc);
+.Pe
+.SH DESCRIPTION
+A condition is a boolean-valued function
+(with possible side effects)
+which allows to wait until it becomes \fBTRUE\fP.
+.I Conditions
+provides a general interface for conditions
+and a waiting algorithm which blocks the current process
+until at least one condition of a set becomes \fBTRUE\fP.
+.LP
+There exist a couple of condition variants with
+differing semantics in dependence of the
+different kinds of events they allow to wait for.
+These differences do not affect \fIConditions\fP itself
+but result in different uses.
+The most important variants are:
+.Tb "concurrent conditions"
+.Tp "local events"
+have only two parties:
+one which causes the event to happen and one
+which is interested in the event.
+Example: \fIStreamConditions(3)\fP.
+.Tp "group events"
+are of interest for a group of parties.
+Each of these parties registers its interest
+which lasts until it is explicitly unregistered.
+Each receipt of these group events must be
+acknowledged.
+Example: \fIEventConditions(3)\fP.
+.Tp "global events"
+are described by conditions which have no
+more than one transition from \fBFALSE\fP to \fBTRUE\fP.
+These conditions may be checked for by any number
+of parties at any time.
+Example: \fITimeConditions(3)\fP.
+.Tp "concurrent conditions"
+are conditions where only a limited number of them
+may become \fBTRUE\fP at the same time.
+These conditions obviously have a side effect
+when they are created.
+Example: \fISemaphores(3)\fP.
+.Te
+.LP
+Note that conditions are always created and used locally,
+i.e. even for non-local events each party creates and
+uses its own condition.
+Conditions related to group events
+and concurrent conditions need some special treatment
+when they become \fBTRUE\fP.
+Conditions which are related to local or group events
+may be recycled.
+.LP
+Note that \fIConditions\fP is independent from
+the kind of concurrency used.
+The synchronization of concurrent units which share
+the same address space is done by other modules
+(e.g. \fITasks(3)\fP).
+\fIConditions\fP itself allows only to block
+\fIall\fP concurrent units of an address space.
+Nevertheless, conditions of \fIConditions\fP
+may be used for the synchronization with other
+processes (concurrent units of other address spaces)
+\fIand\fP with concurrent units of the same address space.
+For this to work, \fIConditions\fP requires
+the memory model to follow the semantics of
+total store ordering,
+i.e. memory operations are visible for all concurrent
+units of the same address space in the order of execution.
+.LP
+Conditions which are of the same type
+(and generally defined by one module)
+belong to one domain.
+An interface is associated with a domain
+and some of the interface procedures are able to
+cope with a set of conditions which all belong to the same domain.
+.LP
+Interfaces are expected to meet following specifications:
+.Is "\fIdomain\fP: \fIDomain\fP"
+.If test "; \fIcondition\fP: \fICondition\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP" "\fBBOOLEAN\fP"
+Test the condition and return the result.
+This procedure must not block the current process.
+Note that \fBTRUE\fP is to be returned
+even in case of errors because
+\fBFALSE\fP is only to be returned if it makes sense
+to wait for \fIcondition\fP to become \fBTRUE\fP.
+.If select "; \fIconditionSet\fP: \fIConditionSet\fP; \fItime\fP: \fITimes.Time\fP; \fBVAR\fP \fIsetOfTrueConditions\fP: \fIConditionSet\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP; \fIretry\fP: \fBBOOLEAN\fP; \fBVAR\fP \fIinterrupted\fP: \fBBOOLEAN\fP" "\fBBOOLEAN\fP"
+Wait for one of the conditions in \fIconditionSet\fP
+to become \fBTRUE\fP.
+\fItime\fP may be \fBNIL\fP or given
+as absolute or relative time limit.
+The time limit is to interpreted in the sense of the system clock
+\fIClocks.system\fP.
+\fItime\fP is guaranteed to be equal to \fBNIL\fP if
+\fItimelimit\fP is not in the set of capabilities.
+If successful, \fIselect\fP should \fIsetOfTrueConditions\fP set
+to the subset of \fIconditionSet\fP which contains the conditions
+which evaluates to \fBTRUE\fP.
+\fIselect\fP must return \fBFALSE\fP if the time limit exceeds
+and all conditions remain \fBFALSE\fP.
+In case of other errors
+(e.g. one of the conditions is no longer valid)
+\fBTRUE\fP is to be returned.
+In the latter case an error event should
+be passed to \fIRelatedEvents\fP which is related to \fIerrors\fP.
+This procedure needs only to be provided if \fIselect\fP belongs
+to the set of capabilities.
+It is important to note that \fIselect\fP is expected to
+return immediately if one of the conditions become \fBTRUE\fP
+(even if the time limit is not yet exceeded).
+Implementations which are unable to assure this
+must not include \fItimelimit\fP in their capability set.
+.br
+Additionally, implementations are expected to be interruptible
+(by external events) if \fIretry\fP is \fBFALSE\fP.
+Otherwise,
+if \fIretry\fP is \fBTRUE\fP,
+\fIselect\fP is expected to retry the operation on interrupts.
+\fIinterrupted\fP should be set to \fBTRUE\fP
+if interrupts occurred.
+.If sendevent "; \fIcondition\fP: \fICondition\fP; \fIevent\fP: \fIEvents.Event\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP" "\fBBOOLEAN\fP"
+Raise the given event immediately
+if \fIcondition\fP becomes \fBTRUE\fP or is no longer valid.
+In case of external conditions
+(i.e. \fIdesc.internal\fP is \fBFALSE\fP)
+this notification must be asynchronously,
+i.e. \fIProcess.Pause\fP has to return.
+\fBFALSE\fP is to be returned if
+\fIcondition\fP already evaluates to \fBTRUE\fP
+(in this case an event doesn't need to be raised).
+\fIsendevent\fP needs only to be implemented if \fIasync\fP
+is in the set of capabilities.
+Note that this capability is very important for
+a good performance of the waiting algorithm.
+.If gettime "; \fIconditionSet\fP: \fIConditionSet\fP; \fBVAR\fP \fInextTime\fP: \fITimes.Time\fP; \fBVAR\fP \fInextCond\fP: \fICondition\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP"
+Return a relative time measure which gives
+the delay time until the first condition
+(to be returned in \fInextCond\fP)
+of \fIconditionSet\fP becomes \fBTRUE\fP.
+This procedure is only to be provided if \fItimecond\fP is
+in the set of capabilities.
+.If preconditions "; \fIcondition\fP: \fICondition\fP; \fBVAR\fP \fIpreconds\fP: \fIConditionSet\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP" "\fBBOOLEAN\fP"
+Allows the implementation to specify a set of conditions
+where at least one of them needs to become \fBTRUE\fP before
+\fIcondition\fP evaluates to \fBTRUE\fP.
+If \fIpreconditions\fP returns \fBTRUE\fP and at least one
+condition in \fIpreconds\fP,
+\fIpreconditions\fP is called again when one of the conditions of
+\fIpreconds\fP becomes \fBTRUE\fP.
+On repeated calls, \fIpreconditions\fP is free to return different
+condition sets.
+This procedure must not return conditions
+which are already \fBTRUE\fP.
+\fIpreconditions\fP needs only to be implemented if \fIpreconditions\fP
+is given in the set of capabilities.
+\fBFALSE\fP is to be returned when there are no
+remaining preconditions.
+.Ef
+.LP
+.I InitDomain
+initializes a new domain and associates it with the interface \fIif\fP
+and the given description \fIdesc\fP.
+The description consists of the capability set and a boolean-valued
+component \fIinternal\fP which states whether the value of conditions
+of the given domain may change during process suspension
+(i.e. call of \fIProcess.Pause\fP).
+Internal conditions are able change only if the program
+is running while
+external conditions may be effected by the outside world.
+.I Init
+initializes a condition and connects it to the given domain.
+.LP
+.I WaitFor
+blocks the current process until
+at least one of the conditions becomes \fBTRUE\fP
+and
+returns the set of true conditions in \fIconditionSet\fP.
+Note that usually \fITasks.WaitFor\fP is called
+which blocks the current task only.
+.LP
+The algorithm of \fIWaitFor\fP may degenerate in
+some cases to a busy loop,
+i.e. the conditions are repeatedly tested.
+To reduce the consumed CPU time in such a case,
+the process is suspended for some time in each iteration
+of the busy loop.
+The delay time of this loop for the
+\fIn\fP-th retry may be determined
+by an interface procedure which is to be passed
+to \fISetGetTimeOfNextTryProc\fP.
+Initially, this interface procedure is provided
+by \fIConditions\fP itself with a reasonable variant
+which returns longer delay times for increasing \fIn\fP.
+Busy loops may be caused by external conditions
+which do not support the capabilities
+\fIasync\fP or \fItimelimit\fP.
+.LP
+.I Test
+returns \fBTRUE\fP if \fIcondition\fP evaluates
+to \fBTRUE\fP.
+.LP
+\fICreateSet\fP creates and initializes a condition set to the empty set.
+\fIIncl\fP includes \fIcondition\fP to \fIconditionSet\fP.
+\fIExcl\fP excludes \fIcondition\fP from \fIconditionSet\fP.
+\fIUnion\fP stores in \fIresult\fP the union of \fIresult\fP and \fIset\fP.
+\fIUnion3\fP returns in \fIresult\fP the union of \fIset1\fP and \fIset2\fP.
+\fIIn\fP returns \fBTRUE\fP
+if \fIcondition\fP is a member of \fIconditionSet\fP.
+\fICard\fP returns the cardinality of \fIconditionSet\fP.
+.LP
+\fIExamineConditions\fP starts a traverse through all conditions of
+\fIconditionSet\fP.
+\fIGetNextCondition\fP, if successful,
+stores one of the conditions of \fIconditionSet\fP into \fIcondition\fP
+and returns \fBFALSE\fP if there are no more conditions.
+.SH DIAGNOSTICS
+Some errors lead to failed assertions:
+.IP \(bu
+The \fIselect\fP interface procedure must return
+\fBFALSE\fP (if the time limit is exceeded) or
+a non-empty set of true conditions.
+If \fItimelimit\fP is not supported or
+if the \fItime\fP is \fBNIL\fP, \fIselect\fP
+is only allowed to return \fBFALSE\fP if \fIretry\fP
+is \fBFALSE\fP and an interrupt occurred.
+.IP \(bu
+A non-empty set of conditions must be passed
+to \fIWaitFor\fP.
+.IP \(bu
+\fIWaitFor\fP detects a deadlock if
+all conditions are internal and none of them evaluates
+to \fBTRUE\fP.
+.IP \(bu
+\fIWaitFor\fP must not be called if the
+priority is that high that asynchronous events
+cannot be delivered.
+.IP \(bu
+The interface procedure which returns the delay
+time for the next iteration of the busy loop
+must not return a zero-valued delay.
+.LP
+.I Conditions
+does not generate any error events itself but
+forwards the events generated by the interface procedures
+to the \fIerrors\fP parameters.
+.SH "SEE ALSO"
+.Tb RelatedEvents(3)
+.Tp Clocks(3)
+definition of the system clock
+.Tp Process(3)
+exports \fIProcess.Pause\fP which
+allows to suspend the current process
+.Tp RelatedEvents(3)
+error handling
+.Tp Tasks(3)
+general task management
+.Tp Times(3)
+time measures
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: Conditions.3,v 1.10 1996/09/13 13:23:54 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Conditions.3,v $
+.\" Revision 1.10  1996/09/13  13:23:54  borchert
+.\" signature of WaitFor fixed: WaitFor does not return a value
+.\"
+.\" Revision 1.9  1995/03/13  09:42:46  borchert
+.\" major revision of Conditions:
+.\" - conditions are now extensions of Disciplines.Object
+.\" - semantics & signatures of interface procedures have been changed:
+.\"   * test & select have to return TRUE in case of errors
+.\"   * sendevent has to return FALSE if the condition is already TRUE
+.\"   * the former timecond is now called timelimit
+.\"   * the former hint is now called timecond with changed semantics
+.\" - WaitFor has been removed and WaitForAndSelect has been renamed
+.\"   to WaitFor; the time parameter has been removed
+.\" - TestAndSelect has been removed
+.\" - lots of bug fixes & performance improvements
+.\"
+.\" Revision 1.8  1994/02/12  17:12:42  borchert
+.\" InitSet renamed to CreateSet
+.\"
+.\" Revision 1.7  1993/09/10  12:57:30  borchert
+.\" order of parameters changed
+.\"
+.\" Revision 1.6  1992/04/22  10:36:11  borchert
+.\" Pauses.Pause has been moved to Process.Pause
+.\"
+.\" Revision 1.5  1992/03/11  14:00:35  borchert
+.\" preconditions added
+.\" internal added
+.\"
+.\" Revision 1.4  1992/01/19  14:47:15  borchert
+.\" interrupted parameter added to SelectProc
+.\"
+.\" Revision 1.3  1992/01/15  07:25:49  borchert
+.\" retry parameter for if.select added
+.\"
+.\" Revision 1.2  1992/01/08  13:57:44  borchert
+.\" typo errors fixed
+.\"
+.\" Revision 1.1  1992/01/07  07:22:10  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

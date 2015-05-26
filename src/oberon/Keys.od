@@ -1,0 +1,135 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Keys.od,v 1.1 1996/01/04 16:45:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Keys.od,v $
+   Revision 1.1  1996/01/04  16:45:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Keys;
+
+   IMPORT PersistentDisciplines, Services;
+
+   (* client roles of this module:
+
+		     +---------------+            +-------+
+		     | YYYKeyForXXXs |            |  ZZZ  |
+		     +---------------+            +-------+
+                      /             \                 /
+                     /               \               /
+                    /              +---------+      /
+                   /               | YYYKeys |     /
+                  /                +---------+    /
+                 /                        \      /
+                /                          \    /
+               /                            \  /
+	  +----------+                 +----------+
+	  |   XXXs   |                 |   Keys   |
+	  +----------+                 +----------+
+
+	 - XXXs defines an extension of Services.Object named XXXs.XXX;
+	 - YYYKeys defines a specific sort of keys, i.e.
+	       an extension of Keys.Key and an extension of Keys.Value;
+	       InitType must be called for the extension of Keys.Key;
+	       ** provides the compare interface procedure
+	 - YYYKeyForXXXs offers the service which has been defined
+	       by YYYKeys for XXXs by calling InitService;
+	       ** provides the extract interface procedure
+	 - any other module (eg ZZZ) is then free to call Extract
+	       for objects of XXXs and YYYKeys.Key to get a key value
+	       of type YYYKeys.Value
+   *)
+
+   TYPE
+      Key = POINTER TO KeyRec;
+      KeyRec = RECORD (PersistentDisciplines.ObjectRec) END;
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+      ExtractProc = PROCEDURE (object: Services.Object;
+			       key: Key; VAR keyval: Value);
+	 (* to be provided by YYYKeyForXXXs;
+	    key is guaranteed to be an extension of YYYKeys.Key;
+	    the returned key value must be an extension of YYYKeys.Value
+	 *)
+      CompareProc = PROCEDURE (key: Key; keyval1, keyval2: Value) : INTEGER;
+	 (* to be provided by YYYKeys;
+	    keyval1 & keyval2 are guaranteed to be extensions of YYYKeys.Value;
+	    return something   < 0   if keyval1 < keyval2
+			       = 0   if keyval1 = keyval2
+			       > 0   if keyval1 > keyval2
+	 *)
+
+   PROCEDURE DefineService(name: ARRAY OF CHAR;
+			   type: Services.Type;
+			   compare: CompareProc;
+			   VAR service: Services.Service);
+      (* to be called by YYYKeys during initialization;
+	 `name' should be the name of the module (eg "YYYKeys") and
+	    becomes the name of the associated service;
+	 type is the Services.Type of YYYKeys.Value
+      *)
+
+   PROCEDURE Init(key: Key; service: Services.Service);
+      (* to be called by YYYKeys for each created extension of Keys.Key;
+	 `service' is the service returned earlier by DefineService
+      *)
+
+   PROCEDURE GetService(key: Key; VAR service: Services.Service);
+      (* return the associated service of `key' *)
+
+   PROCEDURE Support(service: Services.Service;
+		     for: Services.Type;
+		     extract: ExtractProc);
+      (* to be called by YYYKeyForXXXs;
+	 `service' is the Services.Service named "YYYKeys";
+	 `for' is the Services.Type of XXXs.XXX,
+      *)
+
+   PROCEDURE Extract(object: Services.Object; key: Key; VAR keyval: Value);
+      (* extract key value of the given key for `object';
+	 NIL is returned if nobody has defined the associated service
+	    for the Services.Type of `object';
+      *)
+
+   PROCEDURE Supported(object: Services.Object; key: Key) : BOOLEAN;
+      (* returns TRUE iff object may be compared by use of key *)
+
+   PROCEDURE Compare(key: Key; object1, object2: Services.Object) : INTEGER;
+      (* PRE: Supported(object1, key) & Supported(object2, key);
+	 return something   < 0   if object1 < object2
+			    = 0   if object1 = object2
+			    > 0   if object1 > object2
+      *)
+
+   PROCEDURE Compatible(keyval: Value; key: Key) : BOOLEAN;
+      (* return TRUE iff keyval belongs to the given key *)
+
+   PROCEDURE CompareKeyValues(key: Key; keyval1, keyval2: Value) : INTEGER;
+      (* PRE: Compatible(keyval1, key) & Compatible(keyval2, key)
+	 return something   < 0   if keyval1 < keyval2
+			    = 0   if keyval1 = keyval2
+			    > 0   if keyval1 > keyval2
+      *)
+
+END Keys.

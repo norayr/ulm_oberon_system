@@ -1,0 +1,120 @@
+(* Ulm's Compiler Toolkit
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Compiler Toolkit.
+
+   Ulm's Compiler Toolkit is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Compiler Toolkit is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CDBCat.om,v 1.1 2005/02/10 07:34:11 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CDBCat.om,v $
+   Revision 1.1  2005/02/10 07:34:11  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CDBCat;
+
+   IMPORT Args := UnixArguments, CDBNames, Conclusions, ConstStrings, Errors,
+      Names, Paths, PersistentObjects, PersistentTexts, Print, Process, Read,
+      RelatedEvents, RemoteCDBNames, RemoteIterators, RemoteNames, Services,
+      Shards, Storage, Streams, UnixFiles, UnixNames, Write;
+
+   VAR
+      outputfilename: ARRAY 512 OF CHAR;
+      auth: Shards.Lid;
+      path: ARRAY 512 OF CHAR;
+      errors: RelatedEvents.Object;
+
+      lidType: Services.Type;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+   BEGIN (* ProcessArguments *)
+      outputfilename[0] := 0X;
+      Args.Init("[-a auth] [-o output] path");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a": Args.FetchString(filename); CreateLid(auth, filename);
+	 | "o": Args.FetchString(outputfilename);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.FetchString(path); Args.AllArgs;
+   END ProcessArguments;
+
+   PROCEDURE FetchIt;
+      VAR
+	 node: Names.Node;
+	 text: PersistentTexts.Text;
+	 output: Streams.Stream;
+   BEGIN
+      IF ~Paths.GetNode(path, auth, errors, node) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, path);
+      END;
+      IF ~(node IS CDBNames.Node) THEN
+	 Write.StringS(Streams.stderr, path);
+	 Write.LineS(Streams.stderr, " is not a CDB node");
+	 Process.Exit(Process.indicateFailure);
+      END;
+      RelatedEvents.Forward(node, errors);
+      IF ~CDBNames.GetText(node(CDBNames.Node), auth, text) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, path);
+      END;
+      IF outputfilename # "" THEN
+	 IF ~UnixFiles.Open(output, outputfilename,
+	                    UnixFiles.write + UnixFiles.create,
+			    Streams.onebuf, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      ELSE
+	 output := Streams.stdout;
+      END;
+      RelatedEvents.Forward(output, errors);
+      IF ~PersistentObjects.Write(output, text) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, outputfilename);
+      END;
+      Streams.Release(output);
+   END FetchIt;
+
+BEGIN
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+
+   ProcessArguments;
+   FetchIt;
+   Process.Exit(Process.indicateSuccess);
+END CDBCat.

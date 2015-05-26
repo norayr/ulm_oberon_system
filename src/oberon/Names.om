@@ -1,0 +1,1143 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Names.om,v 1.10 2004/09/03 09:18:55 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Names.om,v $
+   Revision 1.10  2004/09/03 09:18:55  borchert
+   switched from Iterators.Create to Iterators.CreateQuickIterator
+
+   Revision 1.9  2004/04/02 18:31:59  borchert
+   - MakeSubnode added
+   - InitNodes checks now the entire interface record
+
+   Revision 1.8  2004/02/11 15:07:36  borchert
+   bug fix: a deadlock was possible when an unlinked node
+            became unreferenced
+
+   Revision 1.7  1998/04/05 16:20:22  martin
+   bug in TerminationHandler fixed
+
+   Revision 1.6  1998/04/05  15:17:44  martin
+   historic relics (Purge, Alive) removed, Resources usage straightened,
+   Assertions replaced by builtin ASSERT, Insert now checks subnode # NIL
+
+   Revision 1.5  1998/03/24  23:17:06  borchert
+   InitMemberEventType added to support PersistentEvents for
+   member event types of non-standard extensions of Names.Node
+
+   Revision 1.4  1997/07/11  08:52:55  borchert
+   adapted to changed interface of Semaphores
+
+   Revision 1.3  1995/12/27  18:43:17  borchert
+   - termination handler added for nodes inside standard domain nodes
+   - support of PersistentEvents added for error events
+
+   Revision 1.2  1995/12/26  11:35:31  martin
+   support of PersistentEvents for MemberEvent added
+
+   Revision 1.1  1995/12/22  15:12:09  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Names;
+(*
+ *	Abstraction for globally distributable names for objects.
+ *	Name spaces are directed and (in general) cycle-free graphs.
+ *	Nodes in the "root" hierarchy as defined in this module can
+ *	belong to other processes (name servers).  Access to individual
+ *	nodes can be controlled by use of an authorization scheme.
+ *)
+
+   IMPORT
+      Conditions, ConstStrings, Events, Iterators, LocalSemaphores, NetIO,
+      Objects, PersistentEvents, Priorities, RelatedEvents, RemoteObjects,
+      Resources, Semaphores, Services, Shards, Streams, Strings;
+
+   TYPE
+      Name = ConstStrings.String;
+
+      Node = POINTER TO NodeRec;
+
+      Lister = Iterators.Iterator;
+
+   CONST
+      examine = 0;			(* GetStatus *)
+      change = 1;			(* SetStatus *)
+      read = 2;				(* GetMembers, TakeInterest *)
+      search = 3;			(* GetNode *)
+      insert = 4;			(* Insert *)
+      delete = 5;			(* Delete *)
+      destroy = 6;			(* Destroy *)
+      accessmodes = 7;
+
+   TYPE
+      AccessMode = SHORTINT;		(* [examine..destroy] *)
+
+      Permissions = ARRAY accessmodes OF Shards.Pot;
+
+      Status = POINTER TO StatusRec;
+      StatusRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* authorization: *)
+	    perm: Permissions;
+	 END;
+
+   CONST
+      accessCap = 0;
+      statusCap = 1;
+      domainCap = 2;
+      destroyCap = 3;
+      makeSubnodeCap = 4;
+      allCaps = {accessCap .. makeSubnodeCap};
+      (* capabilities causing failures when missing: *)
+      strictCaps = {statusCap, domainCap, makeSubnodeCap};
+
+   TYPE
+      CapabilitySet = SET;		(* of [accessCap..destroyCap] *)
+
+   TYPE
+      AccessProc = PROCEDURE (node: Node; mode: AccessMode;
+				 auth: Shards.Lid): BOOLEAN;
+
+      GetStatusProc = PROCEDURE (node: Node; auth: Shards.Lid;
+				 VAR status: StatusRec): BOOLEAN;
+
+      SetStatusProc = PROCEDURE (node: Node; status: Status;
+				 auth: Shards.Lid): BOOLEAN;
+
+      GetMembersProc = PROCEDURE (node: Node; auth: Shards.Lid;
+				 VAR members: Lister): BOOLEAN;
+
+      TakeInterestProc = PROCEDURE (node: Node; auth: Shards.Lid;
+			      VAR eventType: Events.EventType): BOOLEAN;
+
+      GetNodeProc = PROCEDURE (node: Node; name: Name; auth: Shards.Lid;
+				 VAR subnode: Node): BOOLEAN;
+
+      InsertProc = PROCEDURE (node, subnode: Node; name: Name;
+				 auth: Shards.Lid): BOOLEAN;
+
+      MakeSubnodeProc = PROCEDURE (node: Node; name: Name; status: Status;
+				       caps: CapabilitySet; auth: Shards.Lid;
+				       VAR subnode: Node): BOOLEAN; 
+
+      DeleteProc = PROCEDURE (node: Node; name: Name;
+				 auth: Shards.Lid): BOOLEAN;
+
+      DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid): BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* access checking method *)
+	    access:           AccessProc;
+	    (* status methods *)
+	    getStatus:        GetStatusProc;
+	    setStatus:        SetStatusProc;
+	    (* domain methods *)
+	    getMembers:       GetMembersProc;
+	    takeInterest:     TakeInterestProc;
+	    getNode:          GetNodeProc;
+	    insert:           InsertProc;
+	    makeSubnode:      MakeSubnodeProc;
+	    delete:           DeleteProc;
+	    (* cleanup method *)
+	    destroy:          DestroyProc;
+	 END;
+
+   CONST
+      inserted = insert;
+      deleted = delete;
+
+   TYPE
+      State = SHORTINT;			(* inserted or deleted *)
+
+      MemberEvent = POINTER TO MemberEventRec;
+      MemberEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    state: State;
+	    name: Name;			(* of inserted/deleted member *)
+	    node: Node;
+	 END;
+
+      RefList = POINTER TO RefListRec;
+      RefListRec =
+	 RECORD
+	    domain: Node;
+	    name: Name;
+	    next: RefList;
+	 END;
+
+      MemberTree = POINTER TO MemberTreeRec;
+      MemberTreeRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name: Name;
+	    node: Node;
+	    left,
+	    right: MemberTree;
+	 END;
+
+      NodeRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	    caps: CapabilitySet;
+	    id: LONGINT;		(* not persistent *)
+	    alive: BOOLEAN;		(* used in all default cases *)
+	    referencesBusy: Semaphores.Semaphore;
+	    references: RefList;
+	    resKey: Resources.Key;
+	 END;
+
+      StdNode = POINTER TO StdNodeRec;
+      StdNodeRec =
+	 RECORD
+	    (NodeRec)
+	    membersBusy: Semaphores.Semaphore;
+	    members: MemberTree;
+	    memberEventType: Events.EventType;
+	    status: Status;
+	 END;
+      (*
+       * References are sorted first by node.id, then by name.
+       * Members are sorted inorder by name.
+       *)
+
+   CONST
+      noPermission = 0;		(* operation was not permitted *)
+      badAccessMode = 1;	(* illegal access mode *)
+      noStatus = 2;		(* node does not maintain a status *)
+      noDomain = 3;		(* node is not a domain *)
+      nodeNotFound = 4;		(* node could not be found *)
+      nodeDestroyed = 5;	(* node has been destroyed *)
+      nameExists = 6;		(* name is already in use *)
+      nodeBusy = 7;		(* node busy, possible deadlock situation *)
+      cyclicLink = 8;		(* operation would cause a cyclic link *)
+      serverFailure = 9;	(* name server failure *)
+      unknownError = 10;	(* unknown error code *)
+      noSubDomain = 11;         (* node does not support MakeSubdomain *)
+      errorcodes = 12;
+
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+
+   VAR
+      root: Node;		(* common root of all global domains *)
+
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+   (*
+    * Errors related to nodes are queued on default; priority is
+    * Priorities.liberrors
+    *)
+
+   (* ======== private variables ======== *)
+
+      unique: LONGINT;				(* -> id *)
+      stdInterface: Interface;
+      memberEventType: PersistentEvents.Type;
+      eventType,
+      potType,
+      nodeType,
+      stdNodeType: Services.Type;
+      defaultStatus: Status;
+
+   (* ======== ======== ======== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[noPermission] :=     "operation was not permitted";
+      errormsg[badAccessMode] :=    "illegal access mode";
+      errormsg[noStatus] :=	    "node does not maintain a status";
+      errormsg[noDomain] :=         "node is not a domain";
+      errormsg[nodeNotFound] :=     "node could not be found";
+      errormsg[nodeDestroyed] :=    "node has been destroyed";
+      errormsg[nameExists] :=       "name is already in use";
+      errormsg[nodeBusy] :=         "node busy, possible deadlock situation";
+      errormsg[cyclicLink] :=       "operation would cause a cyclic link";
+      errormsg[serverFailure] :=    "name server failure";
+      errormsg[unknownError] :=     "unknown error code";
+      errormsg[noSubDomain] :=
+	 "node does not support the creation of subdomains";
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   PROCEDURE ErrorN(errors: RelatedEvents.Object; name: Name; code: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      ConstStrings.Extract(event.message, name);
+      IF name.len > 12 THEN
+	 event.message[11] := "*";
+	 event.message[12] := 0X;
+      END;
+      Strings.Concatenate(event.message, ": ");
+      Strings.Concatenate(event.message, errormsg[code]);
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END ErrorN;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      (* raise an error event; to be called in standard situations *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      IF (code < 0) OR (code >= errorcodes) THEN
+	 code := unknownError;
+      END;
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE NotifyTermination(node: Node);
+   BEGIN
+      Resources.Notify(node, Resources.terminated);
+   END NotifyTermination;
+
+   PROCEDURE NotifyMembersChange(node: StdNode; state: State; name: Name);
+      VAR
+	 event: MemberEvent;
+   BEGIN
+      IF node.memberEventType # NIL THEN
+	 NEW(event);
+	 event.type := node.memberEventType;
+	 event.message := "Names: insert/delete member notification";
+	 event.state := state;
+	 event.name := name;
+	 event.node := node;
+	 Events.Raise(event);
+      END;
+   END NotifyMembersChange;
+
+   PROCEDURE InsertIntoList(VAR refs: RefList; domain: Node; name: Name);
+      VAR
+	 prev,
+	 this: RefList;
+	 cmp: INTEGER;
+   BEGIN
+      prev := NIL; this := refs;
+      LOOP
+	 IF (this = NIL) OR (this.domain.id > domain.id) THEN
+	    cmp := 1;
+	    EXIT
+	 END;
+	 IF this.domain.id = domain.id THEN
+	    cmp := ConstStrings.Compare(this.name, name);
+	    IF cmp >= 0 THEN
+	       EXIT
+	    END;
+	 END;
+	 prev := this; this := this.next;
+      END; (*LOOP*)
+      IF cmp # 0 THEN
+	 NEW(this);
+	 IF prev = NIL THEN
+	    this.next := refs;
+	    refs := this;
+	 ELSE
+	    this.next := prev.next;
+	    prev.next := this;
+	 END;
+      END;
+      this.domain := domain;
+      this.name := name;
+   END InsertIntoList;
+
+   PROCEDURE DeleteFromList(VAR refs: RefList; domain: Node; name: Name);
+      VAR
+	 prev,
+	 this: RefList;
+	 cmp: INTEGER;
+   BEGIN
+      prev := NIL; this := refs;
+      LOOP
+	 IF (this = NIL) OR (this.domain.id > domain.id) THEN
+	    cmp := 1;
+	    EXIT
+	 END;
+	 IF this.domain.id = domain.id THEN
+	    cmp := ConstStrings.Compare(this.name, name);
+	    IF cmp >= 0 THEN
+	       EXIT
+	    END;
+	 END;
+	 prev := this; this := this.next;
+      END; (*LOOP*)
+      IF cmp = 0 THEN
+	 IF prev = NIL THEN
+	    refs := this.next;
+	 ELSE
+	    prev.next := this.next;
+	 END;
+      END;
+   END DeleteFromList;
+
+   PROCEDURE DeleteTreeRoot(VAR tree: MemberTree);
+      (* eliminate root from given subtree *)
+      VAR
+	 this,
+	 parent: MemberTree;
+	 goleft: BOOLEAN;
+   BEGIN
+      IF (tree.right = NIL) & (tree.left = NIL) THEN
+	 tree := NIL;
+      ELSE
+	 IF tree.right # NIL THEN
+	    (* find immediate successor *)
+	    parent := tree;
+	    goleft := FALSE; this := parent.right;
+	    WHILE this.left # NIL DO
+	       parent := this;
+	       goleft := TRUE; this := parent.left;
+	    END;
+	 ELSE
+	    (* find immediate predecessor *)
+	    parent := tree;
+	    goleft := TRUE; this := parent.left;
+	    WHILE this.right # NIL DO
+	       parent := this;
+	       goleft := FALSE; this := parent.right;
+	    END;
+	 END;
+	 IF goleft THEN
+	    DeleteTreeRoot(parent.left);
+	 ELSE
+	    DeleteTreeRoot(parent.right);
+	 END;
+	 this.left := tree.left;
+	 this.right := tree.right;
+	 tree := this;
+      END;
+   END DeleteTreeRoot;
+
+   PROCEDURE InsertRef(node: Node; domain: Node; name: Name);
+   BEGIN
+      Semaphores.P(node.referencesBusy);
+      IF node.references = NIL THEN
+	 Resources.Attach(node, node.resKey)
+      END;
+      InsertIntoList(node.references, domain, name);
+      Semaphores.V(node.referencesBusy);
+   END InsertRef;
+
+   PROCEDURE DeleteRef(node: Node; domain: Node; name: Name);
+      (* delete a reference previously installed by InsertRef *)
+      VAR
+	 busy: Conditions.Condition;
+   BEGIN
+      Semaphores.GetCondition(node.referencesBusy, busy);
+      IF Conditions.Test(busy, RelatedEvents.null) THEN
+	 DeleteFromList(node.references, domain, name);
+	 IF node.references = NIL THEN
+	    Resources.Detach(node, node.resKey);
+	 END;
+      END;
+      Semaphores.Drop(busy);
+   END DeleteRef;
+
+   PROCEDURE FindMember(tree: MemberTree; name: Name;
+			      VAR member: MemberTree): BOOLEAN;
+      VAR
+	 cmp: INTEGER;
+   BEGIN
+      member := tree;
+      WHILE member # NIL DO
+	 cmp := ConstStrings.Compare(name, member.name);
+	 IF cmp = 0 THEN
+	    RETURN TRUE
+	 END;
+	 IF cmp < 0 THEN
+	    member := member.left;
+	 ELSE
+	    member := member.right;
+	 END;
+      END;
+      RETURN FALSE
+   END FindMember;
+
+   PROCEDURE FindMemberP(tree: MemberTree; name: Name;
+			      VAR member, parent: MemberTree;
+			      VAR toLeft: BOOLEAN): BOOLEAN;
+      VAR
+	 cmp: INTEGER;
+   BEGIN
+      parent := NIL;
+      member := tree;
+      WHILE member # NIL DO
+	 cmp := ConstStrings.Compare(name, member.name);
+	 IF cmp = 0 THEN
+	    RETURN TRUE
+	 END;
+	 parent := member;
+	 IF cmp < 0 THEN
+	    toLeft := TRUE; member := member.left;
+	 ELSE
+	    toLeft := FALSE; member := member.right;
+	 END;
+      END;
+      RETURN FALSE
+   END FindMemberP;
+
+   PROCEDURE DeleteMember(node: Node; name: Name);
+      (* cancel a membership that previously had led to InsertRef *)
+      VAR
+	 busy: Conditions.Condition;
+	 parent,
+	 member: MemberTree;
+	 toLeft: BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 Semaphores.GetCondition(node.membersBusy, busy);
+	 IF Conditions.Test(busy, RelatedEvents.null) &
+	       FindMemberP(node.members, name, member, parent, toLeft) THEN
+	    IF parent = NIL THEN
+	       DeleteTreeRoot(node.members);
+	    ELSIF toLeft THEN
+	       DeleteTreeRoot(parent.left);
+	    ELSE
+	       DeleteTreeRoot(parent.right);
+	    END;
+	 END;
+	 Semaphores.Drop(busy);
+	 NotifyMembersChange(node, deleted, name);
+      END;
+   END DeleteMember;
+
+   PROCEDURE Clear(node: Node);
+      VAR
+	 ref: RefList;
+	 oldmembers: MemberTree;
+
+      PROCEDURE DeleteAllRefs(tree: MemberTree);
+      BEGIN
+	 IF tree # NIL THEN
+	    DeleteAllRefs(tree.left);
+	    DeleteRef(tree.node, node, tree.name);
+	    DeleteAllRefs(tree.right);
+	 END;
+      END DeleteAllRefs;
+
+      PROCEDURE NotifyAllMembers(tree: MemberTree);
+      BEGIN
+	 IF tree # NIL THEN
+	    NotifyAllMembers(tree.left);
+	    NotifyMembersChange(node(StdNode), deleted, tree.name);
+	    NotifyAllMembers(tree.right);
+	 END;
+      END NotifyAllMembers;
+
+   BEGIN
+      IF node IS StdNode THEN
+	 WITH node: StdNode DO
+	    IF node.members # NIL THEN
+	       Semaphores.P(node.membersBusy);
+	       DeleteAllRefs(node.members);
+	       oldmembers := node.members;
+	       node.members := NIL;
+	       Semaphores.V(node.membersBusy);
+	       IF node.memberEventType # NIL THEN
+		  NotifyAllMembers(oldmembers);
+	       END;
+	    END;
+	 END;
+      END;
+      Semaphores.P(node.referencesBusy);
+      ref := node.references;
+      WHILE ref # NIL DO
+	 DeleteMember(ref.domain, ref.name);
+	 ref := ref.next;
+      END;
+      Semaphores.V(node.referencesBusy);
+      node.alive := FALSE;
+   END Clear;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      (* handle external termination of nodes *)
+      VAR
+	 node: Node;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    node := event.resource(Node);
+	    IF node.alive THEN
+	       Clear(node);
+	    END;
+	 ELSIF event.change = Resources.unreferenced THEN
+	    node := event.resource(Node);
+	    NotifyTermination(node);
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE Capabilities(node: Node): CapabilitySet;
+      (* return capabilities of node *)
+   BEGIN
+      RETURN node.caps
+   END Capabilities;
+
+   PROCEDURE Access(node: Node; mode: AccessMode; auth: Shards.Lid): BOOLEAN;
+      (* guess if node would allow a particular access mode *)
+      (* when in doubt, e.g. for lack of access capability, return TRUE *)
+   BEGIN
+      CASE mode OF
+      | examine, change:
+	    IF ~(statusCap IN node.caps) THEN
+	       Error(node, noStatus);
+	       RETURN FALSE
+	    END;
+      | read, search, insert, delete:
+	    IF ~(domainCap IN node.caps) THEN
+	       Error(node, noDomain);
+	       RETURN FALSE
+	    END;
+      | destroy:
+      ELSE  Error(node, badAccessMode);
+	    RETURN FALSE
+      END;
+      RETURN ~(accessCap IN node.caps) OR node.if.access(node, mode, auth)
+   END Access;
+
+   PROCEDURE GetStatus(node: Node; auth: Shards.Lid;
+			      VAR status: StatusRec): BOOLEAN;
+      (* examine current status of node *)
+   BEGIN
+      IF ~(statusCap IN node.caps) THEN
+	 Error(node, noStatus);
+	 RETURN FALSE
+      END;
+      RETURN node.if.getStatus(node, auth, status)
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Node; status: Status; auth: Shards.Lid): BOOLEAN;
+      (* change status of node *)
+   BEGIN
+      IF ~(statusCap IN node.caps) THEN
+	 Error(node, noStatus);
+	 RETURN FALSE
+      END;
+      RETURN node.if.setStatus(node, status, auth)
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Node; auth: Shards.Lid;
+			      VAR members: Lister): BOOLEAN;
+      (* read from node all names of direct subnodes *)
+   BEGIN
+      IF ~(domainCap IN node.caps) THEN
+	 Error(node, noDomain);
+	 RETURN FALSE
+      END;
+      RETURN node.if.getMembers(node, auth, members)
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Node; auth: Shards.Lid;
+			      VAR eventType: Events.EventType): BOOLEAN;
+      (* return node specific event type notificating members changes *)
+   BEGIN
+      IF ~(domainCap IN node.caps) THEN
+	 Error(node, noDomain);
+	 RETURN FALSE
+      END;
+      RETURN node.if.takeInterest(node, auth, eventType)
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Node; name: Name; auth: Shards.Lid;
+			      VAR subnode: Node): BOOLEAN;
+      (* search node for a direct subnode named name *)
+   BEGIN
+      IF ~(domainCap IN node.caps) THEN
+	 Error(node, noDomain);
+	 RETURN FALSE
+      END;
+      RETURN node.if.getNode(node, name, auth, subnode)
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Node; name: Name;
+			      auth: Shards.Lid): BOOLEAN;
+      (* insert name name for subnode subnode into node *)
+   BEGIN
+      IF ~(domainCap IN node.caps) THEN
+	 Error(node, noDomain);
+	 RETURN FALSE
+      END;
+      ASSERT(subnode # NIL);
+      RETURN node.if.insert(node, subnode, name, auth)
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Node;
+                         name: Name;
+			 status: Status;
+			 caps: CapabilitySet;
+			 auth: Shards.Lid;
+			 VAR subnode: Node): BOOLEAN; 
+      (* create subnode of node *)
+   BEGIN
+      IF ~(makeSubnodeCap IN node.caps) THEN
+	 IF domainCap IN node.caps THEN
+	    Error(node, noSubDomain);
+	 ELSE
+	    Error(node, noDomain);
+	 END;
+	 RETURN FALSE
+      END;
+      RETURN node.if.makeSubnode(node, name, status, caps, auth, subnode)
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Node; name: Name; auth: Shards.Lid): BOOLEAN;
+      (* delete subnode named name from node *)
+   BEGIN
+      IF ~(domainCap IN node.caps) THEN
+	 Error(node, noDomain);
+	 RETURN FALSE
+      END;
+      RETURN node.if.delete(node, name, auth)
+   END Delete;
+
+   PROCEDURE Destroy(node: Node; auth: Shards.Lid): BOOLEAN;
+      (* destroy node and delete references to node where possible *)
+   BEGIN
+      IF ~(destroyCap IN node.caps) OR node.if.destroy(node, auth) THEN
+	 Clear(node);
+	 NotifyTermination(node);
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END Destroy;
+
+   PROCEDURE InitNode(node: Node; if: Interface; caps: CapabilitySet);
+      (* to be called after NEW(node) *)
+      VAR
+	 nodeEventType: Events.EventType;
+   BEGIN
+      ASSERT( (node.if = NIL) & ((if # NIL) OR (caps * allCaps = {})) );
+      ASSERT( ~(accessCap IN caps) OR (if.access # NIL) );
+      ASSERT( ~(statusCap IN caps) OR
+	      (if.getStatus # NIL) & (if.setStatus # NIL) );
+      ASSERT( ~(domainCap IN caps) OR
+              (if.takeInterest # NIL) & (if.getMembers # NIL) &
+	      (if.getNode # NIL) & (if.insert # NIL) & (if.delete # NIL) );
+      ASSERT( ~(makeSubnodeCap IN caps) OR
+              (domainCap IN caps) & (if.makeSubnode # NIL) );
+      ASSERT( ~(destroyCap IN caps) OR (if.destroy # NIL) );
+      node.if := if;
+      node.caps := caps;
+      INC(unique); node.id := unique;
+      node.alive := TRUE;
+      node.references := NIL;
+      (* node.memberEventType := NIL; *)
+      LocalSemaphores.Create(node.referencesBusy);
+      RelatedEvents.QueueEvents(node);
+      Resources.TakeInterest(node, nodeEventType);
+      Events.Handler(nodeEventType, TerminationHandler);
+   END InitNode;
+
+   (* ======== event persistency ======== *)
+
+   PROCEDURE InitMemberEventType(eventType: Events.EventType);
+      (* to be called for event types that are returned
+         by implementations of TakeInterest
+      *)
+   BEGIN
+      PersistentEvents.Init(eventType, memberEventType);
+   END InitMemberEventType;
+
+   PROCEDURE WriteMemberEvent(s: Streams.Stream; event: Events.Event): BOOLEAN;
+   BEGIN
+      WITH event: MemberEvent DO
+	 RETURN RemoteObjects.Export(s, event.type) &
+	    NetIO.WriteShortInt(s, event.state) &
+	    NetIO.WriteConstString(s, event.name) &
+	    RemoteObjects.Export(s, event.node)
+      END;
+   END WriteMemberEvent;
+
+   PROCEDURE ReadMemberEvent(s: Streams.Stream;
+			      VAR event: Events.Event): BOOLEAN;
+      VAR
+	 myEvent: MemberEvent;
+   BEGIN
+      NEW(myEvent);
+      myEvent.message :=
+	 "Names: insert/delete member notification (propagated)";
+      event := myEvent;
+      RETURN RemoteObjects.GuardedImport(s, eventType, event.type) &
+	 NetIO.ReadShortInt(s, myEvent.state) &
+	 NetIO.ReadConstString(s, myEvent.name) &
+	 RemoteObjects.GuardedImport(s, nodeType, myEvent.node)
+   END ReadMemberEvent;
+
+   PROCEDURE WriteErrorEvent(s: Streams.Stream; event: Events.Event): BOOLEAN;
+   BEGIN
+      WITH event: ErrorEvent DO
+	 RETURN NetIO.WriteString(s, event.message) &
+	    NetIO.WriteShortInt(s, event.errorcode)
+      END;
+   END WriteErrorEvent;
+
+   PROCEDURE ReadErrorEvent(s: Streams.Stream;
+			      VAR event: Events.Event): BOOLEAN;
+      VAR
+	 myEvent: ErrorEvent;
+   BEGIN
+      NEW(myEvent); myEvent.type := error;
+      event := myEvent;
+      RETURN NetIO.ReadString(s, myEvent.message) &
+	 NetIO.ReadShortInt(s, myEvent.errorcode)
+   END ReadErrorEvent;
+
+   PROCEDURE InitPersistency;
+      VAR
+	 evntif: PersistentEvents.Interface;
+	 errorEventType: PersistentEvents.Type;
+   BEGIN
+      NEW(evntif);
+      evntif.write := WriteMemberEvent;
+      evntif.read := ReadMemberEvent;
+      PersistentEvents.CreateType(memberEventType, "Names.MemberEvent", evntif);
+      NEW(evntif);
+      evntif.write := WriteErrorEvent;
+      evntif.read := ReadErrorEvent;
+      PersistentEvents.CreateType(errorEventType, "Names.ErrorEvent", evntif);
+      PersistentEvents.Init(error, errorEventType);
+   END InitPersistency;
+
+   (* ======== default implementation ======== *)
+
+   PROCEDURE ^ CreateNode(VAR node: Node; status: Status; caps: CapabilitySet);
+
+   PROCEDURE StdAccess(node: Node; mode: AccessMode;
+			      auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~node.alive THEN
+	    Error(node, nodeDestroyed);
+	    RETURN FALSE
+	 END;
+	 IF (node.status # NIL) & (node.status.perm[mode] # NIL) &
+	       ~Shards.Fits(node.status.perm[mode], auth) THEN
+	    Error(node, noPermission);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END;
+   END StdAccess;
+
+   PROCEDURE StdGetStatus(node: Node; auth: Shards.Lid;
+			VAR status: StatusRec): BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, examine, auth) THEN
+	    RETURN FALSE
+	 END;
+	 status := node.status^;
+	 RETURN TRUE
+      END;
+   END StdGetStatus;
+
+   PROCEDURE StdSetStatus(node: Node; status: Status;
+			auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, change, auth) THEN
+	    RETURN FALSE
+	 END;
+	 node.status := status;
+	 RETURN TRUE
+      END;
+   END StdSetStatus;
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator; refs: Iterators.Reference;
+			      mode: Iterators.Mode);
+
+      PROCEDURE Parse(member: MemberTree);
+      BEGIN
+	 IF member.left # NIL THEN
+	    Parse(member.left);
+	 END;
+	 Iterators.Yield(it, member.name);
+	 IF member.right # NIL THEN
+	    Parse(member.right);
+	 END;
+      END Parse;
+   
+   BEGIN
+      IF refs # NIL THEN
+	 Parse(refs(MemberTree));
+      END;
+   END IterateMembers;
+
+   PROCEDURE StdGetMembers(node: Node; auth: Shards.Lid;
+			      VAR members: Lister): BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, read, auth) THEN
+	    RETURN FALSE
+	 END;
+	 Iterators.CreateQuickIterator(members, IterateMembers,
+	                               node.members, 0);
+	 RETURN TRUE
+      END;
+   END StdGetMembers;
+
+   PROCEDURE StdTakeInterest(node: Node; auth: Shards.Lid;
+			      VAR eventType: Events.EventType): BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, read, auth) THEN
+	    RETURN FALSE
+	 END;
+	 IF node.memberEventType = NIL THEN
+	    Events.Define(node.memberEventType);
+	    InitMemberEventType(node.memberEventType);
+	 END;
+	 eventType := node.memberEventType;
+	 RETURN TRUE
+      END;
+   END StdTakeInterest;
+
+   PROCEDURE StdGetNode(node: Node; name: Name; auth: Shards.Lid;
+			      VAR subnode: Node): BOOLEAN;
+      VAR
+	 member: MemberTree;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, search, auth) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~FindMember(node.members, name, member) THEN
+	    ErrorN(node, name, nodeNotFound);
+	    RETURN FALSE
+	 END;
+	 subnode := member.node;
+	 RETURN TRUE
+      END;
+   END StdGetNode;
+
+   PROCEDURE StdInsert(node, subnode: Node; name: Name;
+			      auth: Shards.Lid): BOOLEAN;
+      VAR
+	 parent,
+	 member: MemberTree;
+	 toLeft: BOOLEAN;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, insert, auth) THEN
+	    RETURN FALSE
+	 END;
+	 Semaphores.P(node.membersBusy);
+	 IF FindMemberP(node.members, name, member, parent, toLeft) THEN
+	    Semaphores.V(node.membersBusy);
+	    ErrorN(node, name, nameExists);
+	    RETURN FALSE
+	 END;
+	 NEW(member);
+	 member.left := NIL;
+	 member.right := NIL;
+	 member.node := subnode;
+	 member.name := name;
+	 InsertRef(subnode, node, name);
+	 IF parent = NIL THEN
+	    node.members := member;
+	 ELSIF toLeft THEN
+	    parent.left := member;
+	 ELSE
+	    parent.right := member;
+	 END;
+	 Semaphores.V(node.membersBusy);
+	 NotifyMembersChange(node, inserted, name);
+	 RETURN TRUE
+      END;
+   END StdInsert;
+
+   PROCEDURE StdMakeSubnode(node: Node;
+                            name: Name;
+			    status: Status;
+			    caps: CapabilitySet;
+			    auth: Shards.Lid;
+			    VAR subnode: Node): BOOLEAN;
+      VAR
+	 snode: Node;
+   BEGIN
+      WITH node: StdNode DO
+	 IF (status = NIL) & (node.status # NIL) THEN
+	    (* clone status of parent node *)
+	    NEW(status); status.perm := node.status.perm;
+	 END;
+	 CreateNode(snode, status, caps);
+	 IF StdInsert(node, snode, name, auth) THEN
+	    subnode := snode;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END StdMakeSubnode;
+
+   PROCEDURE StdDelete(node: Node; name: Name; auth: Shards.Lid): BOOLEAN;
+      VAR
+	 parent,
+	 member: MemberTree;
+	 toLeft: BOOLEAN;
+	 key: Resources.Key;
+   BEGIN
+      WITH node: StdNode DO
+	 IF ~StdAccess(node, delete, auth) THEN
+	    RETURN FALSE
+	 END;
+	 Semaphores.P(node.membersBusy);
+	 IF ~FindMemberP(node.members, name, member, parent, toLeft) THEN
+	    Semaphores.V(node.membersBusy);
+	    ErrorN(node, name, nodeNotFound);
+	    RETURN FALSE
+	 END;
+	 (* postpone a possible termination of member.node
+	    by DeleteRef until we release node.membersBusy
+	    to avoid a possible deadlock
+	 *)
+	 Resources.Attach(member.node, key);
+	 DeleteRef(member.node, node, name);
+	 IF parent = NIL THEN
+	    DeleteTreeRoot(node.members);
+	 ELSIF toLeft THEN
+	    DeleteTreeRoot(parent.left);
+	 ELSE
+	    DeleteTreeRoot(parent.right);
+	 END;
+	 Semaphores.V(node.membersBusy);
+	 (* undo temporary attachment *)
+	 Resources.Detach(member.node, key);
+	 NotifyMembersChange(node, deleted, name);
+	 RETURN TRUE
+      END;
+   END StdDelete;
+
+   PROCEDURE StdDestroy(node: Node; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN StdAccess(node, destroy, auth)
+   END StdDestroy;
+
+   PROCEDURE InitStdInterface;
+   BEGIN
+      NEW(stdInterface);
+      stdInterface.access := StdAccess;
+      stdInterface.getStatus := StdGetStatus;
+      stdInterface.setStatus := StdSetStatus;
+      stdInterface.getMembers := StdGetMembers;
+      stdInterface.takeInterest := StdTakeInterest;
+      stdInterface.getNode := StdGetNode;
+      stdInterface.insert := StdInsert;
+      stdInterface.makeSubnode := StdMakeSubnode;
+      stdInterface.delete := StdDelete;
+      stdInterface.destroy := StdDestroy;
+      NEW(defaultStatus);
+      defaultStatus.perm[examine] := NIL;
+      defaultStatus.perm[change] := NIL;
+      defaultStatus.perm[read] := NIL;
+      defaultStatus.perm[search] := NIL;
+      defaultStatus.perm[insert] := NIL;
+      defaultStatus.perm[delete] := NIL;
+      defaultStatus.perm[destroy] := NIL;
+   END InitStdInterface;
+
+   PROCEDURE StdInitNode(VAR node: StdNode; status: Status;
+			      caps: CapabilitySet);
+   BEGIN
+      InitNode(node, stdInterface, caps);
+      node.members := NIL;
+      IF domainCap IN caps THEN
+	 LocalSemaphores.Create(node.membersBusy);
+      ELSE
+	 node.membersBusy := NIL;
+      END;
+      IF caps * allCaps # {} THEN
+	 IF status = NIL THEN
+	    node.status := defaultStatus;
+	 ELSE
+	    node.status := status;
+	 END;
+      ELSE
+	 node.status := NIL;
+      END;
+   END StdInitNode;
+
+   PROCEDURE CreateNode(VAR node: Node; status: Status; caps: CapabilitySet);
+      (* create a default node *)
+      (* status may be NIL if no restrictions are required *)
+      VAR
+	 stdNode: StdNode;
+   BEGIN
+      NEW(stdNode);
+      Services.Init(stdNode, stdNodeType);
+      StdInitNode(stdNode, status, caps);
+      node := stdNode;
+   END CreateNode;
+
+   PROCEDURE CreateRoot;
+      (*
+       * create root as a local node;
+       * runtime system can insert here name server objects
+       *)
+      VAR
+	 key: Resources.Key;
+   BEGIN
+      CreateNode(root, NIL, allCaps);
+      Resources.Attach(root, key);	(* disable unreferencing *)
+   END CreateRoot;
+
+   (* ======== type registration ======== *)
+
+   PROCEDURE InitDatatypes;
+   BEGIN
+      Services.CreateType(nodeType, "Names.Node", "");
+      Services.CreateType(stdNodeType, "Names.StdNode", "Names.Node");
+      Services.SeekType("Shards.Pot", potType);
+      ASSERT(potType # NIL);
+      Services.SeekType("Events.EventType", eventType);
+      ASSERT(eventType # NIL);
+   END InitDatatypes;
+
+BEGIN
+   InitErrorHandling;
+   InitDatatypes;
+   InitPersistency;
+   InitStdInterface;
+   unique := 0;
+   CreateRoot;
+END Names.

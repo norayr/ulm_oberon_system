@@ -1,0 +1,66 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XStdPropert.om,v 1.1 2005/04/10 10:26:24 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XStdPropert.om,v $
+   Revision 1.1  2005/04/10 10:26:24  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XStdProperties;
+
+   IMPORT Args := UnixArguments, BlockingEvents, Streams,
+      String := XStringProperties, UnixHost, XResources,
+      XWMDeleteWindowMessages;
+
+   CONST
+      defaultLocale = "iso_8859_1";
+
+   PROCEDURE SetDefaults(win: XResources.Window) : BOOLEAN;
+      (* set reasonable defaults for the standard properties *)
+      VAR
+	 pathname, cmdname, hostname: ARRAY 512 OF CHAR;
+	 as: Streams.Stream;
+	 ok: BOOLEAN;
+	 et: BlockingEvents.EventType;
+   BEGIN
+      Args.GetCommandName(cmdname);
+      Args.GetPathName(pathname);
+      UnixHost.GetHostName(hostname);
+      ok := String.Replace(win, "WM_NAME", cmdname) &
+            String.Replace(win, "WM_ICON_NAME", cmdname) &
+	    String.Replace(win, "WM_LOCALE_NAME", defaultLocale) &
+	    String.Replace(win, "WM_CLIENT_MACHINE", hostname) &
+	    String.Replace(win, "WM_COMMAND", pathname);
+      IF ~ok THEN RETURN FALSE END;
+      Args.Init("");
+      WHILE Args.OpenArg(as) &
+	    String.Append0(win, "WM_COMMAND") &
+	    String.AppendS(win, "WM_COMMAND", as) DO
+      END;
+      IF ~ok THEN RETURN FALSE END;
+      (* includes WM_DELETE_WINDOW in WM_PROTOCOLS: *)
+      XWMDeleteWindowMessages.GetEventType(win, et);
+      RETURN TRUE
+   END SetDefaults;
+
+END XStdProperties.

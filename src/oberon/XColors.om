@@ -1,0 +1,563 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XColors.om,v 1.1 2005/03/22 18:09:32 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XColors.om,v $
+   Revision 1.1  2005/03/22 18:09:32  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XColors;
+
+   IMPORT ASCII, Disciplines, Errors, Events, RelatedEvents, Resources, Scan,
+      Streams, Strings, Write, XDisplays, XObjects;
+
+   CONST
+      unknownTag = 0;
+      incomplete = 1;
+      invalidFloat = 2;
+      colonExpected = 3;
+      invalidToken = 4;
+      hexTooLong = 5;
+      slashExpected = 6;
+      invalidSuffix = 7;
+      hexDigitsExpected = 8;
+      floatOutOfRange = 9;
+      floatExpected = 10;
+      hashOrTagExpected = 11;
+      emptySpecification = 12;
+      leadingBlanks = 13;
+      trailingBlanks = 14;
+      invalidSpec = 15;
+      unknownColorName = 16;
+      invalidNumberOfHexDigits = 17;
+      errors = 18;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    color: ARRAY 64 OF CHAR;
+	    pos: INTEGER;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   TYPE
+      Colormap = POINTER TO ColormapRec;
+      ColormapRec =
+	 RECORD
+	    (XObjects.ObjectRec)
+	    cmap: XDisplays.ColormapID;
+	 END;
+      Color = POINTER TO ColorRec;
+      ColorRec =
+	 RECORD
+	    (XObjects.ObjectRec)
+	    pixel: XDisplays.Pixel;
+	    exact: XDisplays.RGBColor;
+	    visual: XDisplays.RGBColor;
+	 END;
+
+   TYPE
+      DisplayDiscipline = POINTER TO DisplayDisciplineRec;
+      DisplayDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    defaultColormap: Colormap;
+	 END;
+   VAR
+      ddid: Disciplines.Identifier;
+
+   PROCEDURE CreateColormap(VAR colormap: Colormap;
+			    display: XDisplays.Display;
+                            cmap: XDisplays.ColormapID);
+   BEGIN
+      NEW(colormap);
+      XObjects.Init(colormap, cmap);
+      colormap.cmap := cmap;
+      Resources.DependsOn(colormap, display);
+   END CreateColormap;
+
+   PROCEDURE GetDisplayDiscipline(display: XDisplays.Display;
+                                  VAR dd: DisplayDiscipline);
+   BEGIN
+      IF ~Disciplines.Seek(display, ddid, dd) THEN
+	 NEW(dd); dd.id := ddid;
+	 CreateColormap(dd.defaultColormap, display,
+	    XDisplays.GetDefaultColormap(display));
+	 Disciplines.Add(display, dd);
+      END;
+   END GetDisplayDiscipline;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.color # "" THEN
+	    Write.StringS(s, "error in ");
+	    Write.CharS(s, ASCII.quote);
+	    Write.StringS(s, event.color);
+	    Write.CharS(s, ASCII.quote);
+	    IF (event.pos > 0) & (event.pos < Strings.Len(event.color)) THEN
+	       Write.StringS(s, " at position ");
+	       Write.IntS(s, event.pos - 1, 1);
+	    END;
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[unknownTag] := "unsupported tag in color specification";
+      errormsg[incomplete] := "color specification is incomplete";
+      errormsg[invalidFloat] := "invalid floating point number";
+      errormsg[colonExpected] := "colon expected after tag";
+      errormsg[invalidToken] := "invalid token in color specification";
+      errormsg[hexTooLong] := "too many hex digits";
+      errormsg[slashExpected] := "``/'' expected in color specification";
+      errormsg[invalidSuffix] := "unexpected tokens after color specification";
+      errormsg[hexDigitsExpected] := "hex digits expected";
+      errormsg[floatOutOfRange] := "floating point value out of [0,1]";
+      errormsg[floatExpected] := "floating point value expected";
+      errormsg[hashOrTagExpected] :=
+	 "``#'' or tag expected in color specification";
+      errormsg[emptySpecification] := "empty color specification";
+      errormsg[leadingBlanks] := "leading blanks in color specification";
+      errormsg[trailingBlanks] := "trailing blanks in color specification";
+      errormsg[invalidSpec] := "invalid color specification";
+      errormsg[unknownColorName] :=
+	 "color name is not known by X server";
+      errormsg[invalidNumberOfHexDigits] :=
+	 "the number of hex digits must be 3, 6, 9, or 12";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Parse(display: XDisplays.Display; color: ARRAY OF CHAR;
+                   VAR rgbColor: XDisplays.RGBColor;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+
+      CONST
+	 tagSY = 0;
+	 hashSY = 1;
+	 slashSY = 2;
+	 hexvalSY = 3;
+	 fpvalSY = 4;
+	 errorSY = 5;
+      VAR
+	 ch: CHAR;
+	 sy: INTEGER;
+	 eof, errorFlag: BOOLEAN;
+	 index: INTEGER;
+	 tag: ARRAY 8 OF CHAR;
+	 expectHex, expectFloat: BOOLEAN;
+	 hextoken: ARRAY 16 OF CHAR; hexlen: INTEGER;
+	 floatVal: REAL;
+	 rgb: XDisplays.RGBColor;
+	 firstSY: BOOLEAN;
+
+      PROCEDURE Error(code: ErrorCode);
+	 VAR
+	    event: ErrorEvent;
+      BEGIN
+	 IF ~errorFlag THEN
+	    NEW(event); event.type := error;
+	    event.message := errormsg[code];
+	    event.errorcode := code;
+	    COPY(color, event.color);
+	    event.pos := index;
+	    errorFlag := TRUE;
+	    RelatedEvents.Raise(errors, event);
+	 END;
+      END Error;
+
+      PROCEDURE SimpleColorName() : BOOLEAN;
+	 VAR
+	    index: INTEGER;
+	    letterSeen: BOOLEAN;
+	    initialBlank: BOOLEAN;
+	    ch: CHAR;
+      BEGIN
+	 index := 0; letterSeen := FALSE; initialBlank := FALSE;
+	 WHILE (index < LEN(color)) & (color[index] # 0X) DO
+	    ch := color[index];
+	    CASE ch OF
+	    | "a".."z", "A".."Z":
+	       letterSeen := TRUE;
+	    | " ":
+	       IF index = 0 THEN
+		  initialBlank := TRUE
+	       END;
+	    | "/", ":", "#":
+	       RETURN FALSE
+	    ELSE
+	    END;
+	    INC(index);
+	 END;
+	 IF index = 0 THEN
+	    Error(emptySpecification);
+	    RETURN FALSE
+	 END;
+	 IF ~letterSeen THEN
+	    Error(invalidSpec);
+	    RETURN FALSE
+	 END;
+	 IF (index > 0) & (ch = " ") THEN
+	    Error(trailingBlanks);
+	    RETURN FALSE
+	 END;
+	 IF initialBlank THEN
+	    Error(leadingBlanks);
+	    RETURN FALSE
+	 END;
+	 RETURN TRUE
+      END SimpleColorName;
+
+      PROCEDURE NextCh;
+      BEGIN
+	 IF ~eof THEN
+	    ch := color[index]; INC(index);
+	    IF ch = 0X THEN
+	       eof := TRUE;
+	    END;
+	 END;
+      END NextCh;
+
+      PROCEDURE GetSy;
+	 
+	 VAR
+	    tokenbuf: ARRAY 32 OF CHAR;
+	    ts: Streams.Stream;
+	    index: INTEGER;
+
+	 PROCEDURE IsHexDigit() : BOOLEAN;
+	 BEGIN
+	    RETURN (ch >= "0") & (ch <= "9") OR
+		   (ch >= "a") & (ch <= "f") OR
+	           (ch >= "A") & (ch <= "F") 
+	 END IsHexDigit;
+
+	 PROCEDURE IsFloatCh() : BOOLEAN;
+	 BEGIN
+	    RETURN (ch >= "0") & (ch <= "9") OR
+	           (ch = ".") OR (ch = "E") OR (ch = "D") OR (ch = "e") OR
+		   (ch = "-") OR (ch = "+")
+	 END IsFloatCh;
+
+	 PROCEDURE IsLetter() : BOOLEAN;
+	 BEGIN
+	    RETURN (ch >= "a") & (ch <= "z") OR
+	           (ch >= "A") & (ch <= "Z")
+	 END IsLetter;
+
+      BEGIN (* GetSy *)
+	 IF errorFlag THEN
+	    sy := errorSY;
+	 ELSIF eof THEN
+	    Error(incomplete);
+	    sy := errorSY;
+	 ELSIF expectHex & IsHexDigit() THEN
+	    index := 0;
+	    REPEAT
+	       IF index < LEN(hextoken) THEN
+		  hextoken[index] := ch;
+	       END;
+	       INC(index);
+	       NextCh;
+	    UNTIL ~IsHexDigit();
+	    IF index < LEN(tokenbuf) THEN
+	       hextoken[index] := 0X;
+	    END;
+	    hexlen := index;
+	    sy := hexvalSY;
+	 ELSIF expectFloat &
+	       ((ch >= "0") & (ch <= "9") OR (ch = "-") OR (ch = "+")) THEN
+	    index := 0;
+	    REPEAT
+	       IF index < LEN(tokenbuf) THEN
+		  tokenbuf[index] := ch;
+	       END;
+	       INC(index);
+	       NextCh;
+	    UNTIL ~IsFloatCh();
+	    IF index < LEN(tokenbuf) THEN
+	       tokenbuf[index] := 0X;
+	    END;
+	    Strings.Open(ts, tokenbuf);
+	    RelatedEvents.Forward(ts, errors);
+	    Scan.S1(ts, "%f", floatVal);
+	    IF ts.count = 1 THEN
+	       sy := fpvalSY;
+	    ELSE
+	       Error(invalidFloat);
+	       sy := errorSY;
+	    END;
+	 ELSIF firstSY & IsLetter() THEN
+	    index := 0;
+	    REPEAT
+	       IF index < LEN(tag) THEN
+		  tag[index] := ch;
+	       END;
+	       INC(index);
+	       NextCh;
+	    UNTIL ~IsLetter();
+	    IF index < LEN(tokenbuf) THEN
+	       tag[index] := 0X;
+	    END;
+	    IF ch = ":" THEN
+	       sy := tagSY; NextCh;
+	    ELSE
+	       Error(colonExpected);
+	       sy := errorSY;
+	    END;
+	 ELSE
+	    CASE ch OF
+	    | "#":
+		  sy := hashSY; NextCh;
+	    | "/":
+		  sy := slashSY; NextCh;
+	    ELSE
+	       Error(invalidToken);
+	       sy := errorSY;
+	    END;
+	 END;
+	 firstSY := FALSE;
+      END GetSy;
+
+      PROCEDURE ParseTaggedColor;
+
+	 PROCEDURE ConvertHex(VAR intval: INTEGER) : BOOLEAN;
+	    VAR
+	       s: Streams.Stream;
+	 BEGIN
+	    IF hexlen <= 4 THEN
+	       Strings.Open(s, hextoken);
+	       Scan.S1(s, "%x", intval);
+	       ASSERT(s.count = 1);
+	       intval := SHORT(intval * ASH(1, 4 - hexlen));
+	       RETURN TRUE
+	    ELSE
+	       Error(hexTooLong);
+	       RETURN FALSE
+	    END;
+	 END ConvertHex;
+
+	 PROCEDURE ExpectHex(VAR intval: INTEGER) : BOOLEAN;
+	 BEGIN
+	    IF sy = hexvalSY THEN
+	       RETURN ConvertHex(intval)
+	    ELSE
+	       Error(hexDigitsExpected);
+	       RETURN FALSE
+	    END;
+	 END ExpectHex;
+
+	 PROCEDURE SkipSlash() : BOOLEAN;
+	 BEGIN
+	    GetSy;
+	    IF sy # slashSY THEN
+	       Error(slashExpected);
+	       RETURN FALSE
+	    END;
+	    GetSy;
+	    RETURN TRUE
+	 END SkipSlash;
+
+	 PROCEDURE ExpectFloat(VAR intval: INTEGER) : BOOLEAN;
+	 BEGIN
+	    IF sy = fpvalSY THEN
+	       IF (floatVal < 0) OR (floatVal > 1) THEN
+		  Error(floatOutOfRange);
+		  RETURN FALSE (* out of range *)
+	       END;
+	       intval := SHORT(ENTIER(floatVal * 10000H));
+	       IF intval = 10000H THEN
+		  DEC(intval);
+	       END;
+	       RETURN TRUE
+	    ELSE
+	       Error(floatExpected);
+	       RETURN FALSE
+	    END;
+	 END ExpectFloat;
+
+      BEGIN (* ParseTaggedColor *)
+	 IF tag = "rgb" THEN
+	    expectHex := TRUE; GetSy;
+	    IF ExpectHex(rgb.red) &
+		  SkipSlash() &
+		  ExpectHex(rgb.green) &
+		  SkipSlash() &
+		  ExpectHex(rgb.blue) THEN
+	       IF ~eof THEN
+		  Error(invalidSuffix);
+	       END;
+	    END;
+	 ELSIF tag = "rgbi" THEN
+	    expectFloat := TRUE; GetSy;
+	    IF ExpectFloat(rgb.red) &
+		  SkipSlash() &
+		  ExpectFloat(rgb.green) &
+		  SkipSlash() &
+		  ExpectFloat(rgb.blue) THEN
+	       IF ~eof THEN
+		  Error(invalidSuffix);
+	       END;
+	    END;
+	 ELSE
+	    Error(unknownTag);
+	 END;
+      END ParseTaggedColor;
+
+      PROCEDURE ParseOldSyntax;
+	 
+	 PROCEDURE GetHexVal(index, len: INTEGER) : INTEGER;
+	    VAR
+	       hexval: INTEGER;
+	       hexdigit: INTEGER;
+	       ch: CHAR;
+	 BEGIN
+	    hexval := 0;
+	    WHILE len > 0 DO
+	       ch := hextoken[index]; INC(index);
+	       CASE ch OF
+	       | "a".."f":
+		     hexdigit := ORD(ch) - ORD("a") + 10;
+	       | "A".."F":
+		     hexdigit := ORD(ch) - ORD("A") + 10;
+	       | "0".."9":
+		     hexdigit := ORD(ch) - ORD("0");
+	       END;
+	       hexval := 10H * hexval + hexdigit;
+	       DEC(len);
+	    END;
+	    RETURN hexval
+	 END GetHexVal;
+
+      BEGIN (* ParseOldSyntax *)
+	 expectHex := TRUE; GetSy;
+	 IF sy # hexvalSY THEN
+	    Error(hexDigitsExpected); RETURN
+	 END;
+	 CASE hexlen OF
+	 | 3:
+	    rgb.red   := GetHexVal(0, 1) * 1000H;
+	    rgb.green := GetHexVal(1, 1) * 1000H;
+	    rgb.blue  := GetHexVal(2, 1) * 1000H;
+	 | 6:
+	    rgb.red   := GetHexVal(0, 2) * 100H;
+	    rgb.green := GetHexVal(2, 2) * 100H;
+	    rgb.blue  := GetHexVal(4, 2) * 100H;
+	 | 9:
+	    rgb.red   := GetHexVal(0, 3) * 10H;
+	    rgb.green := GetHexVal(3, 3) * 10H;
+	    rgb.blue  := GetHexVal(6, 3) * 10H;
+	 | 12:
+	    rgb.red   := GetHexVal(0, 4);
+	    rgb.green := GetHexVal(4, 4);
+	    rgb.blue  := GetHexVal(8, 4);
+	 ELSE
+	    Error(invalidNumberOfHexDigits);
+	 END;
+      END ParseOldSyntax;
+
+      PROCEDURE LookupColor;
+	 VAR
+	    visual: XDisplays.RGBColor;
+	    cmap: XDisplays.ColormapID;
+	    ok: BOOLEAN;
+      BEGIN
+	 cmap := XDisplays.GetDefaultColormap(display);
+	 RelatedEvents.Save(display);
+	 IF (errors # NIL) & (display # errors) THEN
+	    RelatedEvents.Forward(display, errors);
+	 END;
+	 ok := XDisplays.LookupColor(display, cmap, color, rgb, visual);
+	 RelatedEvents.Restore(display);
+	 IF ~ok THEN
+	    Error(unknownColorName);
+	 END;
+      END LookupColor;
+
+   BEGIN (* Parse *)
+      errorFlag := FALSE;
+      IF (display # NIL) & SimpleColorName() THEN
+	 LookupColor;
+      ELSE
+	 expectHex := FALSE; expectFloat := FALSE; tag := ""; firstSY := TRUE;
+	 index := 0; eof := FALSE; NextCh; GetSy;
+	 IF sy = tagSY THEN
+	    ParseTaggedColor;
+	 ELSIF sy = hashSY THEN
+	    ParseOldSyntax;
+	 ELSE
+	    Error(hashOrTagExpected);
+	 END;
+      END;
+      IF errorFlag THEN RETURN FALSE END;
+      rgbColor := rgb;
+      RETURN TRUE
+   END Parse;
+
+   PROCEDURE GetDefaultColormap(display: XDisplays.Display) : Colormap;
+      VAR
+	 dd: DisplayDiscipline;
+   BEGIN
+      GetDisplayDiscipline(display, dd);
+      RETURN dd.defaultColormap
+   END GetDefaultColormap;
+
+   PROCEDURE Alloc(display: XDisplays.Display;
+		   colormap: Colormap;
+                   rgbColor: XDisplays.RGBColor;
+		   VAR color: Color) : BOOLEAN;
+      VAR
+	 pixel: XDisplays.Pixel;
+	 actualColor: XDisplays.RGBColor;
+	 newcolor: Color;
+   BEGIN
+      IF ~XDisplays.AllocColor(display, colormap.cmap,
+	    rgbColor, pixel, actualColor) THEN
+	 RETURN FALSE
+      END;
+      NEW(newcolor); XObjects.Init(newcolor, pixel);
+      newcolor.pixel := pixel;
+      newcolor.exact := rgbColor;
+      newcolor.visual := actualColor;
+      color := newcolor;
+      RETURN TRUE
+   END Alloc;
+
+   PROCEDURE GetPixel(color: Color) : XDisplays.Pixel;
+   BEGIN
+      RETURN color.pixel
+   END GetPixel;
+
+BEGIN
+   InitErrorHandling;
+   ddid := Disciplines.Unique();
+END XColors.

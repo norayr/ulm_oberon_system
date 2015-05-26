@@ -1,0 +1,164 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSResolver.od,v 1.1 2004/03/02 14:06:13 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSResolver.od,v $
+   Revision 1.1  2004/03/02 14:06:13  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION DNSResolvers;
+
+   IMPORT DNSRecords, Events, IPv4Addresses, IPv6Addresses, Objects,
+      RelatedEvents, Services;
+
+   TYPE
+      Resolver = POINTER TO ResolverRec;
+      ResolverRec = RECORD (Services.ObjectRec) END;
+   TYPE
+      IPv4AddressList = POINTER TO IPv4AddressListRec;
+      IPv4AddressListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addr: IPv4Addresses.Address;
+	    next: IPv4AddressList;
+	 END;
+   TYPE
+      IPv6AddressList = POINTER TO IPv6AddressListRec;
+      IPv6AddressListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addr: IPv6Addresses.Address;
+	    next: IPv6AddressList;
+	 END;
+   TYPE
+      HostnameList = POINTER TO HostnameListRec;
+      HostnameListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    hostname: DNSRecords.Name;
+	    next: HostnameList;
+	 END;
+   TYPE
+      MXList = POINTER TO MXListRec;
+      MXListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    hostname: DNSRecords.Name;
+	    preference: INTEGER;
+	    next: MXList;
+	 END;
+   TYPE
+      TXTList = POINTER TO TXTListRec;
+      TXTListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    text: DNSRecords.Name;
+	    next: TXTList;
+	 END;
+   TYPE
+      GetRecordsProc =
+	 PROCEDURE(resolver: Resolver;
+	    hostname: ARRAY OF CHAR;
+	    rrtype: DNSRecords.RRType;
+	    trysuffixes: BOOLEAN;
+	    VAR records: DNSRecords.Record;
+	    errors: RelatedEvents.Object) : BOOLEAN;
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    getRecords: GetRecordsProc;
+	 END;
+   CONST
+      corruptedRecords = 0;
+      errors = 1;
+   TYPE
+      ErrorCode = SHORTINT; (* corruptedRecords... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    domain: DNSRecords.Name;
+	    rrtype: DNSRecords.RRType;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   VAR
+      std: Resolver; (* standard resolver *)
+
+   PROCEDURE Init(resolver: Resolver; if: Interface);
+
+   PROCEDURE GetRecords(resolver: Resolver;
+                        hostname: ARRAY OF CHAR;
+			rrtype: DNSRecords.RRType;
+			trysuffixes: BOOLEAN;
+			VAR records: DNSRecords.Record;
+			errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetReverseRecords(resolver: Resolver;
+                               revname: ARRAY OF CHAR;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetIPv4AddrByHost(resolver: Resolver;
+                               hostname: ARRAY OF CHAR;
+			       VAR addresses: IPv4AddressList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetIPv6AddrByHost(resolver: Resolver;
+                               hostname: ARRAY OF CHAR;
+			       VAR addresses: IPv6AddressList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetHostByIPv4Addr(resolver: Resolver;
+                               address: IPv4Addresses.Address;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetHostByIPv6Addr(resolver: Resolver;
+                               address: IPv6Addresses.Address;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetMXRecords(resolver: Resolver;
+                          domain: ARRAY OF CHAR;
+			  VAR mxrecords: MXList;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetTXTRecords(resolver: Resolver;
+                           domain: ARRAY OF CHAR;
+			   VAR txtrecords: TXTList;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GetAttribute(resolver: Resolver;
+                          domain: ARRAY OF CHAR;
+			  attribute: ARRAY OF CHAR;
+			  VAR value: ARRAY OF CHAR;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      (* return attributes embedded in TXT records according to RFC 1464 *)
+
+END DNSResolvers.

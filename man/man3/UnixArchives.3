@@ -1,0 +1,333 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH UnixArchives 3 "Last change: 7 March 2005" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+UnixArchives \- stream input from archives
+.SH SYNOPSIS
+.Pg
+CONST arnamelength = 14;
+.sp 0.7
+TYPE MemberName = ARRAY arnamelength+1 OF CHAR;
+TYPE ArchiveHeader =
+   RECORD
+      name: MemberName;      (* name of archive member *)
+      date: SysTypes.Time;   (* in seconds since Jan 1, 1970 *)
+      uid, gid: INTEGER;     (* user and group id *)
+      mode: SET;             (* protection mode, see SysStat(3) *)
+      size: SysTypes.Offset; (* size in bytes *)
+   END;
+TYPE Archive = POINTER TO ArchiveRec;
+TYPE ArchiveRec =
+   RECORD
+      (Streams.StreamRec)
+      (* readonly stat information of current archive member *)
+      header: ArchiveHeader;
+   END;
+.sp 0.7
+(* error codes *)
+CONST notAnArchiveFile = 0;     (* magic header not found *)
+CONST corruptedArchive = 1;     (* corrupted archive file *)
+CONST memberNotFound = 2;       (* archive member file not found *)
+CONST outOfRange = 3;           (* seek failure: position out of range *)
+CONST readFailed = 4;           (* unexpected read failure *)
+CONST seekFailed = 5;           (* unexpected seek failure *)
+CONST tellFailed = 6;           (* unexpected tell failure *)
+CONST errorcodes = 7;           (* number of error codes *)
+.sp 0.3
+TYPE ErrorCode = SHORTINT;      (* 0..errorcodes-1 *)
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec)
+      stream: Archive;
+      code: ErrorCode;
+   END;
+.sp 0.3
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR streamError: Events.EventType;
+.sp 0.7
+PROCEDURE Open(VAR archive: Streams.Stream;
+               arname: ARRAY OF CHAR;
+               membername: ARRAY OF CHAR;
+               errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.3
+PROCEDURE Reopen(archive: Streams.Stream;
+                 membername: ARRAY OF CHAR) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I UnixArchives
+supports stream input from archives
+in common archive file format.
+This archive file format is supported by UNIX System V
+and BSD systems.
+The minor difference between UNIX System V and BSD systems
+\&(filenames are "/"-terminated in UNIX System V) is tolerated.
+Archives from UNIX Edition VII cannot be read.
+.PP
+.I Open
+opens \fIarname\fP(\fImembername\fP) for reading.
+If \fImembername\fP equals "", the first member of the archive will
+be opened for reading.
+.I Open
+fails if
+.I arname
+cannot be opened or if
+.I membername
+cannot be found (or if the archive is empty).
+.I Reopen
+may be called to read another archive member of an already opened
+archive stream.
+If
+.I membername
+equals "", the next member of the archive will be opened for reading.
+.I Reopen
+fails if
+.I membername
+cannot be found or at the end of the archive.
+It is important to note that
+.I Reopen
+does not close the stream in case of failures.
+.PP
+.I UnixArchives
+maintains an incremental internal member list of the archive
+which avoids rescanning of the archive in case of
+.IR Reopen .
+The main goal of
+.I UnixArchives
+is to support reading of
+.I REF
+and
+.I SYM
+archive files.
+In this case it is very useful to maintain a list of archives
+which are opened with
+.I membername
+"" during initialization time.
+When an archive member is sought for,
+the list of archives can be examined until the first
+.I Reopen
+succeeds.
+.SH EXAMPLE
+Print all archive member names of a given archive:
+.Pg
+PROCEDURE ListArchive(archive: ARRAY OF CHAR);
+   VAR
+      ar: Streams.Stream;
+BEGIN
+   IF UnixArchives.Open(ar, archive, "", NIL) THEN
+      REPEAT
+         Write.Line(ar.header.name);
+      UNTIL ~UnixArchives.Reopen(ar, "");
+      Streams.Release(ar);
+   END;
+END ListArchive;
+.Pe
+.SH DIAGNOSTICS
+.I Open
+passes the \fIerrors\fP parameter together with an error event
+of type \fIstreamError\fP to \fIRelatedEvents\fP in case of errors.
+Further, \fIOpen\fP returns \fBFALSE\fP on failure.
+.LP
+Errors during the access of the stream are converted
+into events of \fIRelatedEvents\fP.
+By default, these events are being queued.
+.LP
+Error events which are generated by \fIUnixArchives\fP contain
+one of the error codes following:
+.Tb notAnArchiveFile
+.Tp notAnArchiveFile
+The magic string of archives at the beginning of the file has not been found.
+.Tp corruptedArchive
+An archive member header cannot be read or is corrupted.
+.Tp memberNotFound
+The given member name (# "") cannot be found in the given archive.
+.Tp outOfRange
+Seek position is negative or beyond the end of the archive member.
+.Tp readFailed
+A read operation failed unexpectantly.
+.Tp seekFailed
+A seek operation failed unexpectantly.
+.Tp tellFailed
+A tell operation failed unexpectantly.
+.Te
+.SH "SEE ALSO"
+.Tb RelatedEvents(3)
+.Tp ar(1)
+maintaining of archives
+.Tp RelatedEvents(3)
+error event handling
+.Tp Streams(3)
+stream operations
+.Tp SysStat(3)
+protection modes
+.Tp ar(3head)
+archive file format
+.Te
+.SH BUGS
+The BSD version of archive files uses trailing blanks as
+filename delimiter.
+Thus filenames with trailing blanks are extracted without trailing blanks.
+.PP
+Archive member names are restricted to 14 characters even on
+file systems which support longer names. 
+.\" ---------------------------------------------------------------------------
+.\" $Id: UnixArchives.3,v 1.6 2005/03/07 15:29:24 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: UnixArchives.3,v $
+.\" Revision 1.6  2005/03/07 15:29:24  borchert
+.\" some minor fixes including SEE ALSO table
+.\"
+.\" Revision 1.5  2003/07/10 09:27:56  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.4  1992/03/24 09:22:36  borchert
+.\" Archives renamed to UnixArchives
+.\"
+.\" Revision 1.3  1991/11/22  09:15:38  borchert
+.\" errors parameter added
+.\" queue events now via RelatedEvents
+.\" new error handling
+.\"
+.\" Revision 1.2  1991/01/03  22:24:33  borchert
+.\" typo error fixed
+.\"
+.\" Revision 1.1  90/08/31  17:02:11  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

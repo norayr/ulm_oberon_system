@@ -1,0 +1,264 @@
+
+
+
+SysSignals(3)          Ulm's Oberon System          SysSignals(3)
+
+
+NNAAMMEE
+       SysSignals - event interface for UNIX signals
+
+SSYYNNOOPPSSIISS
+       TYPE Signal = INTEGER; (* signal number: [1..nsigs-1] *)
+       TYPE EventType = POINTER TO EventTypeRec;
+       TYPE EventTypeRec =
+          RECORD
+             (Events.EventTypeRec)
+             signo: Signal;
+          END;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             signo: Signal;
+             sigcode: INTEGER;
+             sigcontext: SysTypes.UntracedAddress;
+             addr: SysTypes.UntracedAddress;
+             fixed: BOOLEAN;
+          END;
+
+       CONST nsigs     = 32;   (* number of valid signals *)
+       CONST sigHUP    = 1;    (* hangup *)
+       CONST sigINT    = 2;    (* interrupt *)
+       CONST sigQUIT   = 3;    (* quit *)
+       CONST sigILL    = 4;    (* illegal instruction *)
+       CONST sigTRAP   = 5;    (* trace trap *)
+       CONST sigABRT   = 6;    (* used by abort, replace SIGIOT in the future *)
+       CONST sigEMT    = 7;    (* EMT instruction *)
+       CONST sigFPE    = 8;    (* floating point exception *)
+       CONST sigKILL   = 9;    (* kill *)
+       CONST sigBUS    = 10;   (* bus error *)
+       CONST sigSEGV   = 11;   (* segmentation violation *)
+       CONST sigSYS    = 12;   (* bad argument to system call *)
+       CONST sigPIPE   = 13;   (* write on a pipe with no one to read it *)
+       CONST sigALRM   = 14;   (* alarm clock *)
+       CONST sigTERM   = 15;   (* software termination signal from kill *)
+       CONST sigURG    = 16;   (* urgent condition on IO channel *)
+       CONST sigSTOP   = 17;   (* sendable stop signal not from tty *)
+       CONST sigTSTP   = 18;   (* stop signal from tty *)
+       CONST sigCONT   = 19;   (* continue a stopped process *)
+       CONST sigCHLD   = 20;   (* to parent on child stop or exit *)
+       CONST sigTTIN   = 21;   (* to readers pgrp upon background tty read *)
+       CONST sigTTOU   = 22;   (* like TTIN for output if *)
+       CONST sigIO     = 23;   (* input/output possible signal *)
+       CONST sigXCPU   = 24;   (* exceeded CPU time limit *)
+       CONST sigXFSZ   = 25;   (* exceeded file size limit *)
+       CONST sigVTALRM = 26;   (* virtual time alarm *)
+       CONST sigPROF   = 27;   (* profiling time alarm *)
+       CONST sigWINCH  = 28;   (* window changed *)
+       CONST sigLOST   = 29;   (* resource lost *)
+       CONST sigUSR1   = 30;   (* user defined signal 1 *)
+       CONST sigUSR2   = 31;   (* user defined signal 2 *)
+
+
+
+Release 0.5       Last change: 17 September 1996                1
+
+
+
+
+
+SysSignals(3)          Ulm's Oberon System          SysSignals(3)
+
+
+       CONST allsigs   = 32;   (* number of all signals *)
+       CONST ncodes    = 1;    (* number of sigcodes *)
+
+       VAR HUP INT, QUIT, ILL, TRAP, ABRT, EMT, FPE, KILL, BUS, SEGV,
+           SYS, PIPE, ALRM, TERM, URG, STOP, TSTP, CONT, CHLD, TTIN,
+           TTOU, IO, XCPU, XFSZ, VTALRM, PROF, WINCH, LOST, USR1, USR2:
+              EventType;
+
+       VAR unknownSignal: Events.EventType;
+       VAR eventType: ARRAY nsigs OF EventType;
+       TYPE Name = ARRAY 12 OF CHAR; (* traditional name, e.g. "SIGHUP" *)
+       VAR name: ARRAY allsigs OF Name;
+       VAR text: ARRAY allsigs OF Events.Message;
+       VAR codetext: ARRAY ncodes OF Events.Message;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_y_s_S_i_g_n_a_l_s initializes all signal events and defines their
+       priority.  Further _S_y_s_S_i_g_n_a_l_s acts as event  manager  (see
+       _E_v_e_n_t_s_(_3_) for details) and interfaces SSYYSSTTEEMM..UUNNIIXXSSIIGGNNAALL.
+
+       A   UNIX  signal  with  the  number  _s_i_g_n_o  causes  _e_v_e_n_t_­
+       _T_y_p_e[_s_i_g_n_o] to be raised.  A signal event  contains  _s_i_g_n_o
+       (one  of  _s_i_g_H_U_P.._s_i_g_U_S_R_2)  and _s_i_g_c_o_d_e.  _s_i_g_c_o_d_e contains
+       some additional informations but is to  be  considered  as
+       very  system-dependent.  An example is given by the float­
+       ing point exception of _S_y_s_S_i_g_n_a_l_s_._F_P_E: the MC68881 proces­
+       sor  supports  eight  different  exceptions  which are all
+       mapped to _S_y_s_S_i_g_n_a_l_s_._F_P_E with different _s_i_g_c_o_d_e values  by
+       the UNIX system.
+
+       In  addition,  the  Sun  version supports following compo­
+       nents: _s_i_g_c_o_n_t_e_x_t which points to a  structure  containing
+       the  saved registers and _a_d_d_r which contains the offending
+       address in case of memory faults or similar events.
+
+       It is important to note that there  are  some  fundamental
+       differences  between  usual signal handling and event han­
+       dling: With the exception of some few signals the reaction
+       is  reset to default (program termination) on receipt of a
+       signal.   The  signal  handler  of  _S_y_s_S_i_g_n_a_l_s  redeclares
+       itself  as  signal handler and thus ensures that the reac­
+       tion is not affected by signal receiving.
+
+       Signals have a priority like other  events  of  _E_v_e_n_t_s_(_3_).
+       The  priority  is  _P_r_i_o_r_i_t_i_e_s_._i_n_t_e_r_r_u_p_t_s  for signals like
+       _S_y_s_S_i_g_n_a_l_s_._I_N_T,   _S_y_s_S_i_g_n_a_l_s_._A_L_R_M   etc.    and    _P_r_i_o_r_i_­
+       _t_i_e_s_._f_a_t_a_l_s_i_g_n_a_l_s  for  signals which indicate faults like
+       _S_y_s_S_i_g_n_a_l_s_._S_E_G_V,   _S_y_s_S_i_g_n_a_l_s_._B_U_S,   _S_y_s_S_i_g_n_a_l_s_._I_L_L,   and
+       _S_y_s_S_i_g_n_a_l_s_._F_P_E.   Signals  are queued on _E_v_e_n_t_s_._f_u_n_c reac­
+       tion if the current priority is equal or greater than  the
+       priority  of the event.  Event handlers for fault indicat­
+       ing signals must not return because this would  cause  re-
+       execution of the faulting instruction and thus an infinite
+
+
+
+Release 0.5       Last change: 17 September 1996                2
+
+
+
+
+
+SysSignals(3)          Ulm's Oberon System          SysSignals(3)
+
+
+       loop.
+
+       The component _f_i_x_e_d may be set to TTRRUUEE if an event handler
+       is  able  to  fix a hard event in a way which assures that
+       the execution may be continued without  getting  the  same
+       event raised again.
+
+       Signal reactions are inherited to subprocesses and in some
+       restricted form inherited beyond _e_x_e_c_(_2_).  _e_x_e_c_(_2_)  causes
+       all  _E_v_e_n_t_s_._f_u_n_c_s reactions to be reset to _E_v_e_n_t_s_._d_e_f_a_u_l_t.
+       _E_v_e_n_t_s_._d_e_f_a_u_l_t and  _E_v_e_n_t_s_._i_g_n_o_r_e  is  inherited  in  both
+       cases  (_f_o_r_k_(_2_)_)  and _e_x_e_c_(_2_)).  _S_y_s_S_i_g_n_a_l_s sets the reac­
+       tions during initialization to those which has been inher­
+       ited:  _E_v_e_n_t_s_._d_e_f_a_u_l_t or _E_v_e_n_t_s_._i_g_n_o_r_e.  Typically _S_y_s_S_i_g_­
+       _n_a_l_s_._I_N_T and _S_y_s_S_i_g_n_a_l_s_._Q_U_I_T are ignored  if  the  process
+       runs  in  background (the shell does not wait for the pro­
+       cess to terminate).
+
+EEXXAAMMPPLLEE
+       The following signal handler  causes  program  termination
+       (with ordinary cleanup):
+
+       PROCEDURE Die(event: Events.Event);
+       BEGIN
+          SysProcess.Exit(1);
+       END Die;
+
+       PROCEDURE SetUp;
+       BEGIN
+          Events.Handler(SysSignals.INT, Die);
+       END SetUp;
+
+
+       The  example following demonstrates how to allow time-con­
+       suming processing to be aborted  by  the  use  of  _S_y_s_S_i_g_­
+       _n_a_l_s_._I_N_T.   This  is very useful for interactive programs,
+       e.g. a typical editor stops searching on _S_y_s_S_i_g_n_a_l_s_._I_N_T.
+
+       PROCEDURE TimeConsumingProcessing(VAR completed: BOOLEAN);
+          VAR newcr: SYSTEM.COROUTINE;
+       BEGIN
+          completed := FALSE;
+          SYSTEM.CRSPAWN(newcr);
+          (* ... *)
+          completed := TRUE;
+          SYSTEM.CRSWITCH(Coroutines.source);
+       END TimeConsumingProcessing;
+
+       PROCEDURE CatchInterrupt(event: Events.Event);
+       BEGIN
+          (* we assume that Setup was called by the main coroutine *)
+          IF Coroutines.current # Coroutines.main THEN
+             SYSTEM.CRSWITCH(Coroutines.main);
+          END;
+
+
+
+Release 0.5       Last change: 17 September 1996                3
+
+
+
+
+
+SysSignals(3)          Ulm's Oberon System          SysSignals(3)
+
+
+          (* SysSignals.INT has been raised outside of TimeConsumingProcessing *)
+       END CatchInterrupt;
+
+       PROCEDURE Setup;
+          VAR completed: BOOLEAN;
+       BEGIN
+          Events.Handler(SysSignals.INT, CatchInterrupt);
+          TimeConsumingProcessing(completed);
+          SYSTEM.CRSWITCH(Coroutines.source);
+          IF completed THEN
+             (* ordinary return of TimeConsumingProcessing *)
+          ELSE
+             (* TimeConsumingProcessing has been interrupted *)
+          END;
+       END Setup;
+
+
+SSEEEE AALLSSOO
+       _E_v_e_n_t_s_(_3_)       event handling
+       _M_a_t_h_(_3_)         defines handler for _S_y_s_S_i_g_n_a_l_s_._F_P_E event
+       _S_y_s_S_t_o_r_a_g_e_(_3_)   defines handler for _S_y_s_S_i_g_n_a_l_s_._S_E_G_V event
+
+BBUUGGSS
+       Signals with default reaction cause immediate  termination
+       (without raise of termination events) when they occur.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 17 September 1996                4
+
+

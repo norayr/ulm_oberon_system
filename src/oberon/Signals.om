@@ -1,0 +1,130 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Signals.om,v 1.2 2004/09/13 21:10:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Signals.om,v $
+   Revision 1.2  2004/09/13 21:10:41  borchert
+   signal conditions will now become TRUE in case of
+   terminated signal objects
+
+   Revision 1.1  2004/02/13 15:49:21  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Signals;
+
+   IMPORT Conditions, Disciplines, RelatedEvents, Resources, Tasks;
+
+   TYPE
+      Signal = POINTER TO SignalRec;
+      SignalRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    raised: BOOLEAN;
+	 END;
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    signal: Signal;
+	 END;
+   VAR
+      domain: Conditions.Domain;
+
+   (* === private procedures =============================================== *)
+
+   PROCEDURE TestCondition(domain: Conditions.Domain;
+                           condition: Conditions.Condition;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN condition.signal.raised OR
+	        Resources.Terminated(condition.signal)
+      END;
+   END TestCondition;
+
+   PROCEDURE Initialization;
+      VAR
+	 if: Conditions.Interface;
+	 desc: Conditions.Description;
+   BEGIN
+      NEW(if);
+      if.test := TestCondition;
+      if.select := NIL;
+      if.sendevent := NIL;
+      if.gettime := NIL;
+      if.preconditions := NIL;
+      NEW(desc);
+      desc.caps := {};
+      desc.internal := TRUE;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+   END Initialization;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Init(signal: Signal);
+   BEGIN
+      signal.raised := FALSE;
+   END Init;
+
+   PROCEDURE Create(VAR signal: Signal);
+   BEGIN
+      NEW(signal); Init(signal);
+   END Create;
+
+   PROCEDURE CreateCondition(VAR condition: Conditions.Condition;
+                             signal: Signal);
+      VAR
+	 cond: Condition;
+   BEGIN
+      ASSERT(signal # NIL);
+      NEW(cond); cond.signal := signal;
+      Conditions.Init(cond, domain);
+      condition := cond;
+   END CreateCondition;
+
+   PROCEDURE Raise(signal: Signal);
+   BEGIN
+      signal.raised := TRUE;
+   END Raise;
+
+   PROCEDURE Raised(signal: Signal) : BOOLEAN;
+   BEGIN
+      RETURN signal.raised
+   END Raised;
+
+   PROCEDURE WaitFor(signal: Signal);
+      VAR
+	 cond: Conditions.Condition;
+   BEGIN
+      IF ~signal.raised THEN
+	 CreateCondition(cond, signal);
+	 Tasks.WaitFor(cond);
+      END;
+   END WaitFor;
+
+BEGIN
+   Initialization;
+END Signals.

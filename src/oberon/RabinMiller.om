@@ -1,0 +1,131 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RabinMiller.om,v 1.1 1997/04/03 09:39:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RabinMiller.om,v $
+   Revision 1.1  1997/04/03  09:39:28  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RabinMiller; (* Frank B.J. Fischer *)
+    
+   IMPORT IntOperations, Operations, Primes, Random := RandomGenerators;
+
+   VAR
+      test: Primes.Test;
+      if  : Primes.Interface;
+      val0: Operations.Operand;
+      val1: Operations.Operand;
+
+
+   PROCEDURE Create(VAR test: Primes.Test);
+   BEGIN
+      NEW(test);
+      Primes.Init(test, if);
+   END Create;
+
+
+   PROCEDURE RandTestVal(max: Operations.Operand): Operations.Operand;
+      VAR
+	 tVal: Operations.Operand;  
+   BEGIN
+      Operations.Assign(tVal, max);
+      Random.SetVal(tVal);
+      IntOperations.Mod2(tVal, max);
+      RETURN tVal
+   END RandTestVal;
+
+
+   PROCEDURE Calculate(v: Operations.Operand; VAR b, m: Operations.Operand);
+      VAR
+         vm1  : Operations.Operand;
+	 count: Operations.Operand;
+   BEGIN
+      (* init *)
+      IntOperations.Dec3(vm1, v);
+      Operations.Assign(count, val0);
+
+      (* calc *)
+      WHILE (~IntOperations.Odd(vm1)) & (Operations.Compare(vm1, val0)>0) DO
+	 IntOperations.Shift2(vm1, -1);
+         IntOperations.Inc2(count);
+      END;
+
+      b := count;
+      m := vm1;
+   END Calculate;
+
+
+   PROCEDURE PerformTest(test: Primes.Test; v: IntOperations.Operand;
+			 VAR p: REAL): INTEGER;
+      VAR
+	 m, b    : Operations.Operand;
+	 z, vm1  : Operations.Operand;
+	 a, j    : Operations.Operand;
+	 continue: BOOLEAN;
+   BEGIN
+      (* set p *)
+      p := 0.75;
+
+      (* create global values val0 and val1 *)
+      Operations.Assign(val0, v);
+      IntOperations.IntToOp(0, val0);
+      IntOperations.Inc3(val1, val0);
+
+      (* initialize Rabin-Miller test *)
+      Calculate(v, b, m);
+      IntOperations.Dec3(vm1, v);
+      Operations.Assign(j, val0);
+
+      (* begin Rabin-Miller test *)
+      continue := FALSE;
+      a := RandTestVal(v);
+      IntOperations.MPow3(z, a, m, v);
+      IF (Operations.Compare(z, val1)=0) 
+	 OR (Operations.Compare(z, vm1)=0) THEN
+	 continue := TRUE; (* if z=1 or z=v-1 then test successful *)
+      END;
+      IF ~continue THEN    (* the test goes on *)
+	 WHILE Operations.Compare(j, b)<0 DO
+	    IF (Operations.Compare(j, val0)>0) 
+	       & (Operations.Compare(z, val1)=0) THEN
+	       RETURN Primes.composite
+	    END;
+	    IntOperations.Inc2(j);
+	    IF (Operations.Compare(j, b)<0) 
+	       & (Operations.Compare(z, vm1)#0) THEN
+	       IntOperations.MMul2(z, z, v);
+	    END;
+	 END;
+	 IF (Operations.Compare(j, b)=0) 
+	    & (Operations.Compare(z, vm1)#0) THEN
+	    RETURN Primes.composite
+	 END;            
+      END;
+      RETURN Primes.indefinite
+   END PerformTest;
+
+BEGIN
+   NEW(if);
+   if.performTest := PerformTest;
+   Create(test);
+END RabinMiller.

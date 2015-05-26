@@ -1,0 +1,455 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteEvent.om,v 1.5 2004/09/16 13:38:50 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteEvent.om,v $
+   Revision 1.5  2004/09/16 13:38:50  borchert
+   LocalEventListener forgot to include softtermcond in cset
+
+   Revision 1.4  2004/04/05 16:27:10  borchert
+   the priority of imported event types is now limited by
+   Priorities.interrupts - 1
+
+   Revision 1.3  2004/04/02 17:57:10  borchert
+   support of Process.softTermination added
+
+   Revision 1.2  2004/04/02 17:28:14  borchert
+   LocalEventHandler replaced by seperate task LocalEventListener
+
+   Revision 1.1  1995/12/30  17:37:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteEvents;
+
+   IMPORT Conditions, Disciplines, EventConditions, Events, Jobs, Messages,
+      NetIO, PersistentEvents, PersistentObjects, Priorities, Process,
+      RelatedEvents, RemoteObjects, Resources, Services, Shadows, Streams,
+      Tasks;
+
+   (*                                           [LocalHandler]
+	[RemoteEventHandler]                  [LocalEventListener]
+	     proxy object      -/    /-            event type
+		  O--->>>------/----/------->>>--------O
+		  |          -/    /-                  |
+		  O---<<<----/----/---------<<<-------OOO
+	       shadow      -/    /-             proxies of shadows
+	   [RemoteHandler]
+
+	   importing side                         exporting side
+
+      events which are raised for the original event type (at the
+      exporting side) are forwarded by LocalEventHandler via
+      Shadows to all shadows on the importing side where they
+      are passed by RemoteHandler to Events.Raise;
+      events which are raised for the imported event type are
+      forwarded by RemoteEventHandler via Messages to the exporting
+      side where they are passed by LocalHandler to Events.Raise;
+      the main problem is the avoidance of cycling events -- for
+      this we maintain on each side (i.e. for the original event
+      type and each of its proxies) a discipline at the event type
+      which holds a list of forward but yet unprocessed events
+      (i.e. seen by LocalHandler but not yet by LocalHandler or,
+      on the other side, seen by RemoteHandler but not yet by
+      RemoteEventHandler). If an event is passed to LocalHandler
+      or RemoteHandler it is checked first against this list, and,
+      if present, removed from the list and ignored.
+   *)
+
+   TYPE
+      Parameters = POINTER TO ParametersRec;
+      ParametersRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    priority: Priorities.Priority;
+	 END;
+   VAR
+      parametersType: Services.Type;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    event: Events.Event;
+	    prev, next: Event;
+	 END;
+      EventTypeDiscipline = POINTER TO EventTypeDisciplineRec;
+      EventTypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    head, tail: Event; (* list of events which must not be forwarded *)
+	 END;
+   VAR
+      etdID: Disciplines.Identifier;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    eventType: Events.EventType;
+	 END;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      RaiseMessage = POINTER TO RaiseMessageRec;
+      RaiseMessageRec =
+         RECORD
+            (MessageRec)
+            event: Events.Event; (* IN via Event *)
+            shadow: Shadows.Shadow; (* IN via REF *)
+	       (* see comment in LocalHandler *)
+         END;
+   VAR
+      raiseMessageType: Services.Type;
+
+   PROCEDURE WriteParameters(s: Streams.Stream;
+			     object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Parameters DO
+	 RETURN NetIO.WriteInteger(s, object.priority)
+      END;
+   END WriteParameters;
+
+   PROCEDURE ReadParameters(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Parameters DO
+	 RETURN NetIO.ReadInteger(s, object.priority)
+      END;
+   END ReadParameters;
+
+   PROCEDURE CreateParameters(VAR object: PersistentObjects.Object);
+      VAR
+	 params: Parameters;
+   BEGIN
+      NEW(params); PersistentObjects.Init(params, parametersType);
+      object := params;
+   END CreateParameters;
+
+   PROCEDURE CreateRaiseMessage(VAR object: PersistentObjects.Object);
+      VAR msg: RaiseMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, raiseMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateRaiseMessage;
+
+   PROCEDURE WriteRaiseMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: RaiseMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentEvents.Write(s, msg.event) &
+                   RemoteObjects.Export(s, msg.shadow)
+         END;
+      END;
+   END WriteRaiseMessage;
+
+   PROCEDURE ReadRaiseMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: RaiseMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentEvents.Read(s, msg.event) &
+                   RemoteObjects.Import(s, msg.shadow)
+         END;
+      END;
+   END ReadRaiseMessage;
+
+   PROCEDURE Seen(event: Events.Event) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 etd: EventTypeDiscipline;
+	 ptr: Event;
+   BEGIN
+      ok := Disciplines.Seek(event.type, etdID, etd); ASSERT(ok);
+      ptr := etd.head;
+      WHILE ptr # NIL DO
+	 IF ptr.event = event THEN
+	    (* it comes from one of the remote sides -- so don't forward it *)
+	    IF ptr.prev = NIL THEN
+	       etd.head := ptr.next;
+	    ELSE
+	       ptr.prev.next := ptr.next;
+	    END;
+	    IF ptr.next = NIL THEN
+	       etd.tail := ptr.prev;
+	    ELSE
+	       ptr.next.prev := ptr.prev;
+	    END;
+	    RETURN TRUE
+	 END;
+	 ptr := ptr.next;
+      END;
+      RETURN FALSE
+   END Seen;
+
+   PROCEDURE Raise(event: Events.Event);
+      VAR
+	 ok: BOOLEAN;
+	 etd: EventTypeDiscipline;
+	 ptr: Event;
+   BEGIN
+      ok := Disciplines.Seek(event.type, etdID, etd); ASSERT(ok);
+      NEW(ptr); ptr.event := event;
+      ptr.next := NIL; ptr.prev := etd.tail;
+      IF etd.head = NIL THEN
+	 etd.head := ptr;
+      ELSE
+	 etd.tail.next := ptr;
+      END;
+      etd.tail := ptr;
+      Events.Raise(event);
+   END Raise;
+
+   PROCEDURE LocalEventListener(job: Jobs.Job);
+      VAR
+	 eventcond, termcond, softtermcond: Conditions.Condition;
+	 cset: Conditions.ConditionSet;
+	 resEventType: Events.EventType;
+	 event: Events.Event;
+	 msg: RaiseMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      WITH job: Job DO
+	 EventConditions.Create(eventcond, job.eventType);
+	 Resources.TakeInterest(job.eventType, resEventType);
+	 EventConditions.Create(termcond, resEventType);
+	 EventConditions.Create(softtermcond, Process.softTermination);
+	 Conditions.CreateSet(cset);
+	 Conditions.Incl(cset, eventcond);
+	 Conditions.Incl(cset, termcond);
+	 Conditions.Incl(cset, softtermcond);
+	 LOOP
+	    Tasks.WaitForOneOf(cset);
+	    WHILE EventConditions.TestAndGet(eventcond, event) DO
+	       IF ~Seen(event) THEN
+		  CreateRaiseMessage(msg);
+		  msg.event := event;
+		  msg.shadow := NIL;
+		  Shadows.Send(event.type, msg);
+		  RelatedEvents.GetQueue(msg.errors, queue);
+		  RelatedEvents.AppendQueue(event.type, queue);
+	       END;
+	    END;
+	    WHILE EventConditions.TestAndGet(termcond, event) DO
+	       WITH event: Resources.Event DO
+		  IF event.change = Resources.terminated THEN EXIT END;
+	       END;
+	    END;
+	    IF EventConditions.TestAndGet(softtermcond, event) THEN
+	       EXIT
+	    END;
+	 END;
+	 EventConditions.Drop(eventcond);
+	 EventConditions.Drop(termcond);
+	 EventConditions.Drop(softtermcond);
+      END;
+   END LocalEventListener;
+
+   PROCEDURE LocalHandler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+	 shadow: Shadows.Shadow;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Events.EventType DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         IF msg IS RaiseMessage THEN
+            WITH msg: RaiseMessage DO
+	       msg.event.type := object;
+               Raise(msg.event);
+	       (* our cycle-avoidance code not only avoids the redistribution
+		  of the event to the remote side which has it sent but
+		  also to all other remote sides; therefore we
+		  distribute it here to the other sides by
+		  Shadows.SendExcept which resends the msg to all
+		  importing sides with the exception of the side which
+		  has raised that event -- the latter side is identified
+		  by its shadow
+	       *)
+	       shadow := msg.shadow; msg.shadow := NIL;
+	       Shadows.SendExcept(object, shadow, msg);
+               msg.done := TRUE;
+            END;
+         END;
+         msg.processed := TRUE;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END LocalHandler;
+
+   PROCEDURE GetParams(object: Services.Object;
+		       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+      VAR
+	 parameters: Parameters;
+	 etd: EventTypeDiscipline;
+	 job: Job;
+   BEGIN
+      WITH object: Events.EventType DO
+	 Shadows.InitObject(object);
+	 mode := RemoteObjects.linked;
+	 CreateParameters(parameters);
+	 parameters.priority := Events.GetEventPriority(object);
+	 params := parameters;
+	 NEW(etd); etd.id := etdID; etd.head := NIL; etd.tail := NIL;
+	 Disciplines.Add(object, etd);
+	 (*
+	 Events.Handler(object, LocalEventHandler);
+	 *)
+	 NEW(job); job.eventType := object;
+	 Jobs.Submit(job, LocalEventListener);
+      END;
+   END GetParams;
+
+   PROCEDURE RemoteHandler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+	 proxy: Events.EventType;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Shadows.Shadow DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS RaiseMessage THEN
+            WITH msg: RaiseMessage DO
+	       Shadows.GetProxy(object, proxy);
+	       msg.event.type := proxy;
+               Raise(msg.event);
+               msg.done := TRUE;
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END RemoteHandler;
+
+   PROCEDURE RemoteEventHandler(event: Events.Event);
+      VAR msg: RaiseMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      IF ~Seen(event) THEN
+	 CreateRaiseMessage(msg);
+	 msg.event := event;
+	 Shadows.GetShadow(event.type, msg.shadow);
+	 Messages.Send(event.type, msg);
+	 RelatedEvents.GetQueue(msg.errors, queue);
+	 RelatedEvents.AppendQueue(event.type, queue);
+      END;
+   END RemoteEventHandler;
+
+   PROCEDURE RemoteEventManager(eventType: Events.EventType;
+				reaction: Events.Reaction);
+      VAR
+	 condition: Conditions.Condition;
+   BEGIN
+      IF reaction = Events.funcs THEN
+	 Events.Handler(eventType, RemoteEventHandler);
+	 RemoteObjects.CreateRegistrationCondition(condition, eventType);
+	 IF condition # NIL THEN
+	    (* wait until the registration via Shadows is finished *)
+	    Tasks.WaitFor(condition);
+	 END;
+      END;
+   END RemoteEventManager;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+			 params: PersistentObjects.Object);
+      VAR
+	 eventType: Events.EventType;
+	 etd: EventTypeDiscipline;
+   BEGIN
+      WITH params: Parameters DO
+	 Events.Define(eventType);
+	 IF params.priority < Priorities.interrupts THEN
+	    Events.SetPriority(eventType, params.priority);
+	 ELSE
+	    (* remote events cannot be delivered asynchronously *)
+	    Events.SetPriority(eventType, Priorities.interrupts - 1);
+	 END;
+	 Events.Manager(eventType, RemoteEventManager);
+	 Events.Ignore(eventType);
+	 NEW(etd); etd.id := etdID; etd.head := NIL; etd.tail := NIL;
+	 Disciplines.Add(eventType, etd);
+      END;
+      object := eventType;
+   END CreateProxy;
+
+   PROCEDURE Register(object: Services.Object);
+      VAR
+	 shadow: Shadows.Shadow;
+   BEGIN
+      Shadows.Create(shadow, object);
+      Messages.InstallHandler(shadow, RemoteHandler);
+   END Register;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE Init;
+      VAR
+	 type: Services.Type;
+	 if: RemoteObjects.Interface;
+	 msgtype: Services.Type;
+   BEGIN
+      InitPO(parametersType, "RemoteEvents.Parameters", "",
+	 CreateParameters, ReadParameters, WriteParameters);
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteEvents.Message", "Messages.Message", NIL);
+      InitPO(raiseMessageType, "RemoteEvents.RaiseMessage",
+	     "RemoteEvents.Message",
+             CreateRaiseMessage, ReadRaiseMessage, WriteRaiseMessage);
+      Services.SeekType("Events.EventType", type);
+      NEW(if);
+      if.getParams := GetParams;
+      if.createProxy := CreateProxy;
+      if.msgHandler := LocalHandler;
+      if.register := Register;
+      RemoteObjects.Register(type, if, RemoteObjects.serial);
+   END Init;
+
+BEGIN
+   etdID := Disciplines.Unique();
+   Init;
+END RemoteEvents.

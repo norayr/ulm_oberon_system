@@ -1,0 +1,182 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerObj.od,v 1.1 2001/02/08 15:56:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerObj.od,v $
+   Revision 1.1  2001/02/08 15:56:28  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION CompilerObjects;
+
+   IMPORT Architectures, CompilerKeys, ConstStrings, Disciplines,
+      ModularizedStructures, Objects, PersistentDisciplines,
+      PersistentObjects, PersistentTexts, RelatedEvents, Services,
+      Sources := CompilerSources, Streams;
+
+   TYPE
+      Location = POINTER TO LocationRec;
+      LocationRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    src: Sources.Source;
+	    begin, end: Streams.Count;
+	 END;
+
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    loc: Location;
+	       (* may be NIL and must not be modified after initialization *)
+	 END;
+
+   TYPE
+      Attachment = POINTER TO AttachmentRec;
+      AttachmentRec = RECORD (ObjectRec) END;
+
+   (* the somewhat odd numbers of the following constants guarantee
+      that any product of an ObjectType with a Stage returns a
+      unique number; that is useful for the CacheMode set following
+   *)
+   CONST
+      public = 1; (* symbol file *)
+      private = 2; (* with private stuff and statements *)
+   TYPE
+      ObjectType = SHORTINT; (* public or private *)
+
+   CONST
+      archIndependent = 1;
+      archDependent = 3;
+   TYPE
+      Stage = SHORTINT; (* archIndependent or archDependent *)
+
+   TYPE
+      CacheMode = SET;
+	 (* selects the set of object types that are to be cached
+	    during a recursive load operation into persistent memory
+	 *)
+   CONST
+      cachePublic = {public * archIndependent, public * archDependent};
+      cachePrivate = {private * archIndependent, private * archDependent};
+      cacheAll = cachePublic + cachePrivate;
+      cacheArchIndependent = {public * archIndependent,
+                              private * archIndependent};
+      cacheArchDependent = {public * archDependent, private * archDependent};
+
+   TYPE
+      Header = POINTER TO HeaderRec;
+	 (* header object with language-independent meta informations
+	    about the object returned by a compiler;
+	    the separation of header and object allows language-independent
+	    server to seek for objects in its storage without loading them
+	    into memory
+	 *)
+      HeaderRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    modname: ConstStrings.String; (* module name *)
+	    src: Sources.Source; (* associated source, may be NIL *)
+	    srcid: ConstStrings.String; (* must be non-NIL *)
+	    key: CompilerKeys.Key; (* must be non-NIL *)
+	    dependencies: CompilerKeys.Set; (* non-NIL set of imported keys *)
+	    type: ObjectType; (* interface or code, private or public? *)
+	    stage: Stage; (* compilation stage *)
+	    arch: Architectures.Architecture;
+	       (* NIL if mode = archIndependent *)
+	 END;
+
+   TYPE
+      ModuleTable = POINTER TO ModuleTableRec;
+      ModuleTableRec = RECORD (Disciplines.ObjectRec) END;
+
+   PROCEDURE CreateLocation(VAR location: Location;
+                            src: Sources.Source;
+			    begin, end: Streams.Count);
+
+   PROCEDURE CreateHeader(VAR header: Header; modname: ConstStrings.String);
+
+   (* cache of module objects and headers;
+      note that their keys must be compatible to each other
+   *)
+
+   PROCEDURE CreateModuleTable(VAR mtab: ModuleTable);
+   PROCEDURE AddModule(mtab: ModuleTable;
+		       header: Header; module: Object);
+   PROCEDURE AddHeader(mtab: ModuleTable; header: Header);
+      (* headers may later be replaced by AddModule *)
+   PROCEDURE Lookup(mtab: ModuleTable;
+                    modname: ConstStrings.String;
+		    type: ObjectType;
+		    arch: Architectures.Architecture;
+		    VAR header: Header;
+		    VAR module: Object) : BOOLEAN;
+   PROCEDURE LookupHeader(mtab: ModuleTable;
+                          modname: ConstStrings.String;
+			  type: ObjectType;
+			  arch: Architectures.Architecture;
+			  VAR header: Header) : BOOLEAN;
+   PROCEDURE CreateCopyOfModuleTable(VAR mtab: ModuleTable;
+				     orig: ModuleTable);
+   PROCEDURE SynchronizeModuleTable(mtab, extendedtab: ModuleTable);
+
+   PROCEDURE Init(object: Object);
+      (* initialization of objects defined by language sources;
+         may be later overridden by InitBuiltInObject
+      *)
+   PROCEDURE InitBuiltInObject(object: Object);
+      (* initialization of built-in objects *)
+
+   PROCEDURE Attach(module, object: Object; attachment: Attachment);
+      (* attach `attachment' to `object' and include this
+	 attachment to set of attachments associated with
+	 the descendants of module; note that multiple
+	 attachments are not permitted;
+      *)
+
+   PROCEDURE RemoveAttachments(module: Object);
+      (* remove all attachments of all descendants of module *)
+
+   PROCEDURE GetAttachment(object: Object; VAR attachment: Attachment);
+      (* may return NIL if there does not exist a attachment yet *)
+
+   (* operations on base of ModularizedStructures *)
+
+   PROCEDURE ConvertObjectToText(object: Object;
+				 table: ModularizedStructures.ObjectTable;
+				 header: Header;
+                                 VAR text: PersistentTexts.Text;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ConvertTextToObject(text: PersistentTexts.Text;
+                                 table: ModularizedStructures.ObjectTable;
+				 header: Header;
+				 VAR object: Object;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                         VAR object: Object) : BOOLEAN;
+   PROCEDURE Write(s: Streams.Stream;
+                   object: Object) : BOOLEAN;
+
+END CompilerObjects.

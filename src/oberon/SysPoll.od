@@ -1,0 +1,75 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysPoll;
+
+   IMPORT Objects, RelatedEvents, SYS := SYSTEM, SysTime, SysTypes;
+
+   CONST
+      (* bits for events and revents *)
+      pollIn =       1H; (* fd is readable *)
+      pollPri =      2H; (* high priority info at fd *)
+      pollOut =      4H; (* fd is writable (won't block) *)
+      pollRdNorm =  40H; (* normal data is readable *)
+      pollWrNorm = 0100H;
+      pollRdBand =  80H; (* out-of-band data is readable *)
+      pollWrBand = 200H; (* out-of-band data is writable *)
+      pollNorm = pollRdNorm;
+      pollErr =      8H; (* fd has error condition *)
+      pollHup =     10H; (* fd has been hung up on *)
+      pollNval =    20H; (* invalid pollfd entry *)
+      pollMsg =    400H;
+
+   TYPE
+      (* struct pollfd of Solaris 2, see <sys/poll.h> *)
+      Flags = SYS.INT16;
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    fd: SysTypes.File;
+	    events: Flags;
+	    revents: Flags;
+	 END;
+
+      FdSet = POINTER TO FdSetRec;
+      FdSetRec = RECORD (Objects.ObjectRec) END;
+
+   PROCEDURE ConvertTimeout(timeout: SysTime.TimeVal) : LONGINT;
+      (* convert seconds & microseconds into milliseconds *)
+
+   PROCEDURE CreateSet(VAR fdset: FdSet);
+   PROCEDURE Incl(fdset: FdSet; entry: Entry);
+   PROCEDURE Card(fdset: FdSet) : INTEGER;
+   PROCEDURE ExamineEntries(fdset: FdSet);
+   PROCEDURE Next(fdset: FdSet; VAR entry: Entry) : BOOLEAN;
+
+   PROCEDURE Poll(fdset: FdSet; timeout: LONGINT;
+		  VAR ready: INTEGER;
+                  errors: RelatedEvents.Object;
+		  retry: BOOLEAN;
+		  VAR interrupted: BOOLEAN) : BOOLEAN;
+
+END SysPoll.

@@ -1,0 +1,88 @@
+CompilerStackAllocations(3)   Ulm's Oberon System  CompilerStackAllocations(3)
+
+
+
+[1mNAME[0m
+       CompilerStackAllocations - static allocations for stack frames
+
+[1mSYNOPSIS[0m
+       CONST growsup = 1; growsdown = 2;
+       TYPE Direction = SHORTINT; (* growsup, growsdown *)
+
+       TYPE Stack = POINTER TO StackRec;
+       TYPE StackRec =
+          RECORD
+             (Disciplines.ObjectRec)
+             align: Types.Size;
+          END;
+
+       PROCEDURE Init(stack: Stack; baseoff, align: Types.Size; dir: Direction);
+
+       PROCEDURE Allocate(stack: Stack; size, align: Types.Size;
+                          autofree: BOOLEAN) : Types.Size;
+       PROCEDURE Free(stack: Stack; offset: Types.Size);
+
+       PROCEDURE Close(stack: Stack);
+       PROCEDURE AllocateClosed(stack: Stack; size: Types.Size) : Types.Size;
+
+       PROCEDURE GetSize(stack: Stack) : Types.Size;
+
+
+[1mDESCRIPTION[0m
+       Stack frames provide space for parameters, saved registers, local vari-
+       ables, and temporary values. All offsets relative to the frame  pointer
+       can  be  computed at compile time with the exception of dynamic arrays.
+       [4mCompilerStackAllocations[24m supports  the  code  generator  in  allocating
+       static space within a stack frame for items that are not known from the
+       signature of a procedure and its local variable list.  Typical examples
+       are  the  construction  of  constants  that do not fit into a register,
+       passing constants or register values to a  procedure  that  expects  an
+       address, and cases where we run out of registers.
+
+       [4mInit[24m  initializes  the  stack  frame object [4mstack[24m for the direction [4mdir[0m
+       (usually [4mgrowsdown[24m) with  an  initial  offset  of  [4mbaseoff[24m.  The  frame
+       pointer  and  [4mbaseoff[24m  are  considered  to  be multiplies of [4malign[24m. All
+       alignment parameters given to [4mAllocate[24m must be divisors of this  align-
+       ment.
+
+       [4mAllocate[24m  allocates  [4msize[24m  bytes (must be positive) for the stack frame
+       associated with [4mstack[24m and returns the offset which  is  a  multiply  of
+       [4malign[24m.  If  [4mautofree[24m  is  set to [1mTRUE[22m, the area remains allocated until
+       [4mClose[24m gets called. Otherwise, the area has to be freed using [4mFree[24m.
+
+       [4mFree[24m allows to  deallocate  the  area  at  [4moffset[24m  which  was  formerly
+       returned by [4mAllocate[24m with [4mautofree[24m set to [1mFALSE[22m.
+
+       [4mClose[24m  closes  the regular allocation phase of the stack. Neither [4mAllo-[0m
+       [4mcate[24m nor [4mFree[24m may be called for [4mstack[24m afterwards. All offsets  returned
+       by [4mAllocate[24m with [4mautofree[24m set to [1mFALSE [22mmust have been freed before.
+
+       [4mAllocateClosed[24m  allows  to  allocate space (with the alignment given to
+       [4mInit[24m) that is available from begin to end of the  procedure.   In  con-
+       trast,  areas  allocated  by [4mAllocate[24m are only available from the point
+       where [4mAllocate[24m was called until the area is either freed using [4mFree[24m  or
+       automatically  closed by [4mClose[24m.  [4mAllocateClosed[24m is useful if we want to
+       save only those registers that are actually used. But this is not known
+       until  the  code  for  the  whole block is generated.  Please note that
+       [4mAllocateClosed[24m must not be called before  closing  the  stack  and  not
+       after [4mGetSize[24m was called for the stack.
+
+       [4mGetSize[24m  returns  the  next  aligned  offset beyond the allocated area.
+       This is the size of the allocated area if [4mbaseoff[24m was 0.   This  proce-
+       dure must not be called unless [4mClose[24m has already been called for [4mstack[24m.
+
+[1mBUGS[0m
+       The procedure [4mGetSize[24m is not properly named if [4mbaseoff[24m is non-zero.
+
+       Currently, [4mCompilerStackAllocations[24m has no way  of  generating  [4mCompil-[0m
+       [4merErrors(3)[24m events for the current compilation process.  Hence, [4mCompil-[0m
+       [4merStackAllocations[24m has to resort to assertions to assure  that  offsets
+       are kept within the limits of the representation of [4mTypes.Size[24m.
+
+[1mAUTHOR[0m
+       This  module was written by Christian Ehrhardt.  The manual page is due
+       to Andreas Borchert.
+
+
+
+Release 0.5               Last change: 26 August 200C5ompilerStackAllocations(3)

@@ -1,0 +1,101 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Services.od,v 1.1 1995/03/08 14:52:06 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Services.od,v $
+   Revision 1.1  1995/03/08  14:52:06  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Services;
+
+   (* Suppose we have an abstraction A which is for good reasons
+      unknown by the implementations I1, I2 and I3 of T1, T2 and T3.
+      Now, we have some modules M1, M2 and M3 which would like to
+      support A for T1, T2, and T3. But how does the abstraction A
+      find M1, M2 and M3 when I1, I2 and I3 are unaware of A and
+      M1, M2 and M3?
+
+      The mechanisms supported by this module offer a solution for
+      this problem. I1, I2 and I3 register the types T1, T2 and T3
+      by calling CreateType and initialize all objects of these
+      types with Init. The abstraction A may then be defined as
+      a service which may be created by Create. M1, M2 and M3
+      are then free to associate their install procedures to the
+      types T1, T2 and T3. Later, if A is requested to perform
+      some operations for an object created by I1, I2 or I3, it is
+      only necessary to call Install to get the support of M1, M2
+      and M3 for T1, T2 and T3.
+
+      Conventions:
+      -  Names of types should always be given in the qualified
+	 form: "modulename.typename" where "typename" stands
+	 for the pointer type. Example: "Streams.Stream".
+      -  The name of a service should be the name of the module
+	 which defines the associated abstraction.
+	 Example: "RemoteObjects".
+   *)
+
+   IMPORT Disciplines, Objects;
+
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec = RECORD (Disciplines.ObjectRec) END;
+      Type = POINTER TO TypeRec;
+      TypeRec = RECORD (Disciplines.ObjectRec) END;
+      Service = POINTER TO ServiceRec;
+      ServiceRec = RECORD (Disciplines.ObjectRec) END;
+
+   TYPE
+      InstallProc = PROCEDURE (object: Object; service: Service);
+
+   TYPE
+      LoadModuleProc = PROCEDURE (module: ARRAY OF CHAR) : BOOLEAN;
+      LoadServiceProc = PROCEDURE (service, for: ARRAY OF CHAR) : BOOLEAN;
+      LoaderInterface = POINTER TO LoaderInterfaceRec;
+      LoaderInterfaceRec =
+	 RECORD
+	    loadModule: LoadModuleProc;
+	    loadService: LoadServiceProc;
+	 END;
+
+   PROCEDURE InitLoader(if: LoaderInterface);
+
+   PROCEDURE CreateType(VAR type: Type; name, baseName: ARRAY OF CHAR);
+   PROCEDURE InitType(type: Type; name, baseName: ARRAY OF CHAR);
+   PROCEDURE Init(object: Object; type: Type);
+   PROCEDURE GetType(object: Object; VAR type: Type);
+   PROCEDURE GetTypeName(type: Type; VAR name: ARRAY OF CHAR);
+   PROCEDURE GetBaseType(type: Type; VAR baseType: Type);
+   PROCEDURE IsExtensionOf(type, baseType: Type) : BOOLEAN;
+   PROCEDURE SeekType(name: ARRAY OF CHAR; VAR type: Type);
+
+   PROCEDURE Create(VAR service: Service; name: ARRAY OF CHAR);
+   PROCEDURE Seek(name: ARRAY OF CHAR; VAR service: Service);
+   PROCEDURE Define(type: Type; service: Service; install: InstallProc);
+   PROCEDURE Install(object: Object; service: Service) : BOOLEAN;
+   PROCEDURE Supported(object: Object; service: Service) : BOOLEAN;
+   PROCEDURE Installed(object: Object; service: Service) : BOOLEAN;
+   PROCEDURE GetSupportedBaseType(object: Object; service: Service;
+				  VAR baseType: Type);
+
+END Services.

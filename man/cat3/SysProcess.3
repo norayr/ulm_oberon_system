@@ -1,0 +1,198 @@
+
+
+
+SysProcess(3)      Ulm's Oberon System:  Sun 3      SysProcess(3)
+
+
+NNAAMMEE
+       SysProcess - UNIX process management
+
+SSYYNNOOPPSSIISS
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             exitcode: INTEGER;
+          END;
+
+       TYPE ProcessId = INTEGER;
+       TYPE ProcessGroup = INTEGER;
+       TYPE UserId = INTEGER;
+       TYPE GroupId = INTEGER;
+       TYPE Signal = SysSignals.Signal;
+       TYPE Status =
+          RECORD
+             signal: Signal;
+             exitcode: SHORTINT;
+             core: BOOLEAN;
+             stopped: BOOLEAN;
+          END;
+       (* Wait4 options; see <sys/wait.h> *)
+       CONST nohang = 1;    (* don't hang in wait *)
+       CONST untraced = 2;  (* tell about stopped, untraced children *)
+
+       PROCEDURE Getpid() : ProcessId;
+       PROCEDURE Getpgrp() : ProcessGroup;
+       PROCEDURE Getppid() : ProcessId;
+       PROCEDURE Getuid() : UserId;
+       PROCEDURE Geteuid() : UserId;
+       PROCEDURE Getgid() : GroupId;
+       PROCEDURE Getegid() : GroupId;
+       PROCEDURE Kill(pid: INTEGER; sig: Signal;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Exit(code: INTEGER);
+       PROCEDURE Abort;
+       PROCEDURE Fork(VAR pid: ProcessId; errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ExecEnv(path: ARRAY OF CHAR; argv, envp: SysArgs.Arguments;
+                         errors: RelatedEvents.Object);
+       PROCEDURE Exec(path: ARRAY OF CHAR; argv: SysArgs.Arguments;
+                      errors: RelatedEvents.Object);
+       PROCEDURE Wait(VAR status: Status; VAR pid: ProcessId;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE WaitFor(VAR pid: ProcessId; VAR status: Status;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE NonBlockingWait(VAR status: Status; VAR pid: ProcessId;
+                                 errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE NonBlockingWaitFor(VAR pid: ProcessId; VAR status: Status;
+                                    errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Wait4(VAR pid: ProcessId; VAR status: Status;
+                       options: INTEGER;
+                       errors: RelatedEvents.Object;
+
+
+
+Release 0.5       Last change: 13 September 1996                1
+
+
+
+
+
+SysProcess(3)      Ulm's Oberon System:  Sun 3      SysProcess(3)
+
+
+                       retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+       PROCEDURE Pause;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_y_s_P_r_o_c_e_s_s  interfaces  those  UNIX system calls which are
+       related to process management.
+
+       _E_x_i_t causes immediate termination without raising  events.
+       _A_b_o_r_t  enforces a default reaction for _S_y_s_S_i_g_n_a_l_s_._A_B_R_T and
+       sends _S_y_s_S_i_g_n_a_l_s_._A_B_R_T to the process which causes  process
+       termination (with core dump, if possible).
+
+       _G_e_t_p_i_d  returns  the process id, _G_e_t_p_p_i_d the process id of
+       the parent process.  _G_e_t_p_g_r_p returns the process group.
+
+       _G_e_t_u_i_d returns the real user  id,  _G_e_t_e_u_i_d  the  effective
+       user  id  of the calling process.  _G_e_t_g_i_d returns the real
+       group id, _G_e_t_e_g_i_d the effective group id  of  the  calling
+       process.
+
+       _K_i_l_l  sends  _s_i_g  to  the  process designated by _p_i_d.  See
+       _k_i_l_l_(_2_) for details.
+
+       _F_o_r_k creates a new process.  _p_i_d is set to  zero  for  the
+       child  process  and to the process id of the child for the
+       parent process.  _E_x_e_c_E_n_v replaces  the  process  image  by
+       _p_a_t_h  and  passes _a_r_g_v and _e_n_v_p as command line parameters
+       resp. environment parameters.  _p_a_t_h must be 0X-terminated.
+       See  _U_n_i_x_A_r_g_L_i_s_t_(_3_)  for creation of argument lists.  _E_x_e_c
+       is like _E_x_e_c_E_n_v but defaults _e_n_v_p to _S_y_s_A_r_g_s_._e_n_v_i_r_o_n.
+
+       _W_a_i_t waits for any child to be terminated.   _p_i_d  contains
+       the  process  id  of the terminated process and _s_t_a_t_u_s the
+       termination signal or the exit code.  Fields of _s_t_a_t_u_s:
+
+       +--------------------------------------------------------------+
+       |_s_i_g_n_a_l  termination causing signal; equals 0 if  terminated  by|
+       |       exit                                                   |
+       |_e_x_i_t_c_o_d_eexit code (if _s_i_g_n_a_l = 0)                              |
+       |_c_o_r_e    core file produced?                                    |
+       |_s_t_o_p_p_e_d stop of traced process?                                |
+       +--------------------------------------------------------------+
+       _W_a_i_t returns FFAALLSSEE if there are no children to wait for.
+
+       _W_a_i_t_F_o_r  waits  for  the given children to terminate.  The
+       behaviour of _W_a_i_t_F_o_r is modified if _p_i_d is less than 1:
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 13 September 1996                2
+
+
+
+
+
+SysProcess(3)      Ulm's Oberon System:  Sun 3      SysProcess(3)
+
+
+       +--------------------------------------------------------------+
+       |_p_i_d = 0 wait for any child process whose process  group  ID  is|
+       |       equal to that of the calling process.                  |
+       |_p_i_d = -1wait for any child process; the behaviour is equivalent|
+       |       to _W_a_i_t.                                               |
+       |_p_i_d < 0 wait for any child process whose process  group  ID  is|
+       |       equal to the absolute value of _p_i_d.                    |
+       +--------------------------------------------------------------+
+       _N_o_n_B_l_o_c_k_i_n_g_W_a_i_t  and  _N_o_n_B_l_o_c_k_i_n_g_W_a_i_t_F_o_r  are  nonblocking
+       variants of _W_a_i_t and _W_a_i_t_F_o_r  _.   They  return  FFAALLSSEE  and
+       appropriate  error  events  if  no  child  has exited yet.
+       _W_a_i_t_4 offers the most general interface to the correspond­
+       ing  system  call.   Valid options are _n_o_h_a_n_g (nonblocking
+       variant) and _u_n_t_r_a_c_e_d (not only exited  but  also  stopped
+       children).    Both  options  may  be  combined  by  giving
+       _n_o_h_a_n_g++_u_n_t_r_a_c_e_d.
+
+       _P_a_u_s_e suspends execution until receipt of  a  signal  (see
+       _S_y_s_S_i_g_n_a_l_s_(_3_))  which  is  not ignored by the calling pro­
+       cess.  _P_a_u_s_e does not raise an event  of  _S_y_s_E_r_r_o_r_s_(_3_)  in
+       case of return.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Failed  system  calls lead to events of _S_y_s_E_r_r_o_r_s_(_3_).  The
+       _e_r_r_o_r_s parameter is passed to _S_y_s_E_r_r_o_r_s_._R_a_i_s_e.  All proce­
+       dures return FFAALLSSEE in case of errors.
+
+SSEEEE AALLSSOO
+       _e_x_e_c_(_2_)        _E_x_e_c and _E_x_e_c_E_n_v
+       _e_x_i_t_(_2_)        _E_x_i_t
+       _f_o_r_k_(_2_)        _F_o_r_k
+       _g_e_t_p_i_d_(_2_)      _G_e_t_p_i_d and _G_e_t_p_p_i_d
+       _g_e_t_p_g_r_p_(_2_)     _G_e_t_p_g_r_p
+       _g_e_t_u_i_d_(_2_)      _G_e_t_u_i_d_, _G_e_t_e_u_i_d_, _G_e_t_g_i_d_, and _G_e_t_e_g_i_d
+       _k_i_l_l_(_2_)        _K_i_l_l
+       _p_a_u_s_e_(_2_)       _P_a_u_s_e
+       _p_t_r_a_c_e_(_2_)      trace of processes
+       _w_a_i_t_(_2_)        _W_a_i_t and _S_t_a_t_u_s
+       _P_r_o_c_e_s_s_(_3_)     more  portable  interface  for  exiting and
+                      aborting
+       _S_y_s_E_r_r_o_r_s_(_3_)   error handling
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 13 September 1996                3
+
+

@@ -1,0 +1,371 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixDomainS.om,v 1.4 2004/04/02 18:40:13 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixDomainS.om,v $
+   Revision 1.4  2004/04/02 18:40:13  borchert
+   type parameter added for UnixSockets procedures
+
+   Revision 1.3  2001/04/30 09:36:16  borchert
+   adapted to extended parameter lists of UnixSockets.OpenL and
+   UnixSockets.CreateOpenConditionL
+
+   Revision 1.2  1995/01/16 21:47:55  borchert
+   - support of Services added
+   - common parts now in UnixSockets
+   - open condition added
+
+   Revision 1.1  1994/02/23  07:27:15  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixDomainSockets;
+
+   IMPORT Conditions, Events, NetIO, Networks, PersistentObjects,
+      Process, RelatedEvents, Services, Streams, Strings, SysConversions,
+      SysFile, SysSockets, UnixFiles, UnixSockets, UnixTmpNames;
+
+   CONST
+      maxpathlen = 108;
+   TYPE
+      Path = ARRAY maxpathlen+1 OF CHAR;
+      Address =
+	 RECORD
+	    family: INTEGER;
+	    path: Path;
+	 END;
+   CONST
+      familylen = 2;
+      addrlen = familylen + maxpathlen;
+      addrFmt = "is/108:cC"; (* 108 = maxpathlen *)
+   TYPE
+      SysAddress = ARRAY addrlen OF BYTE;
+   VAR
+      compiledAddressFmt: SysConversions.Format;
+
+   TYPE
+      Socket = POINTER TO SocketRec;
+      SocketRec =
+	 RECORD
+	    (UnixSockets.SocketRec)
+	    (* private components *)
+	    path: Path;
+	    prev, next: Socket;
+	 END;
+   VAR
+      listOfSockets: Socket;
+
+   TYPE
+      NetworkAddress = POINTER TO NetworkAddressRec;
+      NetworkAddressRec =
+	 RECORD
+	    (Networks.AddressRec)
+	    path: Path;
+	 END;
+   VAR
+      unix: Networks.Network;
+      addressType: Services.Type;
+
+   PROCEDURE AddSocket(socket: Socket);
+   BEGIN
+      socket.prev := NIL;
+      socket.next := listOfSockets;
+      listOfSockets := socket;
+   END AddSocket;
+
+   PROCEDURE RemoveSocket(socket: Socket);
+   BEGIN
+      IF socket.prev # NIL THEN
+	 socket.prev.next := socket.next;
+      ELSE
+	 listOfSockets := socket.next;
+      END;
+      IF socket.next # NIL THEN
+	 socket.next.prev := socket.prev;
+      END;
+   END RemoveSocket;
+
+   PROCEDURE Remove(socket: Socket) : BOOLEAN;
+   BEGIN
+      RemoveSocket(socket);
+      RETURN SysFile.Unlink(socket.path, socket)
+   END Remove;
+
+   PROCEDURE ExitHandler(event: Events.Event);
+   BEGIN
+      WHILE listOfSockets # NIL DO
+	 IF ~Remove(listOfSockets) THEN END;
+	 (* that's no endless loop because Remove calls RemoveSocket *)
+      END;
+   END ExitHandler;
+
+   PROCEDURE AddrLen(address: Address) : LONGINT;
+   BEGIN
+      RETURN (* short *) 2 + Strings.Len(address.path)
+   END AddrLen;
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 pathname: ARRAY OF CHAR);
+      VAR
+	 address: Address;
+	 sysAddress: SysAddress;
+   BEGIN
+      address.family := SysSockets.afUNIX;
+      COPY(pathname, address.path);
+      SysConversions.ByFmtToC(address, sysAddress, compiledAddressFmt);
+      UnixSockets.CreateOpenConditionL(condition, SysSockets.afUNIX,
+                                       SysSockets.stream, sysAddress,
+				       Strings.Len(pathname) + familylen,
+				       (* bind = *) FALSE, 0, 0);
+   END CreateOpenCondition;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN UnixSockets.TestAndOpen(s, condition, bufmode, errors)
+   END TestAndOpen;
+
+   PROCEDURE Open(VAR s: Streams.Stream; pathname: ARRAY OF CHAR;
+		  bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 address: Address;
+	 sysAddress: SysAddress;
+   BEGIN
+      address.family := SysSockets.afUNIX;
+      COPY(pathname, address.path);
+      SysConversions.ByFmtToC(address, sysAddress, compiledAddressFmt);
+      RETURN UnixSockets.OpenL(s, SysSockets.afUNIX, SysSockets.stream,
+                               sysAddress, Strings.Len(pathname) + familylen,
+			       (* bind = *) FALSE, 0, 0,
+			       bufmode, errors)
+   END Open;
+
+   PROCEDURE Listen(VAR socket: Socket; pathname: ARRAY OF CHAR;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 sysAddress: SysAddress;
+	 address: Address;
+   BEGIN
+      address.family := SysSockets.afUNIX;
+      COPY(pathname, address.path);
+      SysConversions.ByFmtToC(address, sysAddress, compiledAddressFmt);
+      IF UnixSockets.ListenL(socket, SysSockets.afUNIX, SysSockets.stream,
+			     sysAddress,
+			     Strings.Len(pathname) + familylen, errors) THEN
+	 COPY(pathname, socket.path);
+	 AddSocket(socket);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Listen;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Socket;
+			      VAR pathname: ARRAY OF CHAR;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      UnixTmpNames.Create(pathname);
+      RETURN Listen(socket, pathname, errors)
+   END CreateSomeSocket;
+
+   PROCEDURE Accept(socket: Socket;
+		    VAR s: Streams.Stream; bufmode: Streams.BufMode) : BOOLEAN;
+      VAR
+	 peer: SysAddress;
+   BEGIN
+      RETURN UnixSockets.Accept(socket, s, bufmode, peer)
+   END Accept;
+
+   PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+			           socket: Socket);
+   BEGIN
+      UnixSockets.CreateAcceptCondition(condition, socket);
+   END CreateAcceptCondition;
+
+   PROCEDURE CreateAddress(VAR address: Networks.Address; path: ARRAY OF CHAR);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := unix;
+      COPY(path, addr.path);
+      PersistentObjects.Init(addr, addressType);
+      address := addr;
+   END CreateAddress;
+
+   PROCEDURE ConvertAddress(address: Networks.Address; VAR path: ARRAY OF CHAR);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 COPY(address.path, path);
+      END;
+   END ConvertAddress;
+
+   PROCEDURE SetAddress(address: Networks.Address; path: ARRAY OF CHAR);
+   BEGIN
+      COPY(path, address(NetworkAddress).path);
+   END SetAddress;
+
+   (* ==== interface to Networks ====================================== *)
+
+   PROCEDURE NetOpen(VAR s: Streams.Stream; address: Networks.Address;
+		     bufmode: Streams.BufMode;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 RETURN Open(s, address.path, bufmode, errors)
+      END;
+   END NetOpen;
+
+   PROCEDURE NetCreateOpenCondition(VAR condition: Conditions.Condition;
+				    address: Networks.Address);
+   BEGIN
+      WITH address: NetworkAddress DO
+	 CreateOpenCondition(condition, address.path);
+      END;
+   END NetCreateOpenCondition;
+
+   PROCEDURE NetTestAndOpen(VAR s: Streams.Stream;
+			    condition: Conditions.Condition;
+			    bufmode: Streams.BufMode;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN TestAndOpen(s, condition, bufmode, errors)
+   END NetTestAndOpen;
+
+   PROCEDURE NetCreateSomeSocket(VAR socket: Networks.Socket;
+				 VAR address: Networks.Address;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 unixsocket: Socket;
+	 pathname: Path;
+   BEGIN
+      IF CreateSomeSocket(unixsocket, pathname, errors) THEN
+	 socket := unixsocket;
+	 CreateAddress(address, pathname);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END NetCreateSomeSocket;
+
+   PROCEDURE NetListen(VAR socket: Networks.Socket;
+		       address: Networks.Address;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 unixsocket: Socket;
+   BEGIN
+      WITH address: NetworkAddress DO
+	 IF Listen(unixsocket, address.path, errors) THEN
+	    socket := unixsocket;
+	    RETURN TRUE
+	 ELSE
+	    socket := NIL;
+	    RETURN FALSE
+	 END;
+      END;
+   END NetListen;
+
+   PROCEDURE NetRelease(socket: Networks.Socket);
+   BEGIN
+      IF ~Remove(socket(Socket)) THEN END;
+   END NetRelease;
+
+   PROCEDURE NetAccept(socket: Networks.Socket; VAR s: Streams.Stream;
+		       bufmode: Streams.BufMode) : BOOLEAN;
+   BEGIN
+      WITH socket: Socket DO
+	 RETURN Accept(socket, s, bufmode)
+      END;
+   END NetAccept;
+
+   PROCEDURE NetCreateAcceptCondition(VAR condition: Conditions.Condition;
+				      socket: Networks.Socket);
+   BEGIN
+      WITH socket: Socket DO
+	 CreateAcceptCondition(condition, socket);
+      END;
+   END NetCreateAcceptCondition;
+
+   PROCEDURE CreateNetAddress(VAR object: PersistentObjects.Object);
+      VAR
+	 addr: NetworkAddress;
+   BEGIN
+      NEW(addr);
+      addr.network := unix;
+      PersistentObjects.Init(addr, addressType);
+      object := addr;
+   END CreateNetAddress;
+
+   PROCEDURE WriteNetAddress(s: Streams.Stream;
+			     object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 RETURN NetIO.WriteString(s, object.path)
+      END;
+   END WriteNetAddress;
+
+   PROCEDURE ReadNetAddress(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: NetworkAddress DO
+	 RETURN NetIO.ReadString(s, object.path)
+      END;
+   END ReadNetAddress;
+
+   PROCEDURE Init;
+      VAR
+	 netif: Networks.Interface;
+	 if: PersistentObjects.Interface;
+   BEGIN
+      SysConversions.Compile(compiledAddressFmt, addrFmt);
+      listOfSockets := NIL;
+      Events.Handler(Process.termination, ExitHandler);
+
+      NEW(netif);
+      netif.open := NetOpen;
+      netif.createOpenCondition := NetCreateOpenCondition;
+      netif.testAndOpen := NetTestAndOpen;
+      netif.createSomeSocket := NetCreateSomeSocket;
+      netif.listen := NetListen;
+      netif.release := NetRelease;
+      netif.accept := NetAccept;
+      netif.acceptCondition := NetCreateAcceptCondition;
+      Networks.Register(unix, "UnixDomainSockets", netif);
+
+      NEW(if);
+      if.read := ReadNetAddress;
+      if.write := WriteNetAddress;
+      if.create := CreateNetAddress;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(addressType,
+			"UnixDomainSockets.NetworkAddress",
+			"Networks.Address", if);
+   END Init;
+
+BEGIN
+   Init;
+END UnixDomainSockets.

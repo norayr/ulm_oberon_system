@@ -1,0 +1,286 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PipeReaders.om,v 1.3 2005/02/09 09:54:51 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PipeReaders.om,v $
+   Revision 1.3  2005/02/09 09:54:51  borchert
+   bug fixes: avoid locked streams by waiting until a pipe is
+              ready for reading (using StreamConditions)
+              and avoid hanging reader jobs by using a
+              termination signal
+
+   Revision 1.2  2005/02/06 22:29:20  borchert
+   bug fix: send also fillsig on eof, if asked for
+
+   Revision 1.1  2005/02/04 19:30:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PipeReaders;
+
+   IMPORT Conditions, Jobs, LocalSemaphores, MemOps, RelatedEvents,
+      Semaphores, Services, Signals, StreamConditions, Streams,
+      SYS := SYSTEM, Tasks;
+
+   CONST
+      maxbuflen = 512;
+   TYPE
+      Buffer = POINTER TO ARRAY maxbuflen OF BYTE;
+      Packet = POINTER TO PacketRec;
+      PacketRec =
+	 RECORD
+	    nbytes: Streams.Count;
+	    buffer: Buffer;
+	    next: Packet;
+	 END;
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    head, tail: Packet; (* linear list of packets *)
+	    pos: Streams.Count; (* position in current packet *)
+	    mutex: Semaphores.Semaphore;
+	    fillsig: Signals.Signal;
+	    termsig: Signals.Signal;
+	    finished: BOOLEAN;
+	    pipe: Streams.Stream;
+	 END;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    pipe: Streams.Stream;
+	    s: Stream;
+	 END;
+   CONST
+      caps = {Streams.read, Streams.addrio, Streams.close, Streams.handler};
+   VAR
+      if: Streams.Interface;
+      type: Services.Type;
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    s: Stream;
+	 END;
+   VAR
+      domain: Conditions.Domain;
+
+   PROCEDURE Reader(job: Jobs.Job);
+      VAR
+	 count: Streams.Count;
+	 buffer: Buffer;
+	 packet: Packet;
+	 readCond: Conditions.Condition;
+	 termCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+   BEGIN
+      WITH job: Job DO
+	 StreamConditions.Create(readCond, job.pipe, StreamConditions.read);
+	 Signals.CreateCondition(termCond, job.s.termsig);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, readCond);
+	 Conditions.Incl(conditions, termCond);
+	 LOOP
+	    NEW(buffer);
+	    Tasks.WaitForOneOf(conditions);
+	    IF Signals.Raised(job.s.termsig) THEN EXIT END;
+	    count := Streams.ReadPacket(job.pipe, buffer^, 0, maxbuflen);
+	    IF count = 0 THEN EXIT END;
+	    NEW(packet);
+	    packet.nbytes := count;
+	    packet.buffer := buffer;
+	    packet.next := NIL;
+	    Semaphores.P(job.s.mutex);
+	    IF job.s.head = NIL THEN
+	       job.s.head := packet;
+	    ELSE
+	       job.s.tail.next := packet;
+	    END;
+	    job.s.tail := packet;
+	    IF job.s.fillsig # NIL THEN
+	       Signals.Raise(job.s.fillsig);
+	       job.s.fillsig := NIL;
+	    END;
+	    Semaphores.V(job.s.mutex);
+	 END;
+	 Semaphores.P(job.s.mutex);
+	 job.s.finished := TRUE;
+	 IF job.s.fillsig # NIL THEN
+	    Signals.Raise(job.s.fillsig);
+	    job.s.fillsig := NIL;
+	 END;
+	 Semaphores.V(job.s.mutex);
+	 Streams.Release(job.s.pipe);
+      END;
+   END Reader;
+
+   (* === Conditions interface ========================================= *)
+
+   PROCEDURE TestCondition(domain: Conditions.Domain;
+                           condition: Conditions.Condition;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN condition.s.finished OR (condition.s.head # NIL)
+      END;
+   END TestCondition;
+
+   (* === Streams interface ============================================ *)
+
+   PROCEDURE BufRead(s: Streams.Stream;
+                     ptr: Streams.Address;
+                     cnt: Streams.Count) : Streams.Count;
+      VAR
+	 packet: Packet;
+	 count: Streams.Count;
+   BEGIN
+      WITH s: Stream DO
+	 LOOP
+	    count := 0;
+	    Semaphores.P(s.mutex);
+	    packet := s.head;
+	    IF packet # NIL THEN
+	       count := cnt;
+	       IF packet.nbytes - s.pos < count THEN
+		  count := packet.nbytes - s.pos;
+	       END;
+	       MemOps.Copy(SYS.ADR(packet.buffer[s.pos]), ptr, count);
+	       INC(s.pos, count);
+	       IF s.pos = packet.nbytes THEN
+		  s.head := s.head.next;
+		  IF s.head = NIL THEN
+		     s.tail := NIL;
+		  END;
+		  s.pos := 0;
+	       END;
+	    END;
+	    IF (count > 0) OR s.finished THEN
+	       s.fillsig := NIL;
+	    ELSE
+	       Signals.Create(s.fillsig);
+	    END;
+	    Semaphores.V(s.mutex);
+	    IF (count > 0) OR s.finished THEN
+	       RETURN count
+	    END;
+	    Signals.WaitFor(s.fillsig);
+	 END;
+      END;
+   END BufRead;
+
+   PROCEDURE ReadByte(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+      VAR
+	 count: Streams.Count;
+   BEGIN
+      count := BufRead(s, SYS.ADR(byte), 1);
+      RETURN count = 1
+   END ReadByte;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Stream DO
+	 Signals.Raise(s.termsig);
+	 RETURN TRUE
+      END;
+   END Close;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+      VAR
+	 condition: Condition;
+   BEGIN
+      WITH s: Stream DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+	       ASSERT(msg.operation = StreamConditions.read);
+	       NEW(condition);
+	       condition.s := s;
+	       Conditions.Init(condition, domain);
+	       msg.condition := condition;
+	       msg.stream := s;
+	       msg.msgProcessed := TRUE;
+	    END;
+	 ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       ASSERT(msg.operation = StreamConditions.read);
+	       msg.wouldblock := ~s.finished & (s.head = NIL);
+	       msg.msgProcessed := TRUE;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   (* === module initialization ======================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 cif: Conditions.Interface;
+	 cdesc: Conditions.Description;
+   BEGIN
+      NEW(if);
+      if.addrread := BufRead;
+      if.read := ReadByte;
+      if.close := Close;
+      if.handler := Handler;
+      Services.CreateType(type, "PipeReaders.Stream", "Streams.Stream");
+      NEW(cif);
+      cif.test := TestCondition;
+      cif.select := NIL; cif.sendevent := NIL; cif.gettime := NIL;
+      cif.preconditions := NIL;
+      NEW(cdesc);
+      cdesc.caps := {};
+      cdesc.internal := TRUE;
+      NEW(domain);
+      Conditions.InitDomain(domain, cif, cdesc);
+   END InitModule;
+
+   (* === exported constructor ========================================= *)
+
+   PROCEDURE Spawn(VAR s: Streams.Stream; pipe: Streams.Stream);
+      VAR
+	 news: Stream;
+	 job: Job;
+   BEGIN
+      NEW(news); Services.Init(news, type);
+      Streams.Init(news, if, caps, Streams.nobuf);
+      news.head := NIL; news.tail := NIL; news.pos := 0;
+      LocalSemaphores.Create(news.mutex);
+      news.fillsig := NIL;
+      Signals.Create(news.termsig);
+      news.finished := FALSE;
+      news.pipe := pipe;
+      RelatedEvents.Forward(pipe, s);
+      NEW(job); job.pipe := pipe; job.s := news;
+      Jobs.Submit(job, Reader);
+      s := news;
+   END Spawn;
+
+BEGIN
+   InitModule;
+END PipeReaders.

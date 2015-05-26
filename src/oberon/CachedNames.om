@@ -1,0 +1,528 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CachedNames.om,v 1.1 2004/08/30 14:41:23 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CachedNames.om,v $
+   Revision 1.1  2004/08/30 14:41:23  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CachedNames;
+
+   IMPORT AVLTrees, ConstStrings, Disciplines, Events, Forwarders, IdentKeys,
+      Iterators, Keys, LocalSemaphores, Names, Objects, PersistentObjects,
+      Proxies, RelatedEvents, Resources, Semaphores, Services, Shards,
+      Streams, SYS := SYSTEM;
+
+   CONST
+      requiredCaps = {Names.domainCap};
+      caps = requiredCaps +
+	       {Names.accessCap, Names.statusCap, Names.makeSubnodeCap,
+	       Names.destroyCap};
+
+   TYPE
+      ProxyDiscipline = POINTER TO ProxyDisciplineRec;
+      ProxyDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    node: Names.Node;
+	    alive: BOOLEAN;
+	    orig: Names.Node;
+	    auth: Shards.Lid;
+	    status: Names.Status;
+	    eventType: Events.EventType;
+	    links: AVLTrees.AVLTree; (* of type Link *)
+	    mutex: Semaphores.Semaphore;
+	 END;
+   VAR
+      pdid: Disciplines.Identifier;
+   VAR
+      if: Names.Interface;
+      nodeType: Services.Type;
+
+   TYPE
+      Link = POINTER TO LinkRec;
+      LinkRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    name: ConstStrings.String;
+	    dirpd: ProxyDiscipline;
+	       (* may be NIL if it has not been retrieved yet
+		  or if is not a directory node
+	       *)
+	 END;
+   VAR
+      linkType: Services.Type;
+
+   TYPE
+      NodeList = POINTER TO NodeListRec;
+      NodeListRec =
+	 RECORD
+	    pd: ProxyDiscipline;
+	    next: NodeList;
+	 END;
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    nodes: NodeList;
+	 END;
+   VAR
+      ndid: Disciplines.Identifier;
+
+   (* === private constructors ====================================== *)
+
+   PROCEDURE ^ TerminationHandler(event: Events.Event);
+
+   PROCEDURE CreateNewNode(VAR pd: ProxyDiscipline;
+                           orig: Names.Node;
+			   auth: Shards.Lid;
+			   status: Names.Status);
+      VAR
+	 newpd: ProxyDiscipline;
+	 origcaps: Names.CapabilitySet;
+	 eventType: Events.EventType;
+	 node: Names.Node;
+   BEGIN (* CreateNewNode *)
+      origcaps := Names.Capabilities(orig);
+      ASSERT(requiredCaps * origcaps = requiredCaps);
+      Proxies.CreateUninitializedProxy(node, orig);
+      NEW(newpd); newpd.id := pdid;
+      newpd.node := node;
+      newpd.alive := TRUE;
+      newpd.orig := orig;
+      newpd.auth := auth;
+      newpd.status := status;
+      newpd.eventType := NIL;
+      newpd.links := NIL;
+      LocalSemaphores.Create(newpd.mutex);
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      Disciplines.Add(node, newpd);
+      Names.InitNode(node, if, origcaps * caps);
+      Proxies.InitializeAllInterfacesBeyond(node, nodeType);
+      pd := newpd;
+   END CreateNewNode;
+
+   PROCEDURE CreateLink(VAR link: Link; name: ConstStrings.String);
+   BEGIN
+      NEW(link); Services.Init(link, linkType);
+      link.name := name; link.dirpd := NIL;
+   END CreateLink;
+
+   PROCEDURE CreateKeyValue(VAR keyval: IdentKeys.Value;
+                            name: ConstStrings.String);
+   BEGIN
+      IdentKeys.CreateValue(keyval);
+      keyval.ident := name;
+   END CreateKeyValue;
+
+   (* === private procedures ======================================== *)
+
+   PROCEDURE GetDiscipline(node: Names.Node; VAR pd: ProxyDiscipline);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(node, pdid, pd); ASSERT(ok);
+   END GetDiscipline;
+
+   PROCEDURE IsDir(node: Names.Node) : BOOLEAN;
+   BEGIN
+      RETURN requiredCaps * Names.Capabilities(node) = requiredCaps
+   END IsDir;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 nd: NodeDiscipline;
+	 node: Names.Node;
+	 pd: ProxyDiscipline;
+	 prev, ptr: NodeList;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    node := event.resource(Names.Node);
+	    GetDiscipline(node, pd);
+	    pd.alive := FALSE;
+	    pd.links := NIL;
+	    IF Disciplines.Seek(pd.orig, ndid, nd) THEN
+	       IF Resources.Terminated(pd.orig) OR
+	             (nd.nodes = NIL) OR
+		     (nd.nodes.pd = pd) & (nd.nodes.next = NIL) THEN
+		  Disciplines.Remove(pd.orig, ndid);
+	       ELSIF nd.nodes.pd = pd THEN
+		  nd.nodes := nd.nodes.next;
+	       ELSE
+		  prev := nd.nodes; ptr := prev.next;
+		  WHILE (ptr # NIL) & (ptr.pd # pd) DO
+		     prev := ptr; ptr := ptr.next;
+		  END;
+		  IF ptr # NIL THEN
+		     prev.next := ptr.next;
+		  END;
+	       END;
+	    END;
+	    pd.orig := NIL;
+	    Disciplines.Remove(node, pdid);
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE MemberEventHandler(event: Events.Event);
+      VAR
+	 nd: NodeDiscipline;
+	 member: NodeList;
+	 link: Link;
+	 keyval: IdentKeys.Value;
+	 ok: BOOLEAN;
+
+      PROCEDURE SendMemberEvent(state: Names.State);
+	 VAR
+	    memberEvent: Names.MemberEvent;
+      BEGIN
+	 NEW(memberEvent);
+	 memberEvent.type := member.pd.eventType;
+	 memberEvent.message := "CachedNodes member event";
+	 memberEvent.state := state;
+	 memberEvent.name := event(Names.MemberEvent).name;
+	 memberEvent.node := member.pd.node;
+	 Events.Raise(memberEvent);
+      END SendMemberEvent;
+
+   BEGIN (* MemberEventHandler *)
+      WITH event: Names.MemberEvent DO
+	 IF Disciplines.Seek(event.node, ndid, nd) THEN
+	    member := nd.nodes;
+	    WHILE member # NIL DO
+	       IF member.pd.alive THEN
+		  Semaphores.P(member.pd.mutex);
+		  CASE event.state OF
+		  | Names.inserted:
+			CreateLink(link, event.name);
+			ok := AVLTrees.Add(member.pd.links, link);
+		  | Names.deleted:
+			CreateKeyValue(keyval, event.name);
+			ok := AVLTrees.Remove(member.pd.links, keyval);
+		  END;
+		  IF ok & (member.pd.eventType # NIL) THEN
+		     SendMemberEvent(event.state);
+		  END;
+		  Semaphores.V(member.pd.mutex);
+	       END;
+	       member := member.next;
+	    END;
+	 END;
+      END;
+   END MemberEventHandler;
+
+   PROCEDURE SetupHandler(pd: ProxyDiscipline) : BOOLEAN;
+      VAR
+	 nd: NodeDiscipline;
+	 ok: BOOLEAN;
+	 eventType: Events.EventType;
+	 orig: Names.Node;
+	 member: NodeList;
+   BEGIN
+      orig := pd.orig;
+      IF ~Disciplines.Seek(orig, ndid, nd) THEN
+	 IF ~Names.TakeInterest(orig, pd.auth, eventType) THEN
+	    RETURN FALSE
+	 END;
+	 Events.Handler(eventType, MemberEventHandler);
+	 NEW(nd); nd.id := ndid; nd.nodes := NIL;
+	 Disciplines.Add(orig, nd);
+      END;
+      NEW(member); member.pd := pd;
+      member.next := nd.nodes; nd.nodes := member;
+      RETURN TRUE
+   END SetupHandler;
+
+   PROCEDURE ScanNode(pd: ProxyDiscipline) : BOOLEAN;
+      VAR
+	 it: Iterators.Iterator;
+	 name: ConstStrings.String;
+	 link: Link;
+	 ok: BOOLEAN;
+   BEGIN
+      Semaphores.P(pd.mutex);
+      IF pd.links # NIL THEN
+	 Semaphores.V(pd.mutex);
+	 RETURN TRUE
+      END;
+      IF ~SetupHandler(pd) THEN
+	 Semaphores.V(pd.mutex);
+	 RETURN FALSE
+      END;
+      AVLTrees.Create(pd.links, IdentKeys.key);
+      IF ~Names.GetMembers(pd.orig, pd.auth, it) THEN
+	 Semaphores.V(pd.mutex);
+	 RETURN FALSE
+      END;
+      WHILE Iterators.Get(it, name) DO
+	 CreateLink(link, name);
+	 ok := AVLTrees.Add(pd.links, link); ASSERT(ok);
+      END;
+      Semaphores.V(pd.mutex);
+      RETURN TRUE
+   END ScanNode;
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 tit: Iterators.Iterator;
+	 link: Link;
+   BEGIN
+      WITH ref: ProxyDiscipline DO
+	 AVLTrees.GetEntries(ref.links, AVLTrees.ascending,
+	    NIL, NIL, tit);
+	 WHILE Iterators.Get(tit, link) DO
+	    Iterators.Yield(it, link.name);
+	 END;
+      END;
+   END IterateMembers;
+
+   PROCEDURE InternalAccess(pd: ProxyDiscipline; mode: Names.AccessMode;
+                            auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      IF ~pd.alive THEN
+	 Names.Error(pd.node, Names.nodeDestroyed);
+	 RETURN FALSE
+      END;
+      IF (pd.status # NIL) & (pd.status.perm[mode] # NIL) &
+	    ~Shards.Fits(pd.status.perm[mode], auth) THEN
+	 Names.Error(pd.node, Names.noPermission);
+	 RETURN FALSE
+      END;
+      RETURN Names.Access(pd.orig, mode, pd.auth)
+   END InternalAccess;
+
+   (* === Extract if procedures for IdentKeys ======================= *)
+
+   PROCEDURE ExtractIdentFromLink(object: Services.Object;
+                                  key: Keys.Key;
+				  VAR keyval: Keys.Value);
+      VAR
+	 kval: IdentKeys.Value;
+   BEGIN
+      WITH object: Link DO
+	 IdentKeys.CreateValue(kval); kval.ident := object.name;
+	 keyval := kval;
+      END;
+   END ExtractIdentFromLink;
+
+   (* === interface procedures for Names ============================ *)
+
+   PROCEDURE Access(node: Names.Node; mode: Names.AccessMode;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      RETURN InternalAccess(pd, mode, auth)
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node; auth: Shards.Lid;
+                       VAR status: Names.StatusRec) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.examine, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.GetStatus(pd.orig, pd.auth, status)
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node; status: Names.Status;
+		       auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.change, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.SetStatus(pd.orig, status, pd.auth)
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+                        VAR members: Names.Lister) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.read, auth) THEN
+	 RETURN FALSE
+      END;
+      IF ~ScanNode(pd) THEN
+	 RETURN FALSE
+      END;
+      Iterators.CreateQuickIterator(members, IterateMembers, pd, 0);
+      RETURN TRUE
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN (* TakeInterest *)
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.read, auth) THEN
+	 RETURN FALSE
+      END;
+      IF ~ScanNode(pd) THEN
+	 RETURN FALSE
+      END;
+      IF pd.eventType = NIL THEN
+	 Events.Define(pd.eventType);
+	 Names.InitMemberEventType(pd.eventType);
+      END;
+      eventType := pd.eventType;
+      RETURN TRUE
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name;
+                     auth: Shards.Lid; VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 link: Link;
+	 keyval: IdentKeys.Value;
+	 orig: Names.Node;
+	 pd: ProxyDiscipline;
+   BEGIN (* GetNode *)
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.search, auth) THEN
+	 RETURN FALSE
+      END;
+      IF ~ScanNode(pd) THEN
+	 RETURN FALSE
+      END;
+      CreateKeyValue(keyval, name);
+      IF ~AVLTrees.Get(pd.links, keyval, link) THEN
+	 Names.Error(node, Names.nodeNotFound);
+	 RETURN FALSE
+      END;
+      IF link.dirpd # NIL THEN
+	 subnode := link.dirpd.node;
+	 RETURN TRUE
+      END;
+      IF ~Names.GetNode(pd.orig, name, pd.auth, orig) THEN
+	 RETURN FALSE
+      END;
+      IF IsDir(orig) THEN
+	 CreateNewNode(link.dirpd, orig, pd.auth, pd.status);
+	 subnode := link.dirpd.node;
+	 RETURN TRUE
+      END;
+      subnode := orig;
+      RETURN TRUE
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.insert, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.Insert(pd.orig, subnode, name, pd.auth)
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status; caps: Names.CapabilitySet;
+			 auth: Shards.Lid;
+			 VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.insert, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.MakeSubnode(pd.orig, name, status, caps, pd.auth, subnode)
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.delete, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.Delete(pd.orig, name, pd.auth)
+   END Delete;
+
+   PROCEDURE Destroy(node: Names.Node; auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      GetDiscipline(node, pd);
+      IF ~InternalAccess(pd, Names.destroy, auth) THEN
+	 RETURN FALSE
+      END;
+      RETURN Names.Destroy(pd.orig, pd.auth)
+   END Destroy;
+
+   (* === module initialization ===================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 service: Services.Service;
+   BEGIN
+      pdid := Disciplines.Unique();
+      ndid := Disciplines.Unique();
+      NEW(if);
+      if.access := Access;
+      if.getStatus := GetStatus;
+      if.setStatus := SetStatus;
+      if.getMembers := GetMembers;
+      if.takeInterest := TakeInterest;
+      if.getNode := GetNode;
+      if.insert := Insert;
+      if.makeSubnode := MakeSubnode;
+      if.delete := Delete;
+      if.destroy := Destroy;
+      Services.CreateType(linkType, "CachedNodes.Link", "");
+      Keys.GetService(IdentKeys.key, service);
+      Keys.Support(service, linkType, ExtractIdentFromLink);
+      Services.SeekType("Names.Node", nodeType);
+   END Init;
+
+   (* === exported constructors ===================================== *)
+
+   PROCEDURE Create(VAR node: Names.Node;
+		    orig: Names.Node; auth: Shards.Lid;
+		    status: Names.Status);
+      VAR
+	 pd: ProxyDiscipline;
+   BEGIN
+      ASSERT(orig # NIL);
+      CreateNewNode(pd, orig, auth, status);
+      node := pd.node;
+   END Create;
+
+BEGIN
+   Init;
+END CachedNames.

@@ -1,0 +1,196 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StringArgs.om,v 1.2 1995/04/13 07:38:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: StringArgs.om,v $
+   Revision 1.2  1995/04/13  07:38:26  borchert
+   simplifications & cleanup
+
+   Revision 1.1  1994/10/28  10:24:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StringArgs;
+
+   IMPORT Args, ConstStrings, NetIO, PersistentObjects, Read, Services,
+      Sets, StreamDisciplines, Streams, Write;
+
+   TYPE 
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Args.ValueRec)
+	    string: ConstStrings.String;
+	 END;
+
+   VAR 
+      type: Args.Type;
+      if: Args.TypeInterface;
+
+   VAR 
+      valueType: Services.Type;
+      valueIf: PersistentObjects.Interface;
+
+   (* === interface to PersistentObjects ================================= *)
+
+   PROCEDURE CreateValue(VAR obj: PersistentObjects.Object);
+      VAR 
+	 value : Value;
+   BEGIN
+      NEW (value);
+      PersistentObjects.Init(value, valueType);
+      obj := value;
+   END CreateValue;
+
+   PROCEDURE WriteValue(s: Streams.Stream;
+			obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.WriteConstString(s, obj.string)
+      END;
+   END WriteValue;
+
+   PROCEDURE ReadValue(s: Streams.Stream;
+		       obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.ReadConstString(s, obj.string)
+      END;
+   END ReadValue;
+
+   (* === interface to Args ========================================== *)
+
+   PROCEDURE ReadArg(s: Streams.Stream; VAR value: Args.Value): BOOLEAN;
+      VAR 
+	 string: ConstStrings.String;
+	 myval: Value;
+
+      PROCEDURE ReadField(s: Streams.Stream;
+		          VAR string: ConstStrings.String) : BOOLEAN;
+	 (* records are separated by line terminators and fields are
+	    delimited either by field separators or line terminators;
+	    surrounding white space of fields is to be skipped;
+	    ReadField does not skip line terminators but returns
+	    an empty string if there are no more fields on that line;
+	    ReadField returns an empty string for empty fields;
+	    exception: if the field separators are a subset of the
+	    set of white space, then only non-empty fields will be returned;
+	 *)
+	 VAR
+	    bufs: Streams.Stream; (* temporary buffer of ConstStrings *)
+	    fieldseps: Sets.CharSet;
+	    whitespace: Sets.CharSet;
+	    lineterm: StreamDisciplines.LineTerminator;
+	    ch: CHAR;          (* last character read *)
+	    skip: BOOLEAN;     (* OK to skip field separator? *)
+	    mskip: BOOLEAN;    (* OK to skip multiple field separators? *)
+	    wskip: BOOLEAN;    (* OK to skip white space? *)
+	    pos: Streams.Count; (* current pos in bufs *)
+	    lastwhite: Streams.Count; (* index of last white space char *)
+      BEGIN
+	 StreamDisciplines.GetFieldSepSet(s, fieldseps);
+	 StreamDisciplines.GetLineTerm(s, lineterm);
+	 StreamDisciplines.GetWhiteSpace(s, whitespace);
+	 mskip := Sets.Subset(fieldseps, whitespace);
+	 Sets.Difference(whitespace, fieldseps, whitespace);
+	 skip := TRUE; wskip := TRUE; lastwhite := -1;
+	 pos := 0; ConstStrings.Init(bufs);
+	 WHILE Streams.ReadByte(s, ch) & (ch # lineterm[0]) &
+	       (skip OR ~Sets.CharIn(fieldseps, ch)) DO
+	    IF ~Sets.CharIn(fieldseps, ch) &
+		  (~wskip OR ~Sets.CharIn(whitespace, ch)) &
+		  Streams.WriteByte(bufs, ch) THEN
+	       wskip := FALSE;
+	       IF Sets.CharIn(whitespace, ch) THEN
+		  lastwhite := pos;
+	       ELSE
+		  lastwhite := -1;
+	       END;
+	       INC(pos); mskip := FALSE;
+	    ELSIF (pos > 0) & ~Sets.CharIn(whitespace, ch) THEN
+	       lastwhite := -1;
+	    END;
+	    skip := mskip;
+	 END;
+	 IF s.eof OR ~Streams.Back(s) THEN END;
+	 IF lastwhite >= 0 THEN
+	    Streams.SetPos(bufs, lastwhite);
+	 END;
+	 ConstStrings.Close(bufs, string);
+	 RETURN ~s.error
+      END ReadField;
+
+   BEGIN
+      IF ~ReadField(s, string) THEN RETURN FALSE END;
+
+      CreateValue(myval);
+      myval.string := string;
+      value := myval;
+      RETURN TRUE
+   END ReadArg;
+
+   PROCEDURE PrintValue(s: Streams.Stream; value: Args.Value);
+   BEGIN
+      WITH value: Value DO
+	 ConstStrings.Write(s, value.string);
+      END;
+   END PrintValue;
+
+   PROCEDURE Help(s: Streams.Stream);
+   BEGIN
+      Write.LineS(s, "a character string of arbitrary length;");
+      Write.IndentS(s);
+      Write.StringS(s, "non-printable chars including 0X are permitted");
+   END Help;
+
+   (* === exported procedure ============================================ *)
+
+   PROCEDURE Create(VAR value: Args.Value; string: ARRAY OF CHAR);
+      VAR
+	 cstring: ConstStrings.String;
+   BEGIN
+      ConstStrings.Create(cstring, string);
+      CreateValue(value);
+      value(Value).string := cstring;
+   END Create;
+
+BEGIN
+   NEW (if);
+   if.read := ReadArg;
+   if.help := Help;
+   if.print := PrintValue;
+
+   NEW (valueIf);
+   valueIf.read := ReadValue;
+   valueIf.write := WriteValue;
+   valueIf.create := CreateValue;
+   valueIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(valueType,
+      "StringArgs.Value", "Args.Value", valueIf);
+
+   NEW(type);
+   type.name := "string";
+   type.moduleName := "StringArgs";
+   Args.DefineType(type, if, valueType);
+END StringArgs.

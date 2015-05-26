@@ -1,0 +1,92 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: EphemeralPo.om,v 1.1 2004/03/09 17:18:33 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: EphemeralPo.om,v $
+   Revision 1.1  2004/03/09 17:18:33  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE EphemeralPortRange;
+
+   IMPORT RandomGenerators, Read, Streams, UnixEnvironment, UnixSeeds;
+
+   VAR
+      low, high: INTEGER;
+
+   PROCEDURE Get(VAR smallest, largest: INTEGER);
+   BEGIN
+      smallest := low; largest := high;
+   END Get;
+
+   PROCEDURE Set(smallest, largest: INTEGER);
+   BEGIN
+      ASSERT(smallest > 0);
+      ASSERT(largest < 10000H);
+      ASSERT(smallest < largest);
+      low := smallest; high := largest;
+   END Set;
+
+   PROCEDURE GetRandomPort() : INTEGER;
+      VAR
+	 seq: RandomGenerators.Sequence;
+   BEGIN
+      seq := RandomGenerators.unpredictable;
+      IF seq = NIL THEN
+	 seq := RandomGenerators.seed;
+	 IF seq = NIL THEN
+	    seq := RandomGenerators.std;
+	    ASSERT(seq # NIL);
+	 END;
+      END;
+      RETURN SHORT(RandomGenerators.Val(low, high))
+   END GetRandomPort;
+
+   PROCEDURE Init;
+
+      PROCEDURE FetchValue(parameter: ARRAY OF CHAR;
+                           VAR value: INTEGER) : BOOLEAN;
+	 VAR
+	    s: Streams.Stream;
+	    val: INTEGER;
+      BEGIN
+	 IF ~UnixEnvironment.Open(s, parameter) THEN RETURN FALSE END;
+	 Read.IntS(s, val);
+	 IF s.count = 0 THEN RETURN FALSE END;
+	 IF (val <= 0) OR (val >= 10000H) THEN RETURN FALSE END;
+	 value := val;
+	 RETURN TRUE
+      END FetchValue;
+
+   BEGIN (* Init *)
+      IF ~FetchValue("EPHEMERAL_PORT_RANGE_SMALLEST", low) THEN
+	 low := 32768;
+      END;
+      IF ~FetchValue("EPHEMERAL_PORT_RANGE_LARGEST", high) OR
+	    (high <= low) THEN
+	 high := 65535;
+      END;
+   END Init;
+
+BEGIN
+   Init;
+END EphemeralPortRange.

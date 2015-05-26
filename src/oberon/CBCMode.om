@@ -1,0 +1,207 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CBCMode.om,v 1.1 1997/04/02 11:53:12 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: CBCMode.om,v $
+   Revision 1.1  1997/04/02  11:53:12  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CBCMode; (* Michael Szczuka *)
+
+   (* a special mode of operation for block cipher systems *)
+
+   IMPORT BlockCiphers, CipherOps, Ciphers, PersistentObjects, Services,
+      Streams, Texts, Write;
+
+   TYPE 
+      CBCCipher = POINTER TO CBCCipherRec;
+      CBCCipherRec = RECORD
+	 (Ciphers.CipherRec)
+	 key : BlockCiphers.Cipher;
+      END;
+
+   VAR
+      cipherType : Services.Type;
+      cipherInterface : PersistentObjects.Interface;
+
+
+   PROCEDURE Encrypt (in: Streams.Stream; key: Ciphers.Cipher;
+		      length: INTEGER; out: Streams.Stream) : BOOLEAN;
+      (* cbc encryption *)
+      (* for further information about cipher block chaining consult literature
+	 about cryptography - i don't want to explain right now just
+	 exactly how the encryption and decryption works (i hope i will
+	 be forgiven ... :)
+      *)
+      VAR
+	 b : BYTE;
+	 tmp, tmpIn : Texts.Text;
+	 blockLength : INTEGER;
+	 i : INTEGER;
+   BEGIN
+      IF length >= 0 THEN
+	 (* cbc encryption only for the whole stream *)
+	 RETURN FALSE;
+      END;
+      IF ~(key IS CBCCipher) THEN
+	 RETURN FALSE;
+      END;
+      WITH key:CBCCipher DO
+	 blockLength := BlockCiphers.GetInLength(key.key);
+	 Texts.Open(tmp);
+	 i := 0;
+	 WHILE i < blockLength DO
+	    (* init the stream tmp with zero bytes; another solution
+	       (choice of initial vector) might be more desireable ... *)
+	    IF ~Streams.WriteByte(tmp, 0) THEN
+	       RETURN FALSE;
+	    END;
+	    INC(i);
+	 END;
+	 Streams.SetPos(tmp, 0);
+	 Texts.Open(tmpIn);
+	 WHILE Streams.ReadByte(in, b) & Streams.Back(in) DO
+	 (* any more bytes left to read ? *)
+	    IF ~CipherOps.XorStream(in, tmp, tmpIn, blockLength) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmp, 0);
+	    Streams.SetPos(tmpIn, 0);
+	    IF ~BlockCiphers.EncryptBlock(tmpIn, key.key, tmp) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmpIn, 0);
+	    Streams.SetPos(tmp, 0);
+	    IF ~Streams.Copy(tmp, out, blockLength) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmp, 0);
+	 END;
+	 Streams.Release(tmp); Streams.Release(tmpIn);
+      END;
+      RETURN TRUE;
+   END Encrypt;
+
+   PROCEDURE Decrypt (in: Streams.Stream; key: Ciphers.Cipher;
+		      length: INTEGER; out: Streams.Stream) : BOOLEAN;
+      (* cbc decryption *)
+      VAR
+	 b : BYTE;
+	 tmp, tmpOut : Streams.Stream;
+	 blockLength, i : INTEGER;
+   BEGIN
+      IF length >= 0 THEN
+	 (* cbc decryption only for the whole stream *)
+	 RETURN FALSE;
+      END;
+      IF ~(key IS CBCCipher) THEN
+	 RETURN FALSE;
+      END;
+      WITH key:CBCCipher DO
+	 blockLength := BlockCiphers.GetOutLength(key.key);
+	 Texts.Open(tmp);
+	 i := 0;
+	 WHILE i < blockLength DO
+	    IF ~Streams.WriteByte(tmp, 0) THEN
+	       RETURN FALSE;
+	    END;
+	    INC(i);
+	 END;
+	 Streams.SetPos(tmp, 0);
+	 Texts.Open(tmpOut);
+	 WHILE Streams.ReadByte(in, b) & Streams.Back(in) DO
+	    IF ~BlockCiphers.DecryptBlock(in, key.key, tmpOut) THEN
+	       RETURN FALSE;
+	    END;
+	    IF ~Streams.Seek(in, -blockLength, Streams.fromPos) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmpOut, 0);
+	    IF ~CipherOps.XorStream(tmpOut, tmp, out, blockLength) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmpOut, 0);
+	    Streams.SetPos(tmp, 0);
+	    IF ~Streams.Copy(in, tmp, blockLength) THEN
+	       RETURN FALSE;
+	    END;
+	    Streams.SetPos(tmp, 0);
+	 END;
+	 Streams.Release(tmp); Streams.Release(tmpOut);
+      END;
+      RETURN TRUE;
+   END Decrypt;
+
+   PROCEDURE CBCCreate (VAR obj: PersistentObjects.Object);
+      VAR
+	 key : CBCCipher;
+	 if : Ciphers.Interface;
+   BEGIN
+      NEW(key);
+      PersistentObjects.Init(key, cipherType);
+      NEW(if);
+      if.encrypt := Encrypt; if.decrypt := Decrypt;
+      Ciphers.Init(key, if);
+      obj := key;
+   END CBCCreate;
+
+   PROCEDURE CBCRead (s: Streams.Stream;
+                      obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj:CBCCipher DO
+	 RETURN PersistentObjects.Read(s, obj.key);
+      END;
+   END CBCRead;
+
+   PROCEDURE CBCWrite (s: Streams.Stream;
+                       obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj:CBCCipher DO
+	 RETURN PersistentObjects.Write(s, obj.key);
+      END;
+   END CBCWrite;
+
+   PROCEDURE Create (VAR new: Ciphers.Cipher; old: BlockCiphers.Cipher);
+      VAR
+	 if : Ciphers.Interface;
+	 ciph : CBCCipher;
+   BEGIN
+      (* cbc works only if InLength and OutLength of the block cipher old
+	 are the same *)
+      IF BlockCiphers.GetInLength(old) # BlockCiphers.GetOutLength(old) THEN
+	 new := NIL;
+	 RETURN;
+      END;
+      CBCCreate(ciph);
+      ciph.key := old;
+      new := ciph;
+   END Create;
+
+BEGIN
+   NEW(cipherInterface);
+   cipherInterface.create := CBCCreate;
+   cipherInterface.read := CBCRead;
+   cipherInterface.write := CBCWrite;
+   PersistentObjects.RegisterType(cipherType, "CBCMode.Cipher",
+	"Ciphers.Cipher", cipherInterface);
+END CBCMode.

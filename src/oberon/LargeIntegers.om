@@ -1,0 +1,1117 @@
+MODULE LargeIntegers;
+
+   IMPORT Conclusions, IntOperations, Lists, MemOps, NetIO, Operations,
+      PersistentObjects, Services, Streams, SYSTEM, Types, W := Write;
+
+   TYPE
+      Integer = Types.Int32;
+   CONST
+      nofbits = 31; (* <= number of bits of Integer (without sign) *)
+      intsize = SYSTEM.SIZE(Integer);
+      caps = {Operations.add, Operations.cmp, Operations.sub, Operations.div,
+	 Operations.mul, IntOperations.shift, IntOperations.mmul,
+	 IntOperations.odd, IntOperations.mod, IntOperations.inc,
+	 IntOperations.dec, IntOperations.pow, IntOperations.mpow
+	 };
+      maxword = MAX(Integer); (* 1 << nofbits - 1 or 7FFFFFFF *)
+      nil = SYSTEM.VAL(Types.Address, NIL);
+
+   TYPE
+      LargeInteger = POINTER TO LargeIntegerRec;
+      LargeIntegerRec = RECORD
+	 (IntOperations.OperandRec)
+	 negative: BOOLEAN;
+	 wordsused, wordsallocated: Integer;
+	 word: Types.Address;
+      END;
+
+   VAR
+      if: IntOperations.Interface;
+      type: Services.Type;
+      zero, one: LargeInteger;
+      debug: INTEGER; (* debug > 7: beginning of, > 5 Results *) 
+	 (* > 19 details in Mul *)
+
+   PROCEDURE ^SetWord(op: LargeInteger; index, value: Integer);
+   PROCEDURE ^GetWord(op: LargeInteger; index: Integer): Integer;
+   PROCEDURE ^TestAndGetMem(VAR op: Operations.Operand; n: Integer);
+   PROCEDURE ^Add(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+   PROCEDURE ^Sub(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+   PROCEDURE ^BlockLShift(a: Operations.Operand; n: Integer;
+      VAR res: Operations.Operand);
+   PROCEDURE ^BlockRShift(a: Operations.Operand; n: Integer;
+      VAR res: Operations.Operand);
+   PROCEDURE ^LSH(a: Operations.Operand; n: LONGINT;
+      VAR res: Operations.Operand);
+   PROCEDURE ^RSH(a: Operations.Operand; n: LONGINT;
+      VAR res: Operations.Operand);
+   PROCEDURE ^Write(op: Operations.Operand);
+   PROCEDURE ^WriteD(op: Operations.Operand);
+
+   PROCEDURE Max(a, b: Integer): Integer;
+   BEGIN
+      IF a > b THEN RETURN a ELSE RETURN b END;
+   END Max;
+
+   PROCEDURE Min(a, b: Integer): Integer;
+   BEGIN
+      IF a < b THEN RETURN a ELSE RETURN b END;
+   END Min;
+
+   PROCEDURE SaveLSH(a, n: Integer): Integer; (* Deals with sign bit *)
+   BEGIN
+      a := SYSTEM.LSH(a, n);
+      IF ((nofbits MOD 2) = 1) & (n > 0) THEN
+	 a := SYSTEM.LSH(SYSTEM.LSH(a, 1), -1);
+      END;
+      RETURN a;
+   END SaveLSH;
+
+   PROCEDURE XORLongint(a, b: Integer): Integer;
+   BEGIN
+      RETURN SYSTEM.VAL(Integer, SYSTEM.VAL(SET, a) / SYSTEM.VAL(SET, b))
+   END XORLongint;
+
+   PROCEDURE ORLongint(a, b: Integer): Integer;
+   BEGIN
+      RETURN SYSTEM.VAL(Integer, SYSTEM.VAL(SET, a) + SYSTEM.VAL(SET, b))
+   END ORLongint;
+
+   PROCEDURE ANDLongint(a, b: Integer): Integer;
+   BEGIN
+      RETURN SYSTEM.VAL(Integer, SYSTEM.VAL(SET, a) * SYSTEM.VAL(SET, b))
+   END ANDLongint;
+
+   PROCEDURE Create(VAR op: Operations.Operand);
+      VAR n: LargeInteger;
+   BEGIN
+      NEW(n);
+      n.negative := FALSE;
+      n.wordsused := 0; n.wordsallocated := 0;
+      n.word := nil;
+      PersistentObjects.Init(n, type);
+      IntOperations.Init(n, if, caps);
+      op := n;
+   END Create;
+
+   PROCEDURE CreatePObject(VAR object: PersistentObjects.Object);
+      VAR
+	 operand: Operations.Operand;
+   BEGIN
+      Create(operand);
+      object := operand;
+   END CreatePObject;
+
+   PROCEDURE ReadPObject(s: Streams.Stream;
+	 ob: PersistentObjects.Object): BOOLEAN;
+      VAR wordsused, i, tmp: Integer;
+   BEGIN
+      (* used, neg, date *)
+      WITH ob: LargeInteger DO
+	 IF ~NetIO.ReadLongInt(s, wordsused) THEN RETURN FALSE END;
+	 IF wordsused < 0 THEN RETURN FALSE END;
+	 TestAndGetMem(ob, wordsused);
+	 IF ~NetIO.ReadBoolean(s, ob.negative) THEN RETURN FALSE END;
+	 ob.wordsused := wordsused;
+	 i := 0;
+	 WHILE i < wordsused DO
+	    IF ~NetIO.ReadLongInt(s, tmp) THEN RETURN FALSE END;
+	    SetWord(ob, i, tmp);
+	    INC(i);
+	 END;
+      END;
+      RETURN TRUE;
+   END ReadPObject;
+
+   PROCEDURE WritePObject(s: Streams.Stream;
+	 ob: PersistentObjects.Object): BOOLEAN;
+      VAR i: Integer;
+   BEGIN
+      WITH ob: LargeInteger DO
+	 IF ~NetIO.WriteLongInt(s, ob.wordsused) THEN RETURN FALSE END;
+	 IF ~NetIO.WriteBoolean(s, ob.negative) THEN RETURN FALSE END;
+	 i := 0;
+	 WHILE i < ob.wordsused DO
+	    IF ~NetIO.WriteLongInt(s, GetWord(ob, i)) THEN RETURN FALSE END;
+	    INC(i);
+	 END;
+      END;
+      RETURN TRUE;
+   END WritePObject;
+
+   PROCEDURE CheckOp(op: LargeInteger);
+      VAR
+	 tag: Types.Address;
+	 size: Types.Int32;
+   BEGIN
+      (*
+      IF op.wordsallocated > 0 THEN
+	 SYSTEM.GET(op.word - SYSTEM.SIZE(Types.Address), tag);
+	 ASSERT(tag = op.word + op.wordsallocated * SYSTEM.SIZE(Integer));
+	 SYSTEM.GET(tag, size);
+	 ASSERT(size = (op.wordsallocated + 5) * SYSTEM.SIZE(Integer));
+      END;
+      *)
+   END CheckOp;
+
+   PROCEDURE Assign(VAR target: Operations.Operand; source: Operations.Operand);
+   BEGIN
+      WITH target: LargeInteger DO WITH source: LargeInteger DO
+	 IF source.wordsused = 0 THEN
+	    target.negative := FALSE;
+	    target.wordsallocated := 0;
+	    target.wordsused := 0;
+	    target.word := nil;
+	    RETURN
+	 END;
+	 IF source.word # target.word THEN
+	    TestAndGetMem(target, source.wordsused);
+	    target.negative := source.negative;
+	    CheckOp(source); CheckOp(target);
+	    MemOps.Copy(source.word, target.word, intsize * source.wordsused);
+	    target.wordsused := source.wordsused;
+	    CheckOp(source); CheckOp(target);
+	 END;
+      END; END;
+   END Assign;
+
+   PROCEDURE SetWord(op: LargeInteger; index, value: Integer);
+   BEGIN
+      CheckOp(op);
+      ASSERT((op.wordsused <= op.wordsallocated) & (op.wordsallocated > 0));
+      ASSERT((index >= 0) & (index < op.wordsused));
+      ASSERT(value >= 0);
+      SYSTEM.PUT(op.word + index * intsize, value);
+   END SetWord;
+
+   PROCEDURE GetWord(op: LargeInteger; index: Integer): Integer;
+      VAR
+	 word: Integer;
+   BEGIN
+      CheckOp(op);
+      ASSERT((op.wordsused <= op.wordsallocated) & (op.wordsallocated > 0));
+      ASSERT((index >= 0) & (index < op.wordsused));
+      SYSTEM.GET(op.word + index * intsize, word);
+      ASSERT(word >= 0);
+      RETURN word
+   END GetWord;
+
+   PROCEDURE TestAndGetMem(VAR op: Operations.Operand; n: Integer);
+      (* Makes sure op has enough memory or gets some more *)
+      (* Old number is not (anymore) deleted if new memory is allocated *)
+      VAR p: POINTER TO RECORD END;
+	 newword: Types.Address;
+   BEGIN
+      ASSERT(n >= 0);
+      WITH op: LargeInteger DO
+	 CheckOp(op);
+	 ASSERT((0 <= op.wordsused) & (op.wordsused <= op.wordsallocated));
+	 IF op.wordsallocated < n THEN
+	    SYSTEM.NEW(p, intsize * n);
+	    newword := SYSTEM.VAL(Types.Address, p);
+	    op.wordsallocated := n;
+	    (* done by SYSTEM.NEW:
+	       MemOps.Clear(newword, n * intsize);
+	    *)
+	    (* op.word and newword do not overlap. newword is newly created *)
+	    MemOps.Copy(op.word, newword, intsize * op.wordsused);
+	    op.word := newword;
+	 END;
+	 CheckOp(op);
+      END;
+   END TestAndGetMem;
+
+   PROCEDURE IntToLargeInteger(int32: Integer; VAR op: Operations.Operand);
+   BEGIN
+      WITH op: LargeInteger DO
+	 IF int32 # 0 THEN (* ABS(MIN(Interger)) > MAX(INTEGER) *)
+	    IF (int32 = MIN(Integer)) & (nofbits = 31) THEN
+	       op.negative := TRUE;
+	       TestAndGetMem(op, 2);
+	       op.wordsused := 2;
+	       SetWord(op, 0, 0); SetWord(op, 1, 1);
+	    ELSE
+	       op.negative := int32 < 0;
+	       TestAndGetMem(op, 1);
+	       op.wordsused := 1;
+	       SetWord(op, 0, ABS(int32));
+	    END;
+	 ELSE
+	    Assign(op, zero);
+	 END;
+      END;
+   END IntToLargeInteger;
+
+   PROCEDURE LargeIntegerToInt(op: Operations.Operand; VAR int32: Integer);
+      (* ToDo: Deal with MIN(Integer) *)
+   BEGIN
+      WITH op: LargeInteger DO
+	 IF op.wordsused > 0 THEN
+	    int32 := GetWord(op, 0) MOD maxword;
+	    IF op.negative THEN int32 := -int32; END;
+	 ELSE
+	    int32 := 0;
+	 END;
+      END;
+   END LargeIntegerToInt;
+
+   PROCEDURE Compare(a, b: Operations.Operand): INTEGER;
+      (* -1 IF a<b, 0 IF a=b, +1 IF a>b *)
+      VAR g, k: INTEGER;
+	 i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO
+	 WITH b: LargeInteger DO
+	    IF a.negative THEN
+	       IF ~b.negative THEN RETURN -1 END;
+	       g := 1; k := -1;
+	    ELSE
+	       IF b.negative THEN RETURN 1 END;
+	       g := -1; k := 1;
+	    END;
+	    IF a.wordsused > b.wordsused THEN RETURN k; END;
+	    IF a.wordsused < b.wordsused THEN RETURN g; END;
+	    i := a.wordsused; (* a.wordsused = b.wordsused *)
+	    WHILE i > 0 DO
+	       DEC(i);
+	       IF GetWord(a, i) > GetWord(b, i) THEN RETURN k; END;
+	       IF GetWord(a, i) < GetWord(b, i) THEN RETURN g; END;
+	    END;
+	    RETURN 0;
+	 END;
+      END;
+   END Compare;
+
+   PROCEDURE Abs(a: Operations.Operand): Operations.Operand;
+      VAR res: LargeInteger;
+   BEGIN
+      WITH a: LargeInteger DO
+	 Create(res);
+	 Assign(res, a);
+	 res.negative := FALSE;
+	 RETURN res;
+      END;
+   END Abs;
+   
+   PROCEDURE Neg(a: Operations.Operand): Operations.Operand;
+      VAR res: LargeInteger;
+   BEGIN
+      WITH a: LargeInteger DO
+	 Create(res);
+	 IF a.wordsused > 0 THEN
+	    Assign(res, a);
+	    res.negative := ~res.negative;
+	 END;
+	 RETURN res;
+      END;
+   END Neg;
+
+   PROCEDURE Sgn(a: Operations.Operand): Integer;
+   BEGIN
+      WITH a: LargeInteger DO
+	 IF a.wordsused = 0 THEN RETURN 0 END;
+	 IF a.negative THEN RETURN -1 ELSE RETURN 1 END;
+      END;
+   END Sgn;
+   
+   PROCEDURE ANDLN(a, b: Operations.Operand): Operations.Operand;
+      VAR res: LargeInteger;
+	 i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO
+	 IF a.wordsused < b.wordsused THEN RETURN ANDLN(b, a); END;
+	 Create(res);
+	 IF b.wordsused = 0 THEN RETURN res END;
+	 TestAndGetMem(res, b.wordsused);
+	 res.wordsused := b.wordsused;
+	 i := 0;
+	 WHILE i < b.wordsused DO
+	    SetWord(res, i, ANDLongint(GetWord(a, i), GetWord(b, i)));
+	    INC(i);
+	 END;
+	 res.negative := a.negative & b.negative;
+	 RETURN res;
+      END; END;
+   END ANDLN;
+
+   PROCEDURE ORLN(a, b: Operations.Operand): Operations.Operand;
+      VAR res: LargeInteger;
+	 i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO
+	 IF a.wordsused < b.wordsused THEN RETURN ORLN(b, a); END;
+	 Create(res);
+	 IF a.wordsused = 0 THEN RETURN res END;
+	 TestAndGetMem(res, a.wordsused);
+	 res.wordsused := a.wordsused;
+	 i := 0;
+	 WHILE i < b.wordsused DO
+	    SetWord(res, i, ORLongint(GetWord(a, i), GetWord(b, i)));
+	    INC(i);
+	 END;
+	 WHILE i < a.wordsused DO
+	    SetWord(res, i, GetWord(a, i));
+	    INC(i);
+	 END;
+	 res.negative := a.negative OR b.negative;
+	 RETURN res;
+      END; END;
+   END ORLN;
+
+   PROCEDURE XORLN(a, b: Operations.Operand): Operations.Operand;
+      VAR res: LargeInteger;
+	 i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO
+	 IF a.wordsused < b.wordsused THEN RETURN XORLN(b, a); END;
+	 Create(res);
+	 IF a.wordsused = 0 THEN RETURN res END;
+	 TestAndGetMem(res, a.wordsused);
+	 res.wordsused := a.wordsused;
+	 i := 0;
+	 WHILE i < b.wordsused DO
+	    SetWord(res, i, XORLongint(GetWord(a, i), GetWord(b, i)));
+	    INC(i);
+	 END;
+	 WHILE i < a.wordsused DO
+	    SetWord(res, i, GetWord(a, i));
+	    INC(i);
+	 END;
+	 res.negative := a.negative # b.negative;
+	 RETURN res;
+      END; END;
+   END XORLN;
+
+   PROCEDURE Log2(a: Operations.Operand): Integer;
+      VAR res, i: Integer;
+	 tmp: LargeInteger;
+   BEGIN
+      WITH a: LargeInteger DO
+	 ASSERT((a.wordsused > 0) & ~a.negative);
+	 res := nofbits * (a.wordsused - 1);
+	 i := GetWord(a, a.wordsused - 1);
+	 WHILE i > 0 DO
+	    INC(res);
+	    i := SYSTEM.LSH(i, -1);
+	 END;
+	 Create(tmp);
+	 Assign(tmp, one);
+	 LSH(tmp, i - 1, tmp);
+	 IF Compare(a, tmp) = 0 THEN DEC(res); END;
+	 RETURN res;
+      END;
+   END Log2;
+   
+   PROCEDURE IsLargeEnoughFor(op: Operations.Operand; bits: Integer): BOOLEAN;
+   BEGIN
+      RETURN TRUE;
+   END IsLargeEnoughFor;
+
+   PROCEDURE Odd(op: Operations.Operand): BOOLEAN;
+   BEGIN
+      WITH op: LargeInteger DO
+	 IF op.wordsused = 0 THEN RETURN FALSE END;
+	 RETURN (GetWord(op, 0) MOD 2) = 1;
+      END;
+   END Odd;
+
+   PROCEDURE Unsigned(op: Operations.Operand): BOOLEAN;
+   BEGIN
+      WITH op: LargeInteger DO
+	 RETURN ~op.negative;
+      END;
+   END Unsigned;
+
+   PROCEDURE BlockLShift(a: Operations.Operand; n: Integer;
+	 VAR res: Operations.Operand); (* Shift a n Words left *)
+      VAR i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH res: LargeInteger DO
+	 IF (a.wordsused = 0) OR (n = 0) THEN Assign(res, a); RETURN; END;
+	 IF n < 0 THEN BlockRShift(a, ABS(n), res); RETURN; END;
+	 TestAndGetMem(res, a.wordsused + n);
+	 i := a.wordsused;
+	 res.wordsused := a.wordsused + n;
+	 WHILE i > 0 DO
+	    DEC(i);
+	    SetWord(res, i + n, GetWord(a, i));
+	 END;
+	 MemOps.Clear(res.word, n * intsize);
+	 res.negative := a.negative;
+      END; END;
+   END BlockLShift;
+
+   PROCEDURE BlockRShift(a: Operations.Operand; n: Integer;
+	 VAR res: Operations.Operand);
+   (* Shift a n Words right *) (* Just as a test without create *)
+      VAR i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH res: LargeInteger DO
+	 IF (a.wordsused = 0) OR (n = 0) THEN Assign(res, a); RETURN; END;
+	 IF n < 0 THEN BlockLShift(a, ABS(n), res); RETURN; END;
+	 IF n >= a.wordsused THEN Assign(res, zero); RETURN END;
+	 i := 0;
+	 TestAndGetMem(res, a.wordsused); (* not -n res could be a *)
+	 res.wordsused := a.wordsused;
+	 WHILE i < n DO
+	    SetWord(res, i, GetWord(a, i + n));
+	    INC(i);
+	 END;
+	 res.negative := a.negative;
+	 res.wordsused := res.wordsused - n;
+      END; END;
+   END BlockRShift;
+
+   PROCEDURE BlockShift(a: Operations.Operand; n: Integer;
+	 VAR res: Operations.Operand);
+   BEGIN
+      WITH a: LargeInteger DO
+	 IF n > 0 THEN
+	    BlockLShift(a, n, res);
+	 ELSE
+	    BlockRShift(a, ABS(n), res);
+	 END;
+      END;
+   END BlockShift;
+
+   PROCEDURE LSH(a: Operations.Operand; n: LONGINT;
+      VAR res: Operations.Operand);
+   (* Shift a n Bits left *)
+      VAR bits, restbits, words, w, wu, awu, i, j: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH res: LargeInteger DO
+	 IF (a.wordsused = 0) OR (n = 0) THEN
+	    Assign(res, a);
+	    RETURN;
+	 END;
+	 IF n < 0 THEN RSH(a, ABS(n), res); RETURN; END;
+	 bits := n MOD nofbits;
+	 restbits := nofbits - bits;
+	 words := n DIV nofbits;
+	 IF bits = 0 THEN BlockLShift(a, words, res); RETURN END;
+	 wu := a.wordsused + words + 1; (* MAX(needed memory) *)
+	 awu := a.wordsused;
+	 TestAndGetMem(res, wu);
+	 res.wordsused := wu;
+	 res.negative := a.negative;
+	 w := 0;
+	 SetWord(res, wu - 1,
+	    SaveLSH(GetWord(a, awu - 1), -1 * restbits));
+	 i := awu - 1; j := wu - 2;
+	 WHILE i > 0 DO
+	    w := SYSTEM.LSH(GetWord(a, i - 1), -1 * restbits);
+	    SetWord(res, j, SaveLSH(GetWord(a, i), bits) + w);
+	    DEC(i); DEC(j);
+	 END;
+	 SetWord(res, j, SaveLSH(GetWord(a, i), bits));
+	 i := 0;
+	 WHILE i < words DO SetWord(res, i, 0); INC(i); END; (* MemOps.Clear *)
+	 IF GetWord(res, wu - 1) = 0 THEN DEC(res.wordsused); END;
+      END; END;
+   END LSH;
+
+   PROCEDURE RSH(a: Operations.Operand; n: LONGINT;
+      VAR res: Operations.Operand);
+   (* Shift a n Bits right *) (* Just as a test without create *)
+      VAR bits, restbits, words, w, wr, wu, i, j: Integer;
+	 acp: LargeInteger; (* Copy of a for RSH(a, n, a) *)
+   BEGIN
+      WITH a: LargeInteger DO WITH res: LargeInteger DO
+	 IF (a.wordsused = 0) OR (n = 0) THEN Assign(res, a); RETURN; END;
+	 IF n < 0 THEN LSH(a, ABS(n), res); RETURN; END;
+	 bits := n MOD nofbits;
+	 restbits := nofbits - bits;
+	 words := n DIV nofbits;
+	 IF bits = 0 THEN BlockRShift(a, words, res); RETURN END;
+	 IF SYSTEM.LSH(GetWord(a, a.wordsused - 1), -1 * bits) = 0 THEN
+	    wr := 1
+	 ELSE
+	    wr := 0;
+	 END;
+	 w := wr;
+	 IF words + wr >= a.wordsused THEN
+	    Assign(res, zero);
+	    RETURN
+	 END;
+	 Create(acp);
+	 Assign(acp, a);
+	 wu := acp.wordsused - words - wr;
+	 ASSERT(wu > 0);
+	 TestAndGetMem(res, wu);
+	 i := words; j := 0;
+	 res.wordsused := wu;
+	 WHILE j + 1 < wu DO
+	    IF restbits = nofbits THEN
+	       w := 0;
+	    ELSE
+	       w := SaveLSH(GetWord(acp, i + 1), restbits);
+	    END;
+	    SetWord(res, j, SYSTEM.LSH(GetWord(acp, i), -1 * bits) + w);
+	    INC(i); INC(j);
+	 END;
+	 IF i + 1 < acp.wordsused THEN
+	    IF restbits = nofbits THEN
+	       w := 0;
+	    ELSE
+	       w := SaveLSH(GetWord(acp, i + 1), restbits);
+	    END;
+	 ELSE
+	    w := 0;
+	 END;
+	 SetWord(res, j, SYSTEM.LSH(GetWord(acp, i), -1 * bits) + w);
+	 (*IF wr = 1 THEN
+	    INC(res.wordsused);
+	    SetWord(res, j + 1, 0);
+	    DEC(res.wordsused);
+	 END; *)
+      END; END;
+   END RSH;
+
+   PROCEDURE Shift(a: Operations.Operand; n: LONGINT;
+      VAR res: Operations.Operand);
+   (* Just as a test without create *)
+   BEGIN
+      WITH a: LargeInteger DO
+	 IF n > 0 THEN LSH(a, n, res); ELSE RSH(a, ABS(n), res); END;
+      END;
+   END Shift;
+
+   PROCEDURE Shift2(a: Operations.Operand; n: INTEGER): Operations.Operand;
+      (* Just for the Interface *)
+      VAR res: LargeInteger;
+   BEGIN
+      WITH a: LargeInteger DO
+	 Create(res);
+	 Shift(a, n, res);
+	 RETURN res;
+      END;
+   END Shift2;
+
+   PROCEDURE DivMod(a, b: Operations.Operand;
+		    VAR n, r: Operations.Operand): BOOLEAN;
+      VAR absa, absb: LargeInteger;
+	 nega, negb: BOOLEAN;
+	 wordsforn, shift, shiftn, i: Integer;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO
+	 WITH n: LargeInteger DO WITH r: LargeInteger DO
+	    IF b.wordsused = 0 THEN RETURN FALSE END; (* By zero *)
+	    IF debug > 7 THEN W.String("Beginning of DivMod"); W.Ln; END;
+	    IF debug > 6 THEN W.String("DivMod: Starting with: ");
+	       WriteD(a); W.Ln;
+	    END;
+	    Create(absa); Create(absb);
+	    Assign(absa, a); Assign(absb, b);
+	    absa.negative := FALSE; absb.negative := FALSE;
+	    nega := a.negative; negb := b.negative;
+	    wordsforn := 1 + a.wordsused - b.wordsused;
+	    (* From now on: no need for a and b anymore :-) *)
+	    IF Compare(absa, absb) < 0 THEN  (* Triviale Division *)
+	       IF nega # negb THEN
+		  IntToLargeInteger(-1, n);
+		  Sub(absb, absa, r);
+	       ELSE
+		  IntToLargeInteger(0, n);
+		  Assign(r, absa);
+	       END;
+	       r.negative := negb;
+	       RETURN TRUE;
+	    END;
+	    Assign(n, zero);
+	    TestAndGetMem(n, wordsforn); (* to avoid several realloc *)
+	    shift := wordsforn * nofbits;
+	    LSH(absb, shift, absb); (* I do not know if this will work *)
+	    shiftn := 0; i := 0;
+	    WHILE i < shift DO
+	       RSH(absb, 1, absb);
+	       INC(shiftn);
+	       IF Compare(absa, absb) >= 0 THEN
+		  LSH(n, shiftn, n);
+		  shiftn := 0;
+		  Sub(absa, absb, absa);
+		  IF debug > 6 THEN
+		     W.String("DivMod: Shifting: Compare after Sub"); W.Ln;
+		     WriteD(absa); W.String(", "); WriteD(absb); W.String(", ");
+		     WriteD(n); W.Ln;
+		  END;
+		  Add(n, one, n);
+	       END;
+	       INC(i);
+	    END;
+	    LSH(n, shiftn, n);
+	    (* n ist der (positive) Quotient, absa ist der (positive) Rest. *)
+	    IF nega # negb THEN
+	       n.negative := ~n.negative;
+	       IF absa.wordsused > 0 THEN
+		  Sub(n, one, n);
+		  Sub(absb, absa, r);
+		  r.negative := negb;
+	       ELSE
+		  Assign(r, absa);
+	       END;
+	    ELSE
+	       Assign(r, absa);
+	       IF r.wordsused > 0 THEN r.negative := negb; END;
+	    END;
+	    IF debug > 5 THEN
+	       W.String("DivMod: Result ");
+	       WriteD(n); W.String(" r: "); WriteD(r); W.Ln;
+	    END;
+	 END; END;
+      END; END;
+      RETURN TRUE;
+   END DivMod;
+
+   PROCEDURE Mul(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+      VAR a, b, u, v, uneu: LargeInteger;
+	 shift, nm: Integer;
+	 neg: BOOLEAN;
+   BEGIN
+      WITH op1: LargeInteger DO WITH op2: LargeInteger DO
+	    WITH res: LargeInteger DO
+	 IF debug > 7 THEN W.String("Beginning of Mul"); W.Ln; END;
+	 IF (op1.wordsused = 0) OR (op2.wordsused = 0) THEN
+	    Assign(res, zero);
+	    RETURN
+	 END;
+	 Create(a); Create(b);
+	 Assign(a, Abs(op1));
+	 neg := op1.negative # op2.negative;
+	 IF Compare(a, one) = 0 THEN
+	    Assign(res, op2); 
+	    res.negative := neg;
+	    RETURN;
+	 END;
+	 Assign(b, Abs(op2));
+	 Create(u); Create(v); Create(uneu);
+	 nm := op1.wordsused + op2.wordsused;
+	 TestAndGetMem(u, nm); TestAndGetMem(v, nm); TestAndGetMem(uneu, nm);
+	 shift := 0;
+	 WHILE a.wordsused # 0 DO
+	    IF (GetWord(a, 0) MOD 2) = 1 THEN
+	       (*W.String("In Mul: CompaIF: "); *)
+	       (*IF b.wordsused > 1 THEN W.Int(b.word[1], 3); END;
+	       W.Int(b.word[0], 12); W.Int(b.wordsused, 5); W.Int(shift, 5);
+	       W.Ln;
+	       W.String("Before LSH in Mul: "); W.Int(shift, 3); W.Ln; *)
+	       LSH(b, shift, b);
+	       IF debug > 19 THEN
+		  W.String("In Mul: CompaIF b: ");
+		  WriteD(b);
+		  W.Ln;
+	       END;
+	       shift := 0;
+	       (* uneu = b ^ v ^ u; *)
+	       Assign(uneu, XORLN(XORLN(b, v), u));
+	       IF debug > 19 THEN
+		  W.String("In Mul: uneu: "); 
+		  WriteD(uneu); W.Ln;
+		  IF uneu.wordsused > 1 THEN
+		     W.String("In Mul: u: "); 
+		     WriteD(u); W.Ln;
+		  END;
+	       END;
+	       (* v = ((u & b) | (v & b) | (u & v)) << 1; *)
+	       LSH(ORLN(ORLN(ANDLN(u, b), ANDLN(v, b)), ANDLN(u, v)), 1, v);
+	       IF debug > 19 THEN
+		  W.String("In Mul: v: "); WriteD(v); W.Ln;
+	       END;
+	       Assign(u, uneu);
+	    END;
+	    RSH(a, 1, a);
+	    INC(shift);
+	 END;
+	 Add(u, v, res);
+	 res.negative := neg;
+	 IF debug > 5 THEN
+	    W.String("Mul: Result: ");
+	    WriteD(res); W.Ln;
+	    WriteD(u); W.Ln;
+	    WriteD(v); W.Ln;
+	 END;
+      END; END; END;
+   END Mul;
+
+   PROCEDURE Add(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+      VAR
+	 i, a, b, nw, op1wu, op2wu: Integer;
+	 carry: SHORTINT; (* Uebertrag *)
+   BEGIN
+      WITH op1: LargeInteger DO
+	 WITH op2: LargeInteger DO
+	    WITH res: LargeInteger DO
+	       IF op1.wordsused = 0 THEN
+		  Assign(res, op2); RETURN
+	       END;
+	       IF op2.wordsused = 0 THEN
+		  Assign(res, op1); RETURN
+	       END;
+	       IF op1.negative # op2.negative THEN
+		  Sub(op1, Neg(op2), res);
+		  RETURN;
+	       END;
+	       nw := Max(op1.wordsused, op2.wordsused) + 1;
+	       TestAndGetMem(res, nw);
+	       op1wu := op1.wordsused; op2wu := op2.wordsused;
+	       res.wordsused := nw;
+	       i := 0;
+	       carry := 0;
+	       WHILE i < nw - 1 DO (* 2 IFs for Range-check *)
+		  IF op1wu <= i THEN a := 0 ELSE a := GetWord(op1, i) END;
+		  IF op2wu <= i THEN b := 0 ELSE b := GetWord(op2, i) END;
+		  IF maxword - a - carry < b THEN
+		     (* Uebertrag *)
+		     SetWord(res, i, a - maxword + carry - 1 + b);
+		     carry := 1;
+		  ELSE
+		     SetWord(res, i, a + b + carry);
+		     carry := 0;
+		  END;
+		  INC(i);
+	       END;
+	       SetWord(res, i, carry);
+	       res.wordsused := res.wordsused + carry - 1;
+	       res.negative := op1.negative;
+	    END;
+	 END;
+      END;
+   END Add;
+   
+   PROCEDURE Sub(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+      VAR
+	 i, wu, op2wu: Integer;
+	 carry: SHORTINT; (* Uebertrag *)
+   BEGIN
+      WITH op1: LargeInteger DO
+	 WITH op2: LargeInteger DO
+	    WITH res: LargeInteger DO
+	       IF debug > 7 THEN W.String("Beginning of Sub"); W.Ln; END;
+	       IF op1.wordsused = 0 THEN
+		  Assign(res, op2); res.negative := ~res.negative; RETURN
+	       END;
+	       IF op2.wordsused = 0 THEN
+		  Assign(res, op1); RETURN
+	       END;
+	       IF op1.negative # op2.negative THEN
+		  Add(op1, Neg(op2), res); RETURN;
+	       END;
+	       IF (op1.negative & (Compare(op1, op2) > 0)) OR
+		     (~op1.negative & (Compare (op1, op2) < 0)) THEN
+		  Sub(op2, op1, res);
+		  res.negative := ~res.negative;
+		  RETURN;
+	       END;
+	       (* Finally: the subtraction *)
+	       TestAndGetMem(res, op1.wordsused); (* enough for worst case *)
+	       op2wu := op2.wordsused; (* backup, maybe res = op2 # op1 *)
+	       res.wordsused := op1.wordsused;
+	       res.negative := op1.negative;
+	       i := 0; carry := 0; wu := -1;
+	       WHILE i < op2wu DO
+		  IF (GetWord(op1, i) < GetWord(op2, i)) OR
+			((carry = 1) & (GetWord(op1, i) = GetWord(op2, i))) THEN
+		     SetWord(res, i, maxword - GetWord(op2, i)
+			+ 1 - carry + GetWord(op1, i));
+		     carry := 1;
+		  ELSE
+		     SetWord(res, i, GetWord(op1, i) - GetWord(op2, i) - carry);
+		     carry := 0;
+		  END;
+		  IF GetWord(res, i) > 0 THEN wu := i; END;
+		  INC(i);
+	       END;
+	       WHILE i < op1.wordsused DO
+		  IF (carry = 1) & (GetWord(op1, i) = 0) THEN
+		     SetWord(res, i, maxword);
+		  ELSE
+		     SetWord(res, i, GetWord(op1, i) - carry);
+		     carry := 0;
+		  END;
+		  IF GetWord(res, i) > 0 THEN wu := i; END;
+		  INC(i);
+	       END;
+	       res.wordsused := wu + 1;
+	    END;
+	 END;
+      END;
+   END Sub;
+
+   PROCEDURE MMul(a, b, m: Operations.Operand; VAR res: Operations.Operand);
+      VAR
+	 a2, b2, r, tmp: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO WITH m: LargeInteger DO
+	 WITH res: LargeInteger DO
+	    IF debug > 7 THEN W.String("Beginning of MMul"); W.Ln; END;
+	    Create(tmp); Create(a2); Create(b2); Create(r);
+	    ok := DivMod(a, m, tmp, a2); ASSERT(ok);
+	    ok := DivMod(b, m, tmp, b2); ASSERT(ok);
+	    Mul(a2, b2, r);
+	    ok := DivMod(r, m, tmp, res);
+	    ASSERT(ok);
+	 END;
+      END; END; END;
+   END MMul;
+	    
+   PROCEDURE MPow(b, e, m: Operations.Operand; VAR res: Operations.Operand);
+      VAR
+	 a, f, r, tmp, z: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH b: LargeInteger DO WITH e: LargeInteger DO WITH m: LargeInteger DO
+	 WITH res: LargeInteger DO
+	    IF debug > 7 THEN W.String("Beginning of MPow"); W.Ln; END;
+	    IF e.wordsused = 0 THEN Assign(res, one); RETURN; END;
+	    Create(a); Create(f); Create(r); Create(z); Create(tmp);
+	    Assign(a, b); Assign(f, one); Assign(r, one); Assign(z, e);
+	    BlockLShift(f, z.wordsused, f); (* f: first bit *)
+	    WHILE f.wordsused > 0 DO
+	       Mul(r, r, r);
+	       IF Compare(z, f) >= 0 THEN
+		  Mul(r, a, r);
+		  Sub(z, f, z);
+	       END;
+	       ok := DivMod(r, m, tmp, r);
+	       ASSERT(ok);
+	       RSH(f, 1, f);
+	    END;
+	    Assign(res, r);
+	 END;
+      END; END; END;
+   END MPow;
+
+   PROCEDURE Pow(op1, op2: Operations.Operand; VAR res: Operations.Operand);
+   (* Achtung: Zahlen werden schnell sehr gross.
+      Zu Risiken und Nebenwirkungen lesen Sie Ihre Hauptspeichergroesse
+      und fragen sie Ihre Swappartition. (OK die CPU leidet mehr) *)
+      VAR
+	 a, f, r, z: LargeInteger;
+   BEGIN
+      WITH op1: LargeInteger DO WITH op2: LargeInteger DO
+	    WITH res: LargeInteger DO
+	 IF debug > 7 THEN W.String("Beginning of Pow"); W.Ln; END;
+	 IF op2.wordsused = 0 THEN Assign(res, one); RETURN; END;
+	 Create(a); Create(f); Create(r); Create(z);
+	 Assign(a, op1); Assign(f, one); Assign(r, one); Assign(z, op2);
+	 BlockLShift(f, z.wordsused, f); (* f: first bit *)
+	 WHILE f.wordsused > 0 DO
+	    Mul(r, r, r);
+	    IF Compare(z, f) >= 0 THEN
+	       Mul(r, a, r);
+	       Sub(z, f, z);
+	    END;
+	    RSH(f, 1, f);
+	 END;
+	 Assign(res, r);
+      END; END; END;
+   END Pow;
+
+   PROCEDURE GCD(a, b: Operations.Operand; VAR res, c, d: Operations.Operand);
+      (* called <= log2(a * b) *)
+      (* Returns a * c + b * d = res with res = GCD(a, b) *)
+      VAR r0, r1, r2, p0, p1, p2, q0, q1, q2: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO WITH res: LargeInteger DO
+	 WITH c: LargeInteger DO WITH d: LargeInteger DO
+	    Create(r0); Assign(r0, a); r0.negative := FALSE;
+	    Create(r1); Assign(r1, b); r1.negative := FALSE;
+	    Create(r2); Create(p0); Create(p1); Create(p2); Assign(p1, one);
+	    Create(q0); Create(q1); Create(q2); Assign(q0, one);
+	    WHILE r1.wordsused > 0 DO
+	       ok := DivMod(r0, r1, d, r2);
+	       ASSERT(ok);
+	       Assign(r0, r1); Assign(r1, r2);
+	       Mul(d, p1, p2);
+	       Sub(p0, p2, p2);
+	       Assign(p0, p1); Assign(p1, p2);
+	       Mul(d, q1, q2);
+	       Sub(q0, q2, q2);
+	       Assign(q0, q1); Assign(q1, q2);
+	    END;
+	    Assign(c, q0); c.negative := c.negative # a.negative;
+	    Assign(d, p0); d.negative := d.negative # b.negative;
+	    Assign(res, r0);
+	 END; END;
+      END; END; END;
+   END GCD;
+
+   PROCEDURE Inverse(a, b: Operations.Operand; VAR res: Operations.Operand);
+      (* Calculates a * res = 1 mod b *)
+      VAR d, tmp: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH a: LargeInteger DO WITH b: LargeInteger DO WITH res: LargeInteger DO
+	 Create(d); Create(tmp);
+	 GCD(a, b, tmp, res, d);
+	 IF Compare(tmp, one) = 0 THEN
+	    Assign(res, zero);
+	 ELSE
+	    ok := DivMod(res, b, tmp, res);
+	    ASSERT(ok);
+	 END;
+      END; END; END;
+   END Inverse;
+
+   PROCEDURE Op(op:Operations.Operation; op1, op2: Operations.Operand;
+                VAR result : Operations.Operand);
+      VAR tmp: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      CASE op OF
+      | Operations.add:
+	    Add(op1, op2, result);
+      | Operations.sub:
+	    Sub(op1, op2, result);
+      | Operations.div:
+	    Create(tmp);
+	    ok := DivMod(op1, op2, result, tmp);
+	    ASSERT(ok);
+      | Operations.mul:
+	    Mul(op1, op2, result);
+      END;
+   END Op;
+
+   PROCEDURE IntOp(op:Operations.Operation; op1, op2, op3: Operations.Operand;
+                VAR result : Operations.Operand);
+      VAR tmp: LargeInteger;
+	 ok: BOOLEAN;
+   BEGIN
+      CASE op OF
+      | IntOperations.inc:
+	    Add(op1, one, result);
+      | IntOperations.dec:
+	    Sub(op1, one, result);
+      | IntOperations.mod:
+	    Create(tmp);
+	    ok := DivMod(op1, op2, tmp, result);
+	    ASSERT(ok);
+      | IntOperations.mmul:
+	    MMul(op1, op2, op3, result);
+      | IntOperations.pow:
+	    Pow(op1, op2, result);
+      | IntOperations.mpow:
+	    MPow(op1, op2, op3, result);
+      END;
+   END IntOp;
+
+   PROCEDURE WriteS(s: Streams.Stream; op: Operations.Operand);
+      TYPE Element = POINTER TO ElementRec;
+	 ElementRec = RECORD (Lists.ElementRec) n: Integer; END;
+      VAR ok, neg: BOOLEAN;
+	 e: Element;
+	 n, r, zehn: LargeInteger;
+	 list: Lists.List;
+   BEGIN
+      WITH op: LargeInteger DO
+	 IF op.wordsused = 0 THEN 
+	    ok := Streams.WriteByte(s, "0");
+	    RETURN
+	 END;
+	 neg := op.negative;
+	 IF neg THEN ok := Streams.WriteByte(s, "-"); op.negative := FALSE; END;
+	 Create(n); Create(r);
+	 Assign(n, op);
+	 Create(zehn); IntToLargeInteger(10, zehn);
+	 Lists.CreateList(list);
+	 WHILE n.wordsused > 0 DO
+	    ok := DivMod(n, zehn, n, r);
+	    NEW(e);
+	    IF r.wordsused = 0 THEN e.n := 0; ELSE e.n := GetWord(r, 0); END;
+	    Lists.Add(list, e);
+	 END;
+	 Lists.Last(list);
+	 WHILE Lists.Previous(list, e) DO
+	    ok := Streams.WriteByte(s, CHR(e.n + ORD("0")));
+	 END;
+	 op.negative := neg;
+      END;
+   END WriteS;
+
+   PROCEDURE Write(op: Operations.Operand);
+   BEGIN
+      WITH op: LargeInteger DO
+	 WriteS(Streams.stdout, op);
+      END;
+   END Write;
+
+   PROCEDURE ReadS(s: Streams.Stream; VAR op: Operations.Operand);
+      VAR ok: BOOLEAN;
+	 r, zehn: LargeInteger;
+	 c: CHAR;
+	 i: Integer;
+   BEGIN
+      WITH op: LargeInteger DO
+	 Create(op); Create(r);
+	 Assign(r, one);
+	 ok := Streams.ReadByte(s, c);
+	 IF c = "-" THEN op.negative := TRUE
+	 ELSIF (ORD(c) - ORD("0")) IN {0 .. 9} THEN
+	    IntToLargeInteger(ORD(c) - ORD("0"), op);
+	 ELSE W.String("Error while Reading"); W.Ln;
+	 END;
+	 Create(zehn); IntToLargeInteger(10, zehn);
+	 WHILE Streams.ReadByte(s, c) & (ORD(c) # 10) DO
+	    i := (ORD(c) - ORD("0"));
+	    IF i IN {0 .. 9} THEN
+	       Mul(op, zehn, op);
+	       IF i > 0 THEN
+		  SetWord(r, 0, i);
+		  Add(op, r, op);
+	       END;
+	    END;
+	 END;
+      END;
+   END ReadS;
+
+   PROCEDURE Read(VAR op: Operations.Operand);
+   BEGIN
+      WITH op: LargeInteger DO
+	 ReadS(Streams.stdin, op);
+      END;
+   END Read;
+
+   PROCEDURE WriteD(op: Operations.Operand);
+      VAR i: Integer;
+   BEGIN
+      WITH op: LargeInteger DO
+	 i := op.wordsused;
+	 WHILE i > 0 DO
+	    W.Int(GetWord(op, i - 1), 12);
+	    DEC(i);
+	 END;
+      END;
+   END WriteD;
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := Create;
+      if.assign := Assign;
+      if.intToOp := IntToLargeInteger;
+      if.compare := Compare;
+      if.op := Op;
+      if.opToInt := LargeIntegerToInt;
+      if.isLargeEnoughFor := IsLargeEnoughFor;
+      if.shift := Shift2;
+      if.odd := Odd;
+      if.log2 := Log2;
+      if.unsigned := Unsigned;
+      if.intOp := IntOp;
+      NEW(persif);
+      persif.create := CreatePObject; persif.createAndRead := NIL;
+      persif.read := ReadPObject; persif.write := WritePObject;
+      PersistentObjects.RegisterType(type, "LargeIntegers.LargeInteger",
+	 "IntOperations.Operand", persif);
+   END Init;
+
+BEGIN
+   debug := 0;
+   Init;
+   Create(one);
+   Create(zero);
+   IntToLargeInteger(1, one);
+END LargeIntegers.

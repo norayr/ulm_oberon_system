@@ -1,0 +1,640 @@
+(* Edit RemoteCDBNa.rm instead of this file which has been generated
+   by genrem at Fri Sep 10 10:25:40 MEST 2004
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteCDBNa.rm,v 1.1 2001/02/06 19:50:59 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteCDBNa.rm,v $
+   Revision 1.1  2001/02/06 19:50:59  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteCDBNames;
+
+   IMPORT CDBNames, CompilerObjects, ConstStrings, Events, Messages, NetIO,
+      PersistentObjects, PersistentTexts, RelatedEvents, RemoteObjects,
+      RemoteStreams, Services, Shards, Sources := CompilerSources, Streams;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec = RECORD (CDBNames.NodeRec) END;
+
+   TYPE
+      ProxyParameters = POINTER TO ProxyParametersRec;
+      ProxyParametersRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            root: BOOLEAN;
+         END;
+   VAR
+      proxyParamsType: Services.Type;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      AddObjectMessage = POINTER TO AddObjectMessageRec;
+      AddObjectMessageRec =
+         RECORD
+            (MessageRec)
+            header: CompilerObjects.Header; (* IN via COPY *)
+            text: PersistentTexts.Text; (* IN via COPY *)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            newnode: CDBNames.Node; (* OUT via REF *)
+         END;
+   VAR
+      addObjectMessageType: Services.Type;
+
+   TYPE
+      AddSourceMessage = POINTER TO AddSourceMessageRec;
+      AddSourceMessageRec =
+         RECORD
+            (MessageRec)
+            header: Sources.Header; (* IN via COPY *)
+            text: PersistentTexts.Text; (* IN via COPY *)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            newnode: CDBNames.Node; (* OUT via REF *)
+         END;
+   VAR
+      addSourceMessageType: Services.Type;
+
+   TYPE
+      GetObjectHeaderMessage = POINTER TO GetObjectHeaderMessageRec;
+      GetObjectHeaderMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            header: CompilerObjects.Header; (* OUT via COPYORNIL *)
+         END;
+   VAR
+      getObjectHeaderMessageType: Services.Type;
+
+   TYPE
+      GetSourceHeaderMessage = POINTER TO GetSourceHeaderMessageRec;
+      GetSourceHeaderMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            header: Sources.Header; (* OUT via COPYORNIL *)
+         END;
+   VAR
+      getSourceHeaderMessageType: Services.Type;
+
+   TYPE
+      GetTextMessage = POINTER TO GetTextMessageRec;
+      GetTextMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            text: PersistentTexts.Text; (* OUT via COPYORNIL *)
+         END;
+   VAR
+      getTextMessageType: Services.Type;
+
+   TYPE
+      GetPathMessage = POINTER TO GetPathMessageRec;
+      GetPathMessageRec =
+         RECORD
+            (MessageRec)
+            path: ConstStrings.String; (* OUT via ConstString *)
+         END;
+   VAR
+      getPathMessageType: Services.Type;
+
+   TYPE
+      GetRootMessage = POINTER TO GetRootMessageRec;
+      GetRootMessageRec =
+         RECORD
+            (MessageRec)
+            root: CDBNames.Node; (* OUT via REF *)
+         END;
+   VAR
+      getRootMessageType: Services.Type;
+
+   VAR
+      if: CDBNames.Interface; (* of CDBNames *)
+      type: Services.Type; (* of RemoteCDBNames.Node *)
+
+   PROCEDURE CreateProxyParams(VAR object: PersistentObjects.Object);
+      VAR proxyParams: ProxyParameters;
+   BEGIN
+      NEW(proxyParams);
+      PersistentObjects.Init(proxyParams, proxyParamsType);
+      object := proxyParams;
+   END CreateProxyParams;
+
+   PROCEDURE WriteProxyParams(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.WriteBoolean(s, object.root)
+      END;
+   END WriteProxyParams;
+
+   PROCEDURE ReadProxyParams(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.ReadBoolean(s, object.root)
+      END;
+   END ReadProxyParams;
+
+   PROCEDURE CreateAddObjectMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AddObjectMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, addObjectMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAddObjectMessage;
+
+   PROCEDURE WriteAddObjectMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddObjectMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.newnode)
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.header) &
+                   PersistentObjects.Write(s, msg.text) &
+                   PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteAddObjectMessage;
+
+   PROCEDURE ReadAddObjectMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddObjectMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.newnode)
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.header) &
+                   PersistentObjects.Read(s, msg.text) &
+                   PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadAddObjectMessage;
+
+   PROCEDURE CreateAddSourceMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AddSourceMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, addSourceMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAddSourceMessage;
+
+   PROCEDURE WriteAddSourceMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddSourceMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.newnode)
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.header) &
+                   PersistentObjects.Write(s, msg.text) &
+                   PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteAddSourceMessage;
+
+   PROCEDURE ReadAddSourceMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddSourceMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.newnode)
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.header) &
+                   PersistentObjects.Read(s, msg.text) &
+                   PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadAddSourceMessage;
+
+   PROCEDURE CreateGetObjectHeaderMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetObjectHeaderMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getObjectHeaderMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetObjectHeaderMessage;
+
+   PROCEDURE WriteGetObjectHeaderMessage(s: Streams.Stream;
+                                         msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetObjectHeaderMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.header)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetObjectHeaderMessage;
+
+   PROCEDURE ReadGetObjectHeaderMessage(s: Streams.Stream;
+                                        msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetObjectHeaderMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.header)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetObjectHeaderMessage;
+
+   PROCEDURE CreateGetSourceHeaderMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetSourceHeaderMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getSourceHeaderMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetSourceHeaderMessage;
+
+   PROCEDURE WriteGetSourceHeaderMessage(s: Streams.Stream;
+                                         msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetSourceHeaderMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.header)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetSourceHeaderMessage;
+
+   PROCEDURE ReadGetSourceHeaderMessage(s: Streams.Stream;
+                                        msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetSourceHeaderMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.header)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetSourceHeaderMessage;
+
+   PROCEDURE CreateGetTextMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetTextMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getTextMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetTextMessage;
+
+   PROCEDURE WriteGetTextMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetTextMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.text)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetTextMessage;
+
+   PROCEDURE ReadGetTextMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetTextMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.text)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetTextMessage;
+
+   PROCEDURE CreateGetPathMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetPathMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getPathMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetPathMessage;
+
+   PROCEDURE WriteGetPathMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetPathMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteConstString(s, msg.path)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteGetPathMessage;
+
+   PROCEDURE ReadGetPathMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetPathMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadConstString(s, msg.path)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadGetPathMessage;
+
+   PROCEDURE CreateGetRootMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetRootMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getRootMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetRootMessage;
+
+   PROCEDURE WriteGetRootMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetRootMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.root)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteGetRootMessage;
+
+   PROCEDURE ReadGetRootMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetRootMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.root)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadGetRootMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         pathBuf: ARRAY 1024 OF CHAR;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: CDBNames.Node DO
+         RelatedEvents.Save(object);
+         RelatedEvents.Forward(object, msg.errors);
+         msg.processed := TRUE;
+         IF msg IS AddObjectMessage THEN
+            WITH msg: AddObjectMessage DO
+               msg.done := CDBNames.AddObject(object, msg.header, msg.text, msg.auth, msg.newnode);
+            END;
+         ELSIF msg IS AddSourceMessage THEN
+            WITH msg: AddSourceMessage DO
+               msg.done := CDBNames.AddSource(object, msg.header, msg.text, msg.auth, msg.newnode);
+            END;
+         ELSIF msg IS GetObjectHeaderMessage THEN
+            WITH msg: GetObjectHeaderMessage DO
+               msg.done := CDBNames.GetObjectHeader(object, msg.auth, msg.header);
+            END;
+         ELSIF msg IS GetSourceHeaderMessage THEN
+            WITH msg: GetSourceHeaderMessage DO
+               msg.done := CDBNames.GetSourceHeader(object, msg.auth, msg.header);
+            END;
+         ELSIF msg IS GetTextMessage THEN
+            WITH msg: GetTextMessage DO
+               msg.done := CDBNames.GetText(object, msg.auth, msg.text);
+            END;
+         ELSIF msg IS GetPathMessage THEN
+            WITH msg: GetPathMessage DO
+               CDBNames.GetPath(object, pathBuf);
+               ConstStrings.Create(msg.path, pathBuf);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS GetRootMessage THEN
+            WITH msg: GetRootMessage DO
+               CDBNames.GetRoot(object, msg.root);
+               msg.done := TRUE;
+            END;
+         END;
+         RelatedEvents.Restore(object);
+      END;
+   END Handler;
+
+   PROCEDURE AddObject(node: CDBNames.Node;
+                       header: CompilerObjects.Header;
+                       text: PersistentTexts.Text;
+                       auth: Shards.Lid;
+                       VAR newnode: CDBNames.Node) : BOOLEAN;
+      VAR msg: AddObjectMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAddObjectMessage(msg);
+      msg.header := header;
+      msg.text := text;
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      newnode := msg.newnode;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END AddObject;
+
+   PROCEDURE AddSource(node: CDBNames.Node;
+                       header: Sources.Header;
+                       text: PersistentTexts.Text;
+                       auth: Shards.Lid;
+                       VAR newnode: CDBNames.Node) : BOOLEAN;
+      VAR msg: AddSourceMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAddSourceMessage(msg);
+      msg.header := header;
+      msg.text := text;
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      newnode := msg.newnode;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END AddSource;
+
+   PROCEDURE GetObjectHeader(node: CDBNames.Node;
+                             auth: Shards.Lid;
+                             VAR header: CompilerObjects.Header) : BOOLEAN;
+      VAR msg: GetObjectHeaderMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetObjectHeaderMessage(msg);
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      header := msg.header;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END GetObjectHeader;
+
+   PROCEDURE GetSourceHeader(node: CDBNames.Node;
+                             auth: Shards.Lid;
+                             VAR header: Sources.Header) : BOOLEAN;
+      VAR msg: GetSourceHeaderMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetSourceHeaderMessage(msg);
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      header := msg.header;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END GetSourceHeader;
+
+   PROCEDURE GetText(node: CDBNames.Node;
+                     auth: Shards.Lid;
+                     VAR text: PersistentTexts.Text) : BOOLEAN;
+      VAR msg: GetTextMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetTextMessage(msg);
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      text := msg.text;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END GetText;
+
+   PROCEDURE GetPath(node: CDBNames.Node;
+                     VAR path: ARRAY OF CHAR);
+      VAR msg: GetPathMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetPathMessage(msg);
+      Messages.Send(node, msg);
+      ConstStrings.Extract(path, msg.path);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+   END GetPath;
+
+   PROCEDURE GetRoot(node: CDBNames.Node;
+                     VAR root: CDBNames.Node);
+      VAR msg: GetRootMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetRootMessage(msg);
+      Messages.Send(node, msg);
+      root := msg.root;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+   END GetRoot;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE ^ GetParams(object: Services.Object;
+                         VAR params: PersistentObjects.Object;
+                         VAR mode: RemoteObjects.ExportMode);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.addObject := AddObject;
+      if.addSource := AddSource;
+      if.getObjectHeader := GetObjectHeader;
+      if.getSourceHeader := GetSourceHeader;
+      if.getText := GetText;
+      if.getPath := GetPath;
+      if.getRoot := GetRoot;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteCDBNames.Message", "Messages.Message", NIL);
+      InitPO(addObjectMessageType, "RemoteCDBNames.AddObjectMessage", "RemoteCDBNames.Message",
+             CreateAddObjectMessage, ReadAddObjectMessage, WriteAddObjectMessage);
+      InitPO(addSourceMessageType, "RemoteCDBNames.AddSourceMessage", "RemoteCDBNames.Message",
+             CreateAddSourceMessage, ReadAddSourceMessage, WriteAddSourceMessage);
+      InitPO(getObjectHeaderMessageType, "RemoteCDBNames.GetObjectHeaderMessage", "RemoteCDBNames.Message",
+             CreateGetObjectHeaderMessage, ReadGetObjectHeaderMessage, WriteGetObjectHeaderMessage);
+      InitPO(getSourceHeaderMessageType, "RemoteCDBNames.GetSourceHeaderMessage", "RemoteCDBNames.Message",
+             CreateGetSourceHeaderMessage, ReadGetSourceHeaderMessage, WriteGetSourceHeaderMessage);
+      InitPO(getTextMessageType, "RemoteCDBNames.GetTextMessage", "RemoteCDBNames.Message",
+             CreateGetTextMessage, ReadGetTextMessage, WriteGetTextMessage);
+      InitPO(getPathMessageType, "RemoteCDBNames.GetPathMessage", "RemoteCDBNames.Message",
+             CreateGetPathMessage, ReadGetPathMessage, WriteGetPathMessage);
+      InitPO(getRootMessageType, "RemoteCDBNames.GetRootMessage", "RemoteCDBNames.Message",
+             CreateGetRootMessage, ReadGetRootMessage, WriteGetRootMessage);
+      Services.CreateType(type,
+         "RemoteCDBNames.Node", "CDBNames.Node");
+      InitPO(proxyParamsType, "RemoteCDBNames.ProxyParameters", "",
+             CreateProxyParams, ReadProxyParams, WriteProxyParams);
+
+      Services.SeekType("CDBNames.Node", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := GetParams;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+
+   PROCEDURE GetParams(object: Services.Object;
+                       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+   BEGIN
+      WITH object: CDBNames.Node DO
+	 CreateProxyParams(params);
+	 params(ProxyParameters).root := CDBNames.IsRoot(object);
+	 mode := RemoteObjects.linked;
+      END;
+   END GetParams;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+	 node: Node;
+	 newif: CDBNames.Interface;
+	 root: BOOLEAN;
+   BEGIN
+      NEW(node);
+      Services.Init(node, type);
+      CDBNames.Init(node, if, params(ProxyParameters).root);
+      RelatedEvents.QueueEvents(node);
+      object := node;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteCDBNames.

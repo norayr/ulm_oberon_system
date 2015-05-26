@@ -1,0 +1,588 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteClock.om,v 1.2 2004/02/19 17:09:57 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteClock.om,v $
+   Revision 1.2  2004/02/19 17:09:57  borchert
+   support of passed if procedure added
+
+   Revision 1.1  2004/02/19 17:00:32  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteClocks;
+
+   IMPORT Clocks, Conditions, Disciplines, Events, Messages, NetIO,
+      Op := Operations, PersistentObjects, Priorities, RelatedEvents,
+      RemoteEvents, RemoteObjects, Resources, Services, Shadows, Streams,
+      Timers, Times;
+
+   TYPE
+      Clock = POINTER TO ClockRec;
+      ClockRec =
+	 RECORD
+	    (Clocks.ClockRec)
+	    shadow: Shadows.Shadow;
+	    eventType: Events.EventType;
+	    event: Events.Event;
+	    lastTime: Times.Time; (* last time returned by GetTime *)
+	 END;
+
+   TYPE
+      CapabilityDiscipline = POINTER TO CapabilityDisciplineRec;
+      CapabilityDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    caps: Clocks.CapabilitySet;
+	 END;
+   VAR
+      capDiscID: Disciplines.Identifier;
+
+   TYPE
+      EventTypeDiscipline = POINTER TO EventTypeDisciplineRec;
+      EventTypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    clock: Clock;
+	 END;
+   VAR
+      etDiscID: Disciplines.Identifier;
+
+   TYPE
+      ShadowDiscipline = POINTER TO ShadowDisciplineRec;
+      ShadowDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    timer: Timers.Timer;
+	 END;
+   VAR
+      shadowDiscID: Disciplines.Identifier;
+
+   TYPE
+      ProxyParameters = POINTER TO ProxyParametersRec;
+      ProxyParametersRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            caps: Clocks.CapabilitySet;
+	    eventType: Events.EventType;
+         END;
+   VAR
+      proxyParamsType: Services.Type;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      GetTimeMessage = POINTER TO GetTimeMessageRec;
+      GetTimeMessageRec =
+         RECORD
+            (MessageRec)
+            time: Times.Time; (* OUT via COPY *)
+         END;
+   VAR
+      getTimeMessageType: Services.Type;
+
+   TYPE
+      SetTimeMessage = POINTER TO SetTimeMessageRec;
+      SetTimeMessageRec =
+         RECORD
+            (MessageRec)
+            time: Times.Time; (* IN via COPY *)
+         END;
+   VAR
+      setTimeMessageType: Services.Type;
+
+   TYPE
+      TimerOnMessage = POINTER TO TimerOnMessageRec;
+      TimerOnMessageRec =
+         RECORD
+            (MessageRec)
+            shadow: Shadows.Shadow; (* IN via REF *)
+            eventType: Events.EventType; (* IN via REF *)
+            time: Times.Time; (* IN via COPY *)
+         END;
+   VAR
+      timerOnMessageType: Services.Type;
+
+   TYPE
+      TimerOffMessage = POINTER TO TimerOffMessageRec;
+      TimerOffMessageRec =
+         RECORD
+            (MessageRec)
+            shadow: Shadows.Shadow; (* IN via REF *)
+         END;
+   VAR
+      timerOffMessageType: Services.Type;
+
+   VAR
+      if: Clocks.Interface; (* of Clocks *)
+      type: Services.Type; (* of RemoteClocks.Clock *)
+
+   PROCEDURE CreateProxyParams(VAR object: PersistentObjects.Object);
+      VAR proxyParams: ProxyParameters;
+   BEGIN
+      NEW(proxyParams);
+      PersistentObjects.Init(proxyParams, proxyParamsType);
+      object := proxyParams;
+   END CreateProxyParams;
+
+   PROCEDURE WriteProxyParams(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.WriteSet(s, object.caps) &
+                RemoteObjects.Export(s, object.eventType)
+      END;
+   END WriteProxyParams;
+
+   PROCEDURE ReadProxyParams(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.ReadSet(s, object.caps) &
+                RemoteObjects.Import(s, object.eventType)
+      END;
+   END ReadProxyParams;
+
+   PROCEDURE CreateGetTimeMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetTimeMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getTimeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetTimeMessage;
+
+   PROCEDURE WriteGetTimeMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetTimeMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.Write(s, msg.time)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteGetTimeMessage;
+
+   PROCEDURE ReadGetTimeMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetTimeMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.Read(s, msg.time)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadGetTimeMessage;
+
+   PROCEDURE CreateSetTimeMessage(VAR object: PersistentObjects.Object);
+      VAR msg: SetTimeMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, setTimeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateSetTimeMessage;
+
+   PROCEDURE WriteSetTimeMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SetTimeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.time)
+         END;
+      END;
+   END WriteSetTimeMessage;
+
+   PROCEDURE ReadSetTimeMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SetTimeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.time)
+         END;
+      END;
+   END ReadSetTimeMessage;
+
+   PROCEDURE CreateTimerOnMessage(VAR object: PersistentObjects.Object);
+      VAR msg: TimerOnMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, timerOnMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateTimerOnMessage;
+
+   PROCEDURE WriteTimerOnMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TimerOnMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.shadow) &
+                   RemoteObjects.Export(s, msg.eventType) &
+                   PersistentObjects.Write(s, msg.time)
+         END;
+      END;
+   END WriteTimerOnMessage;
+
+   PROCEDURE ReadTimerOnMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TimerOnMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.shadow) &
+                   RemoteObjects.Import(s, msg.eventType) &
+                   PersistentObjects.Read(s, msg.time)
+         END;
+      END;
+   END ReadTimerOnMessage;
+
+   PROCEDURE CreateTimerOffMessage(VAR object: PersistentObjects.Object);
+      VAR msg: TimerOffMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, timerOffMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateTimerOffMessage;
+
+   PROCEDURE WriteTimerOffMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TimerOffMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.shadow)
+         END;
+      END;
+   END WriteTimerOffMessage;
+
+   PROCEDURE ReadTimerOffMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TimerOffMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.shadow)
+         END;
+      END;
+   END ReadTimerOffMessage;
+
+   PROCEDURE HandleTimerOn(clock: Clocks.Clock; shadow: Shadows.Shadow;
+			   eventType: Events.EventType; time: Times.Time);
+      VAR
+	 sdisc: ShadowDiscipline;
+	 event: Events.Event;
+   BEGIN
+      IF Disciplines.Seek(shadow, shadowDiscID, sdisc) THEN
+	 IF sdisc.timer # NIL THEN
+	    Timers.Remove(sdisc.timer);
+	 END;
+      ELSE
+	 NEW(sdisc); sdisc.id := shadowDiscID;
+	 Resources.DependsOn(eventType, shadow);
+      END;
+      NEW(event); event.type := eventType; event.message := "";
+      Timers.Add(clock, time, event, sdisc.timer);
+      Disciplines.Add(shadow, sdisc);
+   END HandleTimerOn;
+
+   PROCEDURE HandleTimerOff(clock: Clocks.Clock; shadow: Shadows.Shadow);
+      VAR
+	 sdisc: ShadowDiscipline;
+   BEGIN
+      IF Disciplines.Seek(shadow, shadowDiscID, sdisc) &
+	    (sdisc.timer # NIL) THEN
+	 Timers.Remove(sdisc.timer); sdisc.timer := NIL;
+      END;
+   END HandleTimerOff;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Clocks.Clock DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS GetTimeMessage THEN
+            WITH msg: GetTimeMessage DO
+               Clocks.GetTime(object, msg.time);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS SetTimeMessage THEN
+            WITH msg: SetTimeMessage DO
+               Clocks.SetTime(object, msg.time);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS TimerOnMessage THEN
+            WITH msg: TimerOnMessage DO
+               HandleTimerOn(object, msg.shadow, msg.eventType, msg.time);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS TimerOffMessage THEN
+            WITH msg: TimerOffMessage DO
+               HandleTimerOff(object, msg.shadow);
+               msg.done := TRUE;
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE EventHandler(event: Events.Event);
+      VAR
+	 etdisc: EventTypeDiscipline;
+   BEGIN
+      IF Disciplines.Seek(event.type, etDiscID, etdisc) THEN
+	 Events.Raise(etdisc.clock.event);
+      END;
+   END EventHandler;
+
+   PROCEDURE GetTime(clock: Clocks.Clock;
+                     VAR time: Times.Time);
+      VAR msg: GetTimeMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetTimeMessage(msg);
+      Messages.Send(clock, msg);
+      clock(Clock).lastTime := msg.time;
+      time := msg.time;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(clock, queue);
+   END GetTime;
+
+   PROCEDURE SetTime(clock: Clocks.Clock;
+                     time: Times.Time);
+      VAR msg: SetTimeMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateSetTimeMessage(msg);
+      msg.time := time;
+      Messages.Send(clock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(clock, queue);
+   END SetTime;
+
+   PROCEDURE Passed(clock: Clocks.Clock;
+		    time: Times.Time) : BOOLEAN;
+      VAR
+	 currentTime: Times.Time;
+   BEGIN
+      WITH clock: Clock DO
+	 IF (clock.lastTime # NIL) &
+	       (Op.Compare(time, clock.lastTime) <= 0) THEN
+	    RETURN TRUE
+	 END;
+	 GetTime(clock, currentTime);
+	 RETURN Op.Compare(time, currentTime) <= 0
+      END;
+   END Passed;
+
+   PROCEDURE TimerOn(clock: Clocks.Clock;
+                     time: Times.Time;
+		     event: Events.Event);
+      VAR msg: TimerOnMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      WITH clock: Clock DO
+	 clock.event := event;
+	 CreateTimerOnMessage(msg);
+	 msg.shadow := clock.shadow;
+	 msg.eventType := clock.eventType;
+	 msg.time := time;
+      END;
+      Messages.Send(clock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(clock, queue);
+   END TimerOn;
+
+   PROCEDURE TimerOff(clock: Clocks.Clock);
+      VAR msg: TimerOffMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      WITH clock: Clock DO
+	 clock.event := NIL;
+	 CreateTimerOffMessage(msg);
+	 msg.shadow := clock.shadow;
+      END;
+      Messages.Send(clock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(clock, queue);
+   END TimerOff;
+
+   PROCEDURE GetPriority(clock: Clocks.Clock;
+                         VAR priority: Priorities.Priority);
+   BEGIN
+      WITH clock: Clock DO
+	 priority := Events.GetEventPriority(clock.eventType);
+      END;
+   END GetPriority;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE ^ GetParams(object: Services.Object;
+                         VAR params: PersistentObjects.Object;
+                         VAR mode: RemoteObjects.ExportMode);
+
+   PROCEDURE ^ Register(object: Services.Object);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.gettime := GetTime;
+      if.settime := SetTime;
+      if.passed := Passed;
+      if.timeron := TimerOn;
+      if.timeroff := TimerOff;
+      if.getpriority := GetPriority;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteClocks.Message", "Messages.Message", NIL);
+      InitPO(getTimeMessageType, "RemoteClocks.GetTimeMessage",
+	 "RemoteClocks.Message",
+	 CreateGetTimeMessage, ReadGetTimeMessage, WriteGetTimeMessage);
+      InitPO(setTimeMessageType, "RemoteClocks.SetTimeMessage",
+	 "RemoteClocks.Message",
+	 CreateSetTimeMessage, ReadSetTimeMessage, WriteSetTimeMessage);
+      InitPO(timerOnMessageType, "RemoteClocks.TimerOnMessage",
+	 "RemoteClocks.Message",
+	 CreateTimerOnMessage, ReadTimerOnMessage, WriteTimerOnMessage);
+      InitPO(timerOffMessageType, "RemoteClocks.TimerOffMessage",
+	 "RemoteClocks.Message",
+	 CreateTimerOffMessage, ReadTimerOffMessage, WriteTimerOffMessage);
+      Services.CreateType(type,
+         "RemoteClocks.Clock", "Clocks.Clock");
+      InitPO(proxyParamsType, "RemoteClocks.ProxyParameters", "",
+             CreateProxyParams, ReadProxyParams, WriteProxyParams);
+
+      Services.SeekType("Clocks.Clock", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := GetParams;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      remoteObjIf.register := Register;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+   PROCEDURE SetCapabilities(clock: Clocks.Clock; caps: Clocks.CapabilitySet);
+      VAR
+	 disc: CapabilityDiscipline;
+   BEGIN
+      caps := caps * Clocks.Capabilities(clock);
+      NEW(disc); disc.id := capDiscID; disc.caps := caps;
+      Disciplines.Add(clock, disc);
+   END SetCapabilities;
+
+   PROCEDURE GetParams(object: Services.Object;
+                       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+      VAR
+	 caps: Clocks.CapabilitySet;
+	 disc: CapabilityDiscipline;
+	 priority: Priorities.Priority;
+   BEGIN
+      WITH object: Clocks.Clock DO
+	 CreateProxyParams(params);
+	 WITH params: ProxyParameters DO
+	    IF Disciplines.Seek(object, capDiscID, disc) THEN
+	       params.caps := disc.caps;
+	    ELSE
+	       params.caps := Clocks.Capabilities(object) - {Clocks.settime};
+	    END;
+	    Events.Define(params.eventType);
+	    Clocks.GetPriority(object, priority);
+	    (*
+	    IF priority >= Priorities.interrupts THEN
+	       priority := Priorities.interrupts - 1;
+	    END;
+	    *)
+	    Events.SetPriority(params.eventType, priority + 1);
+	 END;
+      END;
+      mode := RemoteObjects.linked;
+      Shadows.InitObject(object);
+   END GetParams;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+         clock: Clock;
+	 etdisc: EventTypeDiscipline;
+   BEGIN
+      WITH params: ProxyParameters DO
+	 NEW(clock);
+	 Services.Init(clock, type);
+	 Clocks.Init(clock, if, params.caps + {Clocks.passed});
+	 RelatedEvents.QueueEvents(clock);
+	 clock.eventType := params.eventType;
+	 NEW(etdisc); etdisc.id := etDiscID; etdisc.clock := clock;
+	 Disciplines.Add(clock.eventType, etdisc);
+	 clock.lastTime := NIL;
+	 object := clock;
+      END;
+   END CreateProxy;
+
+   PROCEDURE Register(object: Services.Object);
+   BEGIN
+      WITH object: Clock DO
+	 Events.Handler(object.eventType, EventHandler);
+	 Shadows.Create(object.shadow, object);
+      END;
+   END Register;
+
+BEGIN
+   InitIFs;
+   capDiscID := Disciplines.Unique();
+   shadowDiscID := Disciplines.Unique();
+   etDiscID := Disciplines.Unique();
+END RemoteClocks.

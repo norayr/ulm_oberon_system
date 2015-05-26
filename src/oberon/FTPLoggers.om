@@ -1,0 +1,94 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPLoggers.om,v 1.1 2001/05/08 07:34:30 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPLoggers.om,v $
+   Revision 1.1  2001/05/08 07:34:30  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPLoggers;
+
+   IMPORT Disciplines, Events, FTPRequests, FTPResponses, FTPSessions,
+      RelatedEvents;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    request: FTPRequests.Request;
+	    response: FTPResponses.Response;
+	    errors: RelatedEvents.Object;
+	 END;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    eventType: Events.EventType;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   (* === public procedures =============================================== *)
+
+   PROCEDURE Log(session: FTPSessions.Session;
+		 request: FTPRequests.Request;
+		 response: FTPResponses.Response);
+      VAR
+	 sdisc: SessionDiscipline;
+	 event: Event;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      IF Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(event); event.type := sdisc.eventType;
+	 event.message := "FTP Log Event";
+	 event.request := request;
+	 event.response := response;
+	 NEW(event.errors);
+	 IF RelatedEvents.EventsPending(session) THEN
+	    RelatedEvents.QueueEvents(event.errors);
+	    RelatedEvents.GetQueue(session, queue);
+	    RelatedEvents.AppendQueue(event.errors, queue);
+	 END;
+	 Events.Raise(event);
+      END;
+   END Log;
+
+   PROCEDURE GetEventType(session: FTPSessions.Session;
+			  VAR eventType: Events.EventType);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN
+	 NEW(sdisc); sdisc.id := sdid;
+	 Events.Define(sdisc.eventType);
+	 Disciplines.Add(session, sdisc);
+      END;
+      eventType := sdisc.eventType;
+   END GetEventType;
+
+BEGIN
+   sdid := Disciplines.Unique();
+END FTPLoggers.

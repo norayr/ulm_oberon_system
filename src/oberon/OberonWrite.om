@@ -1,0 +1,551 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonWrite.om,v 1.1 2000/11/08 23:17:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonWrite.om,v $
+   Revision 1.1  2000/11/08 23:17:26  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonWrite;
+
+   IMPORT ASCII, ConstStrings, Disciplines, Iterators, Lex := OberonLex,
+      Scopes, Sources := CompilerSources, StreamDisciplines, Streams,
+      Sym := OberonSymbols, Write;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    module: Sym.Ident;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   PROCEDURE SetModule(s: Streams.Stream; module: Sym.Ident);
+      VAR
+	 sdisc: StreamDiscipline;
+   BEGIN
+      NEW(sdisc); sdisc.id := sdid; sdisc.module := module;
+      Disciplines.Add(s, sdisc);
+   END SetModule;
+
+   PROCEDURE GetModule(s: Streams.Stream; VAR module: Sym.Ident);
+      VAR
+	 sdisc: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(s, sdid, sdisc) THEN
+	 module := sdisc.module;
+      ELSE
+	 module := NIL;
+      END;
+   END GetModule;
+
+   PROCEDURE ^Ident(s: Streams.Stream; ident: Sym.Ident);
+   PROCEDURE ^Expression(s: Streams.Stream; at: Sym.Attribute);
+   PROCEDURE ^StatementSequence(s: Streams.Stream; at: Sym.Attribute);
+   PROCEDURE ^ProcedureHeader(s: Streams.Stream; type: Sym.Type);
+   PROCEDURE ^Type(s: Streams.Stream; type: Sym.Type);
+   PROCEDURE ^NameOfType(s: Streams.Stream; type: Sym.Type);
+
+   PROCEDURE Name(s: Streams.Stream; name: ConstStrings.String);
+   BEGIN
+      IF name # NIL THEN
+	 ConstStrings.Write(s, name);
+      ELSE
+	 Write.StringS(s, "*NONAME*");
+      END;
+   END Name;
+
+   PROCEDURE QualifiedName(s: Streams.Stream; ident: Sym.Ident);
+      VAR
+	 module: Sym.Ident;
+   BEGIN
+      IF ident = NIL THEN
+	 Write.StringS(s, "*NONAME*");
+      ELSE
+	 IF ident.module # NIL THEN
+	    GetModule(s, module);
+	    IF module # ident.module THEN
+	       Name(s, ident.module.name); Write.CharS(s, ".");
+	    END;
+	 END;
+	 Name(s, ident.name);
+      END;
+   END QualifiedName;
+
+   PROCEDURE Scope(s: Streams.Stream; scope: Scopes.Scope;
+		   comment: ARRAY OF CHAR);
+      VAR
+	 it: Iterators.Iterator;
+	 object: Scopes.Object;
+	 emptyline: BOOLEAN;
+   BEGIN
+      IF scope # NIL THEN
+	 StreamDisciplines.IncrIndentationWidth(s, 3);
+	 IF comment # "" THEN
+	    Write.IndentS(s);
+	    Write.StringS(s, "(* "); Write.StringS(s, comment);
+	    Write.LineS(s, " *)");
+	 END;
+	 emptyline := FALSE;
+	 Scopes.GetIterator(scope, it);
+	 WHILE Iterators.Get(it, object) DO
+	    IF object IS Sym.Ident THEN
+	       WITH object: Sym.Ident DO
+		  IF ~emptyline & (object.class = Sym.procedureC) THEN
+		     Write.LnS(s);
+		  END;
+		  Write.IndentS(s); Ident(s, object);
+		  Write.LnS(s);
+		  IF object.class = Sym.procedureC THEN
+		     Write.LnS(s); emptyline := TRUE;
+		  ELSE
+		     emptyline := FALSE;
+		  END;
+	       END;
+	    ELSIF object IS Sym.FieldList THEN
+	       WITH object: Sym.FieldList DO
+		  Write.IndentS(s);
+		  Name(s, object.name);
+		  Write.StringS(s, ": ");
+		  NameOfType(s, object.type);
+		  Write.CharS(s, ";");
+		  IF object.private THEN
+		     Write.StringS(s, " (* private *)");
+		  END;
+		  Write.LnS(s);
+	       END;
+	    END;
+	 END;
+	 StreamDisciplines.IncrIndentationWidth(s, -3);
+      END;
+   END Scope;
+
+   PROCEDURE Ident(s: Streams.Stream; ident: Sym.Ident);
+      VAR
+	 lastModule: Sym.Ident;
+   BEGIN
+      IF ident = NIL THEN RETURN END;
+      CASE ident.class OF
+      | Sym.moduleC:    IF ident.kind = Sources.definition THEN
+			   Write.StringS(s, "DEFINITION ");
+			ELSE
+			   Write.StringS(s, "MODULE ");
+			END;
+      | Sym.constC:     Write.StringS(s, "CONST ");
+      | Sym.typeC:      Write.StringS(s, "TYPE ");
+      | Sym.varC:       Write.StringS(s, "VAR ");
+      | Sym.procedureC: Write.StringS(s, "PROCEDURE ");
+      END;
+      Name(s, ident.name);
+      CASE ident.class OF
+      | Sym.moduleC, Sym.procedureC:
+	 CASE ident.class OF
+	 | Sym.moduleC:
+	    GetModule(s, lastModule); SetModule(s, ident);
+	    IF (ident.origname # NIL) & (ident.origname # ident.name) THEN
+	       Write.StringS(s, " := ");
+	       ConstStrings.Write(s, ident.origname);
+	    END;
+	    Write.CharS(s, ";");
+	 | Sym.procedureC:
+	    ProcedureHeader(s, ident.type);
+	    Write.CharS(s, ";");
+	 END;
+	 Write.LnS(s); Scope(s, ident.scope, "");
+	 IF ident.body # NIL THEN
+	    Write.IndentS(s); Write.LineS(s, "BEGIN");
+	    StatementSequence(s, ident.body);
+	 END;
+	 Write.IndentS(s); Write.StringS(s, "END "); Name(s, ident.name);
+	 IF ident.class = Sym.moduleC THEN
+	    SetModule(s, lastModule);
+	    Write.LineS(s, ".");
+	 ELSE
+	    Write.CharS(s, ";");
+	 END;
+      | Sym.constC:
+	 Write.StringS(s, " = ");
+	 Expression(s, ident.constexpr);
+	 Write.CharS(s, ";");
+	 IF ident.type # NIL THEN
+	    Write.StringS(s, " (* TYPE ");
+	    NameOfType(s, ident.type);
+	    Write.StringS(s, " *)");
+	 END;
+      | Sym.typeC:
+	 Write.StringS(s, " = ");
+	 IF ident.type.ident = ident THEN
+	    Type(s, ident.type);
+	 ELSE
+	    NameOfType(s, ident.type);
+	 END;
+	 Write.CharS(s, ";");
+      | Sym.varC:
+	 Write.StringS(s, ": ");
+	 NameOfType(s, ident.type);
+	 Write.CharS(s, ";");
+      END;
+   END Ident;
+
+   PROCEDURE NameOfType(s: Streams.Stream; type: Sym.Type);
+   BEGIN
+      IF type # NIL THEN
+	 IF (type.ident # NIL) & (type.ident.name # NIL) THEN
+	    QualifiedName(s, type.ident);
+	 ELSE
+	    Type(s, type);
+	 END;
+      ELSE
+	 Write.LineS(s, "*UNDEFINED*");
+      END;
+   END NameOfType;
+
+   PROCEDURE ProcedureHeader(s: Streams.Stream; type: Sym.Type);
+      VAR
+	 param: Sym.ParamList;
+   BEGIN
+      IF ~type.builtin THEN
+	 IF type.paramlist # NIL THEN
+	    Write.LineS(s, " (");
+	    StreamDisciplines.IncrIndentationWidth(s, 6);
+	    param := type.paramlist;
+	    WHILE param # NIL DO
+	       Write.IndentS(s);
+	       IF param.paramkind = Sym.callByReference THEN
+		  Write.StringS(s, "VAR ");
+	       END;
+	       Name(s, param.name);
+	       Write.StringS(s, ": ");
+	       NameOfType(s, param.type);
+	       Write.LineS(s, ";");
+	       param := param.next;
+	    END;
+	    StreamDisciplines.IncrIndentationWidth(s, -3);
+	    Write.IndentS(s); Write.CharS(s, ")");
+	    StreamDisciplines.IncrIndentationWidth(s, -3);
+	 ELSIF type.function THEN
+	    Write.StringS(s, " ()");
+	 END;
+	 IF type.function THEN
+	    Write.StringS(s, " : ");
+	    NameOfType(s, type.restype);
+	 END;
+      END;
+   END ProcedureHeader;
+
+   PROCEDURE Type(s: Streams.Stream; type: Sym.Type);
+   BEGIN
+      IF type = NIL THEN
+	 Write.LineS(s, "*UNDEFINED*"); RETURN
+      END;
+      IF type.form IN Sym.specforms THEN
+	 CASE type.spec OF
+	 | Sym.generic:    Write.StringS(s, "GENERIC-");
+			   CASE type.form OF
+			   | Sym.integer:    Write.StringS(s, "INTEGER");
+			   | Sym.cardinal:   Write.StringS(s, "CARDINAL");
+			   | Sym.real:       Write.StringS(s, "REAL");
+			   END;
+	 | Sym.standard:   CASE type.stdlength OF
+			   | Sym.short, Sym.long:
+				 CASE type.stdlength OF
+				 | Sym.short:   Write.StringS(s, "SHORT");
+				 | Sym.long:    Write.StringS(s, "LONG");
+				 END;
+				 CASE type.form OF
+				 | Sym.integer:    Write.StringS(s, "INT");
+				 | Sym.cardinal:   Write.StringS(s, "CARD");
+				 | Sym.real:       Write.StringS(s, "REAL");
+				 END;
+			   | Sym.medium:
+				 CASE type.form OF
+				 | Sym.integer:    Write.StringS(s, "INTEGER");
+				 | Sym.cardinal:   Write.StringS(s, "CARDINAL");
+				 | Sym.real:       Write.StringS(s, "REAL");
+				 END;
+			   END;
+	 | Sym.explicit:   CASE type.form OF
+			   | Sym.integer:    Write.StringS(s, "INT");
+			   | Sym.cardinal:   Write.StringS(s, "CARD");
+			   | Sym.real:       Write.StringS(s, "REAL");
+			   END;
+			   Write.IntS(s, type.bits, 1);
+	 END;
+      ELSE
+	 CASE type.form OF
+	 | Sym.address:
+	       IF ~type.traced THEN
+		  Write.StringS(s, "UNTRACED");
+	       END;
+	       Write.StringS(s, "ADDRESS");
+	 | Sym.boolean:
+	       Write.StringS(s, "BOOLEAN");
+	 | Sym.char:
+	       Write.StringS(s, "CHAR");
+	 | Sym.set:
+	       Write.StringS(s, "SET");
+	 | Sym.byte:
+	       Write.StringS(s, "BYTE");
+	 | Sym.coroutine:
+	       Write.StringS(s, "COROUTINE");
+	 | Sym.array:
+	       Write.StringS(s, "ARRAY ");
+	       IF ~type.dyn THEN
+		  Expression(s, type.length);
+		  Write.CharS(s, " ");
+	       END;
+	       Write.StringS(s, "OF ");
+	       NameOfType(s, type.element);
+	 | Sym.record:
+	       Write.StringS(s, "RECORD");
+	       IF type.basetype # NIL THEN
+		  Write.StringS(s, " ("); NameOfType(s, type.basetype);
+		  Write.CharS(s, ")");
+	       END;
+	       Write.LnS(s);
+	       Scope(s, type.publicfieldscope, "public fields");
+	       Scope(s, type.privatefieldscope, "private fields");
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.pointer:
+	       IF ~type.taggedptr THEN
+		  Write.StringS(s, "UNTAGGED ");
+	       END;
+	       Write.StringS(s, "POINTER TO ");
+	       NameOfType(s, type.reftype);
+	 | Sym.proceduretype:
+	       IF type.builtin THEN
+		  Write.StringS(s, "BUILTIN ");
+		  IF type.function THEN
+		     Write.StringS(s, "FUNCTION ");
+		  END;
+	       END;
+	       Write.StringS(s, "PROCEDURE");
+	       ProcedureHeader(s, type);
+	 END;
+      END;
+   END Type;
+
+   PROCEDURE IdentAttribute(s: Streams.Stream; at: Sym.Attribute);
+   BEGIN
+      IF at = NIL THEN RETURN END;
+      ASSERT(at.mode IN Sym.identModes);
+      IF (at.ident.class IN {Sym.procedureC, Sym.varC}) &
+	    (at.ident.plevel > 0) THEN
+	 Name(s, at.ident.name);
+      ELSE
+	 QualifiedName(s, at.ident);
+      END;
+   END IdentAttribute;
+
+   PROCEDURE Expression(s: Streams.Stream; at: Sym.Attribute);
+      VAR
+	 param: Sym.Attribute;
+	 opstring: ARRAY 8 OF CHAR;
+	 ts: Streams.Stream;
+	 sy: Lex.Symbol;
+   BEGIN
+      IF at = NIL THEN RETURN END;
+      IF at.mode IN Sym.identModes THEN
+	 IdentAttribute(s, at); RETURN
+      END;
+      ASSERT(at.mode IN Sym.opModes);
+      IF at.mode IN Sym.designatorModes THEN
+	 Expression(s, at.designator);
+      END;
+      CASE at.mode OF
+      | Sym.refAt:
+	    Write.CharS(s, "^");
+      | Sym.selectAt:
+	    Write.CharS(s, ".");
+	    IF at.field # NIL THEN
+	       Name(s, at.field.name);
+	    ELSE
+	       Write.StringS(s, "*UNKNOWN*");
+	    END;
+      | Sym.indexAt:
+	    Write.CharS(s, "["); Expression(s, at.index);
+	    Write.CharS(s, "]");
+      | Sym.guardAt:
+	    Write.CharS(s, "("); IdentAttribute(s, at.guard);
+	    Write.CharS(s, ")");
+      | Sym.callAt:
+	    Expression(s, at.proc);
+	    Write.CharS(s, "(");
+	    param := at.firstparam;
+	    WHILE param # NIL DO
+	       Expression(s, param);
+	       IF param.next # NIL THEN
+		  Write.StringS(s, ", ");
+	       END;
+	       param := param.next;
+	    END;
+	    Write.CharS(s, ")");
+      | Sym.unaryAt:
+	    Write.CharS(s, "(");
+	    Lex.GetSymString(at.opsy, opstring);
+	    Write.StringS(s, opstring);
+	    Write.CharS(s, " ");
+	    Expression(s, at.rightop);
+	    Write.CharS(s, ")");
+      | Sym.binaryAt:
+	    Write.CharS(s, "(");
+	    Expression(s, at.leftop);
+	    Lex.GetSymString(at.opsy, opstring);
+	    Write.CharS(s, " "); Write.StringS(s, opstring);
+	    Write.CharS(s, " ");
+	    Expression(s, at.rightop);
+	    Write.CharS(s, ")");
+      | Sym.constvalAt:
+	    CASE at.constval.kind OF
+	    | Sym.emptySetConst:
+	       Write.StringS(s, "{}");
+	    | Sym.trueConst:
+	       Write.StringS(s, "TRUE");
+	    | Sym.falseConst:
+	       Write.StringS(s, "FALSE");
+	    | Sym.tokenConst:
+	       sy := at.constval.token.sy;
+	       ts := at.constval.token.text;
+	       IF ts # NIL THEN
+		  IF (sy = Lex.charconst) OR (sy = Lex.string) THEN
+		     Write.CharS(s, ASCII.quote);
+		  END;
+		  Streams.SetPos(ts, 0);
+		  IF ~Streams.Copy(ts, s, -1) THEN END;
+		  Streams.SetPos(ts, 0);
+		  IF (sy = Lex.charconst) OR (sy = Lex.string) THEN
+		     Write.CharS(s, ASCII.quote);
+		  END;
+	       ELSE
+		  Lex.GetSymString(sy, opstring);
+		  Write.StringS(s, opstring);
+	       END;
+	    END;
+      END;
+   END Expression;
+
+   PROCEDURE StatementSequence(s: Streams.Stream; at: Sym.Attribute);
+      VAR
+	 chain: Sym.Attribute;
+   BEGIN
+      IF at = NIL THEN RETURN END;
+      ASSERT(at.mode IN Sym.stmtModes + {Sym.procAt});
+      StreamDisciplines.IncrIndentationWidth(s, 3);
+      WHILE at # NIL DO
+	 Write.IndentS(s);
+	 CASE at.mode OF
+	 | Sym.ifAt:
+	       Write.StringS(s, "IF ");
+	       Expression(s, at.expression);
+	       Write.LineS(s, " THEN");
+	       StatementSequence(s, at.then);
+	       chain := at.elsifs;
+	       WHILE chain # NIL DO
+		  Write.IndentS(s);
+		  Write.StringS(s, "ELSIF ");
+		  Expression(s, chain.expression);
+		  Write.LineS(s, " THEN");
+		  StatementSequence(s, chain.then);
+		  chain := chain.next;
+	       END;
+	       IF at.else # NIL THEN
+		  Write.IndentS(s);
+		  Write.LineS(s, "ELSE");
+		  StatementSequence(s, at.else);
+	       END;
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.caseAt:
+	       Write.StringS(s, "CASE ");
+	       Expression(s, at.expression);
+	       Write.LineS(s, " OF");
+	       chain := at.cases;
+	       WHILE chain # NIL DO
+		  Write.IndentS(s);
+		  Write.StringS(s, "| ");
+		  ASSERT(chain.mode = Sym.singleCaseAt);
+		  Expression(s, chain.labels);
+		  Write.LineS(s, ":");
+		  StatementSequence(s, chain.body);
+		  chain := chain.next;
+	       END;
+	       IF at.else # NIL THEN
+		  Write.IndentS(s);
+		  Write.LineS(s, "ELSE");
+		  StatementSequence(s, at.else);
+	       END;
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.whileAt:
+	       Write.StringS(s, "WHILE ");
+	       Expression(s, at.expression);
+	       Write.LineS(s, " DO");
+	       StatementSequence(s, at.body);
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.repeatAt:
+	       Write.LineS(s, "REPEAT");
+	       StatementSequence(s, at.body);
+	       Write.IndentS(s); Write.StringS(s, "UNTIL ");
+	       Expression(s, at.expression);
+	 | Sym.loopAt:
+	       Write.LineS(s, "LOOP");
+	       StatementSequence(s, at.body);
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.exitAt:
+	       Write.StringS(s, "EXIT");
+	 | Sym.returnAt:
+	       Write.StringS(s, "RETURN");
+	       IF at.expression # NIL THEN
+		  Write.CharS(s, " ");
+		  Expression(s, at.expression);
+	       END;
+	 | Sym.withAt:
+	       Write.StringS(s, "WITH ");
+	       QualifiedName(s, at.variable);
+	       Write.StringS(s, ": ");
+	       NameOfType(s, at.type);
+	       Write.LineS(s, " DO");
+	       StatementSequence(s, at.body);
+	       Write.IndentS(s); Write.StringS(s, "END");
+	 | Sym.binaryAt:
+	       ASSERT(at.opsy = Lex.becomes);
+	       Expression(s, at.leftop);
+	       Write.StringS(s, " := ");
+	       Expression(s, at.rightop);
+	 | Sym.callAt:
+	       Expression(s, at);
+	 | Sym.procAt:
+	       QualifiedName(s, at.ident);
+	 END;
+	 IF at.next # NIL THEN
+	    Write.CharS(s, ";");
+	 END;
+	 Write.LnS(s);
+	 at := at.next;
+      END;
+      StreamDisciplines.IncrIndentationWidth(s, -3);
+   END StatementSequence;
+
+BEGIN
+   sdid := Disciplines.Unique();
+END OberonWrite.

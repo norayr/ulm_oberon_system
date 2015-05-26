@@ -1,0 +1,200 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SortedBags.om,v 1.1 1999/05/07 07:23:43 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: SortedBags.om,v $
+   Revision 1.1  1999/05/07 07:23:43  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SortedBags;
+
+   IMPORT AVLTrees, Disciplines, Iterators, Keys, RelatedEvents, Services;
+
+   CONST
+      ascending = 0;  (* in ascending order *)
+      descending = 1; (* in descending order *)
+   
+   TYPE
+      Order = Iterators.Mode;    (* ascending, descending *)
+
+      Bag = POINTER TO BagRec;
+      BagRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    tree: AVLTrees.AVLTree;
+	    key: Keys.Key;
+	    card: INTEGER; (* cardinality *)
+	 END;
+   VAR
+      bagType: Services.Type;
+
+   TYPE
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    object: Services.Object;
+	    prev, next: Entry;
+	 END;
+      KeyValueDiscipline = POINTER TO KeyValueDisciplineRec;
+      KeyValueDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    head, tail: Entry; (* in order of appearance *)
+	 END;
+   VAR
+      kvdID: Disciplines.Identifier;
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(bagType, "SortedBags.Bag", "");
+      kvdID := Disciplines.Unique();
+   END Init;
+
+   PROCEDURE Create(VAR bag: Bag; key: Keys.Key);
+   BEGIN
+      NEW(bag); Services.Init(bag, bagType);
+      bag.key := key; bag.card := 0;
+      AVLTrees.Create(bag.tree, key);
+      RelatedEvents.Forward(bag.tree, RelatedEvents.null);
+   END Create;
+
+   PROCEDURE GetKey(bag: Bag; VAR key: Keys.Key);
+   BEGIN
+      key := bag.key;
+   END GetKey;
+
+   PROCEDURE Add(bag: Bag; object: Services.Object);
+      VAR
+	 keyval, otherkeyval: Keys.Value;
+	 disc: KeyValueDiscipline;
+	 entry: Entry;
+	 ok: BOOLEAN;
+   BEGIN
+      Keys.Extract(object, bag.key, keyval); ASSERT(keyval # NIL);
+      IF AVLTrees.Get(bag.tree, keyval, otherkeyval) THEN
+	 keyval := otherkeyval;
+	 ok := Disciplines.Seek(keyval, kvdID, disc); ASSERT(ok);
+      ELSE
+	 NEW(disc); disc.id := kvdID;
+	 disc.head := NIL; disc.tail := NIL;
+	 Disciplines.Add(keyval, disc);
+	 ok := AVLTrees.Add(bag.tree, keyval);
+      END;
+      NEW(entry); entry.object := object;
+      IF disc.head = NIL THEN
+	 disc.head := entry; entry.prev := NIL;
+      ELSE
+	 disc.tail.next := entry; entry.prev := disc.tail;
+      END;
+      entry.next := NIL; disc.tail := entry;
+      INC(bag.card);
+   END Add;
+
+   PROCEDURE Remove(bag: Bag; object: Services.Object);
+      VAR
+	 keyval, otherkeyval: Keys.Value;
+	 disc: KeyValueDiscipline;
+	 ok: BOOLEAN;
+	 entry: Entry;
+   BEGIN
+      Keys.Extract(object, bag.key, keyval); ASSERT(keyval # NIL);
+      IF ~AVLTrees.Get(bag.tree, keyval, otherkeyval) THEN
+	 RETURN (* object not in bag *)
+      END;
+      keyval := otherkeyval;
+      ok := Disciplines.Seek(keyval, kvdID, disc); ASSERT(ok);
+      entry := disc.head;
+      WHILE (entry # NIL) & (entry.object # object) DO
+	 entry := entry.next;
+      END;
+      IF entry = NIL THEN
+	 RETURN (* object not in bag *)
+      END;
+      IF entry.prev = NIL THEN
+	 disc.head := entry.next;
+      ELSE
+	 entry.prev.next := entry.next;
+      END;
+      IF entry.next = NIL THEN
+	 disc.tail := entry.prev;
+      ELSE
+	 entry.next.prev := entry.prev;
+      END;
+      IF disc.head = NIL THEN
+	 (* list of entries became empty *)
+	 ok := AVLTrees.Remove(bag.tree, keyval); ASSERT(ok);
+      END;
+      DEC(bag.card);
+   END Remove;
+
+   PROCEDURE Card(bag: Bag): INTEGER;
+   BEGIN
+      RETURN bag.card
+   END Card;
+
+   PROCEDURE IterateEntries(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 keyval: Keys.Value;
+	 disc: KeyValueDiscipline;
+	 ok: BOOLEAN;
+	 entry: Entry;
+   BEGIN
+      WITH ref: Iterators.Iterator DO
+	 WHILE Iterators.Get(ref, keyval) DO
+	    ok := Disciplines.Seek(keyval, kvdID, disc); ASSERT(ok);
+	    CASE mode OF
+	    | ascending:  
+	       entry := disc.head;
+	       WHILE entry # NIL DO
+		  Iterators.Yield(it, entry.object);
+		  entry := entry.next;
+	       END;
+	    | descending:
+	       entry := disc.tail;
+	       WHILE entry # NIL DO
+		  Iterators.Yield(it, entry.object);
+		  entry := entry.prev;
+	       END;
+	    END;
+	 END;
+      END;
+   END IterateEntries;
+
+   PROCEDURE GetEntries(bag: Bag; order: Order;
+   	 	        from, to: Keys.Value; VAR it: Iterators.Iterator);
+      VAR
+	 treeIt: Iterators.Iterator;
+   BEGIN
+      AVLTrees.GetEntries(bag.tree, order, from, to, treeIt);
+      IF bag.card >= 128 THEN
+	 Iterators.Create(it, IterateEntries, treeIt, order);
+      ELSE
+	 Iterators.CreateQuickIterator(it, IterateEntries, treeIt, order);
+      END;
+   END GetEntries;
+
+BEGIN
+   Init;
+END SortedBags.

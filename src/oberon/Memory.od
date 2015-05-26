@@ -1,0 +1,138 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Memory.od,v 1.2 1994/07/01 09:18:06 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Memory.od,v $
+   Revision 1.2  1994/07/01  09:18:06  borchert
+   Types used instead of SysTypes
+
+   Revision 1.1  1994/02/23  07:58:10  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/92
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Memory;
+
+   (* general and machine-independent allocation of memory regions;
+      an exception are the types Address and Size which are per
+      definition system dependent
+   *)
+
+   IMPORT Disciplines, Events, RelatedEvents, Types;
+
+   TYPE
+      Address = Types.UntracedAddress;
+      Size = Types.Size;
+
+   CONST
+      (* allocation mode *)
+      fixed = { 0 };              (* memory region doesn't grow *)
+      growingForward = { 1 };     (* should be extensible to higher addresses *)
+      growingBackward = { 0, 1 }; (* should be extensible to lower addresses *)
+      redzoneProtected = { 2 };   (* at least the page before and after the
+				     region should be protected
+				  *)
+
+      (* status returns for memory locations *)
+      stAllocated = 1;   	(* allocated by the given region *)
+      stRedzone = 2;            (* redzone area of given region *)
+      stReserved = 3;    	(* internally allocated for the given region *)
+      stThreatened = 4;  	(* free but threatened by the given region *)
+      stInternalFrag = 5; 	(* consumed by internal fragmentation *)
+      stFree = 6;        	(* free; region = NIL *)
+
+   TYPE
+      AllocationMode = SET;
+      Status = SHORTINT; (* stAllocated..stFree *)
+
+   TYPE
+      Region = POINTER TO RegionRec;
+      RegionRec = RECORD (Disciplines.ObjectRec) END;
+
+   VAR
+      (* assertions *)
+      overlappingRegions: Events.EventType;
+      addrNotOnPageBoundary: Events.EventType;
+      pagesizeSetTwice: Events.EventType;
+      undefinedPageSize: Events.EventType;
+
+   CONST
+      cannotAllocRegion = 0; (* cannot allocate requested memory region *)
+      cannotExtendRegion = 1; (* cannot extend given region *)
+      fixedRegion = 2; (* fixed regions cannot grow *)
+      reservedRegionsAreNotProtected = 3;
+	 (* reserved regions cannot be redzone protected *)
+      badParamsOfReservedRegion = 4;
+	 (* addr/len params does not fit into address space *)
+      errorcodes = 5;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE ReserveRegion(addr: Address; len: Size;
+			   mode: AllocationMode;
+			   VAR region: Region);
+      (* reserve region which has been already allocated by the system;
+	 this procedure should only be called by some system dependent
+	 modules during the initialisation;
+	 the memory region is given by
+	    [addr, addr+len)
+	       for fixed or forward growing regions and by
+	    [addr-len, addr)
+	       for backward growing regions;
+	 addr must be on page boundaries
+      *)
+
+   PROCEDURE AllocateRegion(len: Size; mode: AllocationMode;
+			    VAR addr: Address; VAR region: Region;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ExtendRegion(region: Region; newlen: Size;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ReleaseRegion(region: Region);
+
+   PROCEDURE GetStatus(addr: Address;
+		       VAR status: Status; VAR region: Region);
+      (* return status of the given memory location *)
+
+   PROCEDURE SetPageSize(pagesize: Size);
+      (* has to be set once during initialisation by some
+	 system-dependent module;
+	 the pagesize must be a power of 2
+      *)
+
+   PROCEDURE GetPageSize() : Size;
+      (* returns the pagesize *)
+
+   PROCEDURE AlignSize(VAR size: Size);
+      (* align size to next page boundary *)
+
+END Memory.

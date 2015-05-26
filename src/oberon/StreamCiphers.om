@@ -1,0 +1,101 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StreamCiphe.om,v 1.1 1997/04/02 11:53:53 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: StreamCiphe.om,v $
+   Revision 1.1  1997/04/02  11:53:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StreamCiphers; (* Michael Szczuka *)
+
+   IMPORT CipherOps, Ciphers, PersistentObjects, Services, Streams, Texts;
+
+   TYPE
+      Cipher = POINTER TO CipherRec;
+      CipherRec = RECORD
+	 (Ciphers.CipherRec)
+	 (* private *)
+	 s: Streams.Stream;
+      END;
+
+   VAR
+      streamCipherType : Services.Type;
+      streamCipherIf : PersistentObjects.Interface;
+
+   PROCEDURE Encrypt (in: Streams.Stream; key: Ciphers.Cipher;
+		      length: INTEGER; out: Streams.Stream) : BOOLEAN;
+      (* encryption and decryption using a stream cipher *)
+   BEGIN
+      WITH key:Cipher DO
+	 RETURN CipherOps.XorStream(in, key.s, out, length);
+      END;
+   END Encrypt;
+
+   PROCEDURE PersCreate (VAR obj: PersistentObjects.Object);
+      VAR
+	 key : Cipher;
+	 if : Ciphers.Interface;
+   BEGIN
+      NEW(key);
+      PersistentObjects.Init(key, streamCipherType);
+      NEW(if); 
+      if.encrypt := Encrypt; if.decrypt := Encrypt;
+      Ciphers.Init(key, if);
+      obj := key;
+   END PersCreate;
+
+   PROCEDURE Write (s: Streams.Stream; obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj:Cipher DO
+	 RETURN Streams.Copy(obj.s, s, -1);
+      END;
+   END Write;
+
+   PROCEDURE Read (s: Streams.Stream; obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj:Cipher DO
+	 Texts.Open(obj.s);
+	 IF ~Streams.Copy(s, obj.s, -1) THEN
+	    RETURN FALSE;
+	 ELSE
+	    Streams.SetPos(obj.s, 0);
+	    RETURN TRUE;
+	 END;
+      END;
+   END Read;
+
+   PROCEDURE Create (VAR key: Cipher; s: Streams.Stream);
+      VAR
+	 if: Ciphers.Interface;
+   BEGIN
+      PersCreate(key);
+      key.s := s;
+   END Create;
+
+BEGIN
+   NEW(streamCipherIf);
+   streamCipherIf.create := PersCreate; streamCipherIf.write := Write;
+   streamCipherIf.read := Read; streamCipherIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(streamCipherType, "StreamCiphers.Cipher",
+	"Ciphers.Cipher", streamCipherIf);
+END StreamCiphers.

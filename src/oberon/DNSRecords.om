@@ -1,0 +1,613 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSRecords.om,v 1.2 2005/04/20 21:06:04 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSRecords.om,v $
+   Revision 1.2  2005/04/20 21:06:04  borchert
+   WriteA .. WriteSOA added
+
+   Revision 1.1  2004/03/10 12:52:39  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE DNSRecords;
+
+   (* DNS resource records according to RFC 1035, 3.2.1 *)
+
+   IMPORT IPv4Addresses, IPv6Addresses, Objects, Streams, Strings,
+      SubStreams, Types, Write;
+
+   CONST
+      (* RFC 1035, 3.2.2 -- various nowadays obsolete RR types omitted *)
+      a = 1; ns = 2; cname = 5;
+      soa = 6; ptr = 12; mx = 15;
+      txt = 16;
+
+      (* RFC 1876 *)
+      loc = 29;
+
+      (* RFC 1886 *)
+      aaaa = 28;
+
+      (* RFC 2065 *)
+      sig = 24; key = 25; nxt = 30;
+
+      (* RFC 2782 *)
+      srv = 33;
+
+      (* RFC 2915 *)
+      naptr = 35;
+
+      (* QTYPE values = RFC 1035 = 3.2.3 *)
+      axfr = 252; all = 255;
+   TYPE
+      (* note that we use Int32 instead of Int16 for these
+         unsigned 2-byte integer values to avoid negative values
+      *)
+      RRType = Types.Int32; (* unsigned 2-byte integer, a .. all *)
+      RRName = ARRAY 8 OF CHAR;
+   VAR
+      rrName: ARRAY 256 OF RRName;
+
+   CONST
+      (* classes according to RFC 1035, section 3.2.4 *)
+      classIN = 1; (* the Internet *)
+      classCS = 2;
+	 (* the CSNET class (Obsolete - used only for
+	    examples in some obsolete RFCs)
+	 *)
+      classCH = 3; (* the CHAOS class *)
+      classHS = 4; (* Hesiod *)
+      classNone = 254; (* RFC 2136 *)
+      classAny = 255; (* any class *)
+   TYPE
+      Class = Types.Int32;
+      ClassName = ARRAY 8 OF CHAR;
+   VAR
+      className: ARRAY 256 OF ClassName;
+
+   CONST
+      namelen = 512;
+   TYPE
+      Name = ARRAY namelen OF CHAR; (* qualified DNS names *)
+   TYPE
+      Record = POINTER TO RecordRec;
+      RecordRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: Record;
+	    name: Name;
+	    type: RRType;
+	    class: Class;
+	    ttl: Types.Int32;
+	    rdata: Streams.Stream; (* data of this record *)
+	    pdata: Streams.Stream; (* entire response packet *)
+	    rpos: Streams.Count; (* position of rdata within pdata *)
+	 END;
+   TYPE
+      ListOfTextRecords = POINTER TO ListOfTextRecordsRec;
+      ListOfTextRecordsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    text: Name;
+	    next: ListOfTextRecords;
+	 END;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE ReadInteger(s: Streams.Stream; len: INTEGER;
+			 VAR intval: Types.Int32) : BOOLEAN;
+      VAR
+	 byte: CHAR;
+   BEGIN
+      intval := 0;
+      WHILE len > 0 DO
+	 IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+	 intval := intval * 256 + ORD(byte);
+	 DEC(len);
+      END;
+      RETURN TRUE
+   END ReadInteger;
+
+   PROCEDURE WriteInteger(s: Streams.Stream; len: INTEGER;
+			  intval: Types.Int32) : BOOLEAN;
+      VAR
+	 byte: CHAR;
+	 divisor, nextval: LONGINT;
+   BEGIN
+      WHILE len > 0 DO
+	 DEC(len);
+	 divisor := ASH(1, len * 8);
+	 nextval := intval DIV divisor;
+	 ASSERT(nextval <= 255);
+	 byte := CHR(nextval);
+	 IF ~Streams.WriteByte(s, byte) THEN RETURN FALSE END;
+	 intval := SHORT(intval MOD divisor);
+      END;
+      RETURN TRUE
+   END WriteInteger;
+
+   PROCEDURE Init;
+      VAR
+	 rrtype: INTEGER;
+	 class: INTEGER;
+	 s: Streams.Stream;
+   BEGIN
+      (* initialize rrName *)
+      rrtype := 0;
+      WHILE rrtype < LEN(rrName) DO
+	 rrName[rrtype][0] := 0X;
+	 INC(rrtype);
+      END;
+      rrName[a] := "A";
+      rrName[ns] := "NS";
+      rrName[cname] := "CNAME";
+      rrName[soa] := "SOA";
+      rrName[ptr] := "PTR";
+      rrName[mx] := "MX";
+      rrName[txt] := "TXT";
+      rrName[loc] := "LOC";
+      rrName[aaaa] := "AAAA";
+      rrName[sig] := "SIG";
+      rrName[key] := "KEY";
+      rrName[nxt] := "NXT";
+      rrName[srv] := "SRV";
+      rrName[naptr] := "NAPTR";
+      rrName[axfr] := "AXFR";
+      rrName[all] := "ALL";
+      rrtype := 0;
+      WHILE rrtype < LEN(rrName) DO
+	 IF rrName[rrtype][0] = 0X THEN
+	    Strings.Open(s, rrName[rrtype]);
+	    Write.IntS(s, rrtype, 1);
+	    Streams.Release(s);
+	 END;
+	 INC(rrtype);
+      END;
+      (* initialize className *)
+      class := 0;
+      WHILE class < LEN(className) DO
+	 className[class][0] := 0X;
+	 INC(class);
+      END;
+      className[classIN] := "IN";
+      className[classCS] := "CSNET";
+      className[classCH] := "CHAOS";
+      className[classHS] := "HESIOD";
+      className[classNone] := "none";
+      className[classAny] := "any";
+      class := 0;
+      WHILE class < LEN(className) DO
+	 IF className[class][0] = 0X THEN
+	    Strings.Open(s, className[class]);
+	    Write.IntS(s, class, 1);
+	    Streams.Release(s);
+	 END;
+	 INC(class);
+      END;
+   END Init;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE ReadName(s: Streams.Stream; VAR name: ARRAY OF CHAR) : BOOLEAN;
+      (* extract domain name from s;
+	 pointers according RFC 1035, 4.1.4 are supported provided
+	 that stream position 0 equals pointer position 0;
+	 the stream position is, if possible, left behind the
+	 name field even in case of pointers
+      *)
+      VAR
+	 byte: CHAR;
+	 intval: INTEGER;
+	 rposSet: BOOLEAN; rpos: Streams.Count;
+	 index: INTEGER;
+   BEGIN
+      name[0] := 0X; rposSet := FALSE; index := 0;
+      LOOP
+	 IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+	 IF byte = 0X THEN
+	    IF index = 0 THEN
+	       name[index] := "."; INC(index);
+	    END;
+	    IF rposSet THEN
+	       Streams.SetPos(s, rpos);
+	    END;
+	    IF index < LEN(name) THEN
+	       name[index] := 0X;
+	    END;
+	    RETURN TRUE
+	 END;
+	 intval := ORD(byte);
+	 IF intval >= 0C0H THEN
+	    (* pointer, see message compression in RFC 1035, 4.1.4 *)
+	    DEC(intval, 0C0H); (* remove pointer tag *)
+	    IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+	    intval := intval * 256 + ORD(byte);
+	    IF ~rposSet THEN
+	       (* remember current position *)
+	       IF ~Streams.Tell(s, rpos) THEN RETURN FALSE END;
+	       rposSet := TRUE;
+	    END;
+	    (* take intval as stream position of s *)
+	    IF ~Streams.Seek(s, intval, Streams.fromStart) THEN
+	       RETURN FALSE
+	    END;
+	 ELSE
+	    (* next component of a domain name *)
+	    IF (index > 0) & (index < LEN(name)) THEN
+	       name[index] := "."; INC(index);
+	    END;
+	    WHILE intval > 0 DO
+	       IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+	       IF index < LEN(name) THEN
+		  name[index] := byte; INC(index);
+	       END;
+	       DEC(intval);
+	    END;
+	 END;
+      END;
+      (* not reached *)
+   END ReadName;
+
+   PROCEDURE WriteName(s: Streams.Stream; name: ARRAY OF CHAR) : BOOLEAN;
+      (* write domain name as sequence of so-called labels,
+	 no compression used;
+	 FALSE is returned on all errors of s and in case
+	 of invalid domain names that must conform to following RE: (*
+
+	    ([^.]{1,63}(\.[^.]{1,63})*)?\.?
+      *)
+      VAR
+	 pos, index, len: INTEGER;
+   BEGIN
+      IF (name = "") OR (name = ".") THEN
+	 RETURN Streams.WriteByte(s, 0X)
+      END;
+      IF name[0] = "." THEN
+	 RETURN FALSE
+      END;
+      pos := 0;
+      LOOP
+	 index := pos; len := 0;
+	 WHILE (index < LEN(name)) & (name[index] # 0X) &
+	       (name[index] # ".") DO
+	    INC(index); INC(len);
+	 END;
+	 IF (len = 0) OR (len > 63) THEN RETURN FALSE END;
+	 IF ~Streams.WriteByte(s, CHR(len)) THEN RETURN FALSE END;
+	 WHILE pos < index DO
+	    IF ~Streams.WriteByte(s, name[pos]) THEN RETURN FALSE END;
+	    INC(pos);
+	 END;
+	 IF (index >= LEN(name)) OR (name[index] = 0X) THEN EXIT END;
+	 ASSERT(name[pos] = "."); INC(pos); (* skip "." *)
+	 IF (pos >= LEN(name)) OR (name[pos] = 0X) THEN EXIT END;
+      END;
+      RETURN Streams.WriteByte(s, 0X)
+   END WriteName;
+
+   PROCEDURE ReadRecord(s: Streams.Stream;
+			VAR name: ARRAY OF CHAR;
+			VAR type: RRType;
+			VAR class: Class;
+			VAR ttl: Types.Int32;
+			VAR rdata: Streams.Stream;
+			VAR rpos: Streams.Count) : BOOLEAN;
+      (* parse an entire resource record,
+	 store its components into the VAR-parameters,
+	 and, if possible, leave the position of s behind the record;
+	 rdata is a sub-stream of s
+      *)
+      VAR
+	 rdatalen: Types.Int32;
+   BEGIN
+      IF ~ReadName(s, name) OR
+	    ~ReadInteger(s, 2, type) OR
+	    ~ReadInteger(s, 2, class) OR
+	    ~ReadInteger(s, 4, ttl) OR
+	    ~ReadInteger(s, 2, rdatalen) OR
+	    ~Streams.Tell(s, rpos) THEN
+	 RETURN FALSE
+      END;
+      IF rdatalen = 0 THEN
+	 rdata := NIL;
+      ELSE
+	 IF ~SubStreams.Open(rdata, s, rpos, rdatalen, s) OR
+	       ~Streams.Seek(s, rdatalen, Streams.fromPos) THEN
+	    RETURN FALSE
+	 END;
+      END;
+      RETURN TRUE
+   END ReadRecord;
+
+   PROCEDURE WriteRecord(s: Streams.Stream;
+			 name: ARRAY OF CHAR;
+			 type: RRType;
+			 class: Class;
+			 ttl: Types.Int32;
+			 rdata: Streams.Stream) : BOOLEAN;
+      (* generate resource record and write it onto s;
+	 rdata must be a sub-stream that supports seek operations
+      *)
+      VAR
+	 rdatalen: Streams.Count;
+   BEGIN
+      IF ~Streams.Seek(rdata, 0, Streams.fromEnd) OR
+	    ~Streams.Tell(rdata, rdatalen) OR
+	    ~Streams.Seek(rdata, 0, Streams.fromStart) THEN
+	 RETURN FALSE
+      END;
+      IF ~WriteName(s, name) OR
+	    ~WriteInteger(s, 2, type) OR
+	    ~WriteInteger(s, 2, class) OR
+	    ~WriteInteger(s, 4, ttl) OR
+	    ~WriteInteger(s, 2, rdatalen) OR
+	    ~Streams.Copy(rdata, s, rdatalen) THEN
+	 RETURN FALSE
+      END;
+      Streams.SetPos(rdata, 0);
+      RETURN TRUE
+   END WriteRecord;
+
+   PROCEDURE ReadQuestion(s: Streams.Stream;
+			  VAR name: ARRAY OF CHAR;
+			  VAR type: RRType;
+			  VAR class: Class) : BOOLEAN;
+      (* read question record from a DNS message *)
+   BEGIN
+      RETURN ReadName(s, name) &
+	     ReadInteger(s, 2, type) &
+	     ReadInteger(s, 2, class)
+   END ReadQuestion;
+
+   PROCEDURE WriteQuestion(s: Streams.Stream;
+			   name: ARRAY OF CHAR;
+			   type: RRType;
+			   class: Class) : BOOLEAN;
+      (* generate question record for DNS message *)
+   BEGIN
+      RETURN WriteName(s, name) &
+	     WriteInteger(s, 2, type) &
+	     WriteInteger(s, 2, class)
+   END WriteQuestion;
+
+   PROCEDURE ReadRecords(s: Streams.Stream; count: INTEGER;
+			 packetlen: Streams.Count;
+                         VAR records: Record) : BOOLEAN;
+      VAR
+	 head, tail, record: Record;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE count > 0 DO
+	 NEW(record); record.next := NIL;
+	 IF ~SubStreams.Open(record.pdata, s, 0, packetlen, s) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~ReadRecord(s, record.name, record.type,
+	       record.class, record.ttl, record.rdata, record.rpos) THEN
+	    RETURN FALSE
+	 END;
+	 IF head = NIL THEN
+	    head := record;
+	 ELSE
+	    tail.next := record;
+	 END;
+	 tail := record;
+	 DEC(count);
+      END;
+      records := head;
+      RETURN TRUE
+   END ReadRecords;
+
+   PROCEDURE ExtractA(record: Record;
+                      VAR ipaddr: IPv4Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.Seek(record.rdata, 0, Streams.fromStart) &
+	     Streams.Read(record.rdata, ipaddr)
+   END ExtractA;
+
+   PROCEDURE ExtractAAAA(record: Record;
+			 VAR ipaddr: IPv6Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.Seek(record.rdata, 0, Streams.fromStart) &
+	     Streams.Read(record.rdata, ipaddr)
+   END ExtractAAAA;
+
+   PROCEDURE ExtractName(record: Record; VAR name: ARRAY OF CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Streams.Seek(record.pdata, record.rpos, Streams.fromStart) &
+             ReadName(record.pdata, name)
+   END ExtractName;
+
+   PROCEDURE ExtractMX(record: Record;
+                       VAR preference: INTEGER;
+		       VAR name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 byte1, byte2: CHAR;
+   BEGIN
+      IF ~Streams.Seek(record.rdata, 0, Streams.fromStart) OR
+	    ~Streams.ReadByte(record.rdata, byte1) OR
+	    ~Streams.ReadByte(record.rdata, byte2) THEN
+	 RETURN FALSE
+      END;
+      preference := ORD(byte1) * 256 + ORD(byte2);
+      RETURN Streams.Seek(record.pdata, record.rpos + 2, Streams.fromStart) &
+	     ReadName(record.pdata, name)
+   END ExtractMX;
+
+   PROCEDURE ExtractTXT(record: Record;
+                        VAR list: ListOfTextRecords) : BOOLEAN;
+      VAR
+	 lenbyte: CHAR;
+	 length: INTEGER;
+	 index: INTEGER;
+	 ch: CHAR;
+	 head, tail, entry: ListOfTextRecords;
+	 text: Name;
+   BEGIN
+      IF ~Streams.Seek(record.rdata, 0, Streams.fromStart) THEN
+	 RETURN FALSE
+      END;
+      head := NIL; tail := NIL;
+      WHILE Streams.ReadByte(record.rdata, lenbyte) DO
+	 length := ORD(lenbyte); index := 0;
+	 WHILE length > 0 DO
+	    IF ~Streams.ReadByte(record.rdata, ch) THEN RETURN FALSE END;
+	    IF index + 1 < LEN(text) THEN
+	       text[index] := ch; INC(index);
+	    END;
+	    DEC(length);
+	 END;
+	 text[index] := 0X;
+	 NEW(entry);
+	 entry.text := text;
+	 entry.next := NIL;
+	 IF head = NIL THEN
+	    head := entry;
+	 ELSE
+	    tail.next := entry;
+	 END;
+	 tail := entry;
+      END;
+      IF head = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 list := head; RETURN TRUE
+      END;
+   END ExtractTXT;
+
+   PROCEDURE ExtractSOA(record: Record;
+                        VAR mname: ARRAY OF CHAR;
+			VAR rname: ARRAY OF CHAR;
+			VAR serial: Types.Int32;
+			VAR refresh: Types.Int32;
+			VAR retry: Types.Int32;
+			VAR expire: Types.Int32;
+			VAR minimum: Types.Int32) : BOOLEAN;
+      
+      PROCEDURE ReadInt32(s: Streams.Stream;
+                          VAR int32: Types.Int32) : BOOLEAN;
+	 VAR
+	    byte1, byte2, byte3, byte4: CHAR;
+      BEGIN
+	 IF ~Streams.ReadByte(s, byte1) OR
+	       ~Streams.ReadByte(s, byte2) OR
+	       ~Streams.ReadByte(s, byte3) OR
+	       ~Streams.ReadByte(s, byte4) THEN
+	    RETURN FALSE
+	 END;
+	 int32 := ORD(byte4) + ORD(byte3) * ASH(1, 8) +
+	    ORD(byte2) * ASH(1, 16) + ORD(byte1) * ASH(1, 24);
+	 RETURN TRUE
+      END ReadInt32;
+
+   BEGIN (* ExtractSOA *)
+      RETURN Streams.Seek(record.pdata, record.rpos, Streams.fromStart) &
+	     ReadName(record.pdata, mname) &
+	     ReadName(record.pdata, rname) &
+	     ReadInt32(record.pdata, serial) &
+	     ReadInt32(record.pdata, refresh) &
+	     ReadInt32(record.pdata, retry) &
+	     ReadInt32(record.pdata, expire) &
+	     ReadInt32(record.pdata, minimum)
+   END ExtractSOA;
+
+   PROCEDURE WriteA(s: Streams.Stream;
+                    ipaddr: IPv4Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, ipaddr, 0, 4)
+   END WriteA;
+
+   PROCEDURE WriteAAAA(s: Streams.Stream;
+                       ipaddr: IPv6Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, ipaddr, 0, IPv6Addresses.nbytes)
+   END WriteAAAA;
+
+   PROCEDURE WriteMX(s: Streams.Stream;
+                     preference: INTEGER;
+		     name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 byte1, byte2: CHAR;
+   BEGIN
+      byte1 := CHR(preference DIV 256);
+      byte2 := CHR(preference MOD 256);
+      RETURN Streams.WriteByte(s, byte1) & Streams.WriteByte(s, byte2) &
+	     WriteName(s, name)
+   END WriteMX;
+
+   PROCEDURE WriteTXT(s: Streams.Stream;
+                      list: ListOfTextRecords) : BOOLEAN;
+      VAR
+	 len: LONGINT;
+	 lenbyte: BYTE;
+   BEGIN
+      WHILE list # NIL DO
+	 len := Strings.Len(list.text);
+	 IF len > 255 THEN RETURN FALSE END;
+	 lenbyte := CHR(len);
+	 IF ~Streams.WriteByte(s, lenbyte) OR
+	       ~Streams.WritePart(s, list.text, 0, len) THEN
+	    RETURN FALSE
+	 END;
+	 list := list.next;
+      END;
+      RETURN TRUE
+   END WriteTXT;
+
+   PROCEDURE WriteSOA(s: Streams.Stream;
+                      mname: ARRAY OF CHAR;
+		      rname: ARRAY OF CHAR;
+		      serial: Types.Int32;
+		      refresh: Types.Int32;
+		      retry: Types.Int32;
+		      expire: Types.Int32;
+		      minimum: Types.Int32) : BOOLEAN;
+
+      PROCEDURE WriteInt32(s: Streams.Stream;
+                           int32: Types.Int32) : BOOLEAN;
+	 VAR
+	    byte1, byte2, byte3, byte4: CHAR;
+      BEGIN
+	 byte1 := CHR(int32 DIV ASH(1, 24) MOD ASH(1, 8));
+	 byte2 := CHR(int32 DIV ASH(1, 16) MOD ASH(1, 8));
+	 byte3 := CHR(int32 DIV ASH(1, 8) MOD ASH(1, 8));
+	 byte4 := CHR(int32 MOD ASH(1, 8));
+	 RETURN Streams.WriteByte(s, byte1) &
+	        Streams.WriteByte(s, byte2) &
+	        Streams.WriteByte(s, byte3) &
+	        Streams.WriteByte(s, byte4)
+      END WriteInt32;
+
+   BEGIN (* WriteSOA *)
+      RETURN WriteName(s, mname) &
+             WriteName(s, rname) &
+	     WriteInt32(s, serial) &
+	     WriteInt32(s, refresh) &
+	     WriteInt32(s, retry) &
+	     WriteInt32(s, expire) &
+	     WriteInt32(s, minimum)
+   END WriteSOA;
+
+BEGIN
+   Init;
+END DNSRecords.

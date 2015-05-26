@@ -1,0 +1,528 @@
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+NNAAMMEE
+       TransStreams - transactions on streams
+
+SSYYNNOOPPSSIISS
+       CONST last = 0; prior = 1; current = 2;
+       TYPE State = SHORTINT; (* last..current *)
+       CONST standard = 0; auto = 4; read = 8;
+       TYPE Mode = SHORTINT;
+          (* additive combination of standard, auto, read, last and prior *)
+
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE StreamRec = RECORD (Streams.StreamRec); END;
+
+       (* errors at opening time *)
+       CONST illegalParam = 0;
+       CONST bufferedStream = 1;
+       CONST badMagic = 2;
+       CONST noLegalState = 3;
+       CONST corruptedFile = 4;
+       CONST cannotAccessFile = 5;
+       (* invalid usage *)
+       CONST illegalPos = 6;
+       CONST nestedCall = 7;
+       CONST noPriorState = 8;
+       CONST noTransactionRunning = 9;
+       CONST readOnly = 10;
+       CONST transactionInProgress = 11;
+       CONST alreadyClosed = 12;
+       (* troubles with the underlying stream *)
+       CONST cannotAccessSysPages = 13;
+       CONST cannotUpdateSysPages = 14;
+       CONST cannotAccessContents = 15;
+       CONST cannotUpdateContents = 16;
+       CONST recoveringDueToFailure = 17;
+       CONST closeFailed = 18;
+       CONST errorcodes = 19;
+       TYPE ErrorCode = SHORTINT;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec);
+             errcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+
+       PROCEDURE Open(VAR s: Streams.Stream; base: Streams.Stream;
+                      mode: Mode; errors: RelatedEvents.Object) : BOOLEAN;
+
+       (* transaction primitives *)
+       PROCEDURE Begin(s: Streams.Stream) : BOOLEAN;
+       PROCEDURE Abort(s: Streams.Stream) : BOOLEAN;
+       PROCEDURE Commit(s: Streams.Stream) : BOOLEAN;
+       (* transaction shorthands *)
+
+
+
+Release 0.5       Last change: 28 November 1996                 1
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+       PROCEDURE Touch(s: Streams.Stream) : BOOLEAN; (* Commit & Begin *)
+       PROCEDURE Forget(s: Streams.Stream) : BOOLEAN; (* Abort & Begin *)
+
+       PROCEDURE Switch(s: Streams.Stream) : BOOLEAN;
+       PROCEDURE Toggle(s: Streams.Stream) : BOOLEAN;
+       PROCEDURE Available(s: Streams.Stream; state: State) : BOOLEAN;
+
+       PROCEDURE GetInfo(s: Streams.Stream; state: State;
+                         VAR info: ARRAY OF BYTE) : BOOLEAN;
+       PROCEDURE SetInfo(s: Streams.Stream; info: ARRAY OF BYTE) : BOOLEAN;
+
+       PROCEDURE SetPoolSize(s: Streams.Stream; no: INTEGER) : BOOLEAN;
+       PROCEDURE GetPoolSize(s: Streams.Stream; VAR no: INTEGER) : BOOLEAN;
+       PROCEDURE GetEffPoolSize(s: Streams.Stream; VAR no: INTEGER) : BOOLEAN;
+       PROCEDURE SetNoBufs(no: INTEGER) : BOOLEAN;
+       PROCEDURE GetNoBufs(VAR no: INTEGER) : BOOLEAN;
+       PROCEDURE GetEffNoBufs(VAR no: INTEGER) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _T_r_a_n_s_S_t_r_e_a_m_s (transaction streams) offers a local transac­
+       tion concept (see _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s_(_3_)) on stream  level.
+       Objects  of  type  _S_t_r_e_a_m are extensions of _S_t_r_e_a_m_s_._S_t_r_e_a_m
+       with _r_e_a_d, _w_r_i_t_e, _s_e_e_k, _t_e_l_l and  _t_r_u_n_c  capabilities  but
+       support  transactions as well.  A transaction in the sense
+       of this module represents a frame for an arbitrary  number
+       of  write  operation executed on the stream.  These opera­
+       tions do not alter the stream contents until the  transac­
+       tion  is  successfully  committed.   In  any  other cases,
+       namely if the transaction is explicitely aborted or if the
+       program terminates before a transaction was committed, the
+       contents of a transaction stream remains unaffected.  This
+       holds  true  even  if  a program terminates for any reason
+       while a commit operation itself  is  in  progress.   Since
+       either  all or none of the contents changes applied to the
+       stream during a transaction  become  valid,  committing  a
+       transaction  can  be  seen  as  an  atomar operation which
+       transfers  the  stream  from  one  consistent  state  into
+       another.
+
+       A transaction stream can hold up to three states:
+       _c_u_r_r_e_n_t   refers  to the transaction currently in progress
+                 and  is  not  available  if  no  transaction  is
+                 active.
+       _l_a_s_t      reflects  the contents of the stream at the time
+                 of the last successful  commit.  This  state  is
+                 always available.
+       _p_r_i_o_r     stores  the  last but one successfully committed
+                 transaction.  Only available if no error occured
+                 during the last two commit operations.
+
+       A transaction stream behaves like any other regular stream
+       except that write operations must be executed  within  the
+       scope of a transaction.  After a transaction is aborted or
+
+
+
+Release 0.5       Last change: 28 November 1996                 2
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+       when  the  stream  is  reopened,  a  consistent  state  is
+       restored  from the contents of the stream _b_a_s_e given as an
+       argument to _O_p_e_n.  Base streams  must  be  unbuffered  and
+       support  read, write, seek and tell operations, and holes.
+       They are used by _T_r_a_n_s_S_t_r_e_a_m_s to  store  data  permanently
+       and  will  therefore  typically be of type _U_n_i_x_F_i_l_e_s_._F_i_l_e.
+       Note that the termination of the base stream is propagated
+       to the transaction stream (see _R_e_s_o_u_r_c_e_s_(_3_)).
+
+       The parameter _m_o_d_e provided to _O_p_e_n is a combination (sum)
+       of a state and an operation mode.  Any senseful sum of the
+       following constants may be used:
+       _s_t_a_n_d_a_r_d   open  a stream with standard capabilities, i.e.
+                  the application is  responsible  for  beginning
+                  any transaction.
+       _r_e_a_d       open a transaction stream for read only access.
+                  Any attempt to  begin  a  transaction  will  be
+                  rejected.   No  write  operation at all will be
+                  performed on _b_a_s_e.
+       _a_u_t_o       implicitely starts  a  transaction  during  the
+                  opening  process.  The transaction will be com­
+                  mitted  automatically  when  _S_t_r_e_a_m_s_._C_l_o_s_e   is
+                  called.
+       _l_a_s_t       The  next transaction will start from the state
+                  associated with the  last  successful  transac­
+                  tion.  This is the default behaviour.
+       _p_r_i_o_r      If  available, the last and the prior state are
+                  toggled (see below).  The next transaction will
+                  start  from  the state associated with last but
+                  one successful transaction.  If used in  combi­
+                  nation   with  _s_t_a_n_d_a_r_d  or  _a_u_t_o  this  switch
+                  becomes permanent, even if  no  transaction  is
+                  executed later on.  Combined with _r_e_a_d any read
+                  operation  will  return  data  from  the  prior
+                  rather  than the last state, but this effect is
+                  temporary.
+
+       On a read-only stream, read, tell or seek  operations  are
+       always  possible. In any other case _a_n_y attempt to operate
+       on a stream with no transaction  in  progress  will  fail.
+       Thus,  if not opened in auto mode, a transaction has to be
+       started explicitly before the stream is accessible through
+       the  interface of _S_t_r_e_a_m_s.  Transactions may be controlled
+       by _T_r_a_n_s_a_c_t_i_o_n_s_(_3_) on base of _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s_(_3_), or by
+       means of the following procedures, which are available for
+       all streams regardless of whether they have been opened in
+       auto mode or not.
+       _B_e_g_i_n    Start  a  transaction  on stream _s using the con­
+                tents associated with the state _l_a_s_t as origin.
+       _C_o_m_m_i_t   Commit a previously started transaction and store
+                any contents changes permanently in the underlay­
+                ing base stream of _s and associate  it  with  the
+                state  _l_a_s_t.   The  former _l_a_s_t state will become
+                the new _p_r_i_o_r one, while the former  _p_r_i_o_r  state
+
+
+
+Release 0.5       Last change: 28 November 1996                 3
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+                is discarded.
+       _A_b_o_r_t    Abort  the current transaction and reset _s to the
+                state valid before  the  transaction  was  begun,
+                i.e. to the _l_a_s_t consistent state.
+       _T_o_g_g_l_e   Toggle  the  states  _l_a_s_t  and _p_r_i_o_r permanently.
+                This operation is implicitely executed  when  the
+                stream  is opened with _m_o_d_e set accordingly.  The
+                procedure will  fail,  if  a  transaction  is  in
+                progress, a stream is opened readonly or no _p_r_i_o_r
+                state is available.
+       _S_w_i_t_c_h   Temporarily switch the  states  _l_a_s_t  and  _p_r_i_o_r.
+                The next transaction will use the contents of the
+                last but one successfully  committed  transaction
+                as  its starting point.  The procedure will fail,
+                if a transaction is in progress or a _p_r_i_o_r  state
+                is not available.  For streams opened with _m_o_d_e =
+                _r_e_a_d  +  _p_r_i_o_r  this   operation   is   performed
+                implicitely  during the opening process.  It will
+                fail, if no _p_r_i_o_r state exists.
+       _T_o_u_c_h    is equivalent to _C_o_m_m_i_t + _B_e_g_i_n.
+       _F_o_r_g_e_t   is equivalent to _A_b_o_r_t + _B_e_g_i_n.
+
+       _T_o_g_g_l_e and _S_w_i_t_c_h can be utilized  to  implement  an  _u_n_d_o
+       command  for  transaction  streams (see section examples),
+       which discards the effect of the last successful  transac­
+       tion.
+
+       Since _T_r_a_n_s_S_t_r_e_a_m_s can guarantee only the existence of one
+       consistent state, _A_v_a_i_l_a_b_l_e should be used to check  if  a
+       certain state exists.
+
+       Other  than  an internal enumeration _T_r_a_n_s_S_t_r_e_a_m_s does not
+       store any information  about  transactions.   Instead,  it
+       offers  a  _S_e_t_I_n_f_o  procedure which associates an array of
+       bytes with the current transaction. While _S_e_t_I_n_f_o requires
+       a  transaction to be in progress, previously stored infor­
+       mation can be obtained by _G_e_t_I_n_f_o even if  no  transaction
+       is  running.   According  to  _s_t_a_t_e,  _G_e_t_I_n_f_o  returns the
+       information associated with the _c_u_r_r_e_n_t transaction (if in
+       progress),  the  _l_a_s_t  successfully  commited  transaction
+       (which is always available) or a _p_r_i_o_r  transaction  (pre­
+       sumed the corresponding state is still accessible).
+
+       The size of _i_n_f_o is restricted to an implementation-depen­
+       dent value (about 8K in the current version).
+
+       Read and write  operation  on  a  transaction  stream  are
+       buffered.  To prevent programs from consuming to much mem­
+       ory and to reduce swapping or/and paging activity  of  the
+       associated  processes  applications  might want to control
+       the size of the internal buffer pools.  For  this  reason,
+       the following procedures are provided:
+       _S_e_t_P_o_o_l_S_i_z_e   Make  _n_o  the  maximum  number  of  internal
+                     buffers to be used by _s.
+
+
+
+Release 0.5       Last change: 28 November 1996                 4
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+       _S_e_t_N_o_B_u_f_s     Limit the total number of  internal  buffers
+                     used by all transaction streams to _n_o.
+
+       However, _T_r_a_n_s_S_t_r_e_a_m_s will ignore the limits if more space
+       is required to buffer write operations.  In  these  cases,
+       reduction  of  the internal pool size is delayed until the
+       next commit or abort operation takes  place.   _G_e_t_E_f_f_P_o_o_l_­
+       _S_i_z_e  and  _G_e_t_E_f_f_N_o_B_u_f_s  return  the  effective  number of
+       buffers currently in use, while _G_e_t_P_o_o_l_S_i_z_e and  _G_e_t_N_o_B_u_f_s
+       return  the  default  settings as defined by means of _S_e_t_­
+       _P_o_o_l_S_i_z_e or _S_e_t_N_o_B_u_f_s.
+
+DDIIAAGGNNOOSSTTIICCSS
+       All procedures return FFAALLSSEE in case of an error  and  will
+       raise  an  event of the type _e_r_r_o_r to the affected stream.
+       During the opening process error events are related to the
+       parameter  _e_r_r_o_r_s.   Note  that  the  error  events of the
+       underlying stream are forwarded to the associated transac­
+       tion  stream.   Following  error  codes may be returned by
+       _T_r_a_n_s_S_t_r_e_a_m_s:
+       _i_l_l_e_g_a_l_P_a_r_a_m            An invalid _m_o_d_e was given to _O_p_e_n.
+       _b_u_f_f_e_r_e_d_S_t_r_e_a_m          The  base  stream  passed  to _O_p_e_n
+                               must not be buffered.
+       _b_a_d_M_a_g_i_c                _T_r_a_n_s_S_t_r_e_a_m_s  did  not  find   its
+                               magic  number  at the beginning of
+                               the underlying stream.   Probably,
+                               it  is  not  a file which has been
+                               created earlier by  (this  version
+                               of) _T_r_a_n_s_S_t_r_e_a_m_s.
+       _n_o_L_e_g_a_l_S_t_a_t_e            Neither of the two possible states
+                               in the underlying stream was found
+                               to  be  consistent.  Probably, the
+                               file has been corrupted by  exter­
+                               nal sources.
+       _c_o_r_r_u_p_t_e_d_F_i_l_e           The  system  pages were not avail­
+                               able at opening time.
+       _c_a_n_n_o_t_A_c_c_e_s_s_F_i_l_e        This error  code  is  returned  by
+                               _O_p_e_n  if  some basic stream opera­
+                               tions  on  the  underlying  stream
+                               fail.
+       _i_l_l_e_g_a_l_P_o_s              An invalid position was given to a
+                               seek   or   trunc   operation   of
+                               _S_t_r_e_a_m_s_(_3_).
+       _n_e_s_t_e_d_C_a_l_l              There  may  be  only one operation
+                               running on  a  transaction  stream
+                               concurrently.
+       _n_o_P_r_i_o_r_S_t_a_t_e            This error code may be returned by
+                               _T_o_g_g_l_e or _S_w_i_t_c_h when there is  no
+                               other  consistent state available.
+       _n_o_T_r_a_n_s_a_c_t_i_o_n_R_u_n_n_i_n_g    Stream  operations  (read,  write,
+                               seek,  tell  and  trunc) are valid
+                               only  during  a  transaction  (the
+                               only   exception   are   read-only
+                               opened    transaction    streams).
+
+
+
+Release 0.5       Last change: 28 November 1996                 5
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+                               Further,  _A_b_o_r_t,  _C_o_m_m_i_t,  _F_o_r_g_e_t,
+                               _S_e_t_I_n_f_o, and _T_o_u_c_h may  be  called
+                               only  while  a  transaction  is in
+                               progress.
+       _r_e_a_d_O_n_l_y                This error code is returned by all
+                               updating  operations if the stream
+                               has been opened in read-only mode.
+       _t_r_a_n_s_a_c_t_i_o_n_I_n_P_r_o_g_r_e_s_s   _B_e_g_i_n,  _S_w_i_t_c_h,  and _T_o_g_g_l_e return
+                               this error code  if  there  is  an
+                               already running transaction.
+       _a_l_r_e_a_d_y_C_l_o_s_e_d           An   operation  was  tried  on  an
+                               already closed transaction stream.
+       _c_a_n_n_o_t_A_c_c_e_s_s_S_y_s_P_a_g_e_s    Accesses  to  the  system pages on
+                               the underlying stream failed.
+       _c_a_n_n_o_t_U_p_d_a_t_e_S_y_s_P_a_g_e_s    Updates of the system pages on the
+                               underlying stream failed.
+       _c_a_n_n_o_t_A_c_c_e_s_s_C_o_n_t_e_n_t_s    Accesses  to  the visible pages on
+                               the underlying stream failed.
+       _c_a_n_n_o_t_U_p_d_a_t_e_C_o_n_t_e_n_t_s    Updates of the  visible  pages  on
+                               the underlying stream failed.
+       _r_e_c_o_v_e_r_i_n_g_D_u_e_T_o_F_a_i_l_u_r_e  A  commit  operation failed due to
+                               some reason (see additional  error
+                               events)  which  caused the current
+                               transaction to be aborted.
+       _c_l_o_s_e_F_a_i_l_e_d             The final close operation  failed.
+                               This  shouldn't  be a fatal error,
+                               however,  since   the   underlying
+                               stream  is  unbuffered,  i.e.  all
+                               changes are already done.
+
+       _T_r_a_n_s_S_t_r_e_a_m_s has several assertions, some of them may fail
+       in case of invalid usage:
+
+       ·      _S_e_t_P_o_o_l_S_i_z_e expects _n_o to be non-negative.
+
+       ·      _S_e_t_N_o_B_u_f_s asserts that _n_o is positive.
+
+EEXXAAMMPPLLEESS
+       Open  a  transaction  stream _s_t_r_e_a_m in auto mode and store
+       the data in file _n_a_m_e:
+
+       ·
+
+              IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr,
+                                Streams.nobuf, err) &
+                    TransStreams.Open(stream, file, TransStreams.auto, err) THEN
+                  Streams._P_r_o_c_e_d_u_r_e(stream, .....);
+                  IF ~Streams.Close(stream) THEN
+                      (* error handling *)
+                  END;
+              END;
+
+
+       ·      After the opening sequence _s_t_r_e_a_m can be used  like
+
+
+
+Release 0.5       Last change: 28 November 1996                 6
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+              any other stream.
+
+       ·      The contents of _n_a_m_e will be changed permanently if
+              and only if _S_t_r_e_a_m_s_._C_l_o_s_e is reached  and  executed
+              successfully.
+
+       Open a transaction stream in non-auto mode and execute two
+       transactions on it:
+
+       ·
+
+              IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr,
+                                Streams.nobuf, err) &
+                    TransStreams.Open(stream, file, TransStreams.standard, err) &
+                    ObjectTransactions.Create(trans, stream, NIL, err) THEN
+                 IF ~Transactions.Begin(trans, NIL) THEN      (* T1 *)
+                    (* error handling *)
+                 END;
+                 Streams._P_r_o_c_e_d_u_r_e(trans, .....);  (* apply to 1st trans. *)
+                 IF ~Transactions.Commit(trans, NIL) THEN     (* T1 *)
+                    (* error handling *)
+                 END;
+                 IF ~Transactions.Begin(trans, NIL) THEN      (* T2 *)
+                    (* error handling *)
+                 END;
+                 Streams._P_r_o_c_e_d_u_r_e(stream,.....);   (* apply to 2nd trans. *)
+                 IF ~Transactions.Commit(trans, NIL) THEN     (* T2 *)
+                    (* error handling *)
+                 END;
+                 IF ~Transactions.Release(stream, NIL) THEN
+                    (* error handling *)
+                 END;
+              END;
+
+
+       ·      The stream now stores two  states.  The  last  one,
+              which  discribes  its  contents  after  the  second
+              transaction (T2) was committed, and  a  prior  one,
+              which holds the data stored during the first trans­
+              action (T1).
+
+       ·      Applying _T_o_g_g_l_e  to  the  stream  will  toggle  the
+              states, i.e. the last one becomes the prior one and
+              vice versa.
+
+       Implement an undo command, which resets the  stream  to  a
+       consistent state prior to the last successful transaction:
+
+       ·
+
+              IF UnixFiles.Open(file, name, UnixFiles.condcreate + UnixFiles.rdwr,
+                                Streams.nobuf, err) &
+                    TransStreams.Open(stream, file, TransStrems.standard, err) &
+                    TransStreams.Available(stream, TransStreams.prior) &
+
+
+
+Release 0.5       Last change: 28 November 1996                 7
+
+
+
+
+
+TransStreams(3)        Ulm's Oberon System        TransStreams(3)
+
+
+                    TransStreams.Toggle(stream) & TransStreams.Close(stream) THEN
+                 (* .... *)
+              ELSE
+                 (* error *)
+              END;
+
+
+       ·      If a prior state is available, the effects  of  the
+              last transaction are discarded.
+
+       ·      If  there  is  no  prior state, one of the last two
+              must have failed due  to  program  termination.  In
+              this case there is no use to undo the last success­
+              ful transaction, since it is the only one we  have.
+
+       ·      Operations  during  the  next  transaction will now
+              apply to the last but one consistent state  (T1  in
+              the above example).
+
+SSEEEE AALLSSOO
+       _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s_(_3_)   transactions   which  involve  one
+                               object only
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)        error handling
+       _S_t_r_e_a_m_s_(_3_)              stream operations
+       _T_r_a_n_s_a_c_t_i_o_n_s_(_3_)         general abstraction  for  transac­
+                               tions
+       _U_n_i_x_F_i_l_e_s_(_3_)            stream   implementation   of  UNIX
+                               files
+
+AAUUTTHHOORR
+       Werner Stanglow (stanglow@mathematik.uni-ulm.de),
+       minor revisions due to Andreas Borchert
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 8
+
+

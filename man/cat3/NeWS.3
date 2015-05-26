@@ -1,0 +1,268 @@
+NeWS(3)                       Ulm's Oberon System                      NeWS(3)
+
+
+
+[1mNAME[0m
+       NeWS - interface to the Network/extensible Window System
+
+[1mSYNOPSIS[0m
+       CONST raw = 0; (* no intermediate processing is done *)
+       CONST halfcooked = 1; (* compress outgoing stuff *)
+       CONST cooked = 2; (* check for tags & compress outgoing stuff *)
+       TYPE Mode = SHORTINT; (* raw..cooked *)
+       TYPE Tag = INTEGER;
+       TYPE ListOfObjects = POINTER TO ListOfObjectsRec;
+       TYPE ListOfObjectsRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             s: Streams.Stream; (* NeWS stream *)
+             tag: Tag;
+          END;
+       CONST syntaxError = 0; (* syntax error in NEWSSERVER environment variable *)
+       CONST rejectedConnection = 1; (* network security violation *)
+       CONST errorInHexString = 2; (* bad syntax of hex string *)
+       CONST badInputToken = 3; (* corrupted input token *)
+       CONST connectionFinished = 4; (* no longer connected to NeWS server *)
+       CONST outOfTagNumbers = 5; (* no more unique tag numbers available *)
+       CONST errorcodes = 6;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Open(VAR s: Streams.Stream; mode: Mode;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE DefineUserToken(s: Streams.Stream; token: ARRAY OF CHAR);
+       (* token output operations *)
+       PROCEDURE PutInt(s: Streams.Stream; intval: INTEGER);
+       PROCEDURE PutReal(s: Streams.Stream; realval: REAL);
+       PROCEDURE PutString(s: Streams.Stream; string: ARRAY OF CHAR);
+       PROCEDURE PutUserToken(s: Streams.Stream; code: INTEGER);
+       (* input operations for cooked NeWS streams *)
+       PROCEDURE GetListOfObjects(s: Streams.Stream; tag: Tag;
+                                  VAR list: ListOfObjects) : BOOLEAN;
+       PROCEDURE Length(list: ListOfObjects) : INTEGER;
+       PROCEDURE IsInteger(list: ListOfObjects) : BOOLEAN;
+       PROCEDURE GetInt(list: ListOfObjects; VAR intval: LONGINT) : BOOLEAN;
+       PROCEDURE IsReal(list: ListOfObjects) : BOOLEAN;
+       PROCEDURE GetReal(list: ListOfObjects; VAR realval: REAL) : BOOLEAN;
+       PROCEDURE IsString(list: ListOfObjects) : BOOLEAN;
+       PROCEDURE GetString(list: ListOfObjects;
+                           VAR string: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE GetStringAsStream(list: ListOfObjects;
+                                   VAR s: Streams.Stream) : BOOLEAN;
+       PROCEDURE CreateCondition(VAR condition: Conditions.Condition;
+                                 s: Streams.Stream; tag: Tag; minlen: INTEGER);
+       PROCEDURE GetNotice(s: Streams.Stream; tag: Tag; minlen: INTEGER;
+                           eventType: Events.EventType);
+       PROCEDURE GetUniqueTag(s: Streams.Stream; VAR tag: Tag);
+       PROCEDURE GetUniqueTags(s: Streams.Stream; VAR tag: Tag; count: INTEGER);
+
+
+[1mDESCRIPTION[0m
+       [4mNeWS[24m  provides the basic communication facilities for the equally named
+       window system.  The window system is represented by  a  server  process
+       whose  protocol  is  based upon an extension of POSTSCRIPT.  Hence, the
+       communication is based on ordinary texts  in  ASCII  representation  in
+       comparison to other protocols (e.g. X11) which use binary records.
+
+       In  addition to the usual text representation, the NeWS-server supports
+       some special encodings for many tokens of the POSTSCRIPT language (i.e.
+       for  numbers,  strings,  frequent system tokens and optionally for user
+       defined tokens).  These encodings are always introduced by a  non-ASCII
+       character  and  may  be  embedded  anywhere in the ASCII-text.  Encoded
+       tokens reduce the network traffic and the overhead of the lexical anal-
+       ysis on the server side.
+
+       Output  of  the  NeWS-system  can  be read as input.  E.g. writing "(It
+       works) print" to a NeWS stream causes "It works" to be returned on sub-
+       sequent reading.  Further, the NeWS-server supports the operations [1mtag-[0m
+       [1mprint [22mand [1mtypedprint [22mwhich allow to send a list  of  objects  which  is
+       introduced  by a tag number.  Tag numbers and objects printed by [1mtyped-[0m
+       [1mprint [22mare encoded like the tokens on the input side of the NeWS-server.
+       Typically, events of the NeWS-server side which are of interest for the
+       client (like pressing a button) are encoded in this way.
+
+       [4mNeWS[24m offers three working modes with different support  of  token  com-
+       pression and input processing:
+       [4mraw[24m          provides a raw connection to the NeWS-server.  No input or
+                    output processing is done.  While the advanced input oper-
+                    ations  may  not  be used for this mode, the output opera-
+                    tions ([4mPutInt[24m, [4mPutReal[24m  etc.)  may  be  used  to  compress
+                    tokens.
+       [4mhalfcooked[24m   requests  the  lexical analysis of the POSTSCRIPT language
+                    to be done on the client side and to encode  tokens  when-
+                    ever possible.  The input side remains unprocessed.
+       [4mcooked[24m       offers  the  facilities of the [4mhalfcooked[24m mode and removes
+                    all tagged object lists from the input queue.  Further, it
+                    guarantees  that  write operations will never block due to
+                    not yet processed  input.   Tagged  object  lists  may  be
+                    accessed  by  giving  a  tag  number.   Accesses to tagged
+                    object lists need not to be in the order of  arrival.   It
+                    is  in  the responsibility of the NeWS stream user to pro-
+                    cess everything which has been requested before to be sent
+                    over the communication channel.  The stream implementation
+                    collects everything on the input side until it  gets  pro-
+                    cessed.  The more unprocessed input the more memory usage.
+
+       [4mOpen[24m connects to the NeWS server and returns a stream to  it  with  the
+       requested working mode.  [4mOpen[24m uses the algorithm of OpenWindows Version
+       3 to connect to the server.  Firstly, the environment variables [1mDISPLAY[0m
+       and [1mNEWSSERVER [22mare checked and compared against the local host.  If one
+       of them is given and does not point to the local hostname,  [4mOpen[24m  opens
+       an  Internet socket on port 2000 (or 2000+[4mn[24m for display [4mn[24m) of the given
+       host.  For local hosts (or if neither [1mDISPLAY [22mnor [1mNEWSSERVER  [22mhas  been
+       given),  the  UNIX  domain  socket at [4m/tmp/.NeWS-unix/N[24m followed by the
+       display number is used.
+
+       After having connected  successfully,  [4mOpen[24m  passes  the  authorization
+       information  to  the  server.   The X11/NeWS-server of Sun Microsystems
+       expects X11-authorization data (even for  NeWS  connections)  which  is
+       usally stored in the users home directory in [4m.Xauthority[24m and maintained
+       by the [4mxauth(1)[24m command.  Alternatively,  it  is  possible  to  specify
+       another  authority  file by use of the [1mXAUTHORITY [22mvariable.  The autho-
+       rization data is passed in a way which does not  confuse  NeWS  servers
+       which do not require it.  [4mOpen[24m checks for successful authorization.
+
+       Streams returned by [4mOpen[24m are buffered (independent of the working mode)
+       and support read and write operations.  They are bidirectional  in  the
+       sense  of [4mStreams(3)[24m and do not support [4mseek[24m, [4mtell[24m or [4mtrunc[24m operations.
+       Further, [4mNeWS[24m supports the conditions of [4mStreamConditions[24m and a special
+       condition  type  for  [4mcooked[24m  streams  which  allows to wait for tagged
+       sequences with a given tag number.  Implicit flushing occurs if  condi-
+       tions for the input side are evaluated or waited for.
+
+       [4mDefineUserToken[24m allows to specify frequently used tokens (e.g. names of
+       objects or own operators).  The calling  order  of  [4mDefineUserToken[24m  is
+       important:  the  first tokens need less bytes to be encoded than tokens
+       which has been defined later.  The number of  possible  encodable  user
+       tokens  is limited and [4mDefineUserToken[24m silently ignores the call if the
+       limit is exceeded.  [4mDefineUserToken[24m must not be called for [4mraw[24m streams.
+
+       While  [4mhalfcooked[24m  and  [4mcooked[24m  streams  compress  all  registered user
+       tokens, [4mPutUserToken[24m allows to encode user tokens for [4mraw[24m streams or to
+       circumvents the lexical analysis of [4mhalfcooked[24m or [4mcooked[24m streams.
+
+       [4mPutInt[24m,  [4mPutReal[24m, [4mPutString[24m, and [4mPutUserToken[24m output their parameter in
+       encoded form.  These operations may be mixed with usual  output  opera-
+       tions but note that these routines terminate most tokens but may not be
+       used inside strings or hexstrings.
+
+       [4mGetListOfObjects[24m returns a list of objects which has been introduced by
+       [4mtag[24m  and  removes it from the input queue.  This operation is valid for
+       [4mcooked[24m streams only.  Note that the NeWS server  does  not  support  an
+       end-of-list  notation.   Thus, lists are terminated by tags or ordinary
+       input.  Because [4mGetListOfObjects[24m is free to return a  list  immediately
+       after  seeing the tag, the list may grow even after accessing the list.
+       Usually, the expected list length is known and  [4mCreateCondition[24m  allows
+       to wait for a tag followed by a list of a given length (see below).
+
+       Not  all  objects  of  the  NeWS version of POSTSCRIPT are supported by
+       [1mtypedprint[22m.  Regrettably, the  current  documentation  about  the  NeWS
+       server  does  not  contain  any  hints  for these cases but states that
+       strings and numbers (integers or floating point numbers) are supported.
+       In  fact,  arrays  are supported too.  Encoded arrays on the input side
+       are expanded by [4mNeWS[24m to avoid  the  introduction  of  a  non-documented
+       NeWS-feature  in the [4mNeWS[24m module, e.g. [1m[ 1 2 3] typedprint [22mis converted
+       to three integer objects.  Other objects are encoded as non-objects and
+       converted  to  zero-valued  integers  by  [4mNeWS[24m  to  achieve the correct
+       length.
+
+       [4mLength[24m returns the current number of objects of  the  given  list.   As
+       described above, the length may grow.
+
+       [4mIsInteger[24m  returns  [1mTRUE  [22mif  the next object in the list is an integer
+       object.  [4mGetInt[24m returns and removes an integer object  from  the  given
+       length.   [4mGetInt[24m  returns [1mFALSE [22mif the next object is not an integer or
+       at the end of the list.  [4mIsReal[24m and [4mGetReal[24m  work  like  [4mIsInteger[24m  and
+       [4mGetInt[24m  but  allow  also  to  read  integer objects as reals.  [4mIsString[0m
+       returns [1mTRUE [22mif the next  object  in  the  list  is  a  string  object.
+       Strings may be retrieved either by [4mGetString[24m which puts the string into
+       a fixed-sized character arrays (silent truncation is possible;  [1m0X[22m-ter-
+       mination  is  guaranteed),  or  [4mGetStringAsStream[24m which allows a stream
+       access to the string  object  which  is  suitable  for  arbitrary  long
+       strings.
+
+       [4mCreateCondition[24m creates a condition which evaluates to [1mTRUE [22mif a tagged
+       sequence with the given minimal length can be accessed from  the  input
+       queue.   Shorter  lengths  are possible if the sequence has been termi-
+       nated by other input (tags or ordinary input).
+
+       [4mGetNotice[24m causes events of type [4meventType[24m to be raised for each  tagged
+       sequence  with  the given minimal length.  The length may be shorter if
+       the sequence has been terminated.
+
+       [4mGetUniqueTag[24m and [4mGetUniqueTags[24m assure the use of  unique  tags.   While
+       [4mGetUniqueTag[24m returns one tag number, [4mGetUniqueTag[24m returns [4mcount[24m consec-
+       utive tag numbers.
+
+[1mDIAGNOSTICS[0m
+       Beside of connection related I/O errors, following errors are  detected
+       by  the  [4mNeWS[24m  module and lead to error events which are related to the
+       stream or the [4merrors[24m parameter:
+       [4msyntaxError[24m          a syntax error has been found either in  the  [1mDIS-[0m
+                            [1mPLAY  [22mor  [1mNEWSSERVER  [22menvironment  variable.   See
+                            below for the correct format.
+       [4mrejectedConnection[24m   indicates a network security violation,  i.e.  the
+                            authentication   was  not  successful.   This  may
+                            result from missing or wrong authentication files.
+       [4merrorInHexString[24m     a hex string was given in an invalid form.
+       [4mbadInputToken[24m        an  input token which has been written by the NeWS
+                            server has been found in a corrupted form.
+       [4mconnectionFinished[24m   the connection has been either broken or finished.
+       [4moutOfTagNumbers[24m      indicates  that  no  more  unique  tag numbers are
+                            available.
+
+[1mENVIRONMENT[0m
+       [4mDISPLAY[24m              specifies the host of the NeWS server and the dis-
+                            play to be used in the form [4mhostname[24m[1m:[4m[22mdisplay[24m.
+       [4mHOME[24m                 specifies the users home directory.
+       [4mNEWSSERVER[24m           specifies  the  Internet address, the port number,
+                            and the host name of the NeWS server in  the  form
+                            [4maddress[24m[1m.[4m[22mport[24m[1m;[4m[22mhostname[24m.
+       [4mXAUTHORITY[24m           specifies the name of the X authority file.
+
+[1mFILES[0m
+       [4m/tmp/.NeWS-unix/N[0-9][24m    UNIX domain socket of the NeWS server
+       [4m~/.Xauthority[24m             default X authority file
+
+[1mSEE ALSO[0m
+       [4mnewsserverstr(1)[24m          generates  a  string for the [1mNEWSSERVER [22menvi-
+                                 ronment variable
+       [4mxauth(1)[24m                  X authority file utility
+       [4mxnews(1)[24m                  X11/NeWS server
+       [4mRelatedEvents(3)[24m          error event handling
+       [4mStreams(3)[24m                stream operations
+       [4mStreamConditions(3)[24m       stream conditions which  allow  to  wait  for
+                                 available input or nonblocking output
+       [4mPOSTSCRIPT[24m [4mLanguage[24m       [4mReference[24m  [4mManual,[24m  [4mAdobe[24m [4mSystems[24m [4mInc.,[24m [4mAddi-[0m
+                                 [4mson-Wesley[0m
+       [4mNeWS[24m [4mProgrammer's[24m [4mGuide[24m   documents the extensions  of  the  POSTSCRIPT
+                                 language and the NeWS protocol
+
+[1mLIBRARY[0m
+       [4mNeWS[24m  is  part  of  the [4mNeWS[24m-library, i.e. [1m+lNeWS [22mmust be specified for
+       [4mmmo(1)[24m.
+
+[1mBUGS[0m
+       The implementation of [4mNeWS[24m depends on the current version of  the  NeWS
+       protocol  and  the current version of UNIX.  While all dependencies are
+       documented above, the interface itself is independent of the NeWS  ver-
+       sion  and  client  modules  should not rely on these informations (e.g.
+       trying to send arrays by [1mtypedprint [22mor printing  error  messages  which
+       mention one of the environment variables).
+
+       By default, error messages of the NeWS server are printed onto the con-
+       sole window.  It would be more convenient to  catch  those  errors  (by
+       defining  another error handler) and convert them into events which are
+       related to the [4mNeWS[24m stream.
+
+
+
+Release 0.5                Last change: 10 July 2003                   NeWS(3)

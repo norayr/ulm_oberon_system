@@ -1,0 +1,256 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: BlockingEve.om,v 1.2 1995/03/02 17:55:34 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: BlockingEve.om,v $
+   Revision 1.2  1995/03/02  17:55:34  borchert
+   support of Services added
+
+   Revision 1.1  1994/09/06  13:21:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE BlockingEvents;
+
+   IMPORT Conditions, Events, LocalSemaphores, RelatedEvents, Semaphores,
+      Services, Tasks;
+
+   (* usually the party which raises an event doesn't wait for the
+      completion of the event handling -- especially if this is done
+      by other tasks (see EventConditions);
+      this module allows the raising party to be blocked until
+      all interested parties have seen it;
+      there is, of course, some risk for the calling party to
+      be blocked for a long time if not all interested parties are
+      waiting all the time for this -- so it's wise to use this
+      module only for inter-task communications inside a module
+   *)
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      Queue = POINTER TO QueueRec;
+      CallerCondition = POINTER TO CallerConditionRec;
+      EventType = POINTER TO EventTypeRec;
+      EventTypeRec =
+	 RECORD
+	    (Events.EventTypeRec)
+	    mutex: Semaphores.Semaphore;
+	    conditions: Conditions.ConditionSet;
+	       (* the set of registered parties *)
+	 END;
+      ConditionRec = (* callee condition *)
+	 RECORD
+	    (Conditions.ConditionRec)
+	    mutex: Semaphores.Semaphore;
+	    type: EventType;
+	    head, tail: Queue; (* queue of incoming events *)
+	 END;
+      QueueRec =
+	 RECORD
+	    next: Queue;
+	    event: Events.Event;
+	    ccond: CallerCondition;
+	 END;
+      CallerConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    mutex: Semaphores.Semaphore;
+	    registered, done: LONGINT;
+	 END;
+   VAR
+      callerDomain, calleeDomain: Conditions.Domain;
+      eventTypeType: Services.Type;
+
+   (* ==== private procedures ============================================== *)
+
+   PROCEDURE TestCallerCondition(domain: Conditions.Domain;
+				 condition: Conditions.Condition;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: CallerCondition DO
+	 RETURN condition.done >= condition.registered
+      END;
+   END TestCallerCondition;
+
+   PROCEDURE TestCalleeCondition(domain: Conditions.Domain;
+				 condition: Conditions.Condition;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN condition.head # NIL
+      END;
+   END TestCalleeCondition;
+
+   PROCEDURE Init;
+
+      VAR
+	 desc: Conditions.Description;
+
+      PROCEDURE InitCD(VAR domain: Conditions.Domain;
+		       test: Conditions.TestProc);
+	 VAR
+	    if: Conditions.Interface;
+      BEGIN
+	 NEW(if); if.test := test;
+	 NEW(domain); Conditions.InitDomain(domain, if, desc);
+      END InitCD;
+
+   BEGIN
+      Services.CreateType(eventTypeType,
+	 "BlockingEvents.EventType", "Events.EventType");
+      NEW(desc); desc.caps := {}; desc.internal := TRUE;
+      InitCD(callerDomain, TestCallerCondition);
+      InitCD(calleeDomain, TestCalleeCondition);
+   END Init;
+
+   PROCEDURE Handler(event: Events.Event);
+      VAR
+	 type: EventType;
+	 ccond: CallerCondition;
+	 cond: Condition;
+	 queue: Queue;
+   BEGIN
+      IF ~(event.type IS EventType) THEN RETURN END;
+      type := event.type(EventType);
+
+      (* create caller condition *)
+      NEW(ccond); Conditions.Init(ccond, callerDomain);
+      LocalSemaphores.Create(ccond.mutex);
+      Semaphores.P(type.mutex);
+      ccond.registered := Conditions.Card(type.conditions);
+      ccond.done := 0;
+
+      (* put new event into the queues of all registered parties *)
+      Conditions.ExamineConditions(type.conditions);
+      WHILE Conditions.GetNextCondition(type.conditions, cond) DO
+	 NEW(queue); queue.event := event; queue.ccond := ccond;
+	 Semaphores.P(cond.mutex);
+	 queue.next := NIL;
+	 IF cond.head = NIL THEN
+	    cond.head := queue;
+	 ELSE
+	    cond.tail.next := queue;
+	 END;
+	 cond.tail := queue;
+	 Semaphores.V(cond.mutex);
+      END;
+      Semaphores.V(type.mutex);
+
+      (* and now wait until all parties have called Done *)
+      Tasks.WaitFor(ccond);
+   END Handler;
+
+   (* ==== exported procedures ============================================= *)
+
+   PROCEDURE Define(VAR type: EventType);
+   BEGIN
+      NEW(type);
+      Services.Init(type, eventTypeType);
+      Events.Init(type);
+      LocalSemaphores.Create(type.mutex);
+      Conditions.CreateSet(type.conditions);
+      Events.Handler(type, Handler);
+   END Define;
+
+   PROCEDURE Done(condition: Conditions.Condition);
+      VAR
+	 ccond: CallerCondition;
+   BEGIN
+      IF condition IS Condition THEN
+	 WITH condition: Condition DO
+	    Semaphores.P(condition.mutex);
+	    IF condition.head # NIL THEN
+	       ccond := condition.head.ccond;
+	       condition.head := condition.head.next;
+	       IF condition.head = NIL THEN
+		  condition.tail := NIL;
+	       END;
+	       Semaphores.P(ccond.mutex);
+	       INC(ccond.done);
+	       Semaphores.V(ccond.mutex);
+	    END;
+	    Semaphores.V(condition.mutex);
+	 END;
+      END;
+   END Done;
+
+   PROCEDURE Register(type: EventType; VAR condition: Conditions.Condition);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, calleeDomain);
+      newcond.type := type;
+      newcond.head := NIL; newcond.tail := NIL;
+      LocalSemaphores.Create(newcond.mutex);
+      Semaphores.P(type.mutex);
+      Conditions.Incl(type.conditions, newcond);
+      Semaphores.V(type.mutex);
+      condition := newcond;
+   END Register;
+
+   PROCEDURE Unregister(condition: Conditions.Condition);
+      VAR
+	 type: EventType;
+	 p: Queue;
+   BEGIN
+      IF condition IS Condition THEN
+	 WITH condition: Condition DO
+	    type := condition.type;
+	    Semaphores.P(type.mutex);
+	    Conditions.Excl(type.conditions, condition);
+	    Semaphores.V(type.mutex);
+	    (* execute Done for yet unprocessed events *)
+	    WHILE condition.head # NIL DO
+	       Done(condition);
+	    END;
+	 END;
+      END;
+   END Unregister;
+
+   PROCEDURE TestAndGet(condition: Conditions.Condition;
+			VAR event: Events.Event) : BOOLEAN;
+      (* test & fetch an event which must be marked as done *)
+   BEGIN
+      IF condition IS Condition THEN
+	 WITH condition: Condition DO
+	    IF condition.head = NIL THEN
+	       RETURN FALSE
+	    END;
+	    event := condition.head.event;
+	    RETURN TRUE
+	 END;
+      ELSE
+	 RETURN FALSE
+      END;
+   END TestAndGet;
+
+   PROCEDURE Raise(event: Events.Event);
+      (* Events.Raise works also but this Raise guarantees that
+	 the caller gets blocked independent of current priorities
+      *)
+   BEGIN
+      Handler(event);
+   END Raise;
+
+BEGIN
+   Init;
+END BlockingEvents.

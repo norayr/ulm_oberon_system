@@ -1,0 +1,85 @@
+FTPSessions(3)                Ulm's Oberon System               FTPSessions(3)
+
+
+
+[1mNAME[0m
+       FTPSessions - framework for the inner core of a FTP server
+
+[1mSYNOPSIS[0m
+       TYPE Message = POINTER TO MessageRec;
+       TYPE MessageRec =
+             RECORD
+                (Messages.MessageRec)
+                request: FTPRequests.Request;
+                response: FTPResponses.Response;
+                markEventType: Events.EventType;
+             END;
+
+       TYPE Session = POINTER TO SessionRec;
+       TYPE SessionRec =
+             RECORD
+                (Services.ObjectRec)
+                authorized: BOOLEAN;
+                finished: BOOLEAN;
+             END;
+
+       PROCEDURE Create(VAR session: Session);
+       PROCEDURE ProcessRequest(session: Session;
+                                request: FTPRequests.Request;
+                                markEventType: Events.EventType;
+                                VAR response: FTPResponses.Response);
+
+
+[1mDESCRIPTION[0m
+       [4mFTPSessions[24m  provides  a  framework  for the inner core of a FTP server
+       that processes FTP requests without access to the network connection.
+
+       During the initialization phase of a FTP session for a new network con-
+       nection,
+
+       ·      a new session object is to be created using [4mCreate[24m,
+
+       ·      an  arbitrary number of message handlers may be installed for it
+              using [4mMessages(3)[24m, and
+
+       ·      the initial state is to be set, if necessary.
+
+       State is maintained by various handlers that  were  installed  by  [4mMes-[0m
+       [4msages.InstallHandler[24m  on  base  of disciplines, and some public session
+       components:
+       [4mauthorized[24m   indicates whether FTP  commands  beyond  [4mFTPCommands.user[24m,
+                    [4mFTPCommands.pass[24m,  and [4mFTPCommands.acct[24m are to be accepted
+                    (initially [1mFALSE[22m).
+       [4mfinished[24m     is initially [1mFALSE[22m, and set to [1mTRUE  [22mon  encountering  the
+                    [4mFTPCommands.quit[24m command.
+
+       [4mProcessRequest[24m  checks  whether  [4mrequest[24m  is  acceptable at the current
+       state (in dependence of [4mauthorized[24m),  processes  some  simple  commands
+       itself, and converts all other requests into messages (of type [4mMessage[24m)
+       and sends them to [4msession[24m, using [4mMessages.Send[24m.  Following commands are
+       implemented by [4mProcessRequest[24m:
+       [4mFTPCommands.quit[24m   sets  the  public  component  [4mfinished[24m  to [1mTRUE[22m, and
+                          returns a 221 return code.
+       [4mFTPCommands.noop[24m   is answered by a 200 return code.
+       Attempts to re-authorize when [4mauthorized[24m is already [1mTRUE  [22mare  answered
+       with a response code of 230. All commands beyond authorization commands
+       are rejected with 530 as long [4mauthorized[24m remains [1mFALSE[22m.
+
+       If, after processing of [4mMessages.Send[24m, the [4mresponse[24m field of  the  mes-
+       sage  remains [1mNIL[22m, an error code is returned: either 450 (as indication
+       for temporary failures) if error events were found, or 502 (as  indica-
+       tion for an unknown or unsupported command).
+
+       Some  commands of the FTP protocol request some intermediate responses,
+       called marks, on the command channel as the transfer  on  the  separate
+       channel  begins or ends. Marks are to be delivered by raising events of
+       type [4mFTPResponses.Event[24m using [4mmarkEventType[24m as event type.
+
+[1mSEE ALSO[0m
+       [4mFTPRequests(3)[24m    persistent object type for incoming requests.
+       [4mFTPResponses(3)[24m   persistent object type for outgoing responses.
+       [4mMessages(3)[24m       general abstraction for message handlers.
+
+
+
+Release 0.5              Last change: 9 February 2005           FTPSessions(3)

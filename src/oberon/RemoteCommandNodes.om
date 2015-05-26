@@ -1,0 +1,251 @@
+(* Edit RemoteComma.rm instead of this file which has been generated
+   by genrem at Mon Sep 13 10:55:24 MEST 2004
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteCommandNodes;
+
+   IMPORT Args, CommandNodes, Messages, NetIO, PersistentObjects,
+      RelatedEvents, RemoteObjects, RemoteStreams, Services, Shards, Streams;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec = RECORD (CommandNodes.NodeRec) END;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      GetArgsMessage = POINTER TO GetArgsMessageRec;
+      GetArgsMessageRec =
+         RECORD
+            (MessageRec)
+            args: Args.Arguments; (* OUT via COPYORNIL *)
+         END;
+   VAR
+      getArgsMessageType: Services.Type;
+
+   TYPE
+      InvokeMessage = POINTER TO InvokeMessageRec;
+      InvokeMessageRec =
+         RECORD
+            (MessageRec)
+            args: Args.Arguments; (* IN via COPYORNIL *)
+            in: Streams.Stream; (* IN via REF *)
+            out: Streams.Stream; (* IN via REF *)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+         END;
+   VAR
+      invokeMessageType: Services.Type;
+
+   VAR
+      if: CommandNodes.Interface; (* of CommandNodes *)
+      type: Services.Type; (* of RemoteCommandNodes.Node *)
+
+   PROCEDURE CreateGetArgsMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetArgsMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getArgsMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetArgsMessage;
+
+   PROCEDURE WriteGetArgsMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetArgsMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.args)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteGetArgsMessage;
+
+   PROCEDURE ReadGetArgsMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetArgsMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.args)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadGetArgsMessage;
+
+   PROCEDURE CreateInvokeMessage(VAR object: PersistentObjects.Object);
+      VAR msg: InvokeMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, invokeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateInvokeMessage;
+
+   PROCEDURE WriteInvokeMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: InvokeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.args) &
+                   RemoteObjects.Export(s, msg.in) &
+                   RemoteObjects.Export(s, msg.out) &
+                   PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteInvokeMessage;
+
+   PROCEDURE ReadInvokeMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: InvokeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.args) &
+                   RemoteObjects.Import(s, msg.in) &
+                   RemoteObjects.Import(s, msg.out) &
+                   PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadInvokeMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: CommandNodes.Node DO
+         RelatedEvents.Save(object);
+         RelatedEvents.Forward(object, msg.errors);
+         msg.processed := TRUE;
+         IF msg IS GetArgsMessage THEN
+            WITH msg: GetArgsMessage DO
+               msg.done := CommandNodes.GetArgs(object, msg.args);
+            END;
+         ELSIF msg IS InvokeMessage THEN
+            WITH msg: InvokeMessage DO
+               msg.done := CommandNodes.Invoke(object, msg.args, msg.in, msg.out, msg.auth);
+            END;
+         END;
+         RelatedEvents.Restore(object);
+      END;
+   END Handler;
+
+   PROCEDURE GetArgs(node: CommandNodes.Node;
+                     VAR args: Args.Arguments) : BOOLEAN;
+      VAR msg: GetArgsMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetArgsMessage(msg);
+      Messages.Send(node, msg);
+      args := msg.args;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END GetArgs;
+
+   PROCEDURE Invoke(node: CommandNodes.Node;
+                    args: Args.Arguments;
+                    in: Streams.Stream;
+                    out: Streams.Stream;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR msg: InvokeMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateInvokeMessage(msg);
+      msg.args := args;
+      msg.in := in;
+      msg.out := out;
+      msg.auth := auth;
+      Messages.Send(node, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END Invoke;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.getArgs := GetArgs;
+      if.invoke := Invoke;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteCommandNodes.Message", "Messages.Message", NIL);
+      InitPO(getArgsMessageType, "RemoteCommandNodes.GetArgsMessage", "RemoteCommandNodes.Message",
+             CreateGetArgsMessage, ReadGetArgsMessage, WriteGetArgsMessage);
+      InitPO(invokeMessageType, "RemoteCommandNodes.InvokeMessage", "RemoteCommandNodes.Message",
+             CreateInvokeMessage, ReadInvokeMessage, WriteInvokeMessage);
+      Services.CreateType(type,
+         "RemoteCommandNodes.Node", "CommandNodes.Node");
+
+      Services.SeekType("CommandNodes.Node", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := NIL;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+	                 params: PersistentObjects.Object);
+      VAR
+	 n: Node;
+   BEGIN
+      NEW(n);
+      Services.Init(n, type);
+      CommandNodes.Init(n, if);
+      RelatedEvents.QueueEvents(n);
+      object := n;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteCommandNodes.

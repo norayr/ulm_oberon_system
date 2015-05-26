@@ -1,0 +1,741 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonLex.om,v 1.1 2005/05/08 21:23:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonLex.om,v $
+   Revision 1.1  2005/05/08 21:23:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonLex.om,v 1.1 2005/05/08 21:23:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonLex.om,v $
+   Revision 1.1  2005/05/08 21:23:52  borchert
+   Initial revision
+
+   Revision 1.1  1996/11/29  15:19:43  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonLex;
+
+   (* lexical analyse of all known Oberon variants *)
+
+   IMPORT ASCII, CompilerErrors, CompilerObjects, ConstStrings, Disciplines,
+      Events, Objects, Priorities, RelatedEvents, Sets,
+      Sources := CompilerSources, StreamDisciplines, Streams, Strings,
+      SubStreams, Write;
+
+   CONST (* symbols *)
+      (* keywords *)
+      array = 0; begin = 1; case = 2; const = 3; definition = 4; div = 5;
+      do = 6; else = 7; elsif = 8; end = 9; exit = 10; for = 11; if = 12;
+      import = 13; in = 14; is = 15; loop = 16; mod = 17; module = 18;
+      nil = 19; of = 20; or = 21; pointer = 22; procedure = 23;
+      record = 24; repeat = 25; return = 26; then = 27; to = 28;
+      type = 29; until = 30; var = 31; while = 32; with = 33;
+
+      (* operators and delimiters *)
+      plus = 40; minus = 41; times = 42; slash = 43; tilde = 44;
+      ampersand = 45; period = 46; comma = 47; semicolon = 48; bar = 49;
+      lparen = 50 (* "(" *); lbracket = 51 (* "[" *); lbrace = 52 (* "{" *);
+      becomes = 53; arrow = 54;
+      eql = 55; neq = 56; lst = 57; grt = 58; leq = 59; geq = 60;
+      range = 61; colon = 62;
+      rparen = 63 (* ")" *); rbracket = 64 (* "]" *); rbrace = 65 (* "}" *);
+
+      (* miscellaneous symbols *)
+      ident = 70;
+      intconst = 71; hexconst = 72; realconst = 73; longrealconst = 74;
+      charconst = 75; string = 76; comment = 77; eop = 78;
+
+      symbols = 79; (* # of symbols *)
+
+      special = 70;
+   
+   VAR
+      symstringtab: ARRAY symbols OF ConstStrings.String;
+
+   TYPE
+      Symbol = SHORTINT;
+      Location = Streams.Count;
+      Token =
+	 RECORD
+	    (Objects.ObjectRec)
+	    begin, end: Location;
+	    sy: Symbol;
+	    ident: ConstStrings.String; (* if sy = ident, NIL otherwise *)
+	    text: Streams.Stream; (* constants and comments, NIL otherwise *)
+	 END;
+
+   CONST
+      maxerrors = 100; (* maximal number of error messages *)
+   CONST
+      ioError = 0; (* unable to read from source stream *)
+      backFailed = 1; (* unable to push back look-ahead *)
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    src: Streams.Stream;
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   TYPE
+      KeywordDiscipline = POINTER TO KeywordDisciplineRec;
+      KeywordDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    sy: Symbol;
+	 END;
+   VAR
+      kdID: Disciplines.Identifier;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    src: Sources.Source;
+	    domain: ConstStrings.Domain;
+	    eof: BOOLEAN; (* eof or error seen *)
+	    processed: Streams.Count; (* # of processed chars *)
+	    illegalchars: Streams.Count; (* # of illegal chars *)
+	    errors: Streams.Count; (* # of errors *)
+	    raised: SET; (* OF ErrorCode *)
+	    lineterm: StreamDisciplines.LineTerminator;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error); Events.SetPriority(error, Priorities.liberrors);
+      errormsg[ioError] := "I/O error encountered during lexical analysis";
+      errormsg[backFailed] := "unable to push back look-ahead";
+   END InitErrorHandling;
+
+   PROCEDURE Error(src: Streams.Stream;
+                   errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+	 disc: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(src, sdID, disc) THEN
+	 IF errorcode IN disc.raised THEN RETURN END;
+	 INCL(disc.raised, errorcode);
+      END;
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.src := src;
+      RelatedEvents.Raise(src, event);
+   END Error;
+
+   PROCEDURE FillSymStringTab;
+
+      PROCEDURE Enter(symbol: ARRAY OF CHAR; sy: Symbol);
+      BEGIN
+	 ConstStrings.Create(symstringtab[sy], symbol);
+      END Enter;
+
+   BEGIN
+      (* keywords *)
+      Enter("ARRAY", array);
+      Enter("BEGIN", begin);
+      Enter("CASE", case);
+      Enter("CONST", const);
+      Enter("DEFINITION", definition);
+      Enter("DIV", div);
+      Enter("DO", do);
+      Enter("ELSE", else);
+      Enter("ELSIF", elsif);
+      Enter("END", end);
+      Enter("EXIT", exit);
+      Enter("FOR", for);
+      Enter("IF", if);
+      Enter("IMPORT", import);
+      Enter("IN", in);
+      Enter("IS", is);
+      Enter("LOOP", loop);
+      Enter("MOD", mod);
+      Enter("MODULE", module);
+      Enter("NIL", nil);
+      Enter("OF", of);
+      Enter("OR", or);
+      Enter("POINTER", pointer);
+      Enter("PROCEDURE", procedure);
+      Enter("RECORD", record);
+      Enter("REPEAT", repeat);
+      Enter("RETURN", return);
+      Enter("THEN", then);
+      Enter("TO", to);
+      Enter("TYPE", type);
+      Enter("UNTIL", until);
+      Enter("VAR", var);
+      Enter("WHILE", while);
+      Enter("WITH", with);
+
+      (* operators & delimiters *)
+      Enter("+", plus);
+      Enter("-", minus);
+      Enter("*", times);
+      Enter("/", slash);
+      Enter("~", tilde);
+      Enter("&", ampersand);
+      Enter(".", period);
+      Enter(",", comma);
+      Enter(";", semicolon);
+      Enter("|", bar);
+      Enter("(", lparen);
+      Enter("[", lbracket);
+      Enter("{", lbrace);
+      Enter(":=", becomes);
+      Enter("^", arrow);
+      Enter("=", eql);
+      Enter("#", neq);
+      Enter("<", lst);
+      Enter(">", grt);
+      Enter("<=", leq);
+      Enter(">=", geq);
+      Enter(":", colon);
+      Enter(")", rparen);
+      Enter("]", rbracket);
+      Enter("}", rbrace);
+      Enter("..", range);
+      Enter(":=", becomes);
+      Enter("<=", leq);
+      Enter(">=", geq);
+
+      (* misc. symbols *)
+      Enter("identifier", ident);
+      Enter("decimal constant", intconst);
+      Enter("hexadecimal constant", hexconst);
+      Enter("REAL constant", realconst);
+      Enter("LONGREAL constant", longrealconst);
+      Enter("CHAR constant", charconst);
+      Enter("string", string);
+      Enter("comment", comment);
+      Enter("end of file", eop);
+   END FillSymStringTab;
+
+   PROCEDURE GetDiscipline(s: Streams.Stream;
+			   domain: ConstStrings.Domain;
+                           VAR disc: StreamDiscipline);
+
+      PROCEDURE InitKeywords;
+
+	 PROCEDURE Enter(keyword: ARRAY OF CHAR; sy: Symbol);
+	    VAR
+	       kdisc: KeywordDiscipline;
+	       string: ConstStrings.String;
+	 BEGIN
+	    ConstStrings.CreateD(string, disc.domain, keyword);
+	    NEW(kdisc); kdisc.id := kdID; kdisc.sy := sy;
+	    Disciplines.Add(string, kdisc);
+	 END Enter;
+
+      BEGIN
+	 Enter("ARRAY", array);
+	 Enter("BEGIN", begin);
+	 Enter("CASE", case);
+	 Enter("CONST", const);
+	 Enter("DEFINITION", definition);
+	 Enter("DIV", div);
+	 Enter("DO", do);
+	 Enter("ELSE", else);
+	 Enter("ELSIF", elsif);
+	 Enter("END", end);
+	 Enter("EXIT", exit);
+	 Enter("FOR", for);
+	 Enter("IF", if);
+	 Enter("IMPORT", import);
+	 Enter("IN", in);
+	 Enter("IS", is);
+	 Enter("LOOP", loop);
+	 Enter("MOD", mod);
+	 Enter("MODULE", module);
+	 Enter("NIL", nil);
+	 Enter("OF", of);
+	 Enter("OR", or);
+	 Enter("POINTER", pointer);
+	 Enter("PROCEDURE", procedure);
+	 Enter("RECORD", record);
+	 Enter("REPEAT", repeat);
+	 Enter("RETURN", return);
+	 Enter("THEN", then);
+	 Enter("TO", to);
+	 Enter("TYPE", type);
+	 Enter("UNTIL", until);
+	 Enter("VAR", var);
+	 Enter("WHILE", while);
+	 Enter("WITH", with);
+      END InitKeywords;
+
+   BEGIN (* GetDiscipline *)
+      IF ~Disciplines.Seek(s, sdID, disc) THEN
+	 NEW(disc); disc.id := sdID;
+	 IF domain = NIL THEN
+	    ConstStrings.CreateDomain(disc.domain);
+	 ELSE
+	    disc.domain := domain;
+	 END;
+	 disc.eof := FALSE;
+	 disc.processed := 0; disc.illegalchars := 0; disc.errors := 0;
+	 disc.raised := {};
+	 StreamDisciplines.GetLineTerm(s, disc.lineterm);
+	 InitKeywords;
+	 Sources.GetSource(s, disc.src);
+	 Disciplines.Add(s, disc);
+      ELSIF (domain # NIL) & (disc.domain # domain) THEN
+	 disc.domain := domain;
+	 InitKeywords;
+      END;
+   END GetDiscipline;
+
+   PROCEDURE GetToken(s: Streams.Stream; VAR token: Token);
+      VAR
+	 ch: CHAR;
+	 disc: StreamDiscipline;
+	 sbuf: Streams.Stream;
+	 first: BOOLEAN;
+	 whitespace: Sets.CharSet;
+	 space: BOOLEAN;
+	 errorStream: Streams.Stream;
+	 loc: CompilerObjects.Location;
+	 finalposSet: BOOLEAN;
+
+      PROCEDURE SrcError(msg: ARRAY OF CHAR);
+      BEGIN
+	 INC(disc.errors);
+	 IF disc.errors <= maxerrors THEN
+	    CompilerErrors.Open(errorStream);
+	    IF disc.errors = maxerrors THEN
+	       Write.StringS(errorStream,
+		  "too many lexical errors -- giving up");
+	       disc.eof := TRUE;
+	    ELSE
+	       Write.StringS(errorStream, msg);
+	    END;
+	 END;
+      END SrcError;
+
+      PROCEDURE LocalError(msg: ARRAY OF CHAR; length: Streams.Count);
+	 VAR
+	    begin, end: Location;
+	    loc: CompilerObjects.Location;
+      BEGIN
+	 IF disc.errors + 1 = maxerrors THEN
+	    SrcError(msg); RETURN
+	 END;
+	 INC(disc.errors);
+	 Streams.GetPos(s, end); ASSERT(end >= length);
+	 begin := end - length;
+	 CompilerObjects.CreateLocation(loc, disc.src, begin, end);
+	 CompilerErrors.Raise(s, loc, msg);
+      END LocalError;
+
+      PROCEDURE NextCh;
+      BEGIN
+	 IF disc.eof THEN
+	    ch := 0X;
+	 ELSE
+	    IF Streams.ReadByte(s, ch) THEN
+	       INC(disc.processed);
+	    ELSE
+	       disc.eof := TRUE; ch := 0X;
+	       IF s.error THEN
+		  Error(s, ioError);
+	       END;
+	    END;
+	 END;
+      END NextCh;
+
+      PROCEDURE BackCh;
+      BEGIN
+	 IF ~Streams.Back(s) THEN
+	    Error(s, backFailed);
+	 END;
+      END BackCh;
+
+      PROCEDURE PutCh;
+	 VAR
+	    currpos: Streams.Count;
+	    ok: BOOLEAN;
+      BEGIN
+	 IF first THEN
+	    ConstStrings.Init(sbuf);
+	    first := FALSE;
+	 END;
+	 ok := Streams.WriteByte(sbuf, ch); ASSERT(ok);
+      END PutCh;
+
+      PROCEDURE NotePos;
+	 VAR
+	    currpos: Streams.Count;
+      BEGIN
+	 Streams.GetPos(s, currpos);
+	 IF disc.eof THEN
+	    token.begin := currpos;
+	 ELSE
+	    token.begin := currpos - 1;
+	 END;
+      END NotePos;
+
+      PROCEDURE FinalPos;
+	 VAR
+	    currpos: Streams.Count;
+      BEGIN
+	 IF ~finalposSet THEN
+	    Streams.GetPos(s, currpos);
+	    token.end := currpos;
+	    finalposSet := TRUE;
+	 END;
+      END FinalPos;
+
+      PROCEDURE FinishIdent;
+      BEGIN
+	 ConstStrings.CloseD(sbuf, disc.domain, token.ident);
+      END FinishIdent;
+
+      PROCEDURE FinishText(begin, end: Location);
+	 VAR
+	    ok: BOOLEAN;
+      BEGIN
+	 ok := SubStreams.Open(token.text, s, begin, end - begin, NIL);
+	 ASSERT(ok);
+      END FinishText;
+
+      PROCEDURE ClassifyWord(word: ConstStrings.String; VAR sy: Symbol);
+	 VAR
+	    kdisc: KeywordDiscipline;
+      BEGIN
+	 IF Disciplines.Seek(word, kdID, kdisc) THEN
+	    sy := kdisc.sy;
+	 ELSE
+	    sy := ident;
+	 END;
+      END ClassifyWord;
+
+      PROCEDURE ParseNumber;
+	 VAR
+	    hexdigits: BOOLEAN; (* hexdigits seen? *)
+
+	 PROCEDURE ScanDigits(hexok: BOOLEAN);
+	 BEGIN
+	    WHILE ((ch >= "0") & (ch <= "9")) OR
+		  hexok & (ch >= "A") & (ch <= "F") DO
+	       IF (ch >= "A") & (ch <= "F") THEN
+		  hexdigits := TRUE;
+	       END;
+	       NextCh;
+	    END;
+	 END ScanDigits;
+
+      BEGIN (* ParseNumber *)
+	 NextCh; hexdigits := FALSE; token.sy := intconst;
+	 ScanDigits(TRUE);
+	 IF ~hexdigits & (ch = ".") THEN
+	    NextCh;
+	    IF ch = "." THEN
+	       BackCh; BackCh;
+	    ELSE
+	       token.sy := realconst;
+	       ScanDigits(FALSE);
+	       IF (ch = "E") OR (ch = "D") THEN
+		  IF ch = "D" THEN
+		     token.sy := longrealconst;
+		  END;
+		  NextCh;
+		  IF (ch = "-") OR (ch = "+") THEN
+		     NextCh;
+		  END;
+		  IF (ch >= "0") & (ch <= "9") THEN
+		     ScanDigits(FALSE);
+		  ELSE
+		     SrcError("exponent without digits");
+		  END;
+	       END;
+	       BackCh;
+	    END;
+	 ELSIF (ch = "H") OR (ch = "X") THEN
+	    CASE ch OF
+	    | "H":   token.sy := hexconst;
+	    | "X":   token.sy := charconst;
+	    END;
+	 ELSE
+	    IF hexdigits THEN
+	       SrcError("hexadecimal digits without trailing 'H'");
+	       token.sy := hexconst;
+	    END;
+	    BackCh;
+	 END;
+	 FinalPos; FinishText(token.begin, token.end);
+      END ParseNumber;
+
+      PROCEDURE ParseComment;
+	 VAR
+	    copen: INTEGER;
+	    prevch: CHAR;
+	    loc: CompilerObjects.Location;
+	    es: Streams.Stream;
+      BEGIN
+	 copen := 1;
+	 WHILE (copen > 0) & ~disc.eof DO
+	    prevch := ch; NextCh;
+	    IF (prevch = "*") & (ch = ")") THEN
+	       DEC(copen);
+	       IF copen > 0 THEN
+		  NextCh;
+	       END;
+	    ELSE
+	       IF (prevch = "(") & (ch = "*") THEN
+		  INC(copen);
+		  NextCh;
+	       END;
+	    END;
+	 END;
+	 FinalPos;
+	 IF s.eof & (copen > 0) THEN
+	    CompilerObjects.CreateLocation(loc, disc.src,
+	                                   token.begin, token.begin + 2);
+	    CompilerErrors.Open(es);
+	    CompilerErrors.At1(es, loc);
+	    Write.StringS(es, "comment not closed");
+	    CompilerErrors.Close(es, s);
+	    FinishText(token.begin + 2, token.end);
+	 ELSE
+	    FinishText(token.begin + 2, token.end - 2);
+	 END;
+	 token.sy := comment;
+      END ParseComment;
+
+      PROCEDURE ParseString(delimiter: CHAR);
+	 VAR
+	    ltindex: INTEGER; (* check that we do not skip a line term *)
+	    error: BOOLEAN;
+	    lt: StreamDisciplines.LineTerminator;
+      BEGIN
+	 ltindex := 0; error := FALSE;
+	 NextCh;
+	 WHILE ~error & ~disc.eof & (ch # delimiter) DO
+	    IF ch = disc.lineterm[ltindex] THEN
+	       INC(ltindex);
+	       IF (ltindex = LEN(lt)) OR
+		     (disc.lineterm[ltindex] = 0X) THEN
+		  error := TRUE;
+	       END;
+	    ELSE
+	       ltindex := 0;
+	    END;
+	    IF ~error THEN
+	       NextCh;
+	    END;
+	 END;
+	 IF s.eof OR error THEN
+	    SrcError("string without closing delimiter");
+	 END;
+	 FinalPos;
+	 IF error THEN
+	    DEC(token.end, ltindex); (* take lt out of token range *)
+	    FinishText(token.begin + 1, token.end);
+	 ELSE
+	    FinishText(token.begin + 1, token.end - 1);
+	 END;
+	 token.sy := string;
+      END ParseString;
+
+   BEGIN (* GetToken *)
+      finalposSet := FALSE;
+      errorStream := NIL;
+      GetDiscipline(s, NIL, disc);
+      first := TRUE; NextCh; token.ident := NIL; token.text := NIL;
+      StreamDisciplines.GetWhiteSpace(s, whitespace);
+
+      REPEAT
+	 space := FALSE;
+	 WHILE ~disc.eof & Sets.CharIn(whitespace, ch) DO
+	    NextCh;
+	 END;
+	 NotePos;
+	 CASE ch OF
+	 | "a".."z", "A".."Z":
+		     PutCh; NextCh;
+		     WHILE (ch >= "a") & (ch <= "z") OR
+			   (ch >= "A") & (ch <= "Z") OR
+			   (ch >= "0") & (ch <= "9") DO
+			PutCh; NextCh;
+		     END;
+		     FinishIdent;
+		     ClassifyWord(token.ident, token.sy);
+		     BackCh;
+	 | "0".."9": ParseNumber;
+	 | ASCII.quote:
+		     ParseString(ASCII.quote);
+	 | "'":      ParseString("'");
+		     SrcError("invalid string delimiter");
+	 | "+":      token.sy := plus;
+	 | "-":      token.sy := minus;
+	 | "*":      NextCh;
+		     IF ch = ")" THEN
+			LocalError("'*)' not expected", 2);
+			NextCh;
+			space := TRUE;
+		     ELSE
+			token.sy := times; BackCh;
+		     END;
+	 | "/":      token.sy := slash;
+	 | "~":      token.sy := tilde;
+	 | "&":      token.sy := ampersand;
+	 | ".":      NextCh;
+		     IF ch = "." THEN
+			token.sy := range;
+		     ELSE
+			token.sy := period; BackCh;
+		     END;
+	 | ",":      token.sy := comma;
+	 | ";":      token.sy := semicolon;
+	 | "|":      token.sy := bar;
+	 | "(":      NextCh;
+		     IF ch = "*" THEN
+			NextCh;
+			ParseComment;
+		     ELSE
+			token.sy := lparen;
+			BackCh;
+		     END;
+	 | "[":      token.sy := lbracket;
+	 | "{":      token.sy := lbrace;
+	 | ":":      NextCh;
+		     IF ch = "=" THEN
+			token.sy := becomes;
+		     ELSE
+			token.sy := colon; BackCh;
+		     END;
+	 | "^":      token.sy := arrow;
+	 | "=":      token.sy := eql;
+	 | "#":      token.sy := neq;
+	 | "<":      NextCh;
+		     IF ch = "=" THEN
+			token.sy := leq;
+		     ELSE
+			token.sy := lst; BackCh;
+		     END;
+	 | ">":      NextCh;
+		     IF ch = "=" THEN
+			token.sy := geq;
+		     ELSE
+			token.sy := grt; BackCh;
+		     END;
+	 | ")":      token.sy := rparen;
+	 | "]":      token.sy := rbracket;
+	 | "}":      token.sy := rbrace;
+	 ELSE
+	    IF disc.eof THEN
+	       token.sy := eop;
+	    ELSE
+	       INC(disc.illegalchars);
+	       IF (disc.illegalchars > 10) &
+		     (disc.illegalchars >= disc.processed DIV 10) THEN
+		  (* probably not an ASCII file *)
+		  LocalError("too many illegal characters -- giving up", 1);
+		  disc.eof := TRUE; token.sy := eop;
+	       ELSE
+		  LocalError("illegal character", 1); NextCh; space := TRUE;
+	       END;
+	    END;
+	 END;
+      UNTIL ~space;
+      FinalPos;
+      IF errorStream # NIL THEN
+	 CompilerObjects.CreateLocation(loc, disc.src, token.begin, token.end);
+	 CompilerErrors.At1(errorStream, loc);
+	 CompilerErrors.Close(errorStream, s);
+      END;
+   END GetToken;
+
+   PROCEDURE GetSymString(sy: Symbol; VAR string: ARRAY OF CHAR);
+      VAR
+	 buf: ARRAY 32 OF CHAR;
+	 quote: ARRAY 3 OF CHAR;
+   BEGIN
+      IF (sy >= 0) & (sy < symbols) & (symstringtab[sy] # NIL) THEN
+	 IF sy >= special THEN
+	    ConstStrings.Extract(string, symstringtab[sy]);
+	 ELSE
+	    (* enclose symstring in "..." *)
+	    ConstStrings.Extract(buf, symstringtab[sy]);
+	    quote[0] := ASCII.quote; quote[1] := 0X;
+	    COPY(quote, string);
+	    Strings.Concatenate(string, buf);
+	    Strings.Concatenate(string, quote);
+	 END;
+      ELSE
+	 string[0] := 0X;
+      END;
+   END GetSymString;
+
+   PROCEDURE SetStringDomain(s: Streams.Stream;
+                             domain: ConstStrings.Domain);
+      (* all subsequent returned strings will belong to
+	 the given domain
+      *)
+      VAR
+	 disc: StreamDiscipline;
+   BEGIN
+      GetDiscipline(s, domain, disc);
+   END SetStringDomain;
+
+BEGIN
+   sdID := Disciplines.Unique();
+   kdID := Disciplines.Unique();
+   InitErrorHandling;
+   FillSymStringTab;
+END OberonLex.

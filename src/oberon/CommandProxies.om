@@ -1,0 +1,93 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CommandProxies;
+
+   IMPORT Args, CommandNodes, Proxies, ProxyNodes, RelatedEvents, Services,
+      Shards, Streams;
+
+   TYPE
+      Proxy = POINTER TO ProxyRec;
+      ProxyRec = RECORD (CommandNodes.NodeRec) END;
+   VAR
+      type: Services.Type;
+      if: CommandNodes.Interface;
+
+   (* === CommandNodes interface ========================================= *)
+
+   PROCEDURE GetArgs(node: CommandNodes.Node;
+                     VAR args: Args.Arguments) : BOOLEAN;
+      VAR
+	 orig: CommandNodes.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN CommandNodes.GetArgs(orig, args)
+   END GetArgs;
+
+   PROCEDURE Invoke(node: CommandNodes.Node; args: Args.Arguments;
+		    in, out: Streams.Stream;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 orig: CommandNodes.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN CommandNodes.Invoke(orig, args, in, out, auth)
+   END Invoke;
+
+   (* === Proxies interface ============================================== *)
+
+   PROCEDURE CreateProxy(VAR object: Services.Object; orig: Services.Object);
+      VAR
+	 proxy: Proxy;
+   BEGIN
+      NEW(proxy); Services.Init(proxy, type);
+      RelatedEvents.QueueEvents(proxy);
+      object := proxy;
+   END CreateProxy;
+
+   PROCEDURE InitProxy(object, orig: Services.Object);
+   BEGIN
+      WITH object: CommandNodes.Node DO
+	 CommandNodes.Init(object, if);
+      END;
+   END InitProxy;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 btype: Services.Type;
+	 pif: Proxies.Interface;
+   BEGIN
+      Services.SeekType("CommandNodes.Node", btype); ASSERT(btype # NIL);
+      NEW(pif); pif.createProxy := CreateProxy; pif.initProxy := InitProxy;
+      Proxies.Register(btype, pif);
+      Services.CreateType(type, "CommandProxies.Proxy", "CommandNodes.Node");
+      NEW(if); if.getArgs := GetArgs; if.invoke := Invoke;
+   END InitModule;
+
+BEGIN
+   InitModule;
+END CommandProxies.

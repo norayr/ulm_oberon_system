@@ -1,0 +1,316 @@
+CompilerObjects(3)            Ulm's Oberon System           CompilerObjects(3)
+
+
+
+[1mNAME[0m
+       CompilerObjects  -  language-independent  base  of  persistent compiler
+       objects
+
+[1mSYNOPSIS[0m
+       TYPE Location = POINTER TO LocationRec;
+       TYPE LocationRec =
+          RECORD
+             (PersistentObjects.ObjectRec)
+             src: Sources.Source;
+             begin, end: Streams.Count;
+          END;
+
+       TYPE Object = POINTER TO ObjectRec;
+       TYPE ObjectRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             loc: Location;
+          END;
+
+       TYPE Attachment = POINTER TO AttachmentRec;
+       TYPE AttachmentRec = RECORD (ObjectRec) END;
+
+       CONST public = 1; private = 2;
+       TYPE ObjectType = SHORTINT; (* public or private *)
+       CONST archIndependent = 1;
+       CONST archDependent = 3;
+       TYPE Stage = SHORTINT; (* archIndependent or archDependent *)
+       TYPE CacheMode = SET;
+       CONST cachePublic = {public * archIndependent,
+                public * archDependent};
+       CONST cachePrivate = {private * archIndependent,
+                private * archDependent};
+       CONST cacheAll = cachePublic + cachePrivate;
+       CONST cacheArchIndependent = {public * archIndependent,
+                private * archIndependent};
+       CONST cacheArchDependent = {public * archDependent,
+                private * archDependent};
+
+       TYPE Header = POINTER TO HeaderRec;
+       TYPE HeaderRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             modname: ConstStrings.String;
+             src: Sources.Source;
+             srcid: ConstStrings.String;
+             key: CompilerKeys.Key;
+             dependencies: CompilerKeys.Set;
+             type: ObjectType;
+             stage: Stage;
+             arch: Architectures.Architecture;
+          END;
+
+       TYPE ModuleTable = POINTER TO ModuleTableRec;
+       TYPE ModuleTableRec = RECORD (Disciplines.ObjectRec) END;
+
+       CONST cannotOpenObjectText = 0;
+       CONST cannotReadTextHeader = 1;
+       CONST cannotDecodeObject = 2;
+       CONST corruptedInput = 3;
+       CONST invalidStructure = 4;
+       CONST errors = 5;
+       TYPE ErrorCode = SHORTINT; (* cannotOpenObjectText ... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             code: ErrorCode;
+             modname: ConstStrings.String;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE CreateLocation(VAR location: Location;
+                                src: Sources.Source;
+                                begin, end: Streams.Count);
+
+       PROCEDURE CreateHeader(VAR header: Header;
+                              modname: ConstStrings.String);
+
+       PROCEDURE CreateModuleTable(VAR mtab: ModuleTable);
+       PROCEDURE AddModule(mtab: ModuleTable;
+                           header: Header; module: Object);
+       PROCEDURE AddHeader(mtab: ModuleTable; header: Header);
+       PROCEDURE Lookup(mtab: ModuleTable;
+                        modname: ConstStrings.String;
+                        type: ObjectType;
+                        arch: Architectures.Architecture;
+                        VAR header: Header;
+                        VAR module: Object) : BOOLEAN;
+       PROCEDURE LookupHeader(mtab: ModuleTable;
+                              modname: ConstStrings.String;
+                              type: ObjectType;
+                              arch: Architectures.Architecture;
+                              VAR header: Header) : BOOLEAN;
+
+       PROCEDURE Init(object: Object);
+       PROCEDURE InitBuiltInObject(object: Object);
+       PROCEDURE Attach(object: Object; attachment: Attachment);
+       PROCEDURE InclAttachment(object: Object; attachment: Attachment);
+       PROCEDURE GetAttachment(object: Object;
+                               VAR attachment: Attachment);
+
+       PROCEDURE ConvertObjectToText(
+                   object: Object;
+                   table: ModularizedStructures.ObjectTable;
+                   header: Header;
+                   VAR text: PersistentTexts.Text;
+                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ConvertTextToObject(
+                   text: PersistentTexts.Text;
+                   table: ModularizedStructures.ObjectTable;
+                   header: Header;
+                   VAR object: Object;
+                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                             VAR object: CompilerObjects.Object) : BOOLEAN;
+       PROCEDURE Write(s: Streams.Stream;
+                       object: CompilerObjects.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mCompilerObjects[24m provides a language-independent base of persistent com-
+       piler  objects.   Successful  compilation runs return an object of type
+       [4mObject[24m (a so-called root object)  that  references  further  persistent
+       objects  either generated by this run or by other runs of imported mod-
+       ules by means of [4mModularizedStructures(3)[24m. Each compilation  result  is
+       accompanied  by  a  header  that  allows  to  examine meta data without
+       accessing or restoring its associated objects.
+
+       Not just root objects should be  extensions  of  [4mCompilerObjects.Object[0m
+       but every object that may be referenced by compilation results of other
+       modules (like symbol table entries) as [4mWrite[24m  and  [4mGuardedRead[24m  provide
+       the  necessary  support  for [4mModularizedStructures(3)[24m. Compiler objects
+       should never written or read to external streams but instead  converted
+       to  or from persistent texts (see [4mPersistentTexts(3)[24m) by [4mConvertObject-[0m
+       [4mToText[24m and [4mConvertTextToObject[24m, respectively.   This  is  necessary  to
+       store  and load compilations results without taking care of topological
+       orders (as required by [4mModularizedStructures(3)[24m) and to avoid time-con-
+       suming restoration operations as long they are not strictly required.
+
+       Compiler  objects have optionally a location of type [4mLocation[24m that ref-
+       erences a stretch of bytes inside a source using  stream  positions  of
+       [4mStreams(3)[24m.  These  locations  may  later  be used on the generation of
+       error events (see [4mCompilerErrors(3)[24m). Compiler locations  are  expected
+       to be precise by not just noting a single position but the full textual
+       representation of a syntactical construct that is represented by a com-
+       piler  object.  While  locations  of leaf objects of an abstract syntax
+       tree may just cover a token, upper nodes more close to the root  should
+       have  a  location that is the smallest interval including the locations
+       of all sub nodes.
+
+       Most languages come with built-in objects  representing,  for  example,
+       basic types like integers and floating point numbers. One way to repre-
+       sent them as persistent objects is to treat them as items of a separate
+       module  but  this  is not always practicable. [4mCompilerObjects(3)[24m allows
+       built-in objects to be tagged as such, and, that is  to  be  considered
+       with  care,  saves and restores them not using [4mModularizedStructures(3)[0m
+       but directly by [4mLinearizedStructures(3)[24m which causes them to be cloned.
+       This  leads  to  multiple incarnations of built-in objects representing
+       the same built-in language construct if they are loaded from  different
+       modules.
+
+       In a multi-stage compilation environment where the first pass generates
+       an architecture-independent abstract syntax tree, followed by a  second
+       pass that generates an architecture-dependent interface usable for com-
+       pilation runs of other modules importing this module, it might be  use-
+       ful  to have twin objects. One object represents the architecture-inde-
+       pendent part and belongs to a separate module in the sense of  [4mModular-[0m
+       [4mizedStructures(3)[24m.  The second object provides additional architecture-
+       dependent informations for the first object. The second object can eas-
+       ily reference the first object but not vice versa. This is not just due
+       to the avoidance of cyclic references (as required by [4mModularizedStruc-[0m
+       [4mtures(3)[24m)  but  also  under  the consideration that there might be many
+       different architectures and therefore different  architecture-dependent
+       extensions to one architecture-independent syntax tree.
+
+       This  problem  is  solved  by  so-called attachments of type [4mAttachment[0m
+       which is a specific extension of [4mObject[24m.  [4mAttach[24m creates  a  persistent
+       tie  between  [4mobject[24m  and  [4mattachment[24m,  and  [4mGetAttachment[24m  returns the
+       attachment belonging to [4mobject[24m.  While any number  of  attachments  for
+       one  object  may have once been created (usually one for each architec-
+       ture), there must never be more than one  attachment  in  existence  in
+       memory  for  each  object  instance in memory. Hence, if many different
+       architecture-dependent informations are needed for one object, a single
+       attachment  object  should carry all of them, either directly or by use
+       of  [4mPersistentDisciplines(3)[24m.  Note,  however,  that   [4mPersistentDisci-[0m
+       [4mplines(3)[24m  or other means must not be used to modify loaded compilation
+       results from earlier compilation runs as they have  to  be  treated  as
+       read-only.
+
+       Headers  provide all language-independent meta informations needed of a
+       result generated by a compiler:
+       [4mmodname[24m        Module name that must conform to that of the source ref-
+                      erence  [4msrc.modname[24m  if  [4msrc[24m  is  non-[1mNIL [22m(see [4mCompiler-[0m
+                      [4mSources(3)[24m).
+       [4msrc[24m            Source reference, may be [1mNIL[22m.
+       [4msrcid[24m          Source identification (see [4mCompilerSources(3)[24m), must  be
+                      non-[1mNIL[22m.
+       [4mkey[24m            Associated interface-branding key (see [4mCompilerKeys(3)[24m).
+       [4mdependencies[24m   Set of dependencies to  other  interfaces  (see  [4mCompil-[0m
+                      [4merKeys(3)[24m).
+       [4mtype[24m           Type of compiler result: either [4mpublic[24m (interface infor-
+                      mation usable on compiler runs of importing modules), or
+                      [4mprivate[24m (final machine code or an intermediate architec-
+                      ture-independent state representing the abstract  syntax
+                      tree).
+       [4mstage[24m          Either [4marchIndependent[24m or [4marchDependent[24m.
+       [4march[24m           Concrete  architecture: [1mNIL [22mif [4mstage[24m equals [4marchIndepen-[0m
+                      [4mdent[24m, and non-[1mNIL [22motherwise (see [4mArchitectures(3)[24m).
+
+       The integer constants of [4mObjectType[24m and [4mStage[24m have been chosen in a way
+       that  gives  any possible combination of object type and stage a unique
+       number. Sets of these combinations are cache modes  that  are  used  by
+       [4mCompilers(3)[24m  to  decide  which kinds of intermediate results should be
+       kept in storage for further compilations.
+
+       A module table allows to  collect  all  compilation  results  that  are
+       loaded or generated during a compilation run. It is as such part of the
+       context of a compilation  (see  [4mCompilers(3)[24m)  and  maintained  by  the
+       object loader (see [4mObjectLoader(3)[24m).  Module tables have at maximum two
+       entries per module: public interface and private stuff (abstract syntax
+       tree  or  machine  code). Entries consists of a header and, optionally,
+       the loaded compilation result. Entries may be upgraded, i.e.  they  may
+       advance  from  architecture-independent  to architecture-dependent, and
+       compilation results may be added where previously  just  a  header  was
+       present.  Module  tables must always be consistent in the sense of [4mCom-[0m
+       [4mpilerKeys(3)[24m and violations lead to failed assertions.   [4mCreateLocation[0m
+       creates a location record representing the byte stretch [1m[[4m[22mbegin[24m, [4mend[24m[1m) [22mof
+       [4msrc[24m. Except for noting the end of a source, [4mend[24m should be  larger  than
+       [4mbegin[24m. Locations are usually stored into the [4mlocation[24m component of com-
+       piler objects and later used to generate error  messages  (see  [4mCompil-[0m
+       [4merErrors(3)[24m) or allow debuggers to display source texts.
+
+       [4mCreateHeader[24m  creates  and initializes a header object of [4mmodname[24m. Note
+       that the remaining components need to be initialized  before  returning
+       it as compilation result or including it to a module table.
+
+       [4mCreateModuleTable[24m  creates an empty module table.  While [4mAddHeader[24m adds
+       an entry consisting only of a header to [4mmtab[24m, [4mAddModule[24m  adds  both  of
+       them,  header  and  an object representing the result of a compilation.
+       Upgrades are permitted,  i.e.  [4mAddModule[24m  may  be  called  for  modules
+       already  added  to  add  a compilation result where the header only was
+       formerly known, to advance a  compilations  result  from  architecture-
+       independent to architecture-dependent, or to add the compilation result
+       of an entire module where just the public interface  was  part  of  the
+       module table before.  Note, however, that compatibility in the sense of
+       [4mCompilerKeys(3)[24m is to be strictly preserved.
+
+       [4mLookup[24m and [4mLookupHeader[24m allow to look up compiler objects of the module
+       table  by  their  module name, the object type ([4mpublic[24m or [4mprivate[24m), and
+       their architecture. Note that the architecture passed to  the  look  up
+       procedures needs just to be compatible with that of the object look for
+       (see [4mArchitectures(3)[24m).
+
+       [4mInit[24m and [4mInitBuiltInObject[24m allow to initialize  ordinary  and  built-in
+       compiler  objects.  Note that [4mInit[24m may be followed by [4mInitBuiltInObject[0m
+       as long [4mobject[24m has not been tied with a module  before  by  writing  it
+       using [4mWrite[24m.
+
+       [4mAttach[24m  creates a persistent association between [4mattachment[24m and [4mobject[24m.
+       [4mInclAttachment[24m should be called for all attachments using a root object
+       belonging  to the same module in the sense of [4mModularizedStructures(3)[24m.
+       This may be omitted if these attachments are already connected  to  the
+       root  object  by  other  persistent references that do not cross module
+       boundaries.  [4mGetAttachment[24m allows to retrieve the attachment  belonging
+       to an object. [1mNIL [22mis returned if there is no attachment present.
+
+       [4mConvertObjectToText[24m  and  [4mConvertTextToObject[24m  convert  root objects of
+       compilation results to persistent texts and vice versa.
+
+       [4mGuardedRead[24m and [4mWrite[24m are to be used in marshalling procedures to  read
+       and write compiler objects.
+
+[1mDIAGNOSTICS[0m
+       Following  error  events  may  be raised by [4mCompilerObjects[24m in its mar-
+       shalling and conversion procedures:
+       [4mcannotOpenObjectText[24m   is returned  by  [4mConvertTextToObject[24m  if  it  is
+                              unable  to  open the persistent text object (see
+                              [4mPersistentTexts(3)[24m).
+       [4mcannotReadTextHeader[24m   is returned by [4mConvertTextToObject[24m  on  failures
+                              to  read the module name that is expected at the
+                              beginning of [4mtext[24m.
+       [4mcannotDecodeObject[24m     is returned by [4mConvertTextToObject[24m  on  failures
+                              of [4mGuardedRead[24m.
+       [4mcorruptedInput[24m         is  returned  by [4mGuardedRead[24m and the marshalling
+                              read procedure for attachment objects in case of
+                              inconsistencies.
+       [4minvalidStructure[24m       is raised by [4mGuardedRead[24m in case of lookup fail-
+                              ures regarding references to foreign  persistent
+                              modules (see [4mModularizedStructures(3)[24m).
+
+       In  addition,  various  assertions  check  the validity of module tabs,
+       headers, and parameters.
+
+[1mSEE ALSO[0m
+       [4mArchitectures(3)[24m           classification of target architectures
+       [4mCompilerKeys(3)[24m            keys that identify dependencies of compiler-
+                                  generated objects
+       [4mCompilerSources(3)[24m         objects representing source texts
+       [4mCompilerStreamPosKeys(3)[24m   service  provider  of  [4mStreamPosKeys(3)[24m  for
+                                  extensions of [4mCompilerObjects.Object[0m
+       [4mCompilers(3)[24m               general language-independent compiler inter-
+                                  face
+       [4mModularizedStructures(3)[24m   modularization  of  persistent object struc-
+                                  tures
+       [4mObjectLoader(3)[24m            general language-independent loader
+       [4mPersistentTexts(3)[24m         persistent text objects
+
+
+
+Release 0.5                Last change: 24 June 2004        CompilerObjects(3)

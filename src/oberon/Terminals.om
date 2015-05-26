@@ -1,0 +1,420 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Terminals.om,v 1.1 2004/06/11 12:12:09 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: Terminals.om,v $
+   Revision 1.1  2004/06/11 12:12:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Terminals; (* Ralf Beck *)
+
+   (* this module provides some basic procedures for *)
+   (* managing ASCII-terminals                       *)
+
+   IMPORT Disciplines, Events, Objects, Priorities, Process, RelatedEvents,
+      Services, Streams, Write;
+
+   CONST
+      (* terminal characteristics *)
+      autoleftmargin = 0;  (* terminal wraps from last column to first column
+                              of next line if character is typed *)
+      autorightmargin = 1; (* backspace in first column moves cursor to
+                              last column of previous line *)
+      overstrikes = 2;     (* terminal overstrikes characters rather than
+                              replacing them *)
+      safelastcolumn = 3;  (* safe to write character in last column *)
+
+      (* errorcodes *)
+      cannotSetEcho = 0;
+      cannotSetTermMode = 1;
+      cannotSetCursor = 2;
+      cannotMoveCursor = 3;
+      cannotSetAppearance = 4;
+      cannotScroll = 5;
+      cannotSetScrollRegion = 6;
+      cannotClearScreen = 7;
+      invalidDirection = 8;
+      invalidRegion = 9;
+      invalidPosition = 10;
+      notSupported = 11;
+
+      errorcodes = 12;
+
+      (* echo *)
+      on = 0; off = 1;
+      (* terminal modes *)
+      raw = 0; cooked = 1;
+      (* directions *)
+      forward = 0; reverse = 1;
+      (* cursor shapes *)
+      visible = 0; invisible = 1;
+
+      (* capabilities *)
+      setEcho = 0;
+      setTermMode = 1;
+      setCursor = 2;
+      moveCursor = 3;
+      setAppearance = 4;
+      scroll = 5;
+      setScrollRegion = 6;
+      clearScreen = 7;
+
+   TYPE
+      CapabilitySet = SET;
+      EchoMode = SHORTINT;
+      TermMode = SHORTINT;
+      Direction = SHORTINT;
+      Shape = SHORTINT;
+
+      Stream = POINTER TO StreamRec;
+
+      WindowChangeEvent = POINTER TO WindowChangeEventRec;
+      WindowChangeEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+	    newlines, newcolumns: INTEGER;
+         END;
+
+      InterruptEvent = POINTER TO InterruptEventRec;
+      InterruptEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+         END;
+
+      QuitEvent = POINTER TO QuitEventRec;
+      QuitEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+         END;
+
+      HangupEvent = POINTER TO HangupEventRec;
+      HangupEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+         END;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+           (Events.EventRec)
+           errorcode: SHORTINT;
+         END;
+
+     (* interface procedures *)
+
+      SetTermModeProc = PROCEDURE (s: Streams.Stream; mode: TermMode);
+      SetEchoProc = PROCEDURE (s: Streams.Stream; mode: EchoMode);
+      SetCursorProc = PROCEDURE (s: Streams.Stream; line, column: INTEGER);
+      MoveCursorProc = PROCEDURE(s: Streams.Stream; fromline, fromcolumn,
+						    toline, tocolumn: INTEGER);
+      SetAppearanceProc = PROCEDURE(s: Streams.Stream; shape: Shape);
+      ScrollProc = PROCEDURE(s: Streams.Stream; dir: Direction);
+      SetScrollRegionProc = PROCEDURE(s: Streams.Stream; top, bottom: INTEGER);
+      ClearProc = PROCEDURE(s: Streams.Stream);
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+         RECORD
+            (Objects.ObjectRec)
+            setEcho: SetEchoProc;
+            setTermMode: SetTermModeProc;
+            setCursor: SetCursorProc;
+            moveCursor: MoveCursorProc;
+            setAppearance: SetAppearanceProc;
+            scroll: ScrollProc;
+            setScrollRegion: SetScrollRegionProc;
+	    clearScreen: ClearProc;
+         END;
+
+      Status =
+	 RECORD
+            (Objects.ObjectRec)
+            lines, columns: INTEGER;      (* of physical screen    *)
+            scrtop, scrbottom: INTEGER;   (* start & end of scroll region *)
+            echo: EchoMode;               (* on or off             *)
+            mode: TermMode;               (* raw or cooked         *)
+            characteristics: SET;         (* of terminal characteristics *)
+            scrollDirections: SET;        (* up, down *)
+            cursorShape: Shape;           (* current shape of cursor *)
+         END;
+
+      StreamRec =
+         RECORD
+            (Streams.StreamRec)
+            status: Status;
+            caps: CapabilitySet;
+            if: Interface;
+         END;
+
+   VAR
+      console: Streams.Stream;  (* terminal the user logged in *)
+      terminaltype: Services.Type;
+      windowchanged: Events.EventType;
+      interrupt: Events.EventType;
+      quit: Events.EventType;
+      hangup: Events.EventType;
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[cannotSetEcho] :=
+         "cannot change echo mode";
+      errormsg[cannotSetTermMode] :=
+         "cannot change terminal mode";
+      errormsg[cannotSetCursor] :=
+         "cannot set cursor";
+      errormsg[cannotMoveCursor] :=
+         "cannot move cursor";
+      errormsg[cannotSetAppearance] :=
+         "cannot change appearance of cursor";
+      errormsg[cannotScroll] :=
+         "terminal cannot scroll";
+      errormsg[cannotSetScrollRegion] :=
+         "scroll regions not supported by terminal";
+      errormsg[cannotClearScreen] :=
+	 "cannot clear screen";
+      errormsg[invalidDirection] :=
+         "direction not valid";
+      errormsg[invalidPosition] :=
+         "cursor coordinates not valid";
+      errormsg[invalidRegion] :=
+         "parameters for scroll region not valid";
+      errormsg[notSupported] :=
+	 "module Terminals not supported by underlying stream implementation";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; errorcode: SHORTINT);
+      VAR
+         event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* ==================== public procedures ========================== *)
+
+   PROCEDURE Init(s: Stream; status: Status; caps: CapabilitySet;
+                  if: Interface);
+      (* initializes terminal discipline and adds it to steam s *)
+      (* status: terminal's status                              *)
+      (* caps: terminal's capabilities                          *)
+      (* if: terminal's interface                               *)
+   BEGIN
+      ASSERT(if # NIL);
+      s.status := status;
+      s.caps := caps;
+      s.if := if;
+   END Init;
+
+   PROCEDURE SetScreenSize(event: Events.Event);
+   BEGIN
+      WITH event: WindowChangeEvent DO
+	 event.stream(Stream).status.lines := event.newlines;
+	 event.stream(Stream).status.columns := event.newcolumns;
+      END;
+   END SetScreenSize;
+
+   (* ------------ client procedures --------------------------*)
+
+   PROCEDURE ClearScreen(s: Streams.Stream);
+      (* clears the screen *)
+   BEGIN
+      WITH s: Stream DO
+         IF clearScreen IN s.caps THEN
+	    s.if.clearScreen(s);
+         ELSE
+	    Error(s, cannotClearScreen);
+         END;
+      END;
+   END ClearScreen;
+
+   PROCEDURE Echo(s: Streams.Stream; mode: EchoMode);
+      (* turns echoing of characters on or off *)
+   BEGIN
+      WITH s: Stream DO
+         IF s.status.echo # mode THEN
+            IF setEcho IN s.caps THEN
+               s.if.setEcho(s, mode);
+               s.status.echo := mode;
+            ELSE
+               Error(s, cannotSetEcho);
+            END;
+         END;
+      END;
+   END Echo;
+
+   PROCEDURE SetTermMode(s: Streams.Stream; mode: TermMode);
+      (* set s's mode to raw or cooked *)
+   BEGIN
+      WITH s: Stream DO
+         IF s.status.mode # mode THEN
+            IF setTermMode IN s.caps THEN
+               s.if.setTermMode(s, mode);
+               s.status.mode := mode;
+            ELSE
+               Error(s, cannotSetTermMode);
+            END;
+         END;
+      END;
+   END SetTermMode;
+
+   PROCEDURE SetCursor(s: Streams.Stream; line, column: INTEGER);
+      (* set cursor absolute to (line, column)    *)
+      (* position must fit within screen limits   *)
+   BEGIN
+      WITH s: Stream DO
+         IF (line >= 0) & (line < s.status.lines) &
+            (column >= 0) & (column < s.status.columns) THEN
+            IF setCursor IN s.caps THEN
+               s.if.setCursor(s, line, column);
+            ELSE
+               Error(s, cannotSetCursor);
+            END;
+         ELSE
+            Error(s, invalidPosition);
+         END;
+      END;
+   END SetCursor;
+
+   PROCEDURE MoveCursor(s: Streams.Stream;
+                       (* from *) fromline, fromcolumn,
+                       (* to   *) toline, tocolumn: INTEGER);
+      (* move cursor relative to current position *)
+      (* must be within screen limits             *)
+   BEGIN
+      WITH s: Stream DO
+         IF (fromline >= 0) & (fromline < s.status.lines) &
+	       (toline >= 0) & (toline < s.status.lines) &
+	       (fromcolumn >= 0) & (fromcolumn <= s.status.columns) &
+	       (tocolumn >= 0) & (tocolumn < s.status.columns) THEN
+            IF moveCursor IN s.caps THEN
+               s.if.moveCursor(s, fromline, fromcolumn, toline, tocolumn);
+	    ELSIF setCursor IN s.caps THEN
+	       s.if.setCursor(s, toline, tocolumn);
+            ELSE
+               Error(s, cannotMoveCursor);
+            END;
+         ELSE
+            Error(s, invalidPosition);
+	 END;
+      END;
+   END MoveCursor;
+
+   PROCEDURE CursorAppearance(s: Streams.Stream; shape: Shape);
+      (* set cursor appearance to normal, invisible or highlighted *)
+   BEGIN
+      WITH s: Stream DO
+         IF shape # s.status.cursorShape THEN
+            IF setAppearance IN s.caps THEN
+               s.if.setAppearance(s, shape);
+               s.status.cursorShape := shape;
+            ELSE
+               Error(s, cannotSetAppearance);
+            END;
+         END;
+      END;
+   END CursorAppearance;
+
+   PROCEDURE Scroll(s: Streams.Stream; dir: Direction);
+      (* scroll scrollregion once in direction (dir) *)
+   BEGIN
+      WITH s: Stream DO
+         IF dir IN s.status.scrollDirections THEN
+            IF scroll IN s.caps THEN
+               s.if.scroll(s, dir);
+            ELSE
+               Error(s, cannotScroll);
+            END;
+         ELSE
+            Error(s, invalidDirection);
+	 END;
+      END;
+   END Scroll;
+
+   PROCEDURE SetScrollRegion(s: Streams.Stream; top, bottom: INTEGER);
+      (* define scrollregion from line (top) to line (bottom) *)
+   BEGIN
+      WITH s: Stream DO
+         IF (top >= 0) & (top < s.status.lines) &
+	       (bottom >= 0) & (bottom < s.status.lines) & (top < bottom) THEN
+            IF setScrollRegion IN s.caps THEN
+               s.if.setScrollRegion(s, top, bottom);
+	       s.status.scrtop := top;
+	       s.status.scrbottom := bottom;
+	       IF setCursor IN s.caps THEN
+	          SetCursor(s, bottom, 0);
+               END;
+            ELSE
+               Error(s, cannotSetScrollRegion);
+            END;
+         ELSE
+            Error(s, invalidRegion);
+         END;
+      END;
+   END SetScrollRegion;
+
+   PROCEDURE Capabilities(s: Streams.Stream): CapabilitySet;
+      (* return s's capabilities *)
+   BEGIN
+      WITH s: Stream DO
+         RETURN s.caps;
+      END;
+   END Capabilities;
+
+   PROCEDURE GetStatus(s: Streams.Stream; VAR status: Status);
+      (* return s's status *)
+   BEGIN
+      WITH s: Stream DO
+         status := s.status;
+      END;
+   END GetStatus;
+
+BEGIN
+   Services.CreateType(terminaltype, "Terminals.Stream", "Streams.Stream");
+
+   InitErrorHandling;
+
+   Events.Define(windowchanged);
+   Events.Define(interrupt);
+   Events.Define(quit);
+   Events.Define(hangup);
+
+   Events.SetPriority(windowchanged, Priorities.interrupts);
+   Events.SetPriority(interrupt, Priorities.interrupts);
+   Events.SetPriority(quit, Priorities.interrupts);
+   Events.SetPriority(hangup, Priorities.interrupts);
+
+   Events.Handler(windowchanged, SetScreenSize);
+
+   console := NIL;
+END Terminals.

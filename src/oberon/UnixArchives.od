@@ -1,0 +1,105 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixArchive.od,v 1.1 1994/02/23 07:26:04 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixArchive.od,v $
+   Revision 1.1  1994/02/23  07:26:04  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 7/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION UnixArchives;
+
+   (* examination of common archive file formats:
+      ar-format of System V and Berkeley
+   *)
+
+   IMPORT Events, RelatedEvents, Streams, SysTypes;
+
+   CONST
+      arnamelength = 14;
+	 (* filename lengths of members are limited to arnamelength *)
+
+   TYPE
+      MemberName = ARRAY arnamelength+1 OF CHAR;
+      ArchiveHeader =
+	 RECORD
+	    name: MemberName;		(* name of archive member *)
+	    date: SysTypes.Time;	(* in seconds since Jan 1, 1970 *)
+	    uid, gid: INTEGER;		(* user and group id *)
+	    mode: SET;			(* protection mode, see stat(2) *)
+	    size: SysTypes.Offset;	(* size in bytes *)
+	 END;
+      Archive = POINTER TO ArchiveRec;
+      ArchiveRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    (* readonly stat information of current archive member *)
+	    header: ArchiveHeader;
+	 END;
+
+   CONST
+      notAnArchiveFile = 0;	(* magic header not found *)
+      corruptedArchive = 1;	(* corrupted archive file *)
+      memberNotFound = 2;	(* archive member file not found *)
+      outOfRange = 3;		(* seek failure: position out of range *)
+      readFailed = 4;           (* unexpected read failure *)
+      seekFailed = 5;		(* unexpected seek failure *)
+      tellFailed = 6;		(* unexpected tell failure *)
+      errorcodes = 7;		(* number of error codes *)
+   TYPE
+      ErrorCode = SHORTINT;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Archive;
+	    code: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      streamError: Events.EventType;
+	 (* error event type; priority: Priorities.liberrors *)
+
+   PROCEDURE Open(VAR archive: Streams.Stream;
+		  arname: ARRAY OF CHAR;
+		  membername: ARRAY OF CHAR;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* opens arname(membername) for reading;
+	 if membername = "" the first member of the archive
+	 will be opened for reading;
+	 Open fails if arname cannot be opened or if
+	 membername cannot be found
+	 (or if the archive is empty)
+      *)
+
+   PROCEDURE Reopen(archive: Streams.Stream;
+		    membername: ARRAY OF CHAR) : BOOLEAN;
+      (* archive has been opened by Open;
+	 if membername = "" the next member of the archive
+	 will be opened for reading;
+	 Reopen fails if membername cannot be found
+	 (or at the end of the archive)
+      *)
+
+END UnixArchives.

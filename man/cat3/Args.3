@@ -1,0 +1,385 @@
+Args(3)                       Ulm's Oberon System                      Args(3)
+
+
+
+[1mNAME[0m
+       Args - general abstraction for arguments
+
+[1mSYNOPSIS[0m
+       CONST nameLen = 256;
+       TYPE Name = ARRAY nameLen OF CHAR; (* the name of an argument *)
+       TYPE Value = POINTER TO ValueRec; (* the value of an argument *)
+       TYPE ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+       TYPE Arguments = POINTER TO ArgumentsRec; (* collection of arguments *)
+       TYPE ArgumentsRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+       TYPE ReadProc = PROCEDURE (s: Streams.Stream; VAR value: Value) : BOOLEAN;
+       TYPE PrintProc = PROCEDURE (s: Streams.Stream; value: Value);
+       TYPE HelpProc = PROCEDURE (s: Streams.Stream);
+       TYPE TypeInterface = POINTER TO TypeInterfaceRec;
+       TYPE TypeInterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             read: ReadProc;
+             print: PrintProc;
+             help: HelpProc; (* may be NIL *)
+          END;
+       TYPE Type = POINTER TO TypeRec;
+       TYPE TypeRec =
+          RECORD
+             (Disciplines.ObjectRec)
+             name: Name;
+             moduleName: Name;
+          END;
+
+       TYPE ScanProc = PROCEDURE (args: Arguments);
+       TYPE ScannerList = POINTER TO ScannerListRec;
+       TYPE ScannerListRec = RECORD (Disciplines.ObjectRec) END;
+
+       TYPE Argument = POINTER TO ArgumentRec;
+       TYPE ArgumentRec =
+          RECORD
+             (Disciplines.ObjectRec)
+             name: Name;
+             short: CHAR;
+             type: Type;
+             description: Name;
+          END;
+
+       TYPE ChangeNotification = POINTER TO ChangeNotificationRec;
+       TYPE ChangeNotificationRec =
+          RECORD
+             (Events.EventRec)
+             args: Arguments;
+             arg: Argument;
+          END;
+
+       CONST lowPriority    = 0;
+       CONST middlePriority = 1;
+       CONST highPriority   = 2;
+       TYPE Priority = INTEGER;
+
+       VAR systemScanners: ScannerList; (* predefined scanners *)
+
+       CONST cannotReadArgs     = 0;    (* failed to read list of arguments *)
+       CONST unknownTypeName    = 1;    (* unknown type name encountered *)
+       CONST twiceDefined       = 2;    (* an argument name has been defined twice *)
+       CONST cannotWriteArgs    = 3;    (* failed to write list of arguments *)
+       CONST unknownArgName     = 4;    (* an unknown argument name was given *)
+       CONST namedErrors = {unknownTypeName, twiceDefined, unknownArgName};
+       CONST errorcodes         = 5;    (* number of error codes *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+             name: Name; (* defined if errorcode IN namedErrors *)
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       (* client side *)
+       PROCEDURE Create(VAR args: Arguments);
+       PROCEDURE CreateCopyOf(VAR args: Arguments; orig: Arguments);
+       PROCEDURE Define(args: Arguments; name: ARRAY OF CHAR;
+                        short: CHAR; type: Type; description: ARRAY OF CHAR);
+       PROCEDURE Exists(args: Arguments; name: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE Scan(args: Arguments; scanners: ScannerList);
+       PROCEDURE GetValue(args: Arguments; name: ARRAY OF CHAR; VAR value: Value);
+       PROCEDURE SetValue(args: Arguments; name: ARRAY OF CHAR; value: Value);
+       PROCEDURE GetNotification(args: Arguments; name: ARRAY OF CHAR;
+                                 VAR eventType: Events.EventType);
+       PROCEDURE Print(args: Arguments; name: ARRAY OF CHAR; s: Streams.Stream);
+       PROCEDURE PrintValue(s: Streams.Stream; value: Value);
+       PROCEDURE ReadValue(s: Streams.Stream; type: Type; VAR value: Value) : BOOLEAN;
+       PROCEDURE IterateArgs(args: Arguments; VAR it: Iterators.Iterator);
+       PROCEDURE Seek(args: Arguments; name: ARRAY OF CHAR; VAR arg: Argument);
+       PROCEDURE String2Type(string: ARRAY OF CHAR) : Type;
+       PROCEDURE TypeHelp(args: Arguments; type: Type; s: Streams.Stream);
+       PROCEDURE IterateTypes(VAR it: Iterators.Iterator);
+       PROCEDURE AssignPrintProc(s: Streams.Stream; type: Type; print: PrintProc);
+
+       (* scanner providers *)
+       PROCEDURE CreateScannerList(VAR list: ScannerList);
+       PROCEDURE RegisterScanner(scanners: ScannerList; scan: ScanProc;
+                                  priority: Priority);
+       PROCEDURE ScanValue(args: Arguments; name: ARRAY OF CHAR;
+                           stream: Streams.Stream) : BOOLEAN;
+
+       (* type providers *)
+       PROCEDURE DefineType(type: Type; if: TypeInterface; valtype: Services.Type);
+
+
+[1mDESCRIPTION[0m
+       [4mArgs[24m  offers  a  general  abstraction  of arguments which come from the
+       environment or the user interface.  Examples are the  traditional  UNIX
+       command  line  (see  [4mUnixCommandLine(3)[24m),  environment variables of the
+       shell which are passed through [4mexec(2)[24m, configuration files (so  called
+       [4mrc[24m  files),  X resources, or the text after the selected command in the
+       Zürich Oberon System.
+
+       Arguments are name/value pairs with some  additional  components  which
+       are  organized  in argument collections.  Argument values are typed and
+       the types are associated with a set of interface procedures which allow
+       to read and print them.  A scanner knows how to retrieve arguments from
+       a specific area (e.g. from the command line).  [4mScan[24m allows  to  fire  a
+       set of scanners for a given argument collection.
+
+   [1mDefining a Set of Arguments[0m
+       Each  module which is interested in retrieving arguments from the envi-
+       ronment should create a list of arguments (or get one  from  a  calling
+       module).   [4mCreate[24m  creates  an  empty argument list which may be filled
+       with [4mDefine[24m.  Note that all newly added  arguments  have  initially  an
+       undefined  value.   Each  argument  has a type which determines how the
+       value is represented, how it may be read in, and how it may be printed.
+       Some basic types are offered by [4mBoolArgs(3)[24m, [4mIntArgs(3)[24m, [4mStringArgs(3)[24m,
+       and [4mStrListArgs(3)[24m.
+
+       The following example shows the creation of an argument list with three
+       arguments:
+
+       VAR args: Args.Arguments; (* argument list *)
+
+       (* ... *)
+
+       Args.Create(args);
+       Args.Define(args, "copies",  "#", IntArgs.type,    "number of copies");
+       Args.Define(args, "file",    "f", StringArgs.type, "file to be printed");
+       Args.Define(args, "printer", "p", StringArgs.type, "name of the printer");
+
+       The  [4mname[24m  of  an  argument must be unique for the given argument list.
+       Optionally, a [4mshort[24m name may be given (one character long).   The  last
+       parameter  is  a  short help text which may be later retrieved by [4mIter-[0m
+       [4mateArgs[24m.
+
+       It is possible to give argument default values, or to modify them at  a
+       later  time  by  [4mSetValue[24m.   In the example above, the number of copies
+       should probably default to 1:
+
+       VAR value: Args.Value;
+
+       (* ... *)
+       IntArgs.Create(value, 1); Args.SetValue(args, "copies", value);
+
+
+       [4mCreateCopyOf[24m allows to create a new  argument  list  as  clone  of  the
+       already existing list [4morig[24m.
+
+       [4mScan[24m allows to call all scanners of a scanner list for a given argument
+       list.  All indirectly invoked scanners try to locate settings  for  the
+       arguments  in  their  area and to assign them.  Usually, [4msystemScanners[0m
+       should be given as [4mscanners[24m to [4mScan[24m.  [4mUnixCommandLine(3)[24m, for  example,
+       (which  is member of [4msystemScanners[24m) would assign [4mletter[24m to [4mfile[24m and [4mhp[0m
+       to [4mprinter[24m for following command line:
+
+       [4mcmdname[24m -p hp -file letter
+
+
+       After calling [4mScan[24m, it is useful to retrieve values by [4mGetValue[24m.   Note
+       that  [4mGetValue[24m returns [1mNIL [22mfor undefined values.  In the example above,
+       the file which is to be printed may be retrieved by:
+
+       VAR file: StringArgs.Value; filename: ARRAY 80 OF CHAR;
+
+       (* ... *)
+
+       Args.GetValue(args, "file", file);
+       IF file = NIL THEN
+          (* a file name was not given anywhere *)
+       ELSE
+          COPY(file.string, filename);
+       END;
+
+
+   [1mOffering help[0m
+       [4mArgs[24m supports the generation of help texts.  Usually,  help  texts  are
+       printed  either  on  request  (by  a special help option) or in case of
+       errors (see diagnostics section below).  Given a set  of  arguments,  a
+       comprehensive  help text for them may be generated by iterating through
+       them:
+
+       PROCEDURE PrintHelpText(s: Streams.Stream; args: Args.Arguments);
+          VAR it: Iterators.Iterator; arg: Args.Argument;
+       BEGIN
+          Args.IterateArgs(args, it);
+          WHILE Iterators.Yield(it, arg) DO
+             Print.S4(s, "%1s %-20s %-8s  %s0,
+                arg.short, arg.name, arg.type.name, arg.description);
+          END;
+       END PrintHelpText;
+
+
+       [4mPrint[24m and [4mPrintValue[24m allow to  print  arbitrary  values  to  the  given
+       stream.   Following  example  shows how the values of all defined argu-
+       ments may be printed:
+
+       PROCEDURE PrintValues(s: Streams.Stream; args: Args.Arguments);
+          VAR it: Iterators.Iterator; arg: Args.Argument;
+       BEGIN
+          Args.IterateArgs(args, it);
+          WHILE Iterators.Yield(it, arg) DO
+             Print.S2(s, "%-20s: %-8s = ", arg.name, arg.type.name);
+             Args.Print(args, arg.name, s);
+             Print.S(s, "\n");
+          END;
+       END PrintValues;
+
+       Note that it is possible to override for a given  stream  the  original
+       type-specific  printing  procedure  for a specific type by [4mAssignPrint-[0m
+       [4mProc[24m.
+
+       Informations about the supported argument types  may  be  retrieved  by
+       [4mTypeHelp[24m,  and  [4mIterateTypes[24m  allows  to  iterate through all supported
+       types.  [4mString2Type[24m allows to convert a (probably  user-supplied)  type
+       name into a type.  [1mNIL [22mis returned if the type name is not known.
+
+   [1mCreating a Scanner[0m
+       Specific  scanners  scan through their area and look for possible argu-
+       ment names (either the long or short form).  They have only to  provide
+       one  interface  procedure  to [4mRegisterScanner[24m.  The priority determines
+       the calling order of scanners of a scanner list.   Scanners  with  high
+       priority  are  called  last,  that means that they are able to override
+       value settings of scanners with lower priority.
+
+       Scanners may check the  existence  of  argument  names  by  [4mExist[24m.   It
+       depends  usually on the scanner whether missing argument names are con-
+       sidered as an error (of the  invoker  /  user)  or  not.   [4mUnixCommand-[0m
+       [4mLine(3)[24m,  for  example, generates error events for each option named on
+       the command line which is not part of the argument list.   Other  scan-
+       ners, however, are less restrictive.
+
+       If an argument has been found, it may be read in by [4mScanValue[24m which, in
+       turn, calls the type-specific read procedure  of  the  argument.   Note
+       that  these  read procedures are expected to interpret field separators
+       and line terminators (see [4mStreamDisciplines(3)[24m) as delimiters.   Alter-
+       natively, [4mSeek[24m may be called to access the argument directly.
+
+       Following  example  shows  a  simple  implementation of a scanner which
+       takes arguments out of a [4mrc[24m file whose lines have two fields which  are
+       separated by a colon.  The first field is the name of the parameter and
+       the second the associated value:
+
+       PROCEDURE ScanFile(args: Args.Arguments);
+          VAR
+             s: Streams.Stream;
+             fieldseps: Sets.CharSet;
+             name: Args.Name;
+       BEGIN
+          (* open the rc file and let s point to it *)
+          RelatedEvents.Forward(s, args);
+          Sets.InitSet(fieldseps); Sets.InclChar(fieldseps, ":");
+          StreamDisciplines.SetFieldSepSet(s, fieldseps);
+          WHILE Read.FieldS(s, name) DO
+             IF ~Args.Exists(args, name) OR ~Args.ScanValue(args, name, s) THEN
+                (* raise an appropriate error event and relate it to args *)
+             END;
+             Read.LnS(s);
+          END;
+          Streams.Release(s);
+       END ScanFile;
+
+
+   [1mOffering an Argument Type[0m
+       Argument types are to be created and initialized (components  [4mname[24m  and
+       [4mmoduleName[24m)  by  the  type provider and then passed to [4mDefineType[24m.  The
+       parameter [4mvaltype[24m is the  type  of  [4mServices.Type[24m  for  the  associated
+       extension  of  [4mArgs.Value[24m  which  has  been  returned  by [4mPersistentOb-[0m
+       [4mjects.RegisterType[24m.  This type is used as guard to assure  that  values
+       which  are declared to be of type [4mtype[24m by [4mDefine[24m are extensions of [4mval-[0m
+       [4mtype[24m.  The interface is expected to meet following specification:
+       [4mread[24m: [1mPROCEDURE[22m([4ms[24m: [4mStreams.Stream[24m; [1mVAR [4m[22mvalue[24m: [4mValue[24m) : [1mBOOLEAN[22m;
+            read a value from the given stream.  Exactly one  input  field  in
+            the  sense  of  [4mStreamDisciplines(3)[24m and [4mRead.FieldS[24m is to be con-
+            sumed from [4ms[24m.  That means that line terminators may not be skipped
+            over  and  field  separators work as delimiters but are to be con-
+            sumed.  This field must be read in completely even  if  the  input
+            does  not syntactically conform to the type.  But [4mread[24m has to ter-
+            minate immediately on end of file or in case  of  errors  returned
+            from  [4mStreams(3)[24m.  [1mTRUE [22mis to be returned if a value has been read
+            successfully.
+            Note that [4mread[24m is free to update [4mvalue[24m instead of creating  it  if
+            [4mvalue[24m is non-[1mNIL[22m.  This could be of interest if [4mvalue[24m represents a
+            list or set where subsequent [4mread[24m operations add new elements.
+       [4mprint[24m: [1mPROCEDURE[22m([4ms[24m: [4mStreams.Stream[24m; [4mvalue[24m: [4mValue[24m);
+            print the given value (which is guaranteed to be  non-[1mNIL  [22mand  an
+            extension  of  [4mvaltype[24m)  in ``readable'' form on the given stream.
+            If multiple lines are needed, [4mWrite.IndentS[24m is to be called on the
+            beginning  of  each new line.  Note that the last line must not be
+            terminated.
+       [4mhelp[24m: [1mPROCEDURE[22m([4ms[24m: [4mStreams.Stream[24m);
+            print some useful help information about the type to [4ms[24m.  Note that
+            multiple  lines  should be avoided here.  If they are nevertheless
+            necessary, the conventions of [4mprint[24m should be used.   This  inter-
+            face procedure is optional and may be set to [1mNIL[22m.
+
+       Additionally,  type  providers  should  export  a simple constructor to
+       allow default values to be set.
+
+       [4mReadValue[24m allows to create a value of the given type  and  to  scan  it
+       from  [4ms[24m.  This may be useful for type constructors whose [4mread[24m interface
+       procedures want to read values of their subtypes.
+
+   [1mInternal Links on base of [4m[22mIndirectDisciplines(3)[0m
+       [4mArgs[24m sets up links of [4mIndirectDisciplines(3)[24m from each argument to  its
+       argument  list,  and  from each stream which is passed to the interface
+       procedures [4mread[24m and [4mprint[24m to the  argument  which  is  to  be  read  or
+       printed.   Thus, stream disciplines (see [4mStreamDisciplines(3)[24m) or other
+       disciplines (see, for example, [4mBoolDisciplines(3)[24m and [4mBoolArgs(3)[24m)  may
+       be  given  for  a specific argument or for an argument list.  The links
+       from streams to individual arguments are removed  when  the  associated
+       operation finishes.
+
+[1mDIAGNOSTICS[0m
+       Some  errors  result in events which are related to the [4margs[24m parameter.
+       Following error codes are implemented:
+       [4munknownArgName[24m    An unknown argument name was given to [4mScanValue[24m, [4mGet-[0m
+                         [4mValue[24m, [4mSetValue[24m, [4mGetNotification[24m, or [4mPrintValue[24m.
+       [4mtwiceDefined[24m      An  argument  name was given to [4mDefine[24m which has been
+                         already given earlier for the same argument list.
+       [4mcannotReadArgs[24m    [4mArgs[24m was not able to read an argument list (via  [4mPer-[0m
+                         [4msistentObjects.Read[24m).
+       [4mcannotWriteArgs[24m   Is  returned  on  write failures during [4mPersistentOb-[0m
+                         [4mjects.Write[24m for argument lists.
+       [4munknownTypeName[24m   An unknown argument value type name  was  encountered
+                         during [4mPersistentObjects.Read[24m for an argument list.
+
+       Some errors are caught by assertions:
+
+       ·      [4mDefine[24m  checks the validity of its parameters: [4mname[24m must be non-
+              empty, [4mtype[24m must be non-[1mNIL [22mand initialized  (by  the  providing
+              module).
+
+       ·      [4mScan[24m and [4mScanValue[24m expect [4margs[24m to be non-[1mNIL[22m.
+
+       ·      [4mDefineType[24m  requires  that  that  [4mname[24m  is  unique  and that [4mif[24m,
+              [4mif.read[24m and [4mif.print[24m  are  non-[1mNIL[22m.   Additionally,  [4mvaltype[24m  is
+              checked to be an extension of [4mArgs.Value[24m.
+
+       ·      [4mPrintValue[24m  requires the value parameter to be an extension of a
+              type which has been given to [4mDefineType[24m.
+
+       ·      A non-[1mNIL [4m[22mscan[24m interface procedure must be  given  to  [4mRegister-[0m
+              [4mScanner[24m.
+
+       ·      [4mSetValue[24m  checks that the given value is either [1mNIL [22mor an exten-
+              sion of the type-specific extension of [4mArgs.Value[24m.
+
+       ·      A similar test is performed for the values returned by the  [4mread[0m
+              interface procedures.
+
+[1mSEE ALSO[0m
+       [4mBoolArgs(3)[24m            arguments of type [1mBOOLEAN[0m
+       [4mIntArgs(3)[24m             arguments of type [1mINTEGER[0m
+       [4mPersistentObjects(3)[24m   input and output of persistent objects
+       [4mStreamDisciplines(3)[24m   parameterized definition of an input field
+       [4mStringArgs(3)[24m          arguments of type [1mARRAY OF CHAR[0m
+       [4mStrListArgs(3)[24m         arguments of type [1mARRAY OF ARRAY OF CHAR[0m
+       [4mUnixCommandLine(3)[24m     scanner for the UNIX command line
+
+[1mAUTHORS[0m
+       The  original version of this module was written by Jan Oliver Stibane,
+       all revisions and this manual page are due to Andreas Franz Borchert.
+
+
+
+Release 0.5                Last change: 2 June 2004                    Args(3)

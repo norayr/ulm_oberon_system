@@ -1,0 +1,107 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XWMDeleteWi.om,v 1.1 2005/04/10 13:17:59 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: XWMDeleteWi.om,v $
+   Revision 1.1  2005/04/10 13:17:59  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XWMDeleteWindowMessages;
+
+   IMPORT BlockingEvents, Disciplines, Events, Resources, Types,
+      XAtomListProperties, XResources, XWMProtocolEvents;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    win: XResources.Window;
+	    timestamp: Types.Int32;
+	    (* following BOOLEAN variable is initially set to
+	       TRUE but may be set to FALSE
+	    *)
+	    terminateWindow: BOOLEAN;
+	 END;
+
+   TYPE
+      WindowDiscipline = POINTER TO WindowDisciplineRec;
+      WindowDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    eventType: BlockingEvents.EventType;
+	 END;
+   VAR
+      wdid: Disciplines.Identifier;
+
+   PROCEDURE HandleDeleteWindowMessage(event: Events.Event);
+      VAR
+	 wd: WindowDiscipline;
+	 e: Event;
+   BEGIN
+      WITH event: XWMProtocolEvents.Event DO
+	 IF ~Disciplines.Seek(event.win, wdid, wd) THEN RETURN END;
+	 NEW(e); e.type := wd.eventType;
+	 e.message := "blocking WM_DELETE_WINDOW event";
+	 e.win := event.win;
+	 e.timestamp := event.timestamp;
+	 e.terminateWindow := TRUE;
+	 BlockingEvents.Raise(e);
+	 IF e.terminateWindow THEN
+	    Resources.Notify(event.win, Resources.terminated);
+	 END;
+      END;
+   END HandleDeleteWindowMessage;
+
+   PROCEDURE GetEventType(win: XResources.Window;
+                          VAR eventType: BlockingEvents.EventType);
+      VAR
+	 wd: WindowDiscipline;
+	 et: Events.EventType;
+	 ok: BOOLEAN;
+   BEGIN
+      IF Disciplines.Seek(win, wdid, wd) THEN
+	 ok := TRUE;
+      ELSE
+	 NEW(wd); wd.id := wdid;
+	 BlockingEvents.Define(wd.eventType);
+	 XWMProtocolEvents.GetEventType(win, "WM_DELETE_WINDOW", et);
+	 IF et # NIL THEN
+	    Events.Handler(et, HandleDeleteWindowMessage);
+	    Disciplines.Add(win, wd);
+	    ok := XAtomListProperties.Append(win,
+		     "WM_PROTOCOLS", "WM_DELETE_WINDOW");
+	 ELSE
+	    ok := FALSE;
+	 END;
+      END;
+      IF ok THEN
+	 eventType := wd.eventType;
+      ELSE
+	 eventType := NIL;
+      END;
+   END GetEventType;
+
+BEGIN
+   wdid := Disciplines.Unique();
+END XWMDeleteWindowMessages.

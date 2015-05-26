@@ -1,0 +1,198 @@
+
+
+
+ObjectTransactions(3)  Ulm's Oberon System  ObjectTransactions(3)
+
+
+NNAAMMEE
+       ObjectTransactions - transactions which involve one object
+       only
+
+SSYYNNOOPPSSIISS
+       TYPE Object = Services.Object;
+
+       TYPE BeginProc = PROCEDURE (object: Object;
+                                   trans: Transactions.Transaction) : BOOLEAN;
+       TYPE TransProc = PROCEDURE (object: Object) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             begin: BeginProc;
+             commit, abort, release: TransProc;
+          END;
+
+       CONST notSupported = 0;
+       CONST oneObjectOnly = 1;
+       CONST alreadyAttached = 2;
+       CONST authorizationFailed = 3;
+       CONST invalidTransition = 4;
+       CONST noObjectAttached = 5;
+       CONST transReleased = 6;
+       CONST errors = 7;
+       TYPE ErrorCode = SHORTINT; (* notSupported..transReleased *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       (* implementors side *)
+       PROCEDURE Register(type: Services.Type; if: Interface);
+
+       (* client side *)
+       PROCEDURE Supported(object: Object) : BOOLEAN;
+       PROCEDURE Create(VAR trans: Transactions.Transaction;
+                        object: Object; pot: Shards.Pot;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s is a trivial implementation of _T_r_a_n_s_a_c_­
+       _t_i_o_n_s_(_3_)  which interfaces those objects which do not sup­
+       port distributed transactions.
+
+   SSuuppppoorrttiinngg aa TTyyppee ffoorr _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s
+       Implementors which offer  transactions  for  one  specific
+       kind  of  objects  only  have  to  register  themselves at
+
+
+
+Release 0.5       Last change: 28 November 1996                 1
+
+
+
+
+
+ObjectTransactions(3)  Ulm's Oberon System  ObjectTransactions(3)
+
+
+       initialization time by calling _R_e_g_i_s_t_e_r.  The given inter­
+       face _i_f is a great simplification in comparison to that of
+       _T_r_a_n_s_a_c_t_i_o_n_s and is expected to meet following  specifica­
+       tions:
+       _b_e_g_i_n:    PPRROOCCEEDDUURREE(_o_b_j_e_c_t:    _O_b_j_e_c_t;   _t_r_a_n_s:   _T_r_a_n_s_a_c_­
+            _t_i_o_n_s_._T_r_a_n_s_a_c_t_i_o_n);
+            Begin a transaction in the sense  of  _T_r_a_n_s_a_c_t_i_o_n_s_(_3_)
+            for  _o_b_j_e_c_t.  Note that _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s guarantees
+            that the transaction is neither already  running  nor
+            released.  FFAALLSSEE is to be returned if the implementa­
+            tion is for other reasons unable to start a  transac­
+            tion.  Those operations of _o_b_j_e_c_t which have a trans­
+            action parameter (e.g.  implementations  of  _C_o_n_t_a_i_n_­
+            _e_r_s_(_3_))  should check it against _t_r_a_n_s and fail if it
+            does not match.
+       _c_o_m_m_i_t: PPRROOCCEEDDUURREE(_o_b_j_e_c_t: _O_b_j_e_c_t);
+            Commit the running transaction for _o_b_j_e_c_t.   In  case
+            of failures, FFAALLSSEE is to be returned and the transac­
+            tion is considered as aborted, then.
+       _a_b_o_r_t: PPRROOCCEEDDUURREE(_o_b_j_e_c_t: _O_b_j_e_c_t);
+            Abort the running transaction for _o_b_j_e_c_t.  FFAALLSSEE  may
+            be  returned  in case of problems -- but the transac­
+            tion is to be considered aborted afterwards  indepen­
+            dent from the return value, though.
+       _r_e_l_e_a_s_e: PPRROOCCEEDDUURREE(_o_b_j_e_c_t: _O_b_j_e_c_t);
+            Final  operation on a transaction _o_b_j_e_c_t which should
+            cause all resources to be released.
+
+   RRuunnnniinngg TTrraannssaaccttiioonnss
+       _S_u_p_p_o_r_t_e_d allows to check whether an object  supports  the
+       interface of this module or not.
+
+       _C_r_e_a_t_e  creates  a  transaction  in  the sense of _T_r_a_n_s_a_c_­
+       _t_i_o_n_s_(_3_) with _o_b_j_e_c_t attached (if non-NNIILL) which  is  pro­
+       tected  by _p_o_t (which may be NNIILL if the transaction should
+       run unprotected).  If _o_b_j_e_c_t was not given initially,  one
+       and  only  one  supported  object may be attached later by
+       _T_r_a_n_s_a_c_t_i_o_n_s_._A_t_t_a_c_h.   Note  that  objects  supported   by
+       _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s  are not allowed to participate in more
+       than one transaction concurrently.
+
+       All operations  of  _T_r_a_n_s_a_c_t_i_o_n_s  with  the  exception  of
+       _T_r_a_n_s_a_c_t_i_o_n_s_._G_e_t_N_a_m_e   may  be  applied  later  under  the
+       restriction that just one object may be attached to it.
+
+   TTeerrmmiinnaattiioonn ooff TTrraannssaaccttiioonnss
+       _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s supports _R_e_s_o_u_r_c_e_s_(_3_):
+
+       ·      Released transactions will terminate.
+
+       ·      If a transaction becomes _R_e_s_o_u_r_c_e_s_._u_n_r_e_f_e_r_e_n_c_e_d  or
+              _R_e_s_o_u_r_c_e_s_._t_e_r_m_i_n_a_t_e_d, it will be released automati­
+              cally (if this has not been  done  already).   This
+              includes  an  implicit  abortion if the transaction
+
+
+
+Release 0.5       Last change: 28 November 1996                 2
+
+
+
+
+
+ObjectTransactions(3)  Ulm's Oberon System  ObjectTransactions(3)
+
+
+              was active.
+
+       ·      The termination of transaction  objects  is  propa­
+              gated to the associated transaction.
+
+       Note  that  terminations  by means of _R_e_s_o_u_r_c_e_s_._N_o_t_i_f_y may
+       bypass the authorization  which  is  needed  for  _T_r_a_n_s_a_c_­
+       _t_i_o_n_s_._R_e_l_e_a_s_e.  This  works, however, only if there are no
+       filter objects involved because proxy termination is (usu­
+       ally)  not  propagated  to  the  original object (see, for
+       example, _R_e_m_o_t_e_O_b_j_e_c_t_s_(_3_)).
+
+DDIIAAGGNNOOSSTTIICCSS
+       All operations return FFAALLSSEE in error  cases  and  generate
+       appropriate error events in addition to those generated by
+       underlying levels.  Following error events may  be  gener­
+       ated by _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s:
+       _n_o_t_S_u_p_p_o_r_t_e_d          The  given object has no support for
+                             this module, i.e. nobody has  called
+                             _R_e_g_i_s_t_e_r  for its type or one of its
+                             base types.
+       _o_n_e_O_b_j_e_c_t_O_n_l_y         Transactions created by _O_b_j_e_c_t_T_r_a_n_s_­
+                             _a_c_t_i_o_n_s  accept one supported object
+                             only.
+       _a_l_r_e_a_d_y_A_t_t_a_c_h_e_d       Parallel transactions on one  object
+                             are not supported.
+       _a_u_t_h_o_r_i_z_a_t_i_o_n_F_a_i_l_e_d   This  error gets raised if the given
+                             lid _a_u_t_h  does  not  match  the  _p_o_t
+                             which has been passed to _C_r_e_a_t_e.
+       _i_n_v_a_l_i_d_T_r_a_n_s_i_t_i_o_n     _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s  checks all state
+                             transitions for  validity,  e.g.  an
+                             aborted transaction must not be com­
+                             mitted, or a not yet begun  transac­
+                             tion cannot be aborted.
+       _n_o_O_b_j_e_c_t_A_t_t_a_c_h_e_d      _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s  does  not  allow
+                             transactions to be started  as  long
+                             there is no object attached to it.
+       _t_r_a_n_s_R_e_l_e_a_s_e_d         None   of  the  operations  must  be
+                             called after a transaction has  been
+                             released.
+
+SSEEEE AALLSSOO
+       _R_e_s_o_u_r_c_e_s_(_3_)      termination of objects
+       _T_r_a_n_s_a_c_t_i_o_n_s_(_3_)   general   abstraction   of   distributed
+                         transactions  for  which  _O_b_j_e_c_t_T_r_a_n_s_a_c_­
+                         _t_i_o_n_s offers a trivial implementation
+       _T_r_a_n_s_S_t_r_e_a_m_s_(_3_)   transaction streams support _O_b_j_e_c_t_T_r_a_n_s_­
+                         _a_c_t_i_o_n_s
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 3
+
+

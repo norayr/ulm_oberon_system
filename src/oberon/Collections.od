@@ -1,0 +1,122 @@
+DEFINITION Collections;
+
+   IMPORT Disciplines, Events, Iterators, PersistentDisciplines;
+
+   TYPE
+      Collection = POINTER TO CollectionRec;
+      CollectionRec = RECORD (PersistentDisciplines.ObjectRec) END;
+      Object = Disciplines.Object;
+
+   CONST
+      forward = 0; backward = 1;  (* ordered collections only *)
+      undefined = 2;              (* valid for all kinds of collections *)
+   TYPE
+      Order = SHORTINT; (* forward..undefined *)
+
+   (* error handling *)
+
+   CONST
+      objectNotInCollection = 0;
+	 (* Collections.Remove failed because
+	    the object is not in the collection
+	 *)
+      badIndex = 1;
+	 (* Collections.Get failed because of an invalid index *)
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode; (* what happened...? *)
+	    collection: Collection;
+	       (* failed operation was called for this collection *)
+	    object: Object;
+	       (* the parameter, if present (may be NIL otherwise) *)
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+	 (* error message texts for all error codes returned by this module *)
+
+   (* interface for implementors *)
+
+   TYPE
+      Message = RECORD END;
+      AddProc = PROCEDURE (collection: Collection; object: Object);
+      LengthProc = PROCEDURE (collection: Collection) : INTEGER;
+      GetIteratorProc = PROCEDURE (collection: Collection;
+			           order: Order;
+			           VAR it: Iterators.Iterator);
+      GetProc = PROCEDURE (collection: Collection;
+			   index: INTEGER; VAR object: Object);
+	 (* object must be set to NIL for invalid indices *)
+      GetFirstProc = PROCEDURE (collection: Collection;
+			        VAR object: Object);
+      GetLastProc = PROCEDURE (collection: Collection;
+			       VAR object: Object);
+      RemoveProc = PROCEDURE (collection: Collection; object: Object) : BOOLEAN;
+	 (* FALSE has to be returned if the object was not in
+	    the given collection
+	 *)
+      RemoveFirstProc = PROCEDURE (collection: Collection);
+      RemoveLastProc = PROCEDURE (collection: Collection);
+      HandlerProc = PROCEDURE (collection: Collection;
+			       VAR message: Message);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    add: AddProc;                 (* required *)
+	    length: LengthProc;           (* required *)
+	    getIterator: GetIteratorProc; (* required *)
+	    get: GetProc;                 (* optional: orderedCollection *)
+	    getFirst: GetFirstProc;       (* optional: orderedCollection *)
+	    getLast: GetLastProc;         (* optional: orderedCollection *)
+	    removeFirst: RemoveFirstProc; (* optional: orderedCollection *)
+	    removeLast: RemoveLastProc;   (* optional: orderedCollection *)
+	    remove: RemoveProc;           (* optional: remove *)
+	    handler: HandlerProc;         (* optional: handler *)
+	 END;
+
+   CONST
+      orderedCollection = 0; remove = 1; handler = 2;
+   TYPE
+      Capability = SHORTINT; (* get..handler *)
+      CapabilitySet = SET; (* OF Capability *)
+
+   PROCEDURE Init(collection: Collection; if: Interface; caps: CapabilitySet);
+
+   PROCEDURE Send(collection: Collection; VAR message: Message);
+
+   (* interface for clients *)
+
+   PROCEDURE Capabilities(collection: Collection) : CapabilitySet;
+
+   PROCEDURE Add(collection: Collection; object: Object);
+
+   PROCEDURE Length(collection: Collection) : INTEGER;
+
+   PROCEDURE GetIterator(collection: Collection; order: Order;
+		         VAR it: Iterators.Iterator);
+      (* note that backward & forward order is supported
+	 for ordered collections only
+      *)
+
+   (* IF remove IN caps: *)
+
+   PROCEDURE Remove(collection: Collection; object: Object);
+
+   (* IF orderedCollection IN caps: *)
+
+   PROCEDURE Get(collection: Collection; index: INTEGER; VAR object: Object);
+
+   PROCEDURE GetFirst(collection: Collection; VAR object: Object);
+
+   PROCEDURE GetLast(collection: Collection; VAR object: Object);
+
+   PROCEDURE RemoveFirst(collection: Collection);
+
+   PROCEDURE RemoveLast(collection: Collection);
+
+END Collections.

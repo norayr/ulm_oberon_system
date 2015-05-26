@@ -1,0 +1,146 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CDBNodeProx.om,v 1.1 2004/09/08 15:00:25 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: CDBNodeProx.om,v $
+   Revision 1.1  2004/09/08 15:00:25  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CDBNodeProxies;
+
+   IMPORT CDBNames, CompilerObjects, Names, PersistentTexts, Proxies,
+      ProxyNodes, RelatedEvents, Services, Shards,
+      Sources := CompilerSources;
+
+   TYPE
+      Proxy = POINTER TO ProxyRec;
+      ProxyRec = RECORD (CDBNames.NodeRec) END;
+   VAR
+      type: Services.Type;
+      if: CDBNames.Interface;
+
+   (* === CDBNames interface ============================================== *)
+
+   PROCEDURE AddObject(root: CDBNames.Node; header: CompilerObjects.Header;
+                       text: PersistentTexts.Text;
+		       auth: Shards.Lid;
+		       VAR node: CDBNames.Node) : BOOLEAN;
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(root, orig);
+      RETURN CDBNames.AddObject(orig, header, text, auth, node);
+   END AddObject;
+
+   PROCEDURE AddSource(root: CDBNames.Node; header: Sources.Header;
+		       text: PersistentTexts.Text;
+		       auth: Shards.Lid;
+		       VAR node: CDBNames.Node) : BOOLEAN;
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(root, orig);
+      RETURN CDBNames.AddSource(orig, header, text, auth, node);
+   END AddSource;
+
+   PROCEDURE GetObjectHeader(node: CDBNames.Node; auth: Shards.Lid;
+                             VAR header: CompilerObjects.Header) : BOOLEAN;
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN CDBNames.GetObjectHeader(orig, auth, header)
+   END GetObjectHeader;
+
+   PROCEDURE GetSourceHeader(node: CDBNames.Node; auth: Shards.Lid;
+			     VAR header: Sources.Header) : BOOLEAN;
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN CDBNames.GetSourceHeader(orig, auth, header)
+   END GetSourceHeader;
+
+   PROCEDURE GetText(node: CDBNames.Node; auth: Shards.Lid;
+                     VAR text: PersistentTexts.Text) : BOOLEAN;
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN CDBNames.GetText(orig, auth, text)
+   END GetText;
+
+   PROCEDURE GetPath(node: CDBNames.Node; VAR path: ARRAY OF CHAR);
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      CDBNames.GetPath(orig, path);
+   END GetPath;
+
+   PROCEDURE GetRoot(node: CDBNames.Node; VAR root: CDBNames.Node);
+      VAR
+	 orig: CDBNames.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      CDBNames.GetRoot(orig, root);
+   END GetRoot;
+
+   (* === Proxies interface =============================================== *)
+
+   PROCEDURE CreateProxy(VAR object: Services.Object; orig: Services.Object);
+      VAR
+	 proxy: Proxy;
+   BEGIN
+      NEW(proxy); Services.Init(proxy, type);
+      RelatedEvents.QueueEvents(proxy);
+      object := proxy;
+   END CreateProxy;
+
+   PROCEDURE InitProxy(object, orig: Services.Object);
+   BEGIN
+      WITH object: CDBNames.Node DO
+	 CDBNames.Init(object, if, CDBNames.IsRoot(orig(CDBNames.Node)));
+      END;
+   END InitProxy;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 btype: Services.Type;
+	 pif: Proxies.Interface;
+   BEGIN
+      Services.SeekType("CDBNames.Node", btype); ASSERT(btype # NIL);
+      NEW(pif); pif.createProxy := CreateProxy; pif.initProxy := InitProxy;
+      Proxies.Register(btype, pif);
+      Services.CreateType(type, "CDBNodeProxies.Proxy", "CDBNames.Node");
+      NEW(if); if.addObject := AddObject; if.addSource := AddSource;
+      if.getObjectHeader := GetObjectHeader;
+      if.getSourceHeader := GetSourceHeader;
+      if.getText := GetText; if.getPath := GetPath; if.getRoot := GetRoot;
+   END InitModule;
+
+BEGIN
+   InitModule;
+END CDBNodeProxies.

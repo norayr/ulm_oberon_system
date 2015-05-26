@@ -1,0 +1,787 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XResources.om,v 1.1 2005/04/10 13:18:17 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: XResources.om,v $
+   Revision 1.1  2005/04/10 13:18:17  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XResources;
+
+   IMPORT Disciplines, Events, Resources, X := XDisplays, XAtoms, XColors,
+      XObjects;
+
+   CONST
+      essentialEventTypes = {X.structureNotify, X.visibilityChange};
+
+   TYPE
+      GContext = POINTER TO GContextRec;
+      Resource = POINTER TO ResourceRec;
+      ResourceRec =
+	 RECORD
+	    (XObjects.ObjectRec)
+	    id: X.ResourceID;
+	    xdisplay: X.Display;
+	    eventType: ARRAY 256 OF Events.EventType;
+	 END;
+      SavedGContext = POINTER TO SavedGContextRec;
+      SavedGContextRec =
+	 RECORD
+	    gc: GContext;
+	    next: SavedGContext;
+	 END;
+      Drawable = POINTER TO DrawableRec;
+      DrawableRec =
+	 RECORD
+	    (ResourceRec)
+	    geo: X.Geometry;
+	    gc: GContext;
+	    saved: SavedGContext;
+	 END;
+      Window = POINTER TO WindowRec;
+      WindowRec =
+	 RECORD
+	    (DrawableRec)
+	    ats: X.WindowAttributes;
+	    extra: X.ExtraWindowAttributes;
+	    visibility: X.VisibilityState;
+	 END;
+      Fontable = POINTER TO FontableRec;
+      FontableRec =
+	 RECORD
+	    (ResourceRec)
+	    info: X.FontInfo;
+	    charInfos: X.CharInfo;
+	 END;
+      GContextRec =
+	 RECORD
+	    (FontableRec)
+	    ats: X.GraphicalContextAttributes;
+	 END;
+      Font = POINTER TO FontRec;
+      FontRec =
+	 RECORD
+	    (FontableRec)
+	    name: ARRAY 256 OF CHAR;
+	 END;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    resource: Resource;
+	    xevent: X.XEvent;
+	 END;
+
+   TYPE
+      DisplayDiscipline = POINTER TO DisplayDisciplineRec;
+      DisplayDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    array: XObjects.Array;
+	 END;
+   VAR
+      ddid: Disciplines.Identifier;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE ^Lookup(xdisplay: X.Display;
+                    id: X.DrawableID;
+		    VAR resource: Resource) : BOOLEAN;
+
+   PROCEDURE RaiseResourceEvent(resource: Resource; xevent: X.XEvent);
+      VAR
+	 event: Event;
+   BEGIN
+      IF resource.eventType[xevent.code] # NIL THEN
+	 NEW(event);
+	 event.type := resource.eventType[xevent.code];
+	 event.message := event.message;
+	 event.resource := resource;
+	 event.xevent := xevent;
+	 Events.Raise(event);
+      END;
+   END RaiseResourceEvent;
+   
+   PROCEDURE ClientMessageHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.ClientMessageEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END ClientMessageHandler;
+
+   PROCEDURE ConfigureNotifyHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.ConfigureNotifyEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    win.geo.x := event.x;
+	    win.geo.y := event.y;
+	    win.geo.width := event.width;
+	    win.geo.height := event.height;
+	    win.geo.borderWidth := event.borderWidth;
+	    win.ats.overrideRedirect := event.overrideRedirect;
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END ConfigureNotifyHandler;
+
+   PROCEDURE DestroyNotifyHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.ConfigureNotifyEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    XObjects.Dispose(win);
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END DestroyNotifyHandler;
+
+   PROCEDURE ExposeHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.ExposeEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END ExposeHandler;
+
+   PROCEDURE KeyHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.KeyEvent DO
+	 IF Lookup(event.display, event.event, win) THEN
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END KeyHandler;
+
+   PROCEDURE VisibilityNotifyHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.VisibilityNotifyEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    win.visibility := event.state;
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END VisibilityNotifyHandler;
+
+   PROCEDURE InstallHandlers(xdisplay: X.Display);
+
+      PROCEDURE Install(type: INTEGER; handler: Events.EventHandler);
+	 VAR
+	    eventType: Events.EventType;
+      BEGIN
+	 X.GetEventType(xdisplay, type, eventType);
+	 Events.Handler(eventType, handler);
+      END Install;
+
+   BEGIN (* InstallHandlers *)
+      Install(X.clientMessageEvent, ClientMessageHandler);
+      Install(X.configureNotifyEvent, ConfigureNotifyHandler);
+      Install(X.destroyNotifyEvent, DestroyNotifyHandler);
+      Install(X.exposeEvent, ExposeHandler);
+      Install(X.keyPressEvent, KeyHandler);
+      Install(X.keyReleaseEvent, KeyHandler);
+      Install(X.visibilityNotifyEvent, VisibilityNotifyHandler);
+   END InstallHandlers;
+
+   PROCEDURE GetAttributes(drawable: Drawable) : BOOLEAN;
+   BEGIN
+      IF ~X.GetGeometry(drawable.xdisplay,
+	    drawable.id, drawable.geo) THEN
+	 RETURN FALSE
+      END;
+      IF drawable IS Window THEN
+	 WITH drawable: Window DO
+	    IF ~X.GetWindowAttributes(drawable.xdisplay,
+		     drawable.id, drawable.ats, drawable.extra) THEN
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+      RETURN TRUE
+   END GetAttributes;
+
+   PROCEDURE GetArray(xdisplay: X.Display;
+                      VAR array: XObjects.Array);
+      VAR
+	 dd: DisplayDiscipline;
+	 resourceIDbase: X.ResourceID;
+	 resourceIDmask: X.ResourceID;
+   BEGIN
+      IF ~Disciplines.Seek(xdisplay, ddid, dd) THEN
+	 NEW(dd); dd.id := ddid;
+	 X.GetResourceIDRange(xdisplay, resourceIDbase, resourceIDmask);
+	 XObjects.CreateArray(dd.array, resourceIDbase, resourceIDmask);
+	 InstallHandlers(xdisplay);
+	 Disciplines.Add(xdisplay, dd);
+      END;
+      array := dd.array;
+   END GetArray;
+
+   PROCEDURE Add(xdisplay: X.Display;
+                 resource: Resource);
+      VAR
+	 array: XObjects.Array;
+   BEGIN
+      GetArray(xdisplay, array);
+      XObjects.Add(array, resource);
+   END Add;
+
+   PROCEDURE Lookup(xdisplay: X.Display;
+                    id: X.DrawableID;
+		    VAR resource: Resource) : BOOLEAN;
+      VAR
+	 array: XObjects.Array;
+   BEGIN
+      GetArray(xdisplay, array);
+      RETURN XObjects.Lookup(array, id, resource)
+   END Lookup;
+
+   PROCEDURE ^CloseFont(font: Font);
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    CloseFont(event.resource(Font));
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE InitResource(resource: Resource;
+                          xdisplay: X.Display;
+			  array: XObjects.Array;
+			  id: X.ResourceID);
+   BEGIN
+      resource.xdisplay := xdisplay;
+      resource.id := id;
+      XObjects.Init(resource, id);
+      XObjects.Add(array, resource);
+      Resources.DependsOn(resource, xdisplay);
+   END InitResource;
+
+   PROCEDURE InitDrawable(drawable: Drawable;
+                          xdisplay: X.Display;
+			  array: XObjects.Array;
+			  id: X.DrawableID);
+   BEGIN
+      InitResource(drawable, xdisplay, array, id);
+      drawable.gc := NIL; drawable.saved := NIL;
+      drawable.geo := NIL;
+   END InitDrawable;
+
+   PROCEDURE InitWindow(win: Window;
+                        xdisplay: X.Display;
+			array: XObjects.Array;
+			wid: X.WindowID);
+   BEGIN
+      InitDrawable(win, xdisplay, array, wid);
+      win.ats := NIL; win.extra := NIL;
+      win.visibility := X.fullyObscured;
+   END InitWindow;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE CreateSimpleWindow(VAR win: Window;
+                                xdisplay: X.Display;
+		                parent: Window;
+		                x, y: INTEGER;
+		                width, height: INTEGER;
+		                borderWidth: INTEGER;
+		                border: X.Pixel;
+		                background: X.Pixel) : BOOLEAN;
+      VAR
+	 wid: X.WindowID;
+	 w: Window;
+	 parentID: X.WindowID;
+	 array: XObjects.Array;
+	 winats: X.WindowAttributes;
+
+   BEGIN (* CreateSimpleWindow *)
+      GetArray(xdisplay, array);
+      IF ~XObjects.AllocID(array, wid) THEN
+	 RETURN FALSE
+      END;
+      IF parent = NIL THEN
+	 parentID := X.GetRootWindow(xdisplay);
+      ELSE
+	 parentID := parent.id;
+      END;
+      NEW(winats);
+      winats.defined := {X.atBackgroundPixel, X.atBorderPixel, X.atEventMask};
+      winats.backgroundPixel := background;
+      winats.borderPixel := border;
+      winats.eventMask := essentialEventTypes;
+      IF ~X.CreateWindow(xdisplay, wid, parentID,
+                         0, (* class: CopyFromParent *)
+			 0, (* take depth from parent *)
+                         0, (* visual: CopyFromParent *)
+			 x, y, width, height, borderWidth, winats) THEN
+	 RETURN FALSE
+      END;
+      NEW(w); InitWindow(w, xdisplay, array, wid);
+      IF ~GetAttributes(w) THEN
+	 XObjects.Dispose(w);
+	 RETURN FALSE
+      END;
+      win := w;
+      RETURN TRUE
+   END CreateSimpleWindow;
+
+   PROCEDURE CreateWindowFromID(VAR win: Window;
+			        xdisplay: X.Display;
+                                wid: X.WindowID) : BOOLEAN;
+      VAR
+	 w: Window;
+	 array: XObjects.Array;
+   BEGIN
+      IF Lookup(xdisplay, wid, w) THEN
+	 win := w;
+	 RETURN TRUE
+      END;
+      GetArray(xdisplay, array);
+      NEW(w); InitWindow(w, xdisplay, array, wid);
+      IF ~GetAttributes(w) THEN
+	 XObjects.Dispose(w);
+	 RETURN FALSE
+      END;
+      win := w;
+      RETURN TRUE
+   END CreateWindowFromID;
+
+   PROCEDURE GetID(resource: Resource) : X.ResourceID;
+   BEGIN
+      RETURN resource.id
+   END GetID;
+
+   PROCEDURE GetDisplay(resource: Resource) : X.Display;
+   BEGIN
+      RETURN resource.xdisplay
+   END GetDisplay;
+
+   PROCEDURE GetEventMask(win: Window;
+                          VAR mask: X.EventTypeSet);
+   BEGIN
+      IF X.atEventMask IN win.ats.defined THEN
+	 mask := win.ats.eventMask + essentialEventTypes;
+      ELSE
+	 mask := essentialEventTypes;
+      END;
+   END GetEventMask;
+
+   PROCEDURE SetEventMask(win: Window; mask: X.EventTypeSet) : BOOLEAN;
+      VAR
+	 winats: X.WindowAttributes;
+   BEGIN
+      NEW(winats);
+      winats.defined := {X.atEventMask};
+      winats.eventMask := mask + essentialEventTypes;
+      IF ~X.ChangeWindowAttributes(win.xdisplay, win.id, winats) THEN
+	 RETURN FALSE
+      END;
+      win.ats.eventMask := winats.eventMask;
+      INCL(win.ats.defined, X.atEventMask);
+      RETURN TRUE
+   END SetEventMask;
+
+   PROCEDURE ExtendEventMask(win: Window;
+                             mask: X.EventTypeSet) : BOOLEAN;
+   BEGIN
+      IF X.atEventMask IN win.ats.defined THEN
+	 mask := mask + win.ats.eventMask + essentialEventTypes;
+      ELSE
+	 mask := mask + essentialEventTypes;
+      END;
+      RETURN SetEventMask(win, mask)
+   END ExtendEventMask;
+
+   PROCEDURE GetEventType(resource: Resource;
+                          code: X.XEventCode;
+			  VAR eventType: Events.EventType);
+   BEGIN
+      IF resource.eventType[code] = NIL THEN
+	 Events.Define(resource.eventType[code]);
+      END;
+      eventType := resource.eventType[code];
+   END GetEventType;
+
+   PROCEDURE GetGeometry(drawable: Drawable; VAR geometry: X.Geometry);
+      VAR
+	 g: X.Geometry;
+   BEGIN
+      NEW(g); g^ := drawable.geo^;
+      geometry := g;
+   END GetGeometry;
+
+   PROCEDURE Visibility(win: Window) : X.VisibilityState;
+   BEGIN
+      RETURN win.visibility;
+   END Visibility;
+
+   PROCEDURE ChangeProperty(win: Window;
+                            property: X.Property;
+			    mode: X.PropertyChangeMode) : BOOLEAN;
+   BEGIN
+      RETURN X.ChangeProperty(win.xdisplay, win.id, property, mode)
+   END ChangeProperty;
+
+   PROCEDURE Clear(win: Window) : BOOLEAN;
+   BEGIN
+      RETURN X.ClearArea(win.xdisplay, win.id,
+		  0, 0, 0, 0, (* exposures = *) FALSE)
+   END Clear;
+
+   PROCEDURE ClearArea(win: Window;
+                       x, y: INTEGER;
+		       width, height: INTEGER;
+		       exposures: BOOLEAN) : BOOLEAN;
+   BEGIN
+      RETURN X.ClearArea(win.xdisplay, win.id, x, y, width, height, exposures)
+   END ClearArea;
+
+   PROCEDURE ConfigureWindow(win: Window;
+                             ats: X.ConfigureWindowParameters) : BOOLEAN;
+   BEGIN
+      RETURN X.ConfigureWindow(win.xdisplay, win.id, ats)
+   END ConfigureWindow;
+
+   PROCEDURE ConfigureWindowSize(win: Window;
+                             width, height: INTEGER) : BOOLEAN;
+      VAR
+	 ats: X.ConfigureWindowParameters;
+   BEGIN
+      NEW(ats); ats.defined := {X.cwWidth, X.cwHeight};
+      ats.width := width; ats.height := height;
+      RETURN X.ConfigureWindow(win.xdisplay, win.id, ats)
+   END ConfigureWindowSize;
+
+   PROCEDURE CreateGContext(VAR gc: GContext;
+		xdisplay: X.Display;
+		drawable: Drawable;
+		gcats: X.GraphicalContextAttributes) : BOOLEAN;
+      VAR
+	 array: XObjects.Array;
+	 did: X.DrawableID;
+	 gcid: X.GContextID;
+	 c: GContext;
+   BEGIN
+      GetArray(xdisplay, array);
+      IF ~XObjects.AllocID(array, gcid) THEN
+	 RETURN FALSE
+      END;
+      IF drawable = NIL THEN
+	 did := X.GetRootWindow(xdisplay);
+      ELSE
+	 did := drawable.id;
+      END;
+      IF gcats = NIL THEN
+	 NEW(gcats); gcats.defined := {};
+      END;
+      IF ~X.CreateGC(xdisplay, gcid, did, gcats) THEN
+	 RETURN FALSE
+      END;
+      NEW(c); c.xdisplay := xdisplay; c.id := gcid; XObjects.Init(c, gcid);
+      NEW(c.ats); c.ats^ := gcats^;
+      XObjects.Add(array, c);
+      gc := c;
+      RETURN TRUE
+   END CreateGContext;
+
+   PROCEDURE SetGContext(drawable: Drawable;
+                         gc: GContext);
+   BEGIN
+      ASSERT(gc # NIL);
+      drawable.gc := gc;
+   END SetGContext;
+
+   PROCEDURE GetGContext(drawable: Drawable;
+                         VAR gc: GContext);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      IF drawable.gc = NIL THEN
+	 ok := CreateGContext(drawable.gc, drawable.xdisplay, drawable, NIL);
+      END;
+      gc := drawable.gc;
+   END GetGContext;
+
+   PROCEDURE SaveGContext(drawable: Drawable);
+      VAR
+	 saved: SavedGContext;
+	 ok: BOOLEAN;
+	 oldgc, newgc: GContext;
+   BEGIN
+      GetGContext(drawable, oldgc);
+      NEW(saved); saved.gc := oldgc; saved.next := drawable.saved;
+      drawable.saved := saved;
+      ok := CreateGContext(newgc, drawable.xdisplay, drawable, NIL) &
+            X.CopyGC(drawable.xdisplay, oldgc.id, newgc.id, X.gcAll);
+      IF ok THEN
+	 drawable.gc := newgc;
+      END;
+   END SaveGContext;
+
+   PROCEDURE RestoreGContext(drawable: Drawable);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      ASSERT((drawable.saved # NIL) & (drawable.gc # NIL));
+      ok := X.FreeGC(drawable.xdisplay, drawable.gc.id);
+      drawable.gc := drawable.saved.gc;
+      drawable.saved := drawable.saved.next;
+   END RestoreGContext;
+
+   PROCEDURE ChangeGContext(drawable: Drawable;
+                            ats: X.GraphicalContextAttributes);
+      VAR
+	 gc: GContext;
+	 ok: BOOLEAN;
+   BEGIN
+      GetGContext(drawable, gc);
+      ok := X.ChangeGC(drawable.xdisplay, gc.id, ats);
+   END ChangeGContext;
+
+   PROCEDURE OpenFont(VAR font: Font; display: X.Display;
+                      name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 array: XObjects.Array;
+	 fid: X.FontID;
+	 f: Font;
+	 eventType: Events.EventType;
+	 info: X.FontInfo;
+	 charInfos: X.CharInfo;
+   BEGIN
+      GetArray(display, array);
+      IF ~XObjects.AllocID(array, fid) THEN
+	 RETURN FALSE
+      END;
+      IF ~X.OpenFont(display, fid, name) OR
+	    ~X.QueryFont(display, fid, info, charInfos) THEN
+	 RETURN FALSE
+      END;
+      NEW(f);
+      InitResource(f, display, array, fid);
+      COPY(name, f.name); f.info := info; f.charInfos := charInfos;
+      Resources.TakeInterest(f, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      font := f;
+      RETURN TRUE
+   END OpenFont;
+
+   PROCEDURE CloseFont(font: Font);
+   BEGIN
+      IF Resources.Alive(font) THEN
+	 IF ~X.CloseFont(font.xdisplay, font.id) THEN
+	    RETURN
+	 END;
+	 XObjects.Dispose(font);
+	 Resources.Notify(font, Resources.terminated);
+      END;
+   END CloseFont;
+
+   PROCEDURE ParseColor(drawable: Drawable;
+                        name: ARRAY OF CHAR) : XColors.Color;
+      VAR
+	 rgbColor: X.RGBColor;
+	 color: XColors.Color;
+   BEGIN
+      IF ~XColors.Parse(drawable.xdisplay, name, rgbColor,
+	       drawable.xdisplay) OR
+	    ~XColors.Alloc(drawable.xdisplay,
+		  XColors.GetDefaultColormap(drawable.xdisplay),
+		  rgbColor, color) THEN
+	 RETURN NIL
+      END;
+      ASSERT(color # NIL);
+      RETURN color
+   END ParseColor;
+
+   PROCEDURE SetCapStyle(drawable: Drawable;
+                         capStyle: X.CapStyle);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.capStyle := capStyle; ats.defined := {X.gcCapStyle};
+      ChangeGContext(drawable, ats);
+   END SetCapStyle;
+
+   PROCEDURE SetLineWidth(drawable: Drawable;
+                          lineWidth: INTEGER);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.lineWidth := lineWidth; ats.defined := {X.gcLineWidth};
+      ChangeGContext(drawable, ats);
+   END SetLineWidth;
+
+   PROCEDURE SetLineStyle(drawable: Drawable;
+                          lineStyle: X.LineStyle);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.lineStyle := lineStyle; ats.defined := {X.gcLineStyle};
+      ChangeGContext(drawable, ats);
+   END SetLineStyle;
+
+   PROCEDURE SetForeground(drawable: Drawable;
+                           color: XColors.Color);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.foreground := XColors.GetPixel(color);
+      ats.defined := {X.gcForeground};
+      ChangeGContext(drawable, ats);
+   END SetForeground;
+
+   PROCEDURE SetBackground(drawable: Drawable;
+                           color: XColors.Color);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.background := XColors.GetPixel(color);
+      ats.defined := {X.gcBackground};
+      ChangeGContext(drawable, ats);
+   END SetBackground;
+
+   PROCEDURE SetFont(drawable: Drawable;
+                     font: Font);
+      VAR
+	 ats: X.GraphicalContextAttributes;
+   BEGIN
+      NEW(ats); ats.font := font.id;
+      ats.defined := {X.gcFont};
+      ChangeGContext(drawable, ats);
+   END SetFont;
+
+   PROCEDURE SetNamedFont(drawable: Drawable;
+                          fontname: ARRAY OF CHAR);
+      VAR
+	 font: Font;
+   BEGIN
+      IF OpenFont(font, drawable.xdisplay, fontname) THEN
+	 SetFont(drawable, font);
+      END;
+   END SetNamedFont;
+
+   PROCEDURE SetDashes(drawable: Drawable;
+                       dashOffset, len1, len2: INTEGER);
+      VAR
+	 dashes, p: X.ListOfDashes;
+	 gc: GContext;
+	 ok: BOOLEAN;
+   BEGIN
+      dashes := NIL;
+      NEW(p); p.next := dashes; p.len := len2; dashes := p;
+      NEW(p); p.next := dashes; p.len := len1; dashes := p;
+      GetGContext(drawable, gc);
+      ok := X.SetDashes(drawable.xdisplay, gc.id, dashOffset, dashes);
+   END SetDashes;
+
+   PROCEDURE SetDashes2(drawable: Drawable;
+                        dashOffset, len1, len2, len3, len4: INTEGER);
+      VAR
+	 dashes, p: X.ListOfDashes;
+	 gc: GContext;
+	 ok: BOOLEAN;
+   BEGIN
+      dashes := NIL;
+      NEW(p); p.next := dashes; p.len := len4; dashes := p;
+      NEW(p); p.next := dashes; p.len := len3; dashes := p;
+      NEW(p); p.next := dashes; p.len := len2; dashes := p;
+      NEW(p); p.next := dashes; p.len := len1; dashes := p;
+      GetGContext(drawable, gc);
+      ok := X.SetDashes(drawable.xdisplay, gc.id, dashOffset, dashes);
+   END SetDashes2;
+
+   PROCEDURE FillPoly(drawable: Drawable;
+		      shape: X.Shape;
+		      coordinateMode: X.CoordinateMode;
+		      points: X.ListOfPoints) : BOOLEAN;
+      VAR
+	 gc: GContext;
+   BEGIN
+      GetGContext(drawable, gc);
+      RETURN X.FillPoly(drawable.xdisplay, drawable.id, gc.id,
+                        shape, coordinateMode, points)
+   END FillPoly;
+
+   PROCEDURE PolyArc(drawable: Drawable;
+		     arcs: X.ListOfArcs) : BOOLEAN;
+      VAR
+	 gc: GContext;
+   BEGIN
+      GetGContext(drawable, gc);
+      RETURN X.PolyArc(drawable.xdisplay, drawable.id, gc.id, arcs)
+   END PolyArc;
+
+   PROCEDURE PolyLine(drawable: Drawable;
+		      coordinateMode: INTEGER;
+		      points: X.ListOfPoints) : BOOLEAN;
+      VAR
+	 gc: GContext;
+   BEGIN
+      GetGContext(drawable, gc);
+      RETURN X.PolyLine(drawable.xdisplay, drawable.id, gc.id,
+                        coordinateMode, points)
+   END PolyLine;
+
+   PROCEDURE PolyPoint(drawable: Drawable;
+		       coordinateMode: INTEGER;
+		       points: X.ListOfPoints) : BOOLEAN;
+      VAR
+	 gc: GContext;
+   BEGIN
+      GetGContext(drawable, gc);
+      RETURN X.PolyPoint(drawable.xdisplay, drawable.id, gc.id,
+                         coordinateMode, points)
+   END PolyPoint;
+
+   PROCEDURE WriteString(drawable: Drawable;
+                         x, y: INTEGER;
+			 text: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 gc: GContext;
+	 items, p: X.ListOfTextItems;
+   BEGIN
+      GetGContext(drawable, gc);
+      NEW(p); p.next := NIL;
+      p.kind := X.textItem; COPY(text, p.text); p.delta := 0;
+      items := p;
+      RETURN X.PolyText8(drawable.xdisplay, drawable.id, gc.id, x, y, items);
+   END WriteString;
+
+BEGIN
+   ddid := Disciplines.Unique();
+END XResources.

@@ -1,0 +1,336 @@
+(* Ulm's Compiler Toolkit
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Compiler Toolkit.
+
+   Ulm's Compiler Toolkit is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Compiler Toolkit is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CDBDaemon.om,v 1.1 2005/02/10 07:32:42 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: CDBDaemon.om,v $
+   Revision 1.1  2005/02/10 07:32:42  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CDBDaemon;
+
+   IMPORT Args := UnixArguments, BoolArgs, CDBNames, CDBSources,
+      CommandNodes, Conclusions, ConstStrings, Containers, ControlNodes,
+      DNSRecords, DNSResolvers, Errors, Events, InetTCP, IntArgs,
+      IPv4Addresses, Iterators, Jobs, Loader, Names, Networks, Paths,
+      PersistentEvents, PersistentObjects, PrivateShards, Process, Read,
+      RelatedEvents, RemoteCDBNames, RemoteEvents, RemoteIterators,
+      RemoteNames, RemoteObjects, RemoteStreams, Resources, Services,
+      Shadows, Shards, StandardContainers, StdCDBNames, Storage, Streams,
+      StringArgs, Strings, StrListArgs, SYS := SYSTEM, SysMonitor,
+      SysSignals, TransStreams, UnixFiles, UnixNames, Write;
+
+   TYPE
+      ListOfAddresses = POINTER TO ListOfAddressesRec;
+      ListOfAddressesRec =
+	 RECORD
+	    address: Networks.Address;
+	    next: ListOfAddresses;
+	 END;
+
+   VAR
+      errors: RelatedEvents.Object;
+      auth: Shards.Lid;
+      read, write, shutdown: Shards.Pot;
+      lidType, potType: Services.Type;
+      ports: ListOfAddresses;
+      root: CDBNames.Node;
+      basedir: ARRAY 512 OF CHAR;
+      intensity: INTEGER;
+      monitor: BOOLEAN;
+
+   PROCEDURE DoTermination(job: Jobs.Job);
+   BEGIN
+      Process.Exit(Process.indicateSuccess);
+   END DoTermination;
+
+   PROCEDURE RestartSysMonitor(event: Events.Event);
+   BEGIN
+      Write.LineS(Streams.stderr, "SysMonitor report triggered by SIGALRM");
+      SysMonitor.Stop(Streams.stderr);
+      SysMonitor.Start;
+   END RestartSysMonitor;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 job: Jobs.Job;
+   BEGIN
+      IF event IS Resources.Event THEN
+	 IF event(Resources.Event).change # Resources.terminated THEN
+	    RETURN
+	 END;
+      END;
+      NEW(job); Jobs.Submit(job, DoTermination);
+   END TerminationHandler;
+
+   PROCEDURE DieOnTerminationOf(object: Resources.Resource);
+      VAR
+	 eventType: Events.EventType;
+   BEGIN
+      Resources.TakeInterest(object, eventType);
+      Events.Handler(eventType, TerminationHandler);
+   END DieOnTerminationOf;
+
+   PROCEDURE ProcessArgs;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+	 db, ts: Streams.Stream;
+	 cont: Containers.Container;
+	 as: Streams.Stream;
+	 hostname: DNSRecords.Name;
+	 portnum: IPv4Addresses.PortNumber;
+	 addresses: DNSResolvers.IPv4AddressList;
+	 port: INTEGER;
+	 ipaddr: IPv4Addresses.Address;
+	 s: Streams.Stream;
+
+      PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+	                    errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 RelatedEvents.Forward(s, errors);
+	 IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, filename);
+	 END;
+      END CreateLid;
+
+      PROCEDURE CreatePot(VAR pot: Shards.Pot; filename: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+	    lid: Shards.Lid;
+      BEGIN
+	 IF UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+	                   errors) THEN
+	    RelatedEvents.Forward(s, errors);
+	    IF ~PersistentObjects.GuardedRead(s, lidType, lid) OR
+	          ~PersistentObjects.GuardedRead(s, potType, pot) THEN
+	       Conclusions.Conclude(errors, Errors.fatal, filename);
+	    END;
+	    Streams.Release(s);
+	 ELSIF UnixFiles.Open(s, filename, UnixFiles.write + UnixFiles.create,
+	                      Streams.onebuf, errors) THEN
+	    PrivateShards.Create(pot, lid);
+	    IF ~PersistentObjects.Write(s, lid) OR
+		  ~PersistentObjects.Write(s, pot) OR
+		  ~Streams.Close(s) THEN
+	       Conclusions.Conclude(errors, Errors.fatal, filename);
+	    END;
+	 ELSE
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      END CreatePot;
+
+      PROCEDURE AddIPv4(VAR list: ListOfAddresses;
+                        ipaddr: IPv4Addresses.Address;
+			portnum: IPv4Addresses.PortNumber);
+	 VAR
+	    sockaddr: IPv4Addresses.SocketAddress;
+	    address: Networks.Address;
+	    member: ListOfAddresses;
+      BEGIN
+	 sockaddr.host := ipaddr;
+	 IPv4Addresses.SetPort(sockaddr, portnum);
+	 InetTCP.CreateAddress(address, sockaddr);
+	 NEW(member); member.next := list; member.address := address;
+	 list := member;
+      END AddIPv4;
+
+   BEGIN (* ProcessArgs *)
+      (* by default, the database may be read by everyone
+         but nobody is permitted to change anything
+      *)
+      auth := NIL;
+      Shards.CreateSimplePot(read, (* permissive = *) TRUE);
+      Shards.CreateSimplePot(write, (* permissive = *) FALSE);
+      shutdown := NIL;
+      basedir := "/pub/cdb";
+      intensity := 9;
+      monitor := FALSE;
+      ports := NIL;
+      Args.Init("[-a auth] [-b basedir] {-B bind-address port} [-i intensity] [-m] [-r read-auth] [-s shutdown-auth] [-w write-auth] dbname");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a":   Args.FetchString(filename); CreateLid(auth, filename);
+	 | "b":   Args.FetchString(basedir);
+	 | "B":   Args.FetchString(hostname);
+		  Args.Fetch(as); Read.IntS(as, port);
+		  IF as.count = 0 THEN Args.Usage END;
+		  IF (port >= 0) & (port < 10000H) THEN
+		     portnum := SYS.VAL(IPv4Addresses.PortNumber, port);
+		  ELSE
+		     Args.Usage;
+		  END;
+		  Strings.Open(s, hostname);
+		  IF IPv4Addresses.ReadText(s, ipaddr) THEN
+		     AddIPv4(ports, ipaddr, portnum);
+		  ELSIF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+			   hostname, addresses, errors) THEN
+		     WHILE addresses # NIL DO
+			AddIPv4(ports, addresses.addr, portnum);
+			addresses := addresses.next;
+		     END;
+		  ELSE
+		     Conclusions.Conclude(errors, Errors.fatal, "");
+		  END;
+	 | "i":   Args.Fetch(as); Read.IntS(as, intensity);
+	 | "m":   monitor := TRUE;
+	 | "r":   Args.FetchString(filename); CreatePot(read, filename);
+	 | "s":   Args.FetchString(filename); CreatePot(shutdown, filename);
+	 | "w":   Args.FetchString(filename); CreatePot(write, filename);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.FetchString(filename); Args.AllArgs;
+      IF shutdown = NIL THEN
+	 shutdown := write;
+      END;
+      IF ~UnixFiles.Open(db, filename, UnixFiles.rdwr + UnixFiles.condcreate,
+                         Streams.nobuf, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(db, errors);
+      IF ~TransStreams.Open(ts, db, TransStreams.standard, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+      RelatedEvents.Forward(ts, errors);
+      IF ~StandardContainers.Open(cont, ts, (* auto = *) FALSE, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+      RelatedEvents.Forward(cont, errors);
+      DieOnTerminationOf(cont);
+      IF ~StdCDBNames.Create(root, cont, read, write, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+      DieOnTerminationOf(root);
+      RelatedEvents.Forward(root, errors);
+   END ProcessArgs;
+
+   PROCEDURE InsertNS;
+      VAR
+	 basedirNode: Names.Node;
+	 langString: ConstStrings.String;
+	 cdbdString: ConstStrings.String;
+	 modulesString: ConstStrings.String;
+	 maintenanceNode: CommandNodes.Node;
+
+      PROCEDURE MkDir(node: Names.Node;
+                      dirname: ConstStrings.String;
+		      VAR subnode: Names.Node) : BOOLEAN;
+	 VAR
+	    status: Names.Status;
+      BEGIN
+	 status := NIL;
+	 IF ~Names.MakeSubnode(node, dirname, status, Names.allCaps,
+		  auth, subnode) THEN
+	    RETURN FALSE
+	 END;
+	 DieOnTerminationOf(subnode);
+	 RelatedEvents.Forward(node, errors);
+	 RETURN TRUE
+      END MkDir;
+
+   BEGIN (* InsertNS *)
+      IF ~Paths.GetNode(basedir, auth, errors, basedirNode) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, basedir);
+      END;
+      ConstStrings.Create(modulesString, "modules");
+      IF ~Names.Insert(basedirNode, root, modulesString, auth) THEN
+	 Conclusions.Conclude(basedirNode, Errors.fatal, basedir);
+      END;
+      ControlNodes.Create(maintenanceNode, NIL, shutdown);
+      ConstStrings.Create(cdbdString, "cdbd");
+      IF ~Names.Insert(basedirNode, maintenanceNode, cdbdString, auth) THEN
+	 Conclusions.Conclude(basedirNode, Errors.fatal, basedir);
+      END;
+      DieOnTerminationOf(maintenanceNode);
+   END InsertNS;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+   BEGIN
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE OpenGivenPorts(list: ListOfAddresses);
+      VAR
+	 errors: RelatedEvents.Object;
+	 port: Networks.Socket;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      WHILE list # NIL DO
+	 IF ~Networks.Listen(port, list.address, errors) OR
+	       ~RemoteObjects.AddPort(port, list.address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 list := list.next;
+      END;
+   END OpenGivenPorts;
+
+   PROCEDURE KeepResolverAlive;
+      (* otherwise DNSResolvers.std terminates as soon as
+	 all initializations are over
+      *)
+      VAR
+	 key: Resources.Key;
+   BEGIN
+      Resources.Attach(DNSResolvers.std, key);
+   END KeepResolverAlive;
+
+BEGIN
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Pot", potType);
+   Services.SeekType("Shards.Lid", lidType);
+   Events.Handler(SysSignals.TERM, TerminationHandler);
+   ProcessArgs;
+   intensity := Storage.Intensity(intensity);
+   IF ports = NIL THEN
+      OpenAllKindsOfPorts;
+   ELSE
+      OpenGivenPorts(ports);
+   END;
+   InsertNS;
+   IF monitor THEN
+      SysMonitor.Start;
+      Write.Line("SysMonitor support enabled");
+      Events.Handler(SysSignals.ALRM, RestartSysMonitor);
+   END;
+   KeepResolverAlive;
+END CDBDaemon.

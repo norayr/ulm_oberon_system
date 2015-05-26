@@ -1,0 +1,150 @@
+SMStreams(3)                  Ulm's Oberon System                 SMStreams(3)
+
+
+
+[1mNAME[0m
+       SMStreams - bidirectional IPC using shared memory
+
+[1mSYNOPSIS[0m
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE StreamRec = RECORD (Streams.StreamRec) END;
+
+       CONST MRingError = 0;
+       CONST SRingError = 1;
+       CONST PartnerNotAliveError = 2;
+       CONST WriteAfterCloseError = 3;
+       CONST DeadlockError = 4;
+       CONST NotAloneError = 5;
+       CONST ConnectionNotReadyError = 6;
+       CONST errorcodes = 7;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+
+       PROCEDURE Open(VAR s: Streams.Stream;
+                      filename: ARRAY OF CHAR;
+                      bufmode: Streams.BufMode;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+                                     filename: ARRAY OF CHAR);
+       PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+                             condition: Conditions.Condition;
+                             bufmode: Streams.BufMode;
+                             errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Listen(VAR socket: Networks.Socket; filename: ARRAY OF CHAR;
+                        size: SysTypes.Size;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE CreateSomeSocket(VAR socket: Networks.Socket;
+                                  VAR address: ARRAY OF CHAR;
+                                  size: SysTypes.Size;
+                                  errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Release(socket: Networks.Socket);
+
+       PROCEDURE Accept(socket: Networks.Socket; VAR s: Streams.Stream;
+                        bufmode: Streams.BufMode) : BOOLEAN;
+       PROCEDURE CreateAcceptCondition(s: Streams.Stream;
+                                       VAR cond: Conditions.Condition);
+
+       PROCEDURE CreateAddress(VAR address: Networks.Address;
+                               filename: ARRAY OF CHAR;
+                               size: SysTypes.Size);
+       PROCEDURE ConvertAddress(address: Networks.Address;
+                                VAR filename: ARRAY OF CHAR;
+                                VAR size: SysTypes.Size);
+       PROCEDURE SetAddress(address: Networks.Address;
+                            filename: ARRAY OF CHAR;
+                            size: SysTypes.Size);
+
+
+[1mDESCRIPTION[0m
+       [4mSMStreams[24m  provides  a [4mStreams(3)[24m interface for bidirectional interpro-
+       cess communication and supports [4mNetworks(3)[24m.  It uses [4mSysMemory.Map[24m  to
+       create  a  shared memory region in which the communication takes place,
+       and uses the signals [4mSysSignals.USR1[24m and [4mSysSignals.USR2[24m  for  synchro-
+       nization.  Thus,  the communicating processes must both run on the same
+       machine and have the same effective user-id.
+
+       [4mSMStreams[24m supports the waiting condition interface provided by  [4mStream-[0m
+       [4mConditions(3)[24m.
+
+       [4mOpen[24m  tries  to  create a stream that maps the file [4mfilename[24m which must
+       have been created by some other process by calling  [4mListen[24m  or  [4mCreate-[0m
+       [4mSomeSocket[24m.   The  stream has a memory area of the size which was given
+       to [4mListen[24m.  Alternatively, [4mCreateOpenCondition[24m and [4mTestAndOpen[24m  may  be
+       used like the equally named procedures of [4mNetworks(3)[24m.
+
+       [4mListen[24m  creates  a file to be mapped into memory and a socket which may
+       be used later to wait for incoming connections.  [4mCreateSomeSocket[24m works
+       like  [4mListen[24m  but  takes an unique file name which has been returned by
+       [4mUnixTmpNames(3)[24m.
+
+       [4mAccept[24m waits for incoming connections for socket  [4msocket[24m.   The  socket
+       must  have  been  created and prepared by [4mListen[24m.  When [4mAccept[24m returns,
+       the stream [4ms[24m is connected with the new communication partner.
+
+       The buffering mode [4mbufmode[24m can be chosen from  the  modes  supplied  by
+       [4mStreams[24m.  Please  notice that the choice of the right buffering mode is
+       vital to good performance. Usually, [4mStreams.nobuf[24m is fastest,  but  not
+       in every case, e.g. unbuffered bytewise I/O will result in massive syn-
+       chronization of the two processes. On the other hand buffered operation
+       on large structures will double the amount of data moved around in mem-
+       ory.  Be free to choose different buffering modes for each side of  the
+       communication.
+
+       [4mAcceptCondition[24m creates a condition which evaluates to [1mTRUE [22mif a subse-
+       quent [4mAccept[24m would not block for stream [4ms[24m.
+
+       [4mRelease[24m frees the resources used by the socket [4msocket[24m.
+
+       [4mSMStreams[24m supports the interface of [4mNetworks(3)[24m: [4mCreateAddress[24m takes  a
+       filename and a memory size and converts it into a newly created network
+       address. [4mConvertAddress[24m returns the address data for an [4mSMStreams[24m which
+       consists  of a filename and a memory size.  [4mSetAddress[24m allows to change
+       an existing network address.
+
+[1mDIAGNOSTICS[0m
+       All procedures return [1mFALSE [22min case of errors and  relate  their  error
+       events to [4merrors[24m .
+
+       [4mAccept[24m  relates  its  errors to stream [4ms[24m.  By default, these events are
+       being queued.
+
+       Errorcodes:
+
+       [4mMRingError[24m                The first communication  area  could  not  be
+                                 created. Check if size is >0.
+       [4mSRingError[24m                The  second  communication  area could not be
+                                 created. Check if size is >0.
+       [4mPartnerNotAliveError[24m      An operation did not  reach  the  other  side
+                                 because it has ceased to exist.
+       [4mWriteAfterCloseError[24m      The  other side has already closed the stream
+                                 when a write operation was attempted.
+       [4mDeadlockError[24m             A deadlock situation occurred.
+       [4mNotAloneError[24m             Some other process  has  already  mapped  the
+                                 connection  file with the same opening proce-
+                                 dure.
+       [4mConnectionNotReadyError[24m   [4mOpen[24m or [4mTestAndOpen[24m could not  establish  the
+                                 connection.
+
+[1mSEE ALSO[0m
+       [4mConditions(3)[24m         interface for conditions
+       [4mNetworks(3)[24m           general abstraction for bidirectional connections
+       [4mRelatedEvents(3)[24m      handling of error events
+       [4mSysMemory(3)[24m          interface for the [4mmmap(2)[24m system call
+       [4mStreams(3)[24m            stream operations
+       [4mStreamConditions(3)[24m   stream I/O waiting conditions
+
+[1mAUTHOR[0m
+       Till Franke, University of Ulm
+       some minor revisions are due to Andreas Borchert, University of Ulm
+
+
+
+Release 0.5                Last change: 10 July 2003              SMStreams(3)

@@ -1,0 +1,74 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixMappedF.od,v 1.1 1996/12/06 18:24:05 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixMappedF.od,v $
+   Revision 1.1  1996/12/06  18:24:05  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION UnixMappedFiles;
+
+   (* mapping of files into virtual memory;
+      note that neither Open nor OpenFd are able to extend the
+      file -- use UnixFiles for this
+   *)
+
+   IMPORT Events, RelatedEvents, Streams, SysTypes, UnixFiles;
+
+   CONST
+      read = UnixFiles.read;
+      write = UnixFiles.write;
+      rdwr = UnixFiles.rdwr;
+   TYPE
+      Mode = SHORTINT;
+
+   CONST
+      illegalMode = 0; (* invalid mode given to Open or OpenFd *)
+      posOutOfRange = 1; (* invalid parameters given to Seek *)
+      beyondEndOfStream = 2; (* write operation beyond given length *)
+      invalidRange = 3; (* invalid range given to SubStreams.Open *)
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* illegalMode..beyondEndOfStream *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE Open(VAR s: Streams.Stream; filename: ARRAY OF CHAR;
+                  mode: Mode; errors: RelatedEvents.Object) : BOOLEAN;
+      (* open the given file and map it into memory and return
+         a stream for it
+      *)
+
+   PROCEDURE OpenFd(VAR s: Streams.Stream; fd: SysTypes.File;
+                    mode: Mode; offset, length: Streams.Count;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* note that fd must be something which is supported by mmap(2) *)
+
+END UnixMappedFiles.

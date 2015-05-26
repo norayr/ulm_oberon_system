@@ -1,0 +1,184 @@
+HostPorts(3)                  Ulm's Oberon System                 HostPorts(3)
+
+
+
+[1mNAME[0m
+       HostPorts - support of host/port tuple specifications according to RFCs
+       2373, 2396, and 2732
+
+[1mSYNOPSIS[0m
+       TYPE HostPort = POINTER TO HostPortRec;
+       TYPE HostPortRec =
+          RECORD
+             (Disciplines.ObjectRec)
+             port: INTEGER;
+             host: DNSRecords.Name;
+          END;
+       TYPE IPv4HostPort = POINTER TO IPv4HostPortRec;
+       TYPE IPv4HostPortRec =
+          RECORD
+             (HostPortRec)
+             address: IPv4Addresses.SocketAddress;
+          END;
+       TYPE IPv6HostPort = POINTER TO IPv6HostPortRec;
+       TYPE IPv6HostPortRec =
+          RECORD
+             (HostPortRec)
+             address: IPv6Addresses.SocketAddress;
+          END;
+
+       TYPE AddIPv4Address =
+             PROCEDURE (service: Disciplines.Object;
+                  address: IPv4Addresses.SocketAddress) : BOOLEAN;
+       TYPE AddIPv6Address =
+             PROCEDURE (service: Disciplines.Object;
+                  address: IPv6Addresses.SocketAddress) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             addIPv4Address: AddIPv4Address;
+             addIPv6Address: AddIPv6Address;
+          END;
+
+       CONST unexpectedEOF = 0;
+       CONST closingBracketMissing = 1;
+       CONST hostnameTooLong = 2;
+       CONST tooManyDots = 3;
+       CONST invalidPort = 4;
+       CONST errors = 5;
+       TYPE ErrorCode = SHORTINT; (* unexpectedEOF... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE SetDefaultPort(s: Streams.Stream; port: INTEGER);
+       PROCEDURE SetPort(s: Streams.Stream; port: INTEGER);
+
+       PROCEDURE ReadText(s: Streams.Stream; VAR hostport: HostPort) : BOOLEAN;
+       PROCEDURE WriteText(s: Streams.Stream; hostport: HostPort);
+
+       PROCEDURE CreateAddress(VAR address: Networks.Address; hostport: HostPort);
+
+       PROCEDURE ReadAddress(s: Streams.Stream;
+                       VAR address: Networks.Address) : BOOLEAN;
+
+       PROCEDURE Init(service: Disciplines.Object; if: Interface);
+       PROCEDURE Add(service: Disciplines.Object; hostport: HostPort) : BOOLEAN;
+       PROCEDURE ReadAndAdd(s: Streams.Stream;
+                      service: Disciplines.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mHostPorts[24m supports the textual specification of hosts, either in domain
+       style or as numerical IP address, and an optional port number. The term
+       [4mhostport[24m was coined within RFC 2396 which provides the  generic  syntax
+       for Uniform Resource Identifiers (URI). This syntax was extended by RFC
+       2732 to support IPv6 addresses which  were  already  specified  in  RFC
+       2373.   There  exist  other  modules  to parse and convert domain names
+       ([4mDNSResolvers(3)[24m,  and  [4mInetResolver(3)[24m),  and  numeric  IP   addresses
+       ([4mIPv4Addresses(3)[24m,  [4mIPv6Addresses(3)[24m).  The  goal  of this module is to
+       provide a uniform interface for all these variants which allow to spec-
+       ify a host/port tuple by giving
+
+       ·      a hostname whose A or AAAA record is looked up,
+
+       ·      a numeric IPv4 address, or
+
+       ·      a numeric IPv6 address,
+
+       ·      optionally followed by a colon-separated port number.
+
+       Following syntax is given by RFCs 2396 and 2732:
+       [4mhostport[24m        = [4mhost[24m [ ":" [4mport[24m ]
+       [4mhost[24m            = [4mhostname[24m | [4mIPv4address[24m | [4mIPv6reference[0m
+       [4mhostname[24m        = *( [4mdomainlabel[24m "." ) [4mtoplabel[24m [ "." ]
+       [4mdomainlabel[24m     = [4malphanum[24m | [4malphanum[24m *( [4malphanum[24m | "-" ) [4malphanum[0m
+       [4mtoplabel[24m        = [4malpha[24m | [4malpha[24m *( [4malphanum[24m | "-" ) [4malphanum[0m
+       [4mIPv4address[24m     = 1*[4mdigit[24m "." 1*[4mdigit[24m "." 1*[4mdigit[24m "." 1*[4mdigit[0m
+       [4mport[24m            = *[4mdigit[0m
+       [4mipv6reference[24m   = "[" [4mIPv6address[24m "]"
+       [4mIPv6address[24m     = see RFC 2373
+       Note  that the colon is used as separator between the host and the port
+       specification but also as delimiter within IPv6  addresses.   For  this
+       reason,  RFC  2732  requires  numeric  IPv6 addresses to be enclosed in
+       brackets. [4mHostPorts[24m allows the brackets to be omitted if the port  num-
+       ber is no longer part of the address.  This can be achieved by invoking
+       [4mSetPort[24m for the input stream before calling [4mReadText[24m.
+
+       [4mSetDefaultPort[24m sets the default port of a specification for  the  given
+       input  stream  if  the port is omitted.  [4mSetPort[24m causes [4mReadText[24m not to
+       look for a port in the input specification and to take the given  value
+       instead.
+
+       Read host/port tuples are represented by [4mHostPort[24m objects which come in
+       two extensions: [4mIPv4HostPort[24m and [4mIPv6HostPort[24m.  The common fields  [4mhost[0m
+       and  [4mport[24m  are  close  to  the actual input seen by [4mReadText[24m, i.e. if a
+       numerical IP address was given, [4mhost[24m provides  the  corresponding  text
+       represenation  (without  the  brackets  in case of IPv6 addresses). The
+       extensions provide the associated address specifications which  can  be
+       passed   on   to   [4mIPv4TCPSockets(3)[24m,   [4mIPv6TCPSockets(3)[24m,  [4mInetTCP(3)[24m,
+       [4mInet6TCP(3)[24m, or, after a conversion to the internal format, to [4mSysSock-[0m
+       [4mets(3)[24m.  [4mHostPort[24m objects are to be created only by [4mReadText[24m.
+
+       [4mReadText[24m  parses a hostport specification from the given input specifi-
+       cation, and, if successful, creates a [4mHostPort[24m object for  it.   [4mWrite-[0m
+       [4mText[24m prints a textual representation of [4mhostport[24m to [4ms[24m which is close to
+       the original input.
+
+       [4mCreateAddress[24m uses [4mInetTCP(3)[24m or [4mInet6TCP(3)[24m to create an abstract net-
+       work  address object of [4mNetworks(3)[24m.  [4mReadAddress[24m combines [4mReadText[24m and
+       [4mCreateAddress[24m.
+
+       To ease the specification of IPv4 or IPv6 addresses to  other  modules,
+       an interface is provided which allows [4mAdd[24m to pass on the address to the
+       corresponding procedure. For this to  work,  the  module  that  accepts
+       addresses  has  to define an interface consisting of [4maddIPv4Address[24m and
+       [4maddIPv6Address[24m and to associate it with its newly created object  using
+       [4mInit[24m.  Afterwards,  client modules are free to use [4mAdd[24m or [4mReadAndAdd[24m to
+       pass hostport specifications to an object.
+
+[1mEXAMPLE[0m
+       Following code snippet demonstrates how hostport specifications out  of
+       command  line  arguments  can be forwarded to a [4mserver[24m object that sup-
+       ports the interface that is required by [4mReadAndAdd[24m:
+
+       UnixArguments.Fetch(args);
+       RelatedEvents.Forward(args, server);
+       HostPorts.SetDefaultPort(args, 53);
+       IF ~HostPorts.ReadAndAdd(args, server) THEN
+          Conclusions.Conclude(server, Errors.fatal, "");
+       END;
+
+
+[1mDIAGNOSTICS[0m
+       Error events can be generated  by  the  underlying  modules  (including
+       [4mIPv4Addresses(3)[24m  and [4mIPv6Addresses(3)[24m).  In addition, following errors
+       can be raised by [4mReadText[24m:
+       [4munexpectedEOF[24m           the input stream ended before a complete  host-
+                               port specification could be read
+       [4mclosingBracketMissing[24m   an  bracketed  IPv6  address  was given but the
+                               closing bracket is missing
+       [4mhostnameTooLong[24m         the hostname part was longer than permitted  by
+                               RFC 1035
+       [4mtooManyDots[24m             more dots were found in the hostname specifica-
+                               tion that permitted by the  corresponding  syn-
+                               tax,  i.e.  consecutive  or  leading  dots were
+                               found
+       [4minvalidPort[24m             an invalid port was specified which was outside
+                               the range of [0,65535].
+
+[1mSEE ALSO[0m
+       [4mIPv4Addresses(3)[24m   parsing of IPv4 addresses
+       [4mIPv4TCPSockets(3)[24m  IPv4 TCP sockets
+       [4mIPv6Addresses(3)[24m   parsing of IPv6 addresses
+       [4mIPv6TCPSockets(3)[24m  IPv6 TCP sockets
+
+
+
+Release 0.5               Last change: 11 August 2006             HostPorts(3)

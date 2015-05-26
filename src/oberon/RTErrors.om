@@ -1,0 +1,216 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RTErrors.om,v 1.2 2005/04/28 08:38:32 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RTErrors.om,v $
+   Revision 1.2  2005/04/28 08:38:32  borchert
+   - assertions added
+   - additional parameters added: module and procedure name, line number
+
+   Revision 1.1  1994/02/23  07:48:31  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RTErrors;
+
+   (* handling of run time errors;
+      the run time system calls one of these procedures
+      on run time errors;
+      these procedures must not return
+   *)
+
+   IMPORT Errors, Events, Priorities, Streams, SYS := SYSTEM, Write;
+
+   CONST
+      case = 1;		(* attempt to find case failed *)
+      return = 2;	(* function does not return any value *)
+      range = 3;	(* index out of range *)
+      typeguard = 4;	(* failure of type guard *)
+      conversion = 5;	(* conversion error *)
+      crend = 6;	(* RETURN of coroutine *)
+      assertion = 7;	(* assertion failed *)
+      errorcodes = 8;
+
+   TYPE
+      Name = ARRAY 32 OF CHAR;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: INTEGER; (* one of case..crend *)
+	    val,	(* defined for range, conversion and assertion *)
+	    limit: LONGINT;	(* defined for range *)
+	    (* valid only if errorcode # crend: *)
+	    moduleName,
+	    procedureName: Name;
+	    lineNumber: LONGINT;
+	 END;
+
+   VAR
+      error: ARRAY errorcodes OF Events.EventType; (* specific runtime errors *)
+      errors: Events.EventType; (* catches all runtime errors *)
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE InitErrorMessages;
+   BEGIN
+      errormsg[case] := "attempt to find case failed";
+      errormsg[return] := "function does not return any value";
+      errormsg[range] := "index out of range";
+      errormsg[typeguard] := "failure of type guard";
+      errormsg[conversion] := "conversion error";
+      errormsg[crend] := "RETURN of coroutine";
+      errormsg[assertion] := "assertion failed";
+   END InitErrorMessages;
+
+   PROCEDURE PrintEvent(s: Streams.Stream; event: Events.Event);
+      VAR
+	 printMessage: BOOLEAN;
+   BEGIN
+      printMessage := TRUE;
+      IF event IS Event THEN
+	 WITH event: Event DO
+	    IF event.errorcode # crend THEN
+	       Write.StringS(s, "Failure in ");
+	       Write.StringS(s, event.moduleName);
+	       Write.CharS(s, ".");
+	       Write.StringS(s, event.procedureName);
+	       Write.StringS(s, " at line ");
+	       Write.IntS(s, event.lineNumber, 1);
+	       Write.CharS(s, ":");
+	       Write.LnS(s); Write.IndentS(s);
+	    END;
+	    IF event.errorcode = range THEN
+	       Write.StringS(s, "index ");
+	       Write.IntS(s, event.val, 1);
+	       Write.StringS(s, " out of [0..");
+	       Write.IntS(s, event.limit, 1);
+	       Write.CharS(s, "]");
+	       printMessage := FALSE;
+	    ELSIF event.errorcode = conversion THEN
+	       Write.StringS(s, "cannot convert ");
+	       Write.IntS(s, event.val, 1);
+	       Write.StringS(s, " to SHORTINT");
+	       printMessage := FALSE;
+	    END;
+	 END;
+      END;
+      IF printMessage THEN
+	 Write.StringS(s, event.message);
+      END;
+   END PrintEvent;
+
+   PROCEDURE Raise(errorcode: INTEGER; val, limit: LONGINT;
+		   moduleName, procedureName: ARRAY OF CHAR;
+		   lineNumber: LONGINT);
+      VAR
+	 event: Event;
+
+      PROCEDURE InitEvent(VAR event: Event; type: Events.EventType);
+      BEGIN
+	 NEW(event);
+	 event.type := type;
+	 event.message := errormsg[errorcode];
+	 event.errorcode := errorcode;
+	 event.val := val;
+	 event.limit := limit;
+	 COPY(moduleName, event.moduleName);
+	 COPY(procedureName, event.procedureName);
+	 event.lineNumber := lineNumber;
+      END InitEvent;
+
+   BEGIN
+      InitEvent(event, errors); Events.Raise(event);
+      InitEvent(event, error[errorcode]); Events.Raise(event);
+      HALT(255);
+   END Raise;
+
+   PROCEDURE CaseError(moduleName, procedureName: ARRAY OF CHAR;
+		       lineNumber: LONGINT);
+   BEGIN
+      Raise(case, 0, 0, moduleName, procedureName, lineNumber);
+   END CaseError;
+
+   PROCEDURE NoReturn(moduleName, procedureName: ARRAY OF CHAR;
+		      lineNumber: LONGINT);
+   BEGIN
+      Raise(return, 0, 0, moduleName, procedureName, lineNumber);
+   END NoReturn;
+
+   PROCEDURE TypeGuardFailure(moduleName, procedureName: ARRAY OF CHAR;
+		              lineNumber: LONGINT);
+   BEGIN
+      Raise(typeguard, 0, 0, moduleName, procedureName, lineNumber);
+   END TypeGuardFailure;
+
+   PROCEDURE RangeError(limit: LONGINT; val: LONGINT;
+			moduleName, procedureName: ARRAY OF CHAR;
+		        lineNumber: LONGINT);
+      (* val is outside of [0..limit] *)
+   BEGIN
+      Raise(range, val, limit, moduleName, procedureName, lineNumber);
+   END RangeError;
+
+   PROCEDURE ConversionError(val: LONGINT;
+			     moduleName, procedureName: ARRAY OF CHAR;
+		             lineNumber: LONGINT);
+      (* SHORT(val) or ORD(val) failed *)
+   BEGIN
+      Raise(conversion, val, 0, moduleName, procedureName, lineNumber);
+   END ConversionError;
+
+   PROCEDURE CoroutineReturn;
+      (* coroutines must not return *)
+   BEGIN
+      Raise(crend, 0, 0, "", "", 0);
+   END CoroutineReturn;
+
+   PROCEDURE FailedAssertion(code: INTEGER;
+			     moduleName, procedureName: ARRAY OF CHAR;
+			     lineNumber: LONGINT);
+   BEGIN
+      Raise(assertion, code, 0, moduleName, procedureName, lineNumber);
+   END FailedAssertion;
+
+   PROCEDURE Init;
+      VAR
+	 code: INTEGER;
+   BEGIN
+      error[0] := NIL;
+      code := 1;
+      WHILE code < errorcodes DO
+	 Events.Define(error[code]);
+	 Events.SetPriority(error[code], Priorities.rtserrors);
+	 Errors.AssignWriteProcedure(error[code], PrintEvent);
+	 INC(code);
+      END;
+      Events.Define(errors);
+      Events.SetPriority(errors, Priorities.rtserrors);
+      Events.Ignore(errors);
+      Errors.AssignWriteProcedure(errors, PrintEvent);
+   END Init;
+
+BEGIN
+   InitErrorMessages;
+   Init;
+END RTErrors.

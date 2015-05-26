@@ -1,0 +1,243 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysFile.om,v 1.4 2000/12/11 21:56:17 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysFile.om,v $
+   Revision 1.4  2000/12/11  21:56:17  borchert
+   [SG]etFileCreationMask added
+
+   Revision 1.3  2000/11/17  16:07:22  borchert
+   Rename, MakeDir, and RemoveDir added
+
+   Revision 1.2  2000/11/12  13:37:28  borchert
+   SymbolicLink and ReadLink added
+
+   Revision 1.1  1994/02/23  07:58:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysFile;
+
+   (* operations on files *)
+
+   IMPORT RelatedEvents, SYS := SYSTEM, Sys, SysErrors, SysIO, SysProcess,
+      SysStat;
+
+   CONST
+      readAccess = {SysStat.oread};
+      writeAccess = {SysStat.owrite};
+      execAccess = {SysStat.oexec};
+      existence = {};
+   TYPE
+      AccessMode = SET;
+
+   PROCEDURE Access(filename: ARRAY OF CHAR; amode: AccessMode;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* check accessibility using the real user and group ID *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.access, d0, d1, SYS.ADR(filename), amode) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.access, filename);
+	 RETURN FALSE
+      END;
+   END Access;
+
+   PROCEDURE EffectiveAccess(filename: ARRAY OF CHAR;
+			     amode: AccessMode;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      (* check accessibility using the effective user and group ID *)
+      VAR
+	 fd: SysIO.File;
+	 options: SET;
+	 statbuf: SysStat.StatRec;
+	 uid: SysProcess.UserId;
+	 gid: SysProcess.GroupId;
+	 mask: LONGINT;
+	 interrupted: BOOLEAN;
+   BEGIN
+      uid := SysProcess.Getuid();
+      gid := SysProcess.Getgid();
+      IF (uid = SysProcess.Geteuid()) & (gid = SysProcess.Getegid()) THEN
+	 RETURN Access(filename, amode, errors)
+      END;
+      IF (readAccess + writeAccess) * (-amode) = {} THEN
+	 IF amode = readAccess THEN
+	    options := SysIO.rdonly;
+	 ELSIF amode = writeAccess THEN
+	    options := SysIO.wronly;
+	 ELSE
+	    options := SysIO.rdwr;
+	 END;
+	 RETURN SysIO.Open(fd, filename, options, errors, TRUE, interrupted) &
+		SysIO.Close(fd, errors, TRUE, interrupted)
+      END;
+      IF SysStat.Stat(filename, statbuf, errors) THEN
+	 IF uid = 0 THEN
+	    RETURN TRUE
+	 END;
+	 IF uid # statbuf.uid THEN
+	    mask := SYS.VAL(LONGINT, amode);
+	    IF gid = statbuf.gid THEN
+	       mask := SYS.LSH(mask, -3);
+	    ELSE
+	       mask := SYS.LSH(mask, -6);
+	    END;
+	    amode := SYS.VAL(SET, mask);
+	 END;
+	 RETURN amode * (-statbuf.mode) = {}
+      ELSE
+	 RETURN FALSE
+      END;
+   END EffectiveAccess;
+
+   PROCEDURE Link(filename1, filename2: ARRAY OF CHAR;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.link, d0, d1,
+		      SYS.ADR(filename1), SYS.ADR(filename2)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.link, filename1);
+	 RETURN FALSE
+      END;
+   END Link;
+
+   PROCEDURE Unlink(filename: ARRAY OF CHAR;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.unlink, d0, d1, SYS.ADR(filename)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.unlink, filename);
+	 RETURN FALSE
+      END;
+   END Unlink;
+
+   PROCEDURE Rename(filename1, filename2: ARRAY OF CHAR;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.rename, d0, d1,
+		      SYS.ADR(filename1), SYS.ADR(filename2)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.rename, filename1);
+	 RETURN FALSE
+      END;
+   END Rename;
+
+   PROCEDURE SymbolicLink(VAR filename1, filename2: ARRAY OF CHAR;
+		          errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.symlink, d0, d1,
+		      SYS.ADR(filename1), SYS.ADR(filename2)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.symlink, filename2);
+	 RETURN FALSE
+      END;
+   END SymbolicLink;
+
+   PROCEDURE ReadLink(filename: ARRAY OF CHAR; VAR buf: ARRAY OF CHAR;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.readlink, d0, d1, SYS.ADR(filename),
+		      SYS.ADR(buf), LEN(buf)) THEN
+	 IF (d0 >= 0) & (d0 < LEN(buf)) THEN
+	    buf[d0] := 0X;
+	 END;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.readlink, filename);
+	 RETURN FALSE
+      END;
+   END ReadLink;
+
+   PROCEDURE MakeDir(filename: ARRAY OF CHAR; mode: SET;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.mkdir, d0, d1, SYS.ADR(filename), mode) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.mkdir, filename);
+	 RETURN FALSE
+      END;
+   END MakeDir;
+
+   PROCEDURE RemoveDir(filename: ARRAY OF CHAR;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.rmdir, d0, d1, SYS.ADR(filename)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.rmdir, filename);
+	 RETURN FALSE
+      END;
+   END RemoveDir;
+
+   PROCEDURE SetFileCreationMask(mask: SET;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.umask, d0, d1, mask) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.umask, "");
+	 RETURN FALSE
+      END;
+   END SetFileCreationMask;
+
+   PROCEDURE GetFileCreationMask(VAR mask: SET;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.umask, d0, d1, 0) &
+	    SYS.UNIXCALL(Sys.umask, d0, d1, d0) THEN
+	 mask := SYS.VAL(SET, d0);
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.umask, "");
+	 RETURN FALSE
+      END;
+   END GetFileCreationMask;
+
+END SysFile.

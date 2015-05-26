@@ -1,0 +1,96 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSRequests.od,v 1.1 2004/03/02 16:05:14 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSRequests.od,v $
+   Revision 1.1  2004/03/02 16:05:14  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION DNSRequests;
+
+   IMPORT Disciplines, DNSHeaders, DNSRecords, Events, Objects,
+      RelatedEvents, Streams, SysSockets, Types;
+
+   TYPE
+      Context = POINTER TO ContextRec;
+      ContextRec = RECORD (Disciplines.ObjectRec) END;
+
+   TYPE
+      Name = DNSRecords.Name;
+   TYPE
+      Record = DNSRecords.Record;
+   TYPE
+      Query = POINTER TO QueryRec;
+      QueryRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name: Name;
+	    type: DNSRecords.RRType;
+	    class: DNSRecords.Class;
+	 END;
+
+   CONST
+      noNameServers = 0;
+      protocolError = 1;
+      tooManyRetries = 2;
+      unexpectedResponse = 3;
+      sendFailed = 4;
+      timeout = 5;
+      formatError = 6; (* format error: ns was unable to interpret the query *)
+      serverFailure = 7; (* server failure due to internal problems *)
+      notImplemented = 8; (* ns does not support the query *)
+      refused = 9; (* ns refuses to process the query *)
+      unexpectedResponseCode = 10; (* rcode outside of [0..5] *)
+      errors = 11;
+   TYPE
+      ErrorCode = SHORTINT; (* noNameServers... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    query: Query;
+	    dnsserver: Name;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE CreateContext(VAR context: Context);
+   PROCEDURE AddNameServer(context: Context;
+                           socket: SysSockets.Socket;
+			   name: ARRAY OF CHAR);
+      (* socket must be already connected *)
+   PROCEDURE EnableRoundRobin(context: Context);
+   PROCEDURE SetTimeout(context: Context; seconds: INTEGER);
+   PROCEDURE SetNumberOfRetries(context: Context; retries: INTEGER);
+
+   PROCEDURE Process(context: Context;
+                     name: ARRAY OF CHAR;
+		     type: DNSRecords.RRType;
+		     class: DNSRecords.Class;
+		     VAR header: DNSHeaders.Header;
+		     VAR answerRecs, authRecs, addRecs: Record;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+
+END DNSRequests.

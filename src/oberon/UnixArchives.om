@@ -1,0 +1,475 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixArchive.om,v 1.4 1996/11/13 17:34:35 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixArchive.om,v $
+   Revision 1.4  1996/11/13  17:34:35  borchert
+   more reliable and stable header parsing
+
+   Revision 1.3  1996/09/19  14:40:30  borchert
+   SearchFile is now more tolerant regarding GNU-ar
+
+   Revision 1.2  1995/01/04  16:51:53  borchert
+   support of Services added
+
+   Revision 1.1  1994/02/23  07:26:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 7/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixArchives;
+
+   (* examination of common archive file formats:
+      ar-format of System V and Berkeley
+   *)
+
+   IMPORT ASCII, Events, Priorities, Read, RelatedEvents, Scan,
+      Services, Streams, Strings, SysTypes, SYS := SYSTEM, Texts, UnixFiles;
+
+   CONST
+      arnamelength = 14;
+	 (* filename lengths of members are limited to arnamelength *)
+
+   TYPE
+      MemberName = ARRAY arnamelength+1 OF CHAR;
+      ArchiveHeader =
+	 RECORD
+	    name: MemberName;		(* name of archive member *)
+	    date: SysTypes.Time;	(* in seconds since Jan 1, 1970 *)
+	    uid, gid: INTEGER;		(* user and group id *)
+	    mode: SET;			(* protection mode, see stat(2) *)
+	    size: SysTypes.Offset;	(* size in bytes *)
+	 END;
+      MemberList = POINTER TO MemberListRec;
+      MemberListRec =
+	 RECORD
+	    offset: SysTypes.Offset;	(* start offset of archive member *)
+	    header: ArchiveHeader;	(* header of archive member *)
+	    nextoffset: SysTypes.Offset;(* offset to next header *)
+	    next: MemberList;		(* previous archive member *)
+	 END;
+      Archive = POINTER TO ArchiveRec;
+      ArchiveRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    (* readonly stat information of current archive member *)
+	    header: ArchiveHeader;
+	    (* === private part ======================================= *)
+	    afile: Streams.Stream;
+	    members: MemberList;	(* reverse order *)
+	    nextfile: SysTypes.Offset;	(* offset of next file *)
+	    pos: SysTypes.Offset;	(* current offset *)
+	    bytesleft: SysTypes.Offset;
+	 END;
+
+   CONST
+      notAnArchiveFile = 0;	(* magic header not found *)
+      corruptedArchive = 1;	(* corrupted archive file *)
+      memberNotFound = 2;	(* archive member file not found *)
+      outOfRange = 3;		(* seek failure: position out of range *)
+      readFailed = 4;           (* unexpected read failure *)
+      seekFailed = 5;		(* unexpected seek failure *)
+      tellFailed = 6;		(* unexpected tell failure *)
+      errorcodes = 7;		(* number of error codes *)
+   TYPE
+      ErrorCode = SHORTINT;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Archive;
+	    code: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      streamError: Events.EventType;
+
+   VAR
+      if: Streams.Interface;
+      caps: Streams.CapabilitySet;
+      type: Services.Type; (* UnixArchives.Archive *)
+
+   PROCEDURE Error(s: Archive; object: RelatedEvents.Object;
+		   errorCode: ErrorCode);
+      VAR
+	 event: Event;
+   BEGIN
+      NEW(event);
+      event.type := streamError;
+      event.message := errormsg[errorCode];
+      event.stream := s;
+      event.code := errorCode;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE ReadBuf(s: Streams.Stream;
+		     VAR buf: ARRAY OF BYTE;
+		     off, cnt: Streams.Count) : Streams.Count;
+   BEGIN
+      WITH s: Archive DO
+	 IF cnt > s.bytesleft THEN
+	    cnt := s.bytesleft;
+	 END;
+	 IF ~Streams.ReadPart(s.afile, buf, off, cnt) THEN
+	    Error(s, s, readFailed);
+	    RETURN 0
+	 END;
+	 cnt := s.afile.count;
+	 DEC(s.bytesleft, cnt);
+	 INC(s.pos, cnt);
+	 RETURN cnt
+      END;
+   END ReadBuf;
+
+   PROCEDURE ReadByte(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+   BEGIN
+      WITH s: Archive DO
+	 IF (s.bytesleft > 0) & Streams.ReadByte(s.afile, byte) THEN
+	    DEC(s.bytesleft); INC(s.pos);
+	    RETURN TRUE
+	 END;
+	 Error(s, s, readFailed);
+	 RETURN FALSE
+      END;
+   END ReadByte;
+
+   PROCEDURE Seek(s: Streams.Stream;
+		  cnt: Streams.Count; whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 pos: Streams.Count;
+   BEGIN
+      WITH s: Archive DO
+	 CASE whence OF
+	 | Streams.fromStart: pos := cnt;
+	 | Streams.fromPos:   pos := s.pos + cnt;
+	 | Streams.fromEnd:   pos := s.header.size + cnt;
+	 END;
+	 IF (pos < 0) OR (pos > s.header.size) THEN
+	    Error(s, s, outOfRange);
+	    RETURN FALSE
+	 END;
+	 IF ~Streams.Seek(s.afile, pos - s.pos, Streams.fromPos) THEN
+	    Error(s, s, seekFailed);
+	    RETURN FALSE
+	 END;
+	 s.pos := pos;
+	 s.bytesleft := s.header.size - pos;
+	 RETURN TRUE
+      END;
+   END Seek;
+
+   PROCEDURE Tell(s: Streams.Stream; VAR cnt: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Archive DO
+	 cnt := s.pos;
+	 RETURN TRUE
+      END;
+   END Tell;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH s: Archive DO
+	 ok := Streams.Close(s.afile);
+	 s.afile := NIL;
+	 RETURN ok
+      END;
+   END Close;
+
+   PROCEDURE SearchFile(errors: RelatedEvents.Object;
+			afile: Streams.Stream;
+			VAR members: MemberList;
+			VAR headerofmember: ArchiveHeader;
+			VAR offset: SysTypes.Offset; (* offset of next header *)
+			membername: ARRAY OF CHAR) : BOOLEAN;
+      (* current offset is `offset' (beginning of next header);
+	 members is the list of known archive members;
+	 we are seeking for membername
+	 (if membername = "" we are looking for the next archive member);
+	 the offset to the next header is returned in offset;
+	 the header of the archive member is returned in `headerofmember'
+      *)
+      CONST
+	 headerlength = 60;
+	    (*  0-15 16 member name	(* System V: "/"-terminated *)
+					(* BSD: " "-padded *)
+	       16-27 12 date		(* decimal *)
+	       28-33  6 uid		(* decimal *)
+	       34-39  6 gid		(* decimal *)
+	       40-47  8 mode		(* octal *)
+	       48-57 12 size		(* decimal *)
+	       58-59  2 trailer		(* "`\n" *)
+	    *)
+      TYPE
+	 AsciiHeader = ARRAY headerlength OF CHAR;
+      VAR
+	 member: MemberList;		(* list of known archive members *)
+	 newmember: MemberList;		(* new archive member *)
+	 currpos: SysTypes.Offset;	(* current position in archive *)
+	 header: AsciiHeader;		(* ASCII header *)
+	 binheader: ArchiveHeader;	(* binary header *)
+	 index: INTEGER;		(* of binheader.name *)
+
+      PROCEDURE ScanHeader(ascHeader: AsciiHeader;
+                           VAR binHeader: ArchiveHeader) : BOOLEAN;
+	 VAR
+	    buf: AsciiHeader;
+	    bs: Streams.Stream;
+	    mode: INTEGER;		(* INTEGER value of binheader.mode *)
+	    fmag: ARRAY 3 OF CHAR;	(* trailer, "`\n" expected *)
+
+	 PROCEDURE Fetch(pos, len: INTEGER);
+	    VAR
+	       index, cnt: INTEGER;
+	 BEGIN
+	    index := pos; cnt := 0;
+	    WHILE cnt < len DO
+	       buf[cnt] := ascHeader[index];
+	       INC(cnt); INC(index);
+	    END;
+	    buf[cnt] := 0X;
+	    Streams.Touch(bs); Streams.SetPos(bs, 0);
+	 END Fetch;
+
+      BEGIN (* ScanHeader *)
+	 buf[0] := 0X; Strings.Open(bs, buf);
+	 Fetch( 0, 16); COPY(buf, binHeader.name);
+	 Fetch(16, 12); Scan.S1(bs, "%d", binHeader.date);
+	 IF bs.count # 1 THEN RETURN FALSE END;
+	 Fetch(28,  6); Scan.S1(bs, "%d", binHeader.uid);
+	 IF bs.count # 1 THEN RETURN FALSE END;
+	 Fetch(34,  6); Scan.S1(bs, "%d", binHeader.gid);
+	 IF bs.count # 1 THEN RETURN FALSE END;
+	 Fetch(40,  8); Scan.S1(bs, "%o", mode);
+	 IF bs.count = 1 THEN
+	    binheader.mode := SYS.VAL(SET, mode);
+	 ELSE
+	    (* survive GNU-ar headers *)
+	    binheader.mode := {};
+	 END;
+	 Fetch(48, 12); Scan.S1(bs, "%d", binHeader.size);
+	 IF (bs.count # 1) OR (binHeader.size < 0) THEN RETURN FALSE END;
+	 Fetch(58,  2);
+	 RETURN (buf[0] = "`") & (buf[1] = ASCII.nl)
+      END ScanHeader;
+
+   BEGIN (* SearchFile *)
+      IF membername # "" THEN
+	 (* look for membername in the list of known members *)
+	 member := members;
+	 WHILE member # NIL DO
+	    IF member.header.name = membername THEN
+	       offset := member.nextoffset;
+	       headerofmember := member.header;
+	       RETURN Streams.Seek(afile, member.offset, Streams.fromStart)
+	    END;
+	    member := member.next;
+	 END;
+      END;
+      IF membername = "" THEN
+	 IF ~Streams.Seek(afile, offset, Streams.fromStart) THEN
+	    Error(NIL, errors, seekFailed);
+	    RETURN FALSE
+	 END;
+      ELSIF members # NIL THEN
+	 IF ~Streams.Seek(afile, members.nextoffset, Streams.fromStart) THEN
+	    Error(NIL, errors, seekFailed);
+	    RETURN FALSE
+	 END;
+      (* ELSE at current position = beginning of the archive (after ARMAG) *)
+      END;
+      IF ~Streams.Tell(afile, currpos) THEN
+	 Error(NIL, errors, tellFailed);
+	 RETURN FALSE
+      END;
+      offset := currpos;
+      LOOP
+	 IF ~Streams.Read(afile, header) OR (afile.count # headerlength) THEN
+	    IF afile.count # 0 THEN
+	       Error(NIL, errors, corruptedArchive);
+	    ELSIF membername # "" THEN
+	       Error(NIL, errors, memberNotFound);
+	    END;
+	    RETURN FALSE
+	 END;
+	 IF ~ScanHeader(header, binheader) THEN
+	    Error(NIL, errors, corruptedArchive);
+	    RETURN FALSE
+	 END;
+	 (* remove trailing blanks and "/" from name *)
+	 index := arnamelength;
+	 WHILE index > 0 DO
+	    DEC(index);
+	    IF (binheader.name[index] # " ") &
+	       (binheader.name[index] # "/") &
+	       (binheader.name[index] # 0X) THEN
+	       index := 0; (* terminate loop *)
+	    ELSE
+	       binheader.name[index] := 0X;
+	    END;
+	 END;
+	 IF (members = NIL) OR (offset > members.offset) THEN
+	    NEW(newmember);
+	    newmember.offset := offset + headerlength;
+	    newmember.header := binheader;
+	    newmember.next := members;
+	    members := newmember;
+	 ELSE
+	    newmember := NIL;
+	 END;
+	 INC(offset, headerlength + binheader.size);
+	 IF ODD(binheader.size) THEN
+	    INC(offset);
+	 END;
+	 IF newmember # NIL THEN
+	    newmember.nextoffset := offset;
+	 END;
+	 IF (membername = "") OR (membername = binheader.name) THEN
+	    headerofmember := binheader;
+	    RETURN TRUE
+	 END;
+	 IF ~Streams.Seek(afile, offset, Streams.fromStart) THEN
+	    Error(NIL, errors, seekFailed);
+	    RETURN FALSE
+	 END;
+      END;
+   END SearchFile;
+
+   PROCEDURE Open(VAR archive: Streams.Stream;
+		  arname: ARRAY OF CHAR;
+		  membername: ARRAY OF CHAR;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* opens arname(membername) for reading;
+	 if membername = "" the first member of the archive
+	 will be opened for reading;
+	 Open fails if arname cannot be opened or if
+	 membername cannot be found
+	 (or if the archive is empty)
+      *)
+      CONST
+	 armag = "!<arch>"; (* + newline *)
+	 armaglen = 8;
+      VAR
+	 afile: Streams.Stream;
+	 magic: ARRAY armaglen + 1 OF CHAR;
+	 offset: SysTypes.Offset;
+	 header: ArchiveHeader;
+	 members: MemberList;
+	 ar: Archive;
+   BEGIN
+      archive := NIL;
+      IF ~UnixFiles.Open(afile, arname, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 RETURN FALSE
+      END;
+
+      (* check for magic "number" *)
+      Read.LineS(afile, magic);
+      IF afile.error OR (magic # armag) THEN
+	 Error(NIL, errors, notAnArchiveFile);
+	 RETURN FALSE
+      END;
+
+      (* seek for membername *)
+      offset := armaglen;
+      members := NIL;
+      IF ~SearchFile(errors, afile, members, header, offset, membername) THEN
+	 (* error event already generated *)
+	 RETURN FALSE
+      END;
+
+      NEW(ar);
+      Services.Init(ar, type);
+      Streams.Init(ar, if, caps, Streams.onebuf);
+      archive := ar;
+      WITH archive: Archive DO
+	 archive.afile := afile;
+	 archive.members := members;
+	 archive.nextfile := offset;
+	 archive.header := header;
+
+	 archive.pos := 0;
+	 archive.bytesleft := archive.header.size;
+      END;
+      RelatedEvents.QueueEvents(archive);
+      RelatedEvents.Reset(afile);
+      RelatedEvents.Forward(afile, archive);
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE Reopen(archive: Streams.Stream;
+		    membername: ARRAY OF CHAR) : BOOLEAN;
+      (* archive has been opened by Open;
+	 if membername = "" the next member of the archive
+	 will be opened for reading;
+	 Reopen fails if membername cannot be found
+	 (or at the end of the archive)
+	 the archive is *NOT* closed on failure
+      *)
+   BEGIN
+      IF (archive = NIL) OR
+	 ~(archive IS Archive) OR
+	 (archive(Archive).afile = NIL) THEN
+	 RETURN FALSE
+      END;
+      WITH archive: Archive DO
+	 archive.pos := 0;
+	 IF ~SearchFile(archive, archive.afile, archive.members,
+			archive.header, archive.nextfile, membername) THEN
+	    archive.bytesleft := 0;
+	    RETURN FALSE
+	 END;
+	 archive.bytesleft := archive.header.size;
+	 (* Streams.Touch is necessary because of the buffering mode;
+	    else the previous buffer contents is not invalidated
+	 *)
+	 Streams.Touch(archive);
+	 RETURN TRUE
+      END;
+   END Reopen;
+
+BEGIN
+   NEW(if);
+   caps := {Streams.read, Streams.bufio, Streams.seek, Streams.tell,
+		  Streams.close};
+   if.bufread := ReadBuf;
+   if.read := ReadByte;
+   if.seek := Seek;
+   if.tell := Tell;
+   if.close := Close;
+   caps := {Streams.read, Streams.bufio, Streams.seek, Streams.tell,
+		  Streams.close};
+   Services.CreateType(type, "UnixArchives.Archive", "Streams.Stream");
+
+   errormsg[notAnArchiveFile] := "not an archive file";
+   errormsg[corruptedArchive] := "corrupted archive header";
+   errormsg[memberNotFound] :=   "no such archive member";
+   errormsg[outOfRange] :=       "seek position out of range";
+   errormsg[readFailed] :=       "unexpected read failure";
+   errormsg[seekFailed] :=       "unexpected seek failure";
+   errormsg[tellFailed] :=       "unexpected tell failure";
+
+   Events.Define(streamError);
+   Events.SetPriority(streamError, Priorities.liberrors);
+END UnixArchives.

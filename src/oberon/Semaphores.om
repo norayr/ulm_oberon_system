@@ -1,0 +1,136 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Semaphores.om,v 1.3 1997/07/09 13:59:32 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Semaphores.om,v $
+   Revision 1.3  1997/07/09  13:59:32  borchert
+   Drop added (see comments in Semaphores.od)
+
+   Revision 1.2  1995/01/20  12:25:48  borchert
+   p interface procedure added
+
+   Revision 1.1  1994/02/23  08:04:41  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/93
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Semaphores;
+
+   IMPORT Conditions, Disciplines, Objects, RelatedEvents, Tasks;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      Semaphore = POINTER TO SemaphoreRec;
+      SemaphoreRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    if: Interface;
+	 END;
+
+      SemaOp = PROCEDURE (sema: Semaphore);
+      StatusProc = PROCEDURE (sema: Semaphore) : INTEGER;
+      GetConditionProc = PROCEDURE (sema: Semaphore;
+			            VAR condition: Conditions.Condition);
+      DropProc = PROCEDURE (condition: Conditions.Condition);
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    p: SemaOp; (* optional: may be NIL *)
+	    v: SemaOp;
+	    getcondition: GetConditionProc;
+	    drop: DropProc;
+	    status: StatusProc;
+	 END;
+
+   TYPE
+      ConditionDiscipline = POINTER TO ConditionDisciplineRec;
+      ConditionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    sema: Semaphore; (* associated semaphore *)
+	 END;
+   VAR
+      cdID: Disciplines.Identifier;
+
+   PROCEDURE Init(sema: Semaphore; if: Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.v # NIL) & (if.status # NIL) &
+	     (if.getcondition # NIL) & (if.drop # NIL));
+      sema.if := if;
+   END Init;
+
+   PROCEDURE P(sema: Semaphore);
+      VAR
+	 condition: Conditions.Condition;
+   BEGIN
+      IF sema.if.p # NIL THEN
+	 sema.if.p(sema);
+      ELSE
+	 sema.if.getcondition(sema, condition);
+	 Tasks.WaitFor(condition);
+      END;
+   END P;
+
+   PROCEDURE V(sema: Semaphore);
+      (* PRE: the resource must have been claimed already;
+         otherwise Drop is to be called
+      *)
+   BEGIN
+      sema.if.v(sema);
+   END V;
+
+   PROCEDURE GetCondition(sema: Semaphore; VAR condition: Conditions.Condition);
+      (* return condition which waits for a free resource;
+	 if the condition evaluates to TRUE, the resource is already taken,
+	 i.e. P must not be called additionaly
+      *)
+      VAR
+	 cd: ConditionDiscipline;
+   BEGIN
+      sema.if.getcondition(sema, condition);
+      NEW(cd); cd.id := cdID; cd.sema := sema;
+      Disciplines.Add(condition, cd);
+   END GetCondition;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+      (* undoes the queuing (of GetCondition) or releases the resource *)
+      VAR
+	 ok: BOOLEAN;
+	 cd: ConditionDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(condition, cdID, cd); ASSERT(ok);
+      cd.sema.if.drop(condition);
+   END Drop;
+
+   PROCEDURE Status(sema: Semaphore) : INTEGER;
+      (* return value:
+	    >= 0: number of free resources
+	    <  0: absolute value indicates length of queue
+      *)
+   BEGIN
+      RETURN sema.if.status(sema)
+   END Status;
+
+BEGIN
+   cdID := Disciplines.Unique();
+END Semaphores.

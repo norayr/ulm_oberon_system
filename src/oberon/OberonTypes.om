@@ -1,0 +1,1298 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: OberonTypes.om,v 1.1 2005/03/28 09:15:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: OberonTypes.om,v $
+   Revision 1.1  2005/03/28 09:15:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonTypes;
+
+   (* collection of common semantic type checks *)
+
+   IMPORT ASCII, BaseTypes := OberonBaseTypes, CompilerErrors,
+      CompilerObjects, Consts := OberonStdConstants, ConstStrings,
+      Lex := OberonLex, OberonErrors, Scopes, Sets, Streams, Strings,
+      Sym := OberonSymbols, Write;
+
+   TYPE
+      Attribute = Sym.Attribute;
+      Type = Sym.Type;
+
+   CONST
+      strttlen = 80;
+   VAR
+      strtypes: ARRAY strttlen OF Type;
+
+   TYPE
+      SymSet = ARRAY (Lex.symbols + MAX(SET)) DIV (MAX(SET) + 1) OF SET;
+   VAR
+      compareOps: SymSet; (* eql, neq, lst, grt, leq, geq *)
+      booleanOps: SymSet; (* in, is, or, ampersand + compareOps *)
+      logOps: SymSet; (* or, ampersand *)
+      setOps: SymSet; (* plus, minus, times, slash *)
+      setconstrOps: SymSet; (* comma, range *)
+      arithOps: SymSet; (* setOps + div, mod *)
+
+   PROCEDURE InitSets;
+   BEGIN
+      Sets.InitSet(compareOps);
+      Sets.Incl(compareOps, Lex.eql);
+      Sets.Incl(compareOps, Lex.neq);
+      Sets.Incl(compareOps, Lex.lst);
+      Sets.Incl(compareOps, Lex.grt);
+      Sets.Incl(compareOps, Lex.leq);
+      Sets.Incl(compareOps, Lex.geq);
+
+      booleanOps := compareOps;
+      Sets.Incl(booleanOps, Lex.in);
+      Sets.Incl(booleanOps, Lex.is);
+      Sets.Incl(booleanOps, Lex.or);
+      Sets.Incl(booleanOps, Lex.ampersand);
+
+      Sets.InitSet(logOps);
+      Sets.Incl(logOps, Lex.or);
+      Sets.Incl(logOps, Lex.ampersand);
+
+      Sets.InitSet(setOps);
+      Sets.Incl(setOps, Lex.plus);
+      Sets.Incl(setOps, Lex.minus);
+      Sets.Incl(setOps, Lex.times);
+      Sets.Incl(setOps, Lex.slash);
+
+      Sets.InitSet(setconstrOps);
+      Sets.Incl(setconstrOps, Lex.comma);
+      Sets.Incl(setconstrOps, Lex.range);
+
+      arithOps := setOps;
+      Sets.Incl(arithOps, Lex.div);
+      Sets.Incl(arithOps, Lex.mod);
+   END InitSets;
+
+   PROCEDURE PrintQualifiedIdentifier(es: Streams.Stream; ident: Sym.Ident);
+   BEGIN
+      Write.CharS(es, ASCII.quote);
+      IF (ident.module # NIL) & (ident.name # NIL) THEN
+	 ConstStrings.Write(es, ident.module.name);
+	 Write.CharS(es, ".");
+      END;
+      ConstStrings.Write(es, ident.name);
+      Write.CharS(es, ASCII.quote);
+   END PrintQualifiedIdentifier;
+
+   PROCEDURE CreateStringType(VAR type: Type; length: Streams.Count);
+      VAR
+	 lengthAt: Attribute;
+	 lengthToken: Lex.Token;
+	 lengthConstant: Sym.ConstantValue;
+	 lengthString: ARRAY 12 OF CHAR;
+	 lengthStream: Streams.Stream;
+	 lengthConstString: ConstStrings.String;
+   BEGIN
+      IF (length < strttlen) & (strtypes[length] # NIL) THEN
+	 type := strtypes[length]; RETURN
+      END;
+
+      (* it is a real mess to convert length into an attribute ... *)
+      lengthString[0] := 0X; Strings.Open(lengthStream, lengthString);
+      Write.IntS(lengthStream, length, 1);
+      Streams.Release(lengthStream);
+      ConstStrings.Create(lengthConstString, lengthString);
+      ConstStrings.Open(lengthStream, lengthConstString);
+      lengthToken.begin := 0; lengthToken.end := 0;
+      lengthToken.sy := Lex.intconst;
+      lengthToken.text := lengthStream;
+      Sym.CreateConstval(lengthConstant, Sym.tokenConst);
+      CompilerObjects.InitBuiltInObject(lengthConstant);
+      lengthConstant.token := lengthToken;
+      Sym.CreateConstvalAt(lengthAt, lengthConstant, NIL);
+      lengthAt.type := BaseTypes.integer;
+      CompilerObjects.InitBuiltInObject(lengthAt);
+
+      Sym.CreateArrayOf(type, lengthAt, BaseTypes.char, NIL);
+      IF length < strttlen THEN
+	 CompilerObjects.InitBuiltInObject(type);
+	 strtypes[length] := type;
+      END;
+   END CreateStringType;
+
+   PROCEDURE StreamLength(s: Streams.Stream) : Streams.Count;
+      VAR
+	 length: Streams.Count;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Streams.Seek(s, 0, Streams.fromEnd) &
+            Streams.Tell(s, length) &
+	    Streams.Seek(s, 0, Streams.fromStart);
+      ASSERT(ok);
+      RETURN length
+   END StreamLength;
+
+   PROCEDURE GetConstType(constval: Sym.ConstantValue; VAR type: Type);
+      (* set type of a constant represented by constval *)
+   BEGIN
+      CASE constval.kind OF
+      | Sym.emptySetConst:
+	    type := BaseTypes.set;
+      | Sym.trueConst, Sym.falseConst:
+	    type := BaseTypes.boolean;
+      | Sym.tokenConst:
+	    CASE constval.token.sy OF
+	    | Lex.intconst, Lex.hexconst:
+		  type := BaseTypes.genericInteger;
+	    | Lex.realconst, Lex.longrealconst:
+		  type := BaseTypes.genericReal;
+	    | Lex.charconst:
+		  type := BaseTypes.char;
+	    | Lex.string:
+		  CreateStringType(type, StreamLength(constval.token.text) + 1);
+	    | Lex.nil:
+		  type := BaseTypes.nil;
+	    END;
+      END;
+   END GetConstType;
+
+   PROCEDURE IsConst(at: Attribute) : BOOLEAN;
+   BEGIN
+      RETURN (at # NIL) & (at.mode IN Sym.constModes)
+   END IsConst;
+
+   PROCEDURE IsChar(at: Attribute) : BOOLEAN;
+      (* at and at.type must be # NIL;
+         returns TRUE if at.type.form = char or
+	              if it is character constant
+      *)
+   BEGIN
+      IF at.type.form = Sym.char THEN RETURN TRUE END;
+      IF at.type.form # Sym.array THEN RETURN FALSE END;
+      WHILE at.mode = Sym.constAt DO
+	 IF at.ident = NIL THEN RETURN FALSE END;
+	 at := at.ident.constexpr;
+	 IF at = NIL THEN RETURN FALSE END;
+      END;
+      IF (at.mode # Sym.constvalAt) OR
+	    (at.constval.kind # Sym.tokenConst) OR
+	    (at.constval.token.sy # Lex.string) THEN
+	 RETURN FALSE
+      END;
+      RETURN StreamLength(at.constval.token.text) = 1
+   END IsChar;
+
+   PROCEDURE IsString(at: Attribute) : BOOLEAN;
+      (* at and at.type must be # NIL;
+         returns TRUE if at is a string or char constant or
+	 an array with CHAR as element type
+      *)
+   BEGIN
+      IF IsConst(at) & IsChar(at) THEN RETURN TRUE END;
+      RETURN (at.type.form = Sym.array) &
+	     (at.type.element # NIL) &
+	     (at.type.element.form = Sym.char)
+   END IsString;
+
+   PROCEDURE IsAssignmentCompatibleToByte(type: Type) : BOOLEAN;
+      (* the report states that CHAR and SHORTINT may be
+	 assigned to BYTE;
+	 this is extended here to all numeric whole number types
+	 that are generic or byte-sized or short
+      *)
+   BEGIN
+      RETURN (type = NIL) OR
+             (type.form IN {Sym.byte, Sym.char}) OR
+	     (type.form IN Sym.specforms) &
+	        ((type.spec = Sym.generic) OR
+		   (type.spec = Sym.explicit) & (type.bits <= 8) OR
+		   (type.spec = Sym.standard) & (type.stdlength = Sym.short))
+   END IsAssignmentCompatibleToByte;
+
+   PROCEDURE Includes(t1, t2: Type) : BOOLEAN;
+      (* return TRUE if t1 includes t2,
+         i.e. a value of type t2 may be assigned to t1;
+	 t1 and t2 must be well-defined numeric types
+      *)
+   BEGIN
+      IF (t1.form IN {Sym.cardinal}) # (t2.form IN {Sym.cardinal}) THEN
+	 RETURN FALSE
+      END;
+      IF t1.form # t2.form THEN
+	 CASE t1.form OF
+	 | Sym.address:
+	    RETURN t2.form = Sym.integer
+	 | Sym.integer:
+	    IF t2.form # Sym.address THEN RETURN FALSE END;
+	    CASE t1.spec OF
+	    | Sym.generic:
+	       RETURN TRUE (* we do not know it yet *)
+	    | Sym.standard:
+	       RETURN t1.stdlength >= Sym.long
+	    | Sym.explicit:
+	       RETURN TRUE (* we do not know it yet *)
+	    END;
+	 | Sym.real:
+	    RETURN t2.form = Sym.integer
+	 END;
+      END;
+      IF ~(t1.form IN Sym.specforms) THEN
+	 RETURN TRUE
+      END;
+      IF (t1.spec = Sym.generic) OR (t2.spec = Sym.generic) OR
+	    (t1.spec # t2.spec) THEN
+	 RETURN TRUE
+      END;
+      CASE t1.spec OF
+      | Sym.standard:   RETURN t1.stdlength >= t2.stdlength
+      | Sym.explicit:   RETURN t1.bits >= t2.bits
+      END;
+   END Includes;
+
+   PROCEDURE WriteForm(s: Streams.Stream; form: Sym.Form);
+      VAR
+	 formstr: ARRAY 16 OF CHAR;
+   BEGIN
+      Sym.GetFormString(form, formstr);
+      Write.StringS(s, formstr);
+   END WriteForm;
+
+   PROCEDURE WriteFormSet(s: Streams.Stream; forms: Sym.FormSet);
+      VAR
+	 form: Sym.Form;
+	 index, card: INTEGER; (* cardinality of forms *)
+	 members: ARRAY Sym.forms OF Sym.Form;
+   BEGIN
+      IF (Sym.integer IN forms) & (Sym.cardinal IN forms) THEN
+	 (* do not bother error messages with non-standard types
+	    that might be used internally only
+	 *)
+	 EXCL(forms, Sym.cardinal);
+      END;
+      IF (Sym.integer IN forms) & (Sym.address IN forms) THEN
+	 EXCL(forms, Sym.address);
+      END;
+      IF forms = Sym.numeric THEN
+	 Write.StringS(s, "numeric");
+      ELSIF forms = Sym.basic THEN
+	 Write.StringS(s, "basic");
+      ELSIF forms = Sym.structured THEN
+	 Write.StringS(s, "structured");
+      ELSE
+	 form := 0; card := 0;
+	 WHILE form < Sym.forms DO
+	    IF form IN forms THEN
+	       members[card] := form;
+	       INC(card);
+	    END;
+	    INC(form);
+	 END;
+
+	 ASSERT(card > 0);
+	 IF card = 1 THEN
+	    WriteForm(s, members[0]);
+	 ELSIF card = 2 THEN
+	    WriteForm(s, members[0]);
+	    Write.StringS(s, " or ");
+	    WriteForm(s, members[1]);
+	 ELSE
+	    index := 0;
+	    WHILE index + 1 < card DO
+	       WriteForm(s, members[index]);
+	       Write.StringS(s, ", ");
+	       INC(index);
+	    END;
+	    Write.StringS(s, "or ");
+	    WriteForm(s, members[card-1]);
+	 END;
+      END;
+   END WriteFormSet;
+
+   PROCEDURE CheckAtType(at: Attribute; forms: Sym.FormSet);
+      (* at # NIL and at.type # NIL;
+         check that at.type.form IN forms and
+	 raise error event if not
+      *)
+      VAR
+	 es: Streams.Stream;
+   BEGIN
+      IF at.type.form IN forms THEN RETURN END;
+      IF (Sym.char IN forms) & IsChar(at) THEN RETURN END;
+      OberonErrors.Open(es, at);
+      Write.StringS(es, "is of ");
+      WriteForm(es, at.type.form);
+      Write.StringS(es, " type but an expression of ");
+      WriteFormSet(es, forms);
+      Write.StringS(es, " type was expected");
+      IF (at.ident # NIL) & (at.ident.loc # NIL) THEN
+	 CompilerErrors.Ref(es, at.ident.loc);
+      END;
+      OberonErrors.Close(es);
+   END CheckAtType;
+
+   PROCEDURE CheckSetMember(at: Attribute);
+      (* check that at may be given as set member *)
+   BEGIN
+      IF (at # NIL) & (at.type # NIL) THEN
+	 CheckAtType(at, {Sym.integer, Sym.cardinal});
+      END;
+   END CheckSetMember;
+
+   PROCEDURE CheckOpMode(at: Attribute) : BOOLEAN;
+      VAR
+	 es: Streams.Stream;
+   BEGIN
+      IF at.mode IN Sym.opModes THEN RETURN TRUE END;
+      OberonErrors.Open(es, at);
+      IF (at.mode IN Sym.identModes) & (at.ident # NIL) &
+	    (at.ident.name # NIL) THEN
+	 OberonErrors.Ref(es, at.ident);
+	 Write.StringS(es, "identifier ");
+	 OberonErrors.WriteString(es, at.ident.name);
+	 Write.StringS(es, " misused in this context");
+      ELSE
+	 Write.StringS(es, "identifier misused in this context");
+      END;
+      OberonErrors.Close(es);
+      RETURN FALSE
+   END CheckOpMode;
+
+   PROCEDURE BaseType(t1, t2: Type; VAR base: Type) : BOOLEAN;
+      (* returns TRUE
+	 if both types have the same form (record or pointer)
+	 and one is the basetype of the other type
+	 the base type is returned in `base'.
+
+	 There may be a case where t1 is a basetype of t2 and
+	 vice versa even if t1 # t2:
+
+	 TYPE
+	    Rec = RECORD END;
+	    Ptr1 = POINTER TO Rec;
+	    Ptr2 = POINTER TO Rec;
+
+	 Ptr1 and Ptr2 are still assignment compatible due to
+	 the rule that Ptr1 is an extension of Ptr2 and vice versa.
+	 In this case, base is set to `t1'
+      *)
+      VAR
+	 t: Type;
+	 rt1, rt2: Type; (* record types *)
+   BEGIN
+      base := NIL;
+      IF t1.form # t2.form THEN
+	 RETURN FALSE
+      END;
+      IF t1.form = Sym.pointer THEN
+	 rt1 := t1.reftype;
+	 rt2 := t2.reftype;
+         IF (rt1 = NIL) OR (rt2 = NIL) THEN
+            RETURN TRUE (* avoid additional error messages *)
+         END;
+      ELSE
+	 rt1 := t1; rt2 := t2;
+      END;
+      IF (rt1.form # Sym.record) OR (rt2.form # Sym.record) THEN
+	 RETURN FALSE
+      END;
+
+      (* check for `rt1' being a base type of `rt2' *)
+      t := rt2;
+      WHILE (t # NIL) & (t # rt1) DO
+	 t := t.basetype;
+      END;
+      IF t = rt1 THEN
+	 base := t1; RETURN TRUE
+      END;
+
+      (* check for `rt2' being a base type of `rt1' *)
+      t := rt1;
+      WHILE (t # NIL) & (t # rt2) DO
+	 t := t.basetype;
+      END;
+      IF t = rt2 THEN
+	 base := t2; RETURN TRUE
+      END;
+
+      RETURN FALSE
+   END BaseType;
+
+   PROCEDURE IsTypeOfNIL(type: Type) : BOOLEAN;
+   BEGIN
+      RETURN (type.form = Sym.pointer) & (type.reftype = NIL)
+   END IsTypeOfNIL;
+
+   PROCEDURE IsStringType(t: Type) : BOOLEAN;
+   BEGIN
+      RETURN (t # NIL) & (t.form = Sym.array) &
+             (t.element # NIL) & (t.element.form = Sym.char)
+   END IsStringType;
+
+   PROCEDURE TrulyIdentical(t1, t2: Type) : BOOLEAN;
+      (* can t1 and t2 be treated as identical types? *)
+   BEGIN
+      IF (t1 = t2) OR (t1 = NIL) OR (t2 = NIL) THEN RETURN TRUE END;
+      IF (t1.form # t2.form) OR ~(t1.form IN Sym.basic) THEN RETURN FALSE END;
+      IF ~(t1.form IN Sym.numeric) THEN RETURN TRUE END;
+      IF t1.form IN Sym.specforms THEN
+	 RETURN (t1.spec = t2.spec) &
+	        ((t1.spec # Sym.explicit) OR (t1.bits = t2.bits)) &
+		((t1.spec # Sym.standard) OR (t1.stdlength = t2.stdlength))
+      END;
+      ASSERT(t1.form = Sym.address); (* only basic type left *)
+      RETURN t1.traced = t2.traced
+   END TrulyIdentical;
+
+   PROCEDURE Identical(t1, t2: Type) : BOOLEAN;
+      (* like TrulyIdentical but considering also types as identical
+         that have the same fully qualified name
+      *)
+   BEGIN
+      RETURN TrulyIdentical(t1, t2) OR
+             (t1.ident # NIL) & (t2.ident # NIL) &
+	     (t1.ident.module # NIL) & (t2.ident.module # NIL) &
+	        (ConstStrings.Compare(t1.ident.module.name,
+	                              t2.ident.module.name) = 0) &
+	        (ConstStrings.Compare(t1.ident.name, t2.ident.name) = 0)
+   END Identical;
+
+   PROCEDURE DynComp(ft, actt: Type) : BOOLEAN;
+   BEGIN
+      WHILE (ft # NIL) & (actt # NIL) &
+	    (ft.form = Sym.array) & (actt.form = Sym.array) &
+	    ft.dyn & actt.dyn DO
+	 ft := ft.element;
+	 actt := actt.element;
+      END;
+      RETURN Identical(ft, actt)
+   END DynComp;
+
+   PROCEDURE ProcedureComp(t1, t2: Type) : BOOLEAN;
+      VAR
+	 pl1, pl2: Sym.ParamList;
+   BEGIN (* ProcedureComp *)
+      IF Identical(t1, t2) THEN RETURN TRUE END;
+      IF (t1.form = t2.form) & (t1.form = Sym.proceduretype) &
+	    (t1.function = t2.function) THEN
+	 IF t1.function &
+	       ~Identical(t1.restype, t2.restype) &
+	       (t1.restype # NIL) & (t2.restype # NIL) THEN
+	    RETURN FALSE
+	 END;
+	 IF t1.builtin # t2.builtin THEN RETURN FALSE END;
+	 IF t1.builtin THEN
+	    RETURN t1.builtinproc = t2.builtinproc
+	 END;
+	 pl1 := t1.paramlist; pl2 := t2.paramlist;
+	 WHILE (pl1 # NIL) & (pl2 # NIL) DO
+	    IF (pl1.paramkind # pl2.paramkind) OR
+		  (pl1.type # pl2.type) &
+		  (pl1.type # NIL) & (pl2.type # NIL) &
+		  ~DynComp(pl1.type, pl2.type) THEN
+	       RETURN FALSE
+	    END;
+	    pl1 := pl1.next;
+	    pl2 := pl2.next;
+	 END;
+	 RETURN pl1 = pl2
+      ELSIF IsTypeOfNIL(t1) & (t2.form = Sym.proceduretype) OR
+	       IsTypeOfNIL(t2) & (t1.form = Sym.proceduretype) THEN
+	    (* NIL is compatible and assignment compatible to procedure types
+	       (Oberon revision 1991)
+	    *)
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END ProcedureComp;
+
+   PROCEDURE Compatible(t1, t2: Type) : BOOLEAN;
+      CONST
+	 numeric1 = {Sym.address, Sym.integer, Sym.real};
+	 numeric2 = {Sym.address, Sym.cardinal};
+	 NILcompatible = {Sym.pointer, Sym.proceduretype, Sym.coroutine};
+      VAR
+	 base: Type;
+   BEGIN
+      RETURN Identical(t1, t2) OR
+	     (t1.form IN numeric1) & (t2.form IN numeric1) OR
+	     (t1.form IN numeric2) & (t2.form IN numeric2) OR
+	     (t1.form IN NILcompatible) & (t2.form IN NILcompatible) &
+		(IsTypeOfNIL(t1) OR IsTypeOfNIL(t2)) OR
+	     BaseType(t1, t2, base) OR ProcedureComp(t1, t2) OR
+	     IsStringType(t1) & IsStringType(t2)
+   END Compatible;
+
+   PROCEDURE AssignComp(left, right: Type; const: BOOLEAN) : BOOLEAN;
+      (* check compatibility for left := right;
+	 const is TRUE if right is a constant
+      *)
+      VAR
+	 base: Type;
+   BEGIN
+      IF (left # NIL) & (left.form = Sym.array) & left.dyn THEN
+	 RETURN FALSE
+      ELSIF Identical(left, right) OR
+            (left.form = Sym.byte) & IsAssignmentCompatibleToByte(right) THEN
+	 RETURN TRUE
+      ELSIF (left.form IN Sym.numeric) & (right.form IN Sym.numeric) THEN
+	 RETURN Includes(left, right)
+      ELSIF (left.form IN {Sym.pointer, Sym.proceduretype, Sym.coroutine}) &
+	    IsTypeOfNIL(right) THEN
+         (* NIL may be assigned to any pointer type *)
+         RETURN TRUE
+      ELSIF BaseType(left, right, base) THEN
+	 (* return TRUE if the expression extends the type of the variable *)
+	 IF base = left THEN
+	    IF (left.form = Sym.pointer) &
+		  (left.taggedptr # right.taggedptr) THEN
+	       RETURN FALSE
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      ELSIF const & (left.form = Sym.array) & (right.form = Sym.array) THEN
+	 (* strings can be assigned to any variable whose type is an array
+	    of characters, provided the length of the string is less
+	    than that of the array (what we cannot check now)
+	 *)
+	 RETURN (left.element = NIL) OR (right.element = NIL) OR
+	        (left.element.form = Sym.char) & (right.element.form = Sym.char)
+      ELSIF const & (right.form = Sym.char) THEN
+	 (* assignment of a character constant of length 1,
+	    we permit this here for ETHZ compatibility
+	 *)
+	 RETURN (left.form = Sym.array) &
+	        ((left.element = NIL) OR (left.element.form = Sym.char))
+      ELSIF const & (right.form = Sym.array) THEN
+	 (* assignment of a string constant of length 1, e.g. "x" *)
+	 RETURN (left.form IN {Sym.char, Sym.byte}) &
+	        ((right.element = NIL) OR (right.element.form = Sym.char))
+      ELSE
+	 RETURN ProcedureComp(left, right)
+      END;
+   END AssignComp;
+
+   PROCEDURE CheckGuard(at, guard: Attribute) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 ltype, rtype: Type; (* record types *)
+	 es: Streams.Stream;
+	 base: Type; (* base type of ltype and rtype *)
+
+      PROCEDURE Ref(at: Attribute);
+      BEGIN
+	 IF (at.ident # NIL) & (at.ident.loc # NIL) THEN
+	    CompilerErrors.Ref(es, at.ident.loc);
+	 END;
+      END Ref;
+
+   BEGIN (* CheckGuard *)
+      ok := CheckOpMode(at) & (at.type # NIL);
+      IF ok THEN
+	 CheckAtType(at, {Sym.pointer, Sym.record});
+	 ok := ok & (at.type.form IN {Sym.pointer, Sym.record});
+	 IF ok & (at.mode IN Sym.constModes) THEN
+	    OberonErrors.Error(at, "NIL must not be subject of a type test");
+	 END;
+	 IF ok & (at.type.form = Sym.pointer) THEN
+	    IF ~at.type.taggedptr THEN
+	       OberonErrors.Error(at, "is an untagged pointer");
+	    END;
+	    ltype := at.type.reftype;
+	    ok := ltype # NIL;
+	    IF ok & (ltype.form # Sym.record) THEN
+	       OberonErrors.Open(es, at);
+	       Write.StringS(es, "is not a pointer to a record");
+	       Ref(at);
+	       OberonErrors.Close(es);
+	       ok := FALSE;
+	    END;
+	 ELSE
+	    ltype := at.type;
+	 END;
+      END;
+      IF guard = NIL THEN
+	 RETURN FALSE
+      END;
+      IF guard.mode # Sym.typeAt THEN
+	 OberonErrors.Error(guard, "qualified type identifier expected");
+	 RETURN FALSE
+      END;
+      IF guard.type # NIL THEN
+	 CheckAtType(guard, {Sym.pointer, Sym.record});
+	 rtype := guard.type;
+	 IF rtype.form = Sym.pointer THEN
+	    IF ~rtype.taggedptr THEN
+	       OberonErrors.Error(guard, "is an untagged pointer type");
+	    END;
+	    rtype := rtype.reftype;
+	    IF rtype # NIL THEN
+	       IF rtype.form # Sym.record THEN
+		  OberonErrors.Open(es, guard);
+		  Write.StringS(es, "is not a pointer to a record");
+		  Ref(guard);
+		  OberonErrors.Close(es);
+		  ok := FALSE;
+	       END;
+	    ELSE
+	       ok := FALSE;
+	    END;
+	 ELSIF rtype.form # Sym.record THEN
+	    ok := FALSE;
+	 END;
+      ELSE
+	 ok := FALSE;
+      END;
+      IF ok & (at.type.form # guard.type.form) THEN
+	 OberonErrors.Open(es, at);
+	 OberonErrors.At2(es, guard);
+	 Ref(at);
+	 Write.StringS(es, "must be both pointers or both records");
+	 OberonErrors.Close(es);
+	 ok := FALSE;
+      END;
+      IF ~ok THEN RETURN FALSE END;
+
+      IF ~BaseType(ltype, rtype, base) THEN
+	 OberonErrors.Open(es, at);
+	 OberonErrors.At2(es, guard);
+	 Ref(at);
+	 IF at.ident # NIL THEN
+	    OberonErrors.WriteString(es, at.ident.name);
+	 ELSE
+	    Write.StringS(es, "at operand");
+	 END;
+	 Write.StringS(es, " cannot be of type ");
+	 OberonErrors.WriteString(es, guard.ident.name);
+	 OberonErrors.Close(es);
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END CheckGuard;
+
+   PROCEDURE ArithmeticType(t1, t2: Type) : Type;
+   BEGIN
+      IF (t1 = NIL) OR (t2 = NIL) THEN
+	 RETURN NIL
+      END;
+      IF t1.form = Sym.address THEN
+	 t1 := BaseTypes.longint;
+      END;
+      IF t2.form = Sym.address THEN
+	 t2 := BaseTypes.longint;
+      END;
+      IF Identical(t1, t2) THEN
+	 RETURN t1
+      END;
+      IF (t1.form IN Sym.numeric) & (t2.form IN Sym.numeric) THEN
+	 IF t1.form > t2.form THEN
+	    RETURN t1
+	 ELSIF (t1.form = t2.form) & (t1.form IN Sym.specforms) THEN
+	    IF t1.spec = Sym.generic THEN
+	       RETURN t1
+	    ELSIF t2.spec = Sym.generic THEN
+	       RETURN t2
+	    ELSIF t1.spec # t2.spec THEN
+	       CASE t1.form OF
+	       | Sym.integer:    RETURN BaseTypes.genericInteger;
+	       | Sym.cardinal:   RETURN BaseTypes.genericCardinal;
+	       | Sym.real:       RETURN BaseTypes.genericReal;
+	       END;
+	    ELSIF t1.spec = Sym.explicit THEN
+	       IF t1.bits > t2.bits THEN
+		  RETURN t1
+	       ELSE
+		  RETURN t2
+	       END;
+	    ELSE
+	       ASSERT(t1.spec = Sym.standard);
+	       IF t1.stdlength > t2.stdlength THEN
+		  RETURN t1
+	       ELSE
+		  RETURN t2
+	       END;
+	    END;
+	 ELSE
+	    RETURN t2
+	 END;
+      END;
+      RETURN t1
+   END ArithmeticType;
+
+   PROCEDURE ProcedureDiff(t1, t2: Type; loc: CompilerObjects.Location);
+      (* generate error events (as additional comments!)
+         regarding the differences between t1 and t2 for the given location;
+	 both types must be # NIL
+      *)
+      VAR
+	 pl1, pl2: Sym.ParamList;
+	 es: Streams.Stream;
+
+      PROCEDURE OpenError;
+      BEGIN
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, loc.src);
+      END CloseError;
+
+      PROCEDURE Error(msg: ARRAY OF CHAR);
+      BEGIN
+	 OpenError; Write.StringS(es, msg); CloseError;
+      END Error;
+
+   BEGIN (* ProcedureDiff *)
+      IF (t1.form = t2.form) & (t1.form = Sym.proceduretype) &
+	 (t1.function = t2.function) THEN
+	 IF t1.function & ~Identical(t1.restype, t2.restype) &
+	    (t1.restype # NIL) & (t2.restype # NIL) THEN
+	    OpenError;
+	    Write.StringS(es, "result types are not identical");
+	    IF (t1.restype.ident # NIL) & (t1.restype.ident # NIL) THEN
+	       Write.StringS(es, ": ");
+	       OberonErrors.WriteString(es, t1.restype.ident.name);
+	       Write.StringS(es, " and ");
+	       OberonErrors.WriteString(es, t2.restype.ident.name);
+	    END;
+	    CloseError;
+	 END;
+	 pl1 := t1.paramlist; pl2 := t2.paramlist;
+	 WHILE (pl1 # NIL) & (pl2 # NIL) DO
+	    IF pl1.paramkind # pl2.paramkind THEN
+	       Error("different kinds of parameter: VAR versus value");
+	    ELSIF (pl1.type # pl2.type) &
+		  (pl1.type # NIL) & (pl2.type # NIL) &
+		  ~DynComp(pl1.type, pl2.type) THEN
+	       OpenError;
+	       Write.StringS(es, "parameter types are not identical");
+	       IF (pl1.type.ident # NIL) & (pl2.type.ident # NIL) THEN
+		  Write.StringS(es, ": ");
+		  OberonErrors.WriteString(es, pl1.type.ident.name);
+		  Write.StringS(es, " and ");
+		  OberonErrors.WriteString(es, pl2.type.ident.name);
+	       END;
+	       CloseError;
+	    END;
+	    pl1 := pl1.next;
+	    pl2 := pl2.next;
+	 END;
+	 IF pl1 # pl2 THEN
+	    Error("different number of parameters");
+	 END;
+      END;
+   END ProcedureDiff;
+
+   PROCEDURE CheckAgainstExportedType(deftype, modtype: Type;
+                                      loc: CompilerObjects.Location;
+				      genevents: BOOLEAN) : BOOLEAN;
+      (* check re-declaration of a type inside a module (modtype)
+         against the exported type declaration (deftype);
+	 modtype may be modified in case of record types to distinguish
+	 between public and private fields;
+	 generate explaining error events (if requested)
+	 and return TRUE in case of errors
+      *)
+      VAR
+	 es: Streams.Stream;
+
+      PROCEDURE OpenError;
+      BEGIN
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, loc.src);
+      END CloseError;
+
+      PROCEDURE Error(msg: ARRAY OF CHAR);
+      BEGIN
+	 IF genevents THEN
+	    OpenError; Write.StringS(es, msg); CloseError;
+	 END;
+      END Error;
+
+      PROCEDURE Name(ident: Sym.Ident);
+      BEGIN
+	 IF ident = NIL THEN
+	    Write.StringS(es, "unnamed type");
+	 ELSE
+	    Write.CharS(es, ASCII.quote);
+	    IF ident.module # NIL THEN
+	       ConstStrings.Write(es, ident.module.name);
+	       Write.CharS(es, ".");
+	    END;
+	    ConstStrings.Write(es, ident.name);
+	    Write.CharS(es, ASCII.quote);
+	 END;
+      END Name;
+
+      PROCEDURE String(string: ConstStrings.String);
+      BEGIN
+	 Write.CharS(es, ASCII.quote);
+	 ConstStrings.Write(es, string);
+	 Write.CharS(es, ASCII.quote);
+      END String;
+
+      PROCEDURE ^ Check(deftype, modtype: Sym.Type; level: INTEGER) : BOOLEAN;
+
+      PROCEDURE CheckFieldLists(deflist, modlist: Sym.FieldList;
+                                defscope, modscope: Scopes.Scope) : BOOLEAN;
+	 VAR
+	    deffield, modfield: Sym.FieldList;
+	    differentOrder, fieldsMissing, typeMismatch: BOOLEAN;
+	    otherfield: Sym.FieldList;
+	    ok: BOOLEAN;
+      BEGIN
+	 differentOrder := FALSE; fieldsMissing := FALSE;
+	 typeMismatch := FALSE;
+	 deffield := deflist; modfield := modlist;
+	 WHILE deffield # NIL DO
+	    IF modfield # NIL THEN
+	       IF ConstStrings.Compare(deffield.name, modfield.name) # 0 THEN
+		  IF ~differentOrder THEN
+		     differentOrder := TRUE;
+		     IF genevents THEN
+			IF Scopes.LocalLookup(defscope, modfield.name,
+					      otherfield) THEN
+			   OpenError;
+			   Write.StringS(es, "different order of fields: ");
+			   String(deffield.name); Write.StringS(es, " vs ");
+			   String(modfield.name);
+			   CloseError;
+			ELSIF Scopes.LocalLookup(modscope, deffield.name,
+			                         otherfield) THEN
+			   OpenError;
+			   Write.StringS(es, "private fields like ");
+			   String(modfield.name);
+			   Write.StringS(es, "are to be declared behind ");
+			   Write.StringS(es, "the public fields");
+			   CloseError;
+			ELSE
+			   (* missing field, see below *)
+			END;
+		     END;
+		  END;
+	       END;
+	       modfield := modfield.next;
+	    END;
+	    IF Scopes.LocalLookup(modscope, deffield.name, otherfield) THEN
+	       IF ~CheckAgainstExportedType(deffield.type, otherfield.type,
+	                                    loc, FALSE) THEN
+		  typeMismatch := TRUE;
+		  IF genevents THEN
+		     OpenError;
+		     Write.StringS(es, "different types of ");
+		     String(deffield.name);
+		     Write.StringS(es, ": ");
+		     CloseError;
+		     ok := ~Check(deffield.type, otherfield.type, 1);
+		     ASSERT(ok);
+		  END;
+	       END;
+	    ELSE
+	       fieldsMissing := TRUE;
+	       IF genevents THEN
+		  OpenError;
+		  Write.StringS(es, "missing field: ");
+		  String(deffield.name);
+		  CloseError;
+	       END;
+	    END;
+	    deffield := deffield.next;
+	 END;
+	 RETURN ~differentOrder & ~fieldsMissing & ~typeMismatch
+      END CheckFieldLists;
+
+      PROCEDURE Check(deftype, modtype: Sym.Type; level: INTEGER) : BOOLEAN;
+      BEGIN
+	 IF level > 0 THEN
+	    IF Identical(deftype, modtype) THEN RETURN TRUE END;
+	 ELSE
+	    IF TrulyIdentical(deftype, modtype) THEN RETURN TRUE END;
+	 END;
+	 IF deftype.form # modtype.form THEN
+	    IF genevents THEN
+	       OpenError;
+	       Write.StringS(es, "different form of types: ");
+	       WriteForm(es, deftype.form);
+	       Write.StringS(es, " vs ");
+	       WriteForm(es, modtype.form);
+	       CloseError;
+	    END;
+	    RETURN FALSE
+	 END;
+	 IF deftype.form IN Sym.basic THEN
+	    ASSERT(deftype.form IN Sym.numeric); (* otherwise identical *)
+	    IF deftype.form = Sym.address THEN
+	       Error("traced vs untraced address"); RETURN FALSE
+	    ELSIF (deftype.form IN Sym.specforms) &
+		  ((deftype.spec = Sym.generic) OR
+	             (modtype.spec = Sym.generic)) THEN
+	       (* check postponed to the 2nd pass *)
+	       RETURN TRUE
+	    ELSE
+	       Error("types are not identical (different size)"); RETURN FALSE
+	    END;
+	 ELSE
+	    IF ((deftype.ident = NIL) # (modtype.ident = NIL)) OR
+		  (deftype.ident # NIL) &
+		  (((deftype.ident.module = NIL) #
+			(modtype.ident.module = NIL)) OR
+		     (deftype.ident.module # NIL) &
+		     (modtype.ident.module # NIL) &
+		     (ConstStrings.Compare(deftype.ident.module.name,
+					   modtype.ident.module.name) # 0) OR
+		     (ConstStrings.Compare(deftype.ident.name,
+			modtype.ident.name) # 0)) THEN
+	       IF genevents THEN
+		  OpenError;
+		  Write.StringS(es, "types are not identical: ");
+		  Name(deftype.ident);
+		  Write.StringS(es, " vs ");
+		  Name(modtype.ident);
+		  CloseError;
+	       END;
+	       RETURN FALSE
+	    END;
+	    CASE deftype.form OF
+	    | Sym.array:
+		  RETURN Check(deftype.element, modtype.element, level + 1)
+	    | Sym.record:
+		  IF (deftype.basetype = NIL) # (modtype.basetype = NIL) THEN
+		     Error("different base types"); RETURN FALSE
+		  END;
+		  IF ~Check(deftype.basetype, modtype.element, level + 1) THEN
+		     Error("different base types"); RETURN FALSE
+		  END;
+		  RETURN CheckFieldLists(deftype.fields, modtype.fields, 
+					 deftype.publicfieldscope,
+					 modtype.publicfieldscope);
+	    | Sym.pointer:
+		  RETURN Check(deftype.reftype, modtype.reftype, level + 1)
+	    | Sym.proceduretype:
+		  IF ProcedureComp(deftype, modtype) THEN
+		     RETURN TRUE
+		  ELSE
+		     IF genevents THEN
+			ProcedureDiff(deftype, modtype, loc);
+		     END;
+		     RETURN FALSE
+		  END;
+	    END;
+	 END;
+      END Check;
+
+   BEGIN (* CheckAgainstExportedType *)
+      RETURN Check(deftype, modtype, 0)
+   END CheckAgainstExportedType;
+
+   PROCEDURE CheckParamCompatibility(actparam: Attribute;
+                                     formalparam: Sym.ParamList);
+      VAR
+	 es: Streams.Stream;
+	 var: BOOLEAN;
+	 base, ft, actt: Type;
+
+      PROCEDURE DynComp(ft, actt: Type) : BOOLEAN;
+      BEGIN
+	 WHILE (ft # NIL) & (actt # NIL) &
+	       (ft.form = Sym.array) & (actt.form = Sym.array) & ft.dyn DO
+	    ft := ft.element;
+	    actt := actt.element;
+	 END;
+	 RETURN Identical(ft, actt)
+      END DynComp;
+
+      PROCEDURE AddRef;
+      BEGIN
+	 IF (actparam.mode IN Sym.identModes) & (actparam.ident # NIL) &
+	       (actparam.ident.loc # NIL) THEN
+	    CompilerErrors.Ref(es, actparam.ident.loc);
+	 END;
+      END AddRef;
+
+   BEGIN (* CheckParamCompatibility *)
+      IF ~CheckOpMode(actparam) OR (actparam.type = NIL) THEN RETURN END;
+      var := formalparam.paramkind = Sym.callByReference;
+      IF var THEN
+	 IF ~(actparam.mode IN Sym.designatorModes) THEN
+	    OberonErrors.Open(es, actparam);
+	    Write.StringS(es, "designator expected for VAR-parameter");
+	    OberonErrors.Close(es);
+	 END;
+      END;
+      IF formalparam.type = NIL THEN RETURN END;
+      ft := formalparam.type; actt := actparam.type;
+
+      (* no check necessary for passing public parts because
+	 this is done by AssignComp
+      *)
+      IF Identical(ft, actt) OR
+	    (ft.form = Sym.array) & ft.dyn &
+	       ((ft.element = NIL) OR (ft.element.form = Sym.byte) OR
+		  DynComp(ft, actt) OR
+		  (ft.element.form = Sym.char) & IsString(actparam)) OR
+	    (ft.form = Sym.byte) &
+	 (ft.form = Sym.byte) & IsAssignmentCompatibleToByte(actt) THEN
+	 RETURN
+      END;
+      IF var THEN
+	 IF ~BaseType(ft, actt, base) OR (base # ft) THEN
+	    OberonErrors.Open(es, actparam);
+	    AddRef;
+	    Write.StringS(es, "type identity");
+	    IF ft.ident # NIL THEN
+	       IF ft.form IN {Sym.record, Sym.pointer} THEN
+		  Write.StringS(es, " or extension of ");
+	       ELSE
+		  Write.StringS(es, " to ");
+	       END;
+	       OberonErrors.WriteString(es, ft.ident.name);
+	    END;
+	    Write.StringS(es, " required");
+	    OberonErrors.Close(es);
+	 END;
+      ELSIF (ft.form = Sym.array) & ft.dyn THEN
+	 OberonErrors.Open(es, actparam); AddRef;
+	 Write.StringS(es, "actual parameter must be assignment compatible");
+	 IF (ft.element # NIL) & (ft.element.ident # NIL) THEN
+	    Write.StringS(es, " to ");
+	    Write.StringS(es, "ARRAY OF ");
+	    PrintQualifiedIdentifier(es, ft.element.ident);
+	 END;
+	 OberonErrors.Close(es);
+      ELSIF ~AssignComp(ft, actt, actparam.mode IN Sym.constModes) THEN
+	 OberonErrors.Open(es, actparam); AddRef;
+	 Write.StringS(es, "type of actual parameter must be");
+	 Write.StringS(es, " assignment compatible");
+	 IF ft.ident # NIL THEN
+	    Write.StringS(es, " to ");
+	    OberonErrors.WriteString(es, ft.ident.name);
+	 END;
+	 OberonErrors.Close(es);
+	 IF (ft.form = Sym.proceduretype) & (actt.form = Sym.proceduretype) THEN
+	    ProcedureDiff(actt, ft, actparam.loc);
+	 END;
+      END;
+   END CheckParamCompatibility;
+
+   PROCEDURE CheckCall(procat, params: Attribute; VAR restype: Type);
+      VAR
+	 ptype: Type;
+	 paramcnt, fparamcnt: INTEGER;
+	 param: Sym.ParamList;
+	 at: Attribute;
+	 minargs, maxargs: INTEGER;
+	 loc: CompilerObjects.Location;
+	 begin: Streams.Count; (* begin of param list, procat, or ... *)
+	 endpos: Streams.Count; (* end pos of parameter list *)
+	 es: Streams.Stream;
+   BEGIN
+      IF (procat = NIL) OR (procat.type = NIL) THEN
+	 restype := NIL; RETURN
+      END;
+      ptype := procat.type;
+      IF ptype.form # Sym.proceduretype THEN
+	 OberonErrors.Error(procat, "procedure expected");
+	 restype := NIL; RETURN
+      END;
+
+      IF ptype.builtin THEN
+	 minargs := ptype.builtinproc.minargs;
+	 maxargs := ptype.builtinproc.maxargs;
+      ELSE
+	 fparamcnt := 0; param := ptype.paramlist;
+	 WHILE param # NIL DO
+	    INC(fparamcnt);
+	    param := param.next;
+	 END;
+	 minargs := fparamcnt; maxargs := fparamcnt;
+	 IF ptype.function THEN
+	    restype := ptype.restype;
+	 ELSE
+	    restype := NIL;
+	 END;
+      END;
+      
+      begin := procat.loc.begin;
+      endpos := procat.loc.end;
+      at := params; paramcnt := 0;
+      WHILE at # NIL DO
+	 INC(paramcnt);
+	 IF (paramcnt = 1) OR (paramcnt = maxargs + 1) THEN
+	    begin := at.loc.begin; (* mark just exceeding parameters *)
+	 END;
+	 endpos := at.loc.end;
+	 at := at.next;
+      END;
+
+      IF (paramcnt < minargs) OR
+            (paramcnt > maxargs) & (maxargs # -1) THEN
+	 CompilerObjects.CreateLocation(loc, procat.loc.src, begin, endpos);
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+	 IF paramcnt < minargs THEN
+	    Write.StringS(es, "missing actual parameters (got ");
+	    IF paramcnt = 0 THEN
+	       Write.StringS(es, "none");
+	    ELSE
+	       Write.IntS(es, paramcnt, 1);
+	    END;
+	    Write.StringS(es, " but expected ");
+	    Write.IntS(es, minargs, 1);
+	    Write.StringS(es, ")");
+	 ELSE
+	    Write.StringS(es, "too many actual parameters");
+	 END;
+	 CompilerErrors.Close(es, procat.loc.src);
+	 RETURN (* no further checks *)
+      END;
+
+      IF ptype.builtin THEN
+	 Sym.CheckArgs(ptype.builtinproc, params, restype);
+      ELSE
+	 at := params; param := ptype.paramlist;
+	 WHILE at # NIL DO
+	    ASSERT(param # NIL);
+	    CheckParamCompatibility(at, param);
+	    at := at.next; param := param.next;
+	 END;
+	 ASSERT(param = NIL);
+      END;
+   END CheckCall;
+
+   PROCEDURE CheckUnaryOp(opsy: Lex.Symbol; at: Attribute;
+			  VAR restype: Type);
+   BEGIN
+      IF (at = NIL) OR ~CheckOpMode(at) OR (at.type = NIL) THEN
+	 restype := NIL; RETURN
+      END;
+      CASE opsy OF
+      | Lex.minus:   CheckAtType(at, {Sym.set} + Sym.numeric);
+      | Lex.plus:    CheckAtType(at, Sym.numeric);
+      | Lex.tilde:   CheckAtType(at, {Sym.boolean});
+      END;
+      restype := at.type;
+   END CheckUnaryOp;
+
+   PROCEDURE CheckBinaryOp(opsy: Lex.Symbol;
+                           left, right: Attribute;
+			   VAR restype: Type);
+      VAR
+	 forms: Sym.FormSet;
+	 ok: BOOLEAN;
+	 es: Streams.Stream;
+
+   BEGIN (* CheckBinaryOp *)
+      IF (left = NIL) & (opsy = Lex.comma) THEN
+	 (* set construction: first element *)
+	 Consts.CreateEmptySet(left);
+      ELSIF (right = NIL) & (opsy = Lex.comma) THEN
+	 Consts.CreateEmptySet(right);
+      END;
+      IF (left = NIL) OR (right = NIL) THEN
+	 restype := NIL; RETURN
+      END;
+      IF opsy = Lex.is THEN
+	 IF CheckGuard(left, right) THEN
+	    restype := BaseTypes.boolean;
+	 ELSE
+	    restype := NIL;
+	 END;
+	 RETURN
+      END;
+
+      ok := CheckOpMode(left);
+      ok := CheckOpMode(right) & ok;
+      IF ~ok OR (left.type = NIL) OR (right.type = NIL) THEN
+	 restype := NIL; RETURN
+      END;
+
+      IF opsy = Lex.in THEN
+	 CheckAtType(left, {Sym.integer, Sym.cardinal});
+	 CheckAtType(right, {Sym.set});
+	 restype := BaseTypes.boolean;
+	 RETURN
+      END;
+
+      (* check compatibility *)
+      IF (~IsChar(left) OR ~IsChar(right)) &
+	    (~IsString(left) OR ~IsString(right)) &
+	    (opsy # Lex.comma) & ~Compatible(left.type, right.type) THEN
+	 OberonErrors.Open(es, left);
+	 OberonErrors.At2(es, right);
+	 Write.StringS(es, "are not compatible to each other");
+	 OberonErrors.Close(es);
+	 restype := NIL; RETURN
+      END;
+
+      (* check that opsy can be applied on left and right *)
+      IF (opsy = Lex.mod) OR (opsy = Lex.div) THEN
+	 forms := {Sym.integer, Sym.cardinal, Sym.address};
+	 restype := ArithmeticType(left.type, right.type);
+      ELSIF (opsy = Lex.slash) &
+	    (left.type.form IN Sym.numeric) &
+	    (right.type.form IN Sym.numeric) THEN
+	 forms := Sym.numeric;
+	 restype := ArithmeticType(left.type, BaseTypes.real);
+	 restype := ArithmeticType(right.type, restype);
+      ELSIF Sets.In(arithOps, opsy) THEN (* includes setOps *)
+	 forms := Sym.numeric;
+	 IF Sets.In(setOps, opsy) THEN
+	    INCL(forms, Sym.set);
+	 END;
+	 restype := ArithmeticType(left.type, right.type);
+      ELSIF Sets.In(logOps, opsy) THEN
+	 forms := {Sym.boolean};
+	 restype := BaseTypes.boolean;
+      ELSIF opsy = Lex.comma THEN
+	 forms := {Sym.integer, Sym.cardinal};
+	 IF (left.type.form IN {Sym.set, Sym.integer, Sym.cardinal}) &
+	       (right.type.form IN {Sym.set, Sym.integer, Sym.cardinal}) THEN
+	    INCL(forms, Sym.set);
+	 END;
+	 restype := BaseTypes.set;
+      ELSIF opsy = Lex.range THEN
+	 forms := {Sym.integer, Sym.cardinal};
+	 restype := BaseTypes.set;
+      ELSE
+	 ASSERT(Sets.In(compareOps, opsy));
+	 forms := Sym.numeric + {Sym.char};
+	 IF IsString(left) OR IsString(right) THEN
+	    INCL(forms, Sym.array);
+	 END;
+	 IF (opsy = Lex.eql) OR (opsy = Lex.neq) THEN
+	    forms := forms + {Sym.boolean, Sym.set,
+	                Sym.pointer, Sym.proceduretype, Sym.coroutine};
+	 END;
+	 restype := BaseTypes.boolean;
+      END;
+      CheckAtType(left, forms); CheckAtType(right, forms);
+   END CheckBinaryOp;
+
+BEGIN
+   InitSets;
+END OberonTypes.

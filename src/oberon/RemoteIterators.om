@@ -1,0 +1,448 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteItera.om,v 1.2 2004/09/03 09:17:33 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteItera.om,v $
+   Revision 1.2  2004/09/03 09:17:33  borchert
+   switched to quick iterators
+
+   Revision 1.1  1995/01/16 21:43:45  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteIterators;
+
+   IMPORT ConstStrings, Disciplines, Iterators, Messages, NetIO, Objects,
+      PersistentObjects, RemoteObjects, Services, Streams;
+
+   CONST
+      exportObjects = 0;
+      copyObjects = 1;
+   TYPE
+      Mode = SHORTINT;
+
+   CONST
+      constString = 0;      (* ConstStrings.String *)
+      exportedObject = 1;   (* extension of Services.Object & exportable *)
+      copiedObject = 2;     (* extension of PersistentObjects.Object *)
+   TYPE
+      Type = SHORTINT; (* constString..copiedObject *)
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    type: Type;
+	    constString: ConstStrings.String;
+	    exportedObject: Services.Object;
+	    copiedObject: PersistentObjects.Object;
+	    next: Object; (* next object in list *)
+	 END;
+   VAR
+      objectType: Services.Type;
+
+   TYPE
+      Parameters = POINTER TO ParametersRec;
+	 (* passed as parameter for proxy object creation by RemoteObjects
+	    and used as reference for Iterators on the remote side
+	 *)
+      ParametersRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    fullList: BOOLEAN;
+	    objects: Object;
+	 END;
+   VAR
+      parametersType: Services.Type;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+      GetObjectsMsg = POINTER TO GetObjectsMsgRec;
+      GetObjectsMsgRec =
+	 RECORD
+	    (MessageRec)
+	    (* out *) objects: Object;
+	 END;
+   VAR
+      getObjectsMsgType: Services.Type;
+
+   TYPE
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    packetlen: INTEGER;
+	    mode: Mode;
+	 END;
+   VAR
+      discID: Disciplines.Identifier;
+
+   (* === marshalling procedures ========================================= *)
+
+   PROCEDURE CreateObject(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: Object;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, objectType);
+      object := newobject;
+   END CreateObject;
+   
+   PROCEDURE ReadObject(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH object: Object DO
+	 ok := NetIO.ReadShortInt(s, object.type);
+	 IF ok THEN
+	    CASE object.type OF
+	    | constString:    
+		  ok := NetIO.ReadConstString(s, object.constString);
+	    | exportedObject:
+		  ok := RemoteObjects.Import(s, object.exportedObject);
+	    | copiedObject:
+		  ok := PersistentObjects.Read(s, object.copiedObject);
+	    END;
+	 END;
+	 RETURN ok & PersistentObjects.ReadObjectOrNIL(s, object.next)
+      END;
+   END ReadObject;
+   
+   PROCEDURE WriteObject(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH object: Object DO
+	 ok := NetIO.WriteShortInt(s, object.type);
+	 IF ok THEN
+	    CASE object.type OF
+	    | constString:    
+		  ok := NetIO.WriteConstString(s, object.constString);
+	    | exportedObject:
+		  ok := RemoteObjects.Export(s, object.exportedObject);
+	    | copiedObject:
+		  ok := PersistentObjects.Write(s, object.copiedObject);
+	    END;
+	 END;
+	 RETURN ok & PersistentObjects.WriteObjectOrNIL(s, object.next)
+      END;
+   END WriteObject;
+
+   PROCEDURE CreateParameters(VAR object: PersistentObjects.Object);
+      VAR
+	 newobject: Parameters;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, parametersType);
+      object := newobject;
+   END CreateParameters;
+
+   PROCEDURE ReadParameters(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Parameters DO
+	 RETURN NetIO.ReadBoolean(s, object.fullList) &
+		PersistentObjects.ReadObjectOrNIL(s, object.objects)
+      END;
+   END ReadParameters;
+
+   PROCEDURE WriteParameters(s: Streams.Stream;
+			    object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Parameters DO
+	 RETURN NetIO.WriteBoolean(s, object.fullList) &
+		PersistentObjects.WriteObjectOrNIL(s, object.objects)
+      END;
+   END WriteParameters;
+   
+   PROCEDURE CreateGetObjectsMsg(VAR object: PersistentObjects.Object);
+      VAR
+         newobject: GetObjectsMsg;
+   BEGIN
+      NEW(newobject);
+      PersistentObjects.Init(newobject, getObjectsMsgType);
+      Messages.Init(newobject);
+      object := newobject;
+   END CreateGetObjectsMsg;
+   
+   PROCEDURE ReadGetObjectsMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetObjectsMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN PersistentObjects.ReadObjectOrNIL(s, object.objects)
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END
+   END ReadGetObjectsMsg;
+   
+   PROCEDURE WriteGetObjectsMsg(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: GetObjectsMsg DO
+         IF object.processed THEN
+            (* out parameters *)
+            RETURN PersistentObjects.WriteObjectOrNIL(s, object.objects)
+         ELSE
+            (* in parameters *)
+            RETURN TRUE
+         END;
+      END
+   END WriteGetObjectsMsg;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE GetDisc(it: Iterators.Iterator; VAR disc: Discipline);
+   BEGIN
+      IF ~Disciplines.Seek(it, discID, disc) THEN
+	 NEW(disc); disc.id := discID;
+	 disc.mode := exportObjects;
+	 disc.packetlen := 1;
+	 Disciplines.Add(it, disc);
+      END;
+   END GetDisc;
+
+   PROCEDURE GetObjects(proxy: Iterators.Iterator;
+			VAR objects: Object) : BOOLEAN;
+      VAR
+	 msg: GetObjectsMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getObjectsMsgType);
+      Messages.Init(msg);
+      Messages.Send(proxy, msg);
+      IF ~msg.processed OR ~msg.done THEN
+	 objects := NIL;
+	 RETURN FALSE
+      END;
+      objects := msg.objects;
+      RETURN objects # NIL
+   END GetObjects;
+
+   PROCEDURE GetObjectList(it: Iterators.Iterator;
+			   packetlen: INTEGER; mode: Mode;
+			   VAR objects: Object);
+      VAR
+	 head, tail: Object;
+	 newobject: Object;
+	 cnt: INTEGER;
+	 itobject: Objects.Object;
+   BEGIN
+      head := NIL; tail := NIL; cnt := 0;
+      WHILE ((cnt < packetlen) OR (packetlen <= 0)) &
+	    Iterators.Get(it, itobject) & (itobject # NIL) DO
+	 IF itobject IS ConstStrings.String THEN
+	    NEW(newobject); newobject.type := constString;
+	    newobject.constString := itobject(ConstStrings.String);
+	 ELSIF (mode = exportObjects) &
+	       (itobject IS Services.Object) &
+	       RemoteObjects.Exportable(itobject(Services.Object)) THEN
+	    NEW(newobject); newobject.type := exportedObject;
+	    newobject.exportedObject := itobject(Services.Object);
+	 ELSIF itobject IS PersistentObjects.Object THEN
+	    NEW(newobject); newobject.type := copiedObject;
+	    newobject.copiedObject := itobject(PersistentObjects.Object);
+	 ELSE
+	    newobject := NIL;
+	 END;
+	 IF newobject # NIL THEN
+	    PersistentObjects.Init(newobject, objectType);
+	    newobject.next := NIL;
+	    IF head = NIL THEN
+	       head := newobject;
+	    ELSE
+	       tail.next := newobject;
+	    END;
+	    tail := newobject;
+	    INC(cnt);
+	 END;
+      END;
+      objects := head;
+   END GetObjectList;
+
+   PROCEDURE MessageHandler(object: Messages.Object;
+			    VAR message: Messages.Message);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF ~(message IS Message) THEN RETURN END;
+      WITH object: Iterators.Iterator DO
+	 IF message IS GetObjectsMsg THEN
+	    WITH message: GetObjectsMsg DO
+	       GetDisc(object, disc);
+	       GetObjectList(object, disc.packetlen,
+			     disc.mode, message.objects);
+	       message.done := message.objects # NIL;
+	       message.processed := TRUE;
+	    END;
+	 END;
+      END;
+   END MessageHandler;
+
+   PROCEDURE IterateObjects(it: Iterators.Iterator; ref: Iterators.Reference;
+		            mode: Iterators.Mode);
+      VAR
+	 object, objects: Object;
+   BEGIN
+      WITH ref: Parameters DO
+	 WHILE GetObjects(it, objects) DO
+	    object := objects;
+	    WHILE object # NIL DO
+	       CASE object.type OF
+	       | constString:      Iterators.Yield(it, object.constString);
+	       | exportedObject:   Iterators.Yield(it, object.exportedObject);
+	       | copiedObject:     Iterators.Yield(it, object.copiedObject);
+	       ELSE
+		  RETURN
+	       END;
+	       object := object.next;
+	    END;
+	 END;
+      END;
+   END IterateObjects;
+
+   PROCEDURE IterateList(it: Iterators.Iterator; ref: Iterators.Reference;
+			 mode: Iterators.Mode);
+      VAR
+	 object: Object;
+   BEGIN
+      IF ref # NIL THEN
+	 object := ref(Object);
+	 WHILE object # NIL DO
+	    CASE object.type OF
+	    | constString:      Iterators.Yield(it, object.constString);
+	    | exportedObject:   Iterators.Yield(it, object.exportedObject);
+	    | copiedObject:     Iterators.Yield(it, object.copiedObject);
+	    ELSE
+	       RETURN
+	    END;
+	    object := object.next;
+	 END;
+      END;
+   END IterateList;
+
+   (* === RemoteObjects interface ========================================= *)
+
+   PROCEDURE GetParams(object: Services.Object;
+		       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      WITH object: Iterators.Iterator DO
+	 CreateParameters(params);
+	 WITH params: Parameters DO
+	    GetDisc(object, disc);
+	    params.fullList := disc.packetlen = 0;
+	    IF params.fullList THEN
+	       GetObjectList(object, disc.packetlen, disc.mode, params.objects);
+	       mode := RemoteObjects.standalone;
+	    ELSE
+	       params.objects := NIL;
+	       mode := RemoteObjects.linked;
+	    END;
+	 END;
+      END;
+   END GetParams;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+			 params: PersistentObjects.Object);
+      VAR
+	 it: Iterators.Iterator;
+   BEGIN
+      WITH params: Parameters DO
+	 IF params.fullList THEN
+	    Iterators.CreateQuickIterator(it, IterateList, params.objects, 0);
+	 ELSE
+	    Iterators.Create(it, IterateObjects, params, 0);
+	 END;
+      END;
+      object := it;
+   END CreateProxy;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE SetMode(it: Iterators.Iterator; packetlen: INTEGER; mode: Mode);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      NEW(disc); disc.id := discID;
+      disc.packetlen := packetlen; disc.mode := mode;
+      Disciplines.Add(it, disc);
+   END SetMode;
+
+   (* === initializations ============================================ *)
+
+   PROCEDURE Init;
+
+      VAR
+	 if: RemoteObjects.Interface;
+	 type: Services.Type;
+
+      PROCEDURE InitPT(name, baseName: ARRAY OF CHAR;
+		       createProc: PersistentObjects.CreateProc;
+		       readProc: PersistentObjects.ReadProc;
+		       writeProc: PersistentObjects.WriteProc;
+		       VAR type: Services.Type);
+	 VAR
+	    if: PersistentObjects.Interface;
+      BEGIN
+	 NEW(if); if.read := readProc; if.write := writeProc;
+	 if.create := createProc; if.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, baseName, if);
+      END InitPT;
+
+      PROCEDURE InitAbstractPT(name, baseName: ARRAY OF CHAR);
+	 VAR
+	    type: Services.Type;
+      BEGIN
+	 PersistentObjects.RegisterType(type, name, baseName, NIL);
+      END InitAbstractPT;
+
+   BEGIN
+      InitPT("RemoteIterators.Object", "",
+             CreateObject, ReadObject, WriteObject, objectType);
+      InitAbstractPT("RemoteIterators.Message", "Messages.Message");
+      InitPT("RemoteIterators.GetObjectsMsg", "RemoteIterators.Message",
+             CreateGetObjectsMsg, ReadGetObjectsMsg, WriteGetObjectsMsg,
+             getObjectsMsgType);
+      InitPT("RemoteIterators.Parameters", "",
+	    CreateParameters, ReadParameters, WriteParameters, parametersType);
+
+      discID := Disciplines.Unique();
+
+      Services.SeekType("Iterators.Iterator", type);
+      NEW(if);
+      if.getParams := GetParams;
+      if.createProxy := CreateProxy;
+      if.msgHandler := MessageHandler;
+      RemoteObjects.Register(type, if, RemoteObjects.serial);
+   END Init;
+
+BEGIN
+   Init;
+END RemoteIterators.
