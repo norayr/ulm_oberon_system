@@ -218,6 +218,6 @@ steadystatetest:	stage1 runstage1 stage2 finishstage1 stage12cmp
 
 .PHONY:	download_tof2elf
 download_tof2elf:
-	wget -O src/util/tof2elf/tof2elf ftp://ftp.mathematik.uni-ulm.de/pub/soft/oberon/ulm/i386/tof2elf
+	wget -O src/util/tof2elf/tof2elf https://github.com/norayr/ulm_oberon_system/blob/master/src/util/tof2elf/tof2elf
 	chmod 755 src/util/tof2elf/tof2elf
 	touch src/util/tof2elf/tof2elf
