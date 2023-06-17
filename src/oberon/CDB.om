@@ -17,9 +17,15 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: CDB.om,v 1.1 1998/04/14 08:50:09 borchert Exp borchert $
+   $Id: CDB.om,v 1.3 2004/09/10 21:23:36 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: CDB.om,v $
+   Revision 1.3  2004/09/10 21:23:36  borchert
+   WriteError added
+
+   Revision 1.2  2004/09/10 17:31:45  borchert
+   language parameter removed
+
    Revision 1.1  1998/04/14 08:50:09  borchert
    Initial revision
 
@@ -29,9 +35,9 @@
 MODULE CDB;
 
    IMPORT Architectures, CDBNames, CDBSources, CompilerDatabases,
-      CompilerKeys, CompilerObjects, ConstStrings, Events, Iterators, Names,
-      Paths, PersistentTexts, Priorities, RelatedEvents, Resources, Services,
-      Shards, Sources := CompilerSources, Streams, Strings, Write;
+      CompilerKeys, CompilerObjects, ConstStrings, Errors, Events, Iterators,
+      Names, Paths, PersistentTexts, Priorities, RelatedEvents, Resources,
+      Services, Shards, Sources := CompilerSources, Streams, Strings, Write;
 
    TYPE
       Database = POINTER TO DatabaseRec;
@@ -73,6 +79,25 @@ MODULE CDB;
 
    (* === error handling =================================================== *)
 
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+      VAR
+	 db: Database;
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.object IS Database THEN
+	    db := event.object(Database);
+	    Write.StringS(s, "CDB database at ");
+	    ConstStrings.Write(s, db.basedir);
+	    Write.StringS(s, ": ");
+	 END;
+	 IF event.name # NIL THEN
+	    ConstStrings.Write(s, event.name);
+	    Write.StringS(s, ": ");
+	 END;
+	 Write.StringS(s, errormsg[event.code]);
+      END;
+   END WriteError;
+
    PROCEDURE InitErrorHandling;
    BEGIN
       Events.Define(error);
@@ -80,6 +105,7 @@ MODULE CDB;
       errormsg[noRoot] := "unable to access CDB root";
       errormsg[noSuchModule] := "no such module in CDB";
       errormsg[objNotFound] := "requested object not yet in CDB";
+      Errors.AssignWriteProcedure(error, WriteError);
    END InitErrorHandling;
 
    PROCEDURE Error(object: RelatedEvents.Object; code: ErrorCode;

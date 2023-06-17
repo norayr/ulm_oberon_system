@@ -28,16 +28,16 @@
 
 MODULE CDBDaemon;
 
-   IMPORT Args := UnixArguments, BoolArgs, CDBNames, CDBSources, Conclusions,
-      (* DebugLoader, *)
-      ConstStrings, Containers, Errors, Events, InetTCP, IntArgs,
-      Iterators, Jobs, Loader, Names, Networks, Paths, PersistentEvents,
-      PersistentObjects, PrivateShards, Process, RelatedEvents,
-      RemoteCDBNames, RemoteEvents, RemoteIterators, RemoteNames,
-      NameServerMaintenance, Read, RemoteObjects, RemoteStreams, Resources,
-      Services, Shadows, Shards, StandardContainers, StdCDBNames,
-      Storage, Streams, StringArgs, StrListArgs, SysMonitor, SysSignals,
-      TransStreams, UnixFiles, UnixNames, Write;
+   IMPORT Args := UnixArguments, BoolArgs, CDBNames, CDBSources,
+      CommandNodes, Conclusions, ConstStrings, Containers, ControlNodes,
+      DNSResolvers, Errors, Events, InetTCP, IntArgs, Iterators, Jobs,
+      Loader, Names, Networks, Paths, PersistentEvents, PersistentObjects,
+      PrivateShards, Process, Read, RelatedEvents, RemoteCDBNames,
+      RemoteEvents, RemoteIterators, RemoteNames, RemoteObjects,
+      RemoteStreams, Resources, Services, Shadows, Shards,
+      StandardContainers, StdCDBNames, Storage, Streams, StringArgs,
+      StrListArgs, SysMonitor, SysSignals, TransStreams, UnixFiles,
+      UnixNames, Write;
 
    VAR
       errors: RelatedEvents.Object;
@@ -185,7 +185,7 @@ MODULE CDBDaemon;
 	 langString: ConstStrings.String;
 	 cdbdString: ConstStrings.String;
 	 modulesString: ConstStrings.String;
-	 maintenanceNode: Names.Node;
+	 maintenanceNode: CommandNodes.Node;
 
       PROCEDURE MkDir(node: Names.Node;
                       dirname: ConstStrings.String;
@@ -211,7 +211,7 @@ MODULE CDBDaemon;
       IF ~Names.Insert(basedirNode, root, modulesString, auth) THEN
 	 Conclusions.Conclude(basedirNode, Errors.fatal, basedir);
       END;
-      NameServerMaintenance.Create(maintenanceNode, shutdown);
+      ControlNodes.Create(maintenanceNode, NIL, shutdown);
       ConstStrings.Create(cdbdString, "cdbd");
       IF ~Names.Insert(basedirNode, maintenanceNode, cdbdString, auth) THEN
 	 Conclusions.Conclude(basedirNode, Errors.fatal, basedir);
@@ -235,14 +235,21 @@ MODULE CDBDaemon;
       END;
    END OpenAllKindsOfPorts;
 
+   PROCEDURE KeepResolverAlive;
+      (* otherwise DNSResolvers.std terminates as soon as
+	 all initializations are over
+      *)
+      VAR
+	 key: Resources.Key;
+   BEGIN
+      Resources.Attach(DNSResolvers.std, key);
+   END KeepResolverAlive;
+
 BEGIN
    NEW(errors); RelatedEvents.QueueEvents(errors);
    Services.SeekType("Shards.Pot", potType);
    Services.SeekType("Shards.Lid", lidType);
    Events.Handler(SysSignals.TERM, TerminationHandler);
-   (*
-   Conclusions.CatchEvent(Loader.error, Errors.fatal);
-   *)
    ProcessArgs;
    intensity := Storage.Intensity(intensity);
    OpenAllKindsOfPorts;
@@ -252,4 +259,5 @@ BEGIN
       Write.Line("SysMonitor support enabled");
       Events.Handler(SysSignals.ALRM, RestartSysMonitor);
    END;
+   KeepResolverAlive;
 END CDBDaemon.

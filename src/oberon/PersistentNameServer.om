@@ -25,12 +25,13 @@
 
 MODULE PersistentNameServer;
 
-   IMPORT Args := UnixArguments, Conclusions, Containers, DNSRecords,
-      DNSResolvers, DNSStdResolvers, Errors, Events, InetTCP, IPv4Addresses,
-      Iterators, Loader, LoaderErrors, NamedObjects, Names, NamesBootService,
-      Networks, PasswordShards, PersistentNodes, PersistentObjects,
-      PrivateShards, Process, Read, RelatedEvents, RemoteCDBNames,
-      RemoteEvents, RemoteNames, RemoteObjects, Resources, Services, Shards,
+   IMPORT Args := UnixArguments, CommandNodes, Conclusions, Containers,
+      ControlNodes, DNSRecords, DNSResolvers, DNSStdResolvers, Errors,
+      Events, InetTCP, IPv4Addresses, Iterators, Loader, LoaderErrors,
+      NamedObjects, Names, NamesBootService, Networks, PasswordShards, Paths,
+      PersistentNodes, PersistentObjects, PrivateShards, Process, Read,
+      RelatedEvents, RemoteCDBNames, RemoteCommandNodes, RemoteEvents,
+      RemoteNames, RemoteObjects, Resources, Services, Shards,
       StandardContainers, Storage, Streams, Strings, SYS := SYSTEM, SysMain,
       SysSignals, TransStreams, UnixFiles, VolatileShards, Write;
 
@@ -94,6 +95,7 @@ MODULE PersistentNameServer;
 	 new: BOOLEAN;
 	 accessmode: Names.AccessMode;
 	 permissions: Names.Permissions;
+	 key: Resources.Key;
    BEGIN
       NEW(errors); RelatedEvents.QueueEvents(errors);
       IF UnixFiles.Open(s, dbfile, UnixFiles.rdwr, Streams.nobuf,
@@ -125,6 +127,7 @@ MODULE PersistentNameServer;
       IF ~PersistentNodes.Open(root, container) THEN
 	 Conclusions.Conclude(container, Errors.fatal, "");
       END;
+      Resources.Attach(root, key);
    END SetupRoot;
 
    PROCEDURE ProcessArgs;
@@ -212,12 +215,10 @@ MODULE PersistentNameServer;
       VAR
 	 event: Events.Event;
    BEGIN
-      RemoteObjects.RemoveAllPorts;
-      RemoteObjects.CloseAllConnections;
-      IF Resources.Alive(root) THEN
-	 Resources.Notify(root, Resources.terminated);
-      END;
       Process.TerminateSoftly;
+      IF verbose THEN
+	 Write.LineS(Streams.stderr, "terminating softly");
+      END;
    END InitiateTermination;
 
    PROCEDURE TerminationHandler(event: Events.Event);
@@ -232,29 +233,87 @@ MODULE PersistentNameServer;
 
    PROCEDURE RootTerminationHandler(event: Events.Event);
    BEGIN
-      IF ~SYS.TAS(termination) THEN
-	 IF verbose THEN
-	    Write.LineS(Streams.stderr, "root object is terminated");
-	 END;
-	 WITH event: Resources.Event DO
-	    IF event.change = Resources.terminated THEN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    IF ~SYS.TAS(termination) THEN
+	       IF verbose THEN
+		  Write.LineS(Streams.stderr, "root object is terminated");
+	       END;
 	       InitiateTermination;
 	    END;
 	 END;
       END;
    END RootTerminationHandler;
 
+   PROCEDURE ControlObjectTerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    IF ~SYS.TAS(termination) THEN
+	       IF verbose THEN
+		  Write.LineS(Streams.stderr, "root object is terminated");
+	       END;
+	       InitiateTermination;
+	    END;
+	 END;
+      END;
+   END ControlObjectTerminationHandler;
+
+   PROCEDURE InsertOwnRoot(root: Names.Node);
+      VAR
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF ~Paths.Insert("/pub", root, NIL, errors) THEN
+	 Conclusions.Conclude(errors, Errors.error, "/pub");
+      END;
+   END InsertOwnRoot;
+
+   PROCEDURE ExportControlObject;
+      VAR
+	 auth: Shards.Lid;
+	 errors: RelatedEvents.Object;
+	 node: CommandNodes.Node;
+	 eventType: Events.EventType;
+	 key: Resources.Key;
+   BEGIN
+      IF (pot = NIL) OR ~Shards.Supply(pot, auth) THEN
+	 auth := NIL;
+      END;
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      ControlNodes.Create(node, NIL, pot);
+      Resources.Attach(node, key);
+      IF ~Paths.Insert("/pub/pons", node, auth, errors) THEN
+	 Conclusions.Conclude(errors, Errors.error, "/pub/pons");
+      END;
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, ControlObjectTerminationHandler);
+   END ExportControlObject;
+
+   PROCEDURE KeepResolverAlive;
+      (* otherwise DNSResolvers.std terminates as soon as
+	 all initializations are over
+      *)
+      VAR
+	 key: Resources.Key;
+   BEGIN
+      Resources.Attach(DNSResolvers.std, key);
+   END KeepResolverAlive;
+
 BEGIN
    intensity := Storage.Intensity(8);
    Services.SeekType("Shards.Pot", potType); ASSERT(potType # NIL);
    ProcessArgs;
-   SetupRoot(root, dbfile);
    OpenAllKindsOfPorts;
+   SetupRoot(root, dbfile);
+   InsertOwnRoot(root);
    StartBootServices;
    termination := FALSE;
    Events.Handler(SysSignals.TERM, TerminationHandler);
    Resources.TakeInterest(root, rootEventType);
    Events.Handler(rootEventType, RootTerminationHandler);
+   ExportControlObject;
+   KeepResolverAlive;
    IF verbose THEN
       Conclusions.CatchEvent(Loader.error, Errors.warning);
       Write.LineS(Streams.stderr, "initialization finished");

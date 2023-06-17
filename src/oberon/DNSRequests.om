@@ -17,9 +17,13 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: DNSRequests.om,v 1.1 2004/03/09 23:30:45 borchert Exp $
+   $Id: DNSRequests.om,v 1.2 2004/09/13 21:09:30 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: DNSRequests.om,v $
+   Revision 1.2  2004/09/13 21:09:30  borchert
+   - DNSRequests supports now Process.softTermination
+   - requests will no longer hung in case of terminated context objects
+
    Revision 1.1  2004/03/09 23:30:45  borchert
    Initial revision
 
@@ -29,7 +33,7 @@
 MODULE DNSRequests;
 
    IMPORT Clocks, Conditions, Disciplines, DNSHeaders, DNSRecords, Errors,
-      EventConditions, Events, Jobs, MemOps, MemStreams, Objects,
+      EventConditions, Events, Jobs, MemOps, MemStreams, Objects, P := Process,
       RandomGenerators, RelatedEvents, Resources, Signals, Streams,
       SubStreams, SYS := SYSTEM, SysSockets, SysTypes, Tasks, TimeConditions,
       Times, Types, UnixFileConditions, UnixSeeds, Write;
@@ -299,6 +303,8 @@ MODULE DNSRequests;
 	 resCondition: Conditions.Condition;
 	 resEventType: Events.EventType;
 	 resEvent: Resources.Event;
+	 termCondition: Conditions.Condition;
+	 termEvent: Events.Event;
 	 queueEventType: Events.EventType;
 	 queueCondition: Conditions.Condition;
 	 queueEvent: QueueEvent;
@@ -475,6 +481,9 @@ MODULE DNSRequests;
 	 EventConditions.Create(resCondition, resEventType);
 	 Conditions.Incl(conditions, resCondition);
 
+	 EventConditions.Create(termCondition, P.softTermination);
+	 Conditions.Incl(conditions, termCondition);
+
 	 Events.Define(queueEventType);
 	 EventConditions.Create(queueCondition, queueEventType);
 	 job.queueEventType := queueEventType;
@@ -508,6 +517,10 @@ MODULE DNSRequests;
 	    Tasks.Select(conditions, setOfTrueConditions);
 	    WHILE EventConditions.TestAndGet(resCondition, resEvent) DO
 	       IF resEvent.change = Resources.terminated THEN EXIT END;
+	    END;
+	    IF EventConditions.TestAndGet(termCondition, termEvent) THEN
+	       Resources.Notify(job.context, Resources.terminated);
+	       EXIT
 	    END;
 	    WHILE EventConditions.TestAndGet(queueCondition, queueEvent) DO
 	       request := queueEvent.request;
@@ -631,6 +644,7 @@ MODULE DNSRequests;
 	 END;
 	 EventConditions.Drop(resCondition);
 	 EventConditions.Drop(queueCondition);
+	 EventConditions.Drop(termCondition);
       END;
    END SocketHandler;
 
@@ -701,6 +715,7 @@ MODULE DNSRequests;
 	 s: Streams.Stream;
 	 query: Query;
    BEGIN
+      IF Resources.Terminated(context) THEN RETURN FALSE END;
       NEW(query);
       COPY(name, query.name);
       query.type := type;
@@ -753,7 +768,10 @@ MODULE DNSRequests;
 	 answerRecs := NIL; authRecs := NIL; addRecs := NIL;
 	 RETURN FALSE
       END;
-      ASSERT(request.done);
+      IF ~request.done THEN
+	 (* context died most likely *)
+	 RETURN FALSE
+      END;
       header := request.response.header;
       answerRecs := request.response.answerRecs;
       authRecs := request.response.authRecs;

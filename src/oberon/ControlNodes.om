@@ -1,0 +1,194 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ControlNodes;
+
+   IMPORT Args, CommandNodes, ConstStrings, Events, Paths, Process,
+      RelatedEvents, RemoteCommandNodes, Resources, Services, Shards,
+      Streams, StringArgs, SYS := SYSTEM, UnixHost, Write;
+
+   TYPE
+      ControlNode = POINTER TO ControlNodeRec;
+      ControlNodeRec =
+	 RECORD
+	    (CommandNodes.NodeRec)
+	    statusAuth: Shards.Pot;
+	    shutAuth: Shards.Pot;
+	 END;
+   VAR
+      helpString: ConstStrings.String;
+      shutString: ConstStrings.String;
+      statusString: ConstStrings.String;
+      if: CommandNodes.Interface;
+      type: Services.Type;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    Process.TerminateSoftly;
+	 END;
+      END;
+   END TerminationHandler;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE GetArgs(node: CommandNodes.Node;
+                     VAR args: Args.Arguments) : BOOLEAN;
+   BEGIN
+      Args.Create(args);
+      Args.Define(args, "command", "c", StringArgs.type,
+	 "selected command (try ``help'')");
+      RETURN TRUE
+   END GetArgs;
+
+   PROCEDURE Invoke(node: CommandNodes.Node; args: Args.Arguments;
+		    in, out: Streams.Stream;
+                    auth: Shards.Lid) : BOOLEAN;
+
+      VAR
+	 val: Args.Value;
+
+      PROCEDURE Usage(errormsg: ARRAY OF CHAR);
+      BEGIN
+	 IF out # NIL THEN
+	    IF errormsg # "" THEN
+	       Write.LineS(out, errormsg);
+	    END;
+	    Write.LineS(out, "supported commands:");
+	    Write.LineS(out, "help      gives this summary");
+	    Write.LineS(out, "shut      shut down my process");
+	    Write.LineS(out, "status    gives status summary about my process");
+	 END;
+      END Usage;
+
+      PROCEDURE CheckAuth(pot: Shards.Pot) : BOOLEAN;
+      BEGIN
+	 IF pot = NIL THEN RETURN TRUE END;
+	 IF Shards.Fits(pot, auth) THEN RETURN TRUE END;
+	 IF out # NIL THEN
+	    Write.LineS(out, "authorization failed");
+	 END;
+	 RETURN FALSE
+      END CheckAuth;
+
+      PROCEDURE PrintStatus;
+	 VAR
+	    fqdn: ARRAY 512 OF CHAR;
+      BEGIN
+	 Write.StringS(out, "this node belongs to ");
+	 Write.StringS(out, Process.name);
+	 IF Process.id # "" THEN
+	    Write.CharS(out, "[");
+	    Write.StringS(out, Process.id);
+	    Write.CharS(out, "]");
+	 END;
+	 UnixHost.GetFullyQualifiedHostName(fqdn);
+	 IF fqdn # "" THEN
+	    Write.CharS(out, "@");
+	    Write.StringS(out, fqdn);
+	 END;
+	 Write.LnS(out);
+	 Streams.Touch(out);
+      END PrintStatus;
+
+   BEGIN (* Invoke *)
+      WITH node: ControlNode DO
+	 Args.GetValue(args, "command", val); 
+	 IF val = NIL THEN
+	    Usage("``-c <command>'' is missing");
+	    RETURN FALSE
+	 END;
+	 IF ~(val IS StringArgs.Value) THEN
+	    Usage("string argument expected for -c");
+	    RETURN FALSE
+	 END;
+	 WITH val: StringArgs.Value DO
+	    IF ConstStrings.Compare(val.string, helpString) = 0 THEN
+	       Usage("");;
+	    ELSIF ConstStrings.Compare(val.string, shutString) = 0 THEN
+	       IF ~CheckAuth(node.shutAuth) THEN RETURN FALSE END;
+	       IF out # NIL THEN
+		  Write.LineS(out, "termination will be initiated");
+		  Streams.Touch(out);
+	       END;
+	       Resources.Notify(node, Resources.terminated);
+	    ELSIF ConstStrings.Compare(val.string, statusString) = 0 THEN
+	       IF ~CheckAuth(node.statusAuth) THEN RETURN FALSE END;
+	       IF out # NIL THEN
+		  PrintStatus;
+	       END;
+	    ELSE
+	       Usage("unknown command");
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+      RETURN TRUE
+   END Invoke;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      ConstStrings.Create(helpString, "help");
+      ConstStrings.Create(shutString, "shut");
+      ConstStrings.Create(statusString, "status");
+      Services.CreateType(type, "ControlNodes.Node", "CommandNodes.Node");
+      NEW(if); if.getArgs := GetArgs; if.invoke := Invoke;
+   END Init;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR cmdnode: CommandNodes.Node;
+                    statusAuth, shutAuth: Shards.Pot);
+      VAR
+	 cnode: ControlNode;
+   BEGIN
+      NEW(cnode); Services.Init(cnode, type);
+      cnode.statusAuth := statusAuth;
+      cnode.shutAuth := shutAuth;
+      CommandNodes.Init(cnode, if);
+      cmdnode := cnode;
+   END Create;
+
+   PROCEDURE Export(path: ARRAY OF CHAR; auth: Shards.Lid;
+		    statusAuth, shutAuth: Shards.Pot;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 node: CommandNodes.Node;
+	 eventType: Events.EventType;
+   BEGIN
+      Create(node, statusAuth, shutAuth);
+      Resources.TakeInterest(node, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      RETURN Paths.Insert(path, node, auth, errors)
+   END Export;
+
+BEGIN
+   Init;
+END ControlNodes.
