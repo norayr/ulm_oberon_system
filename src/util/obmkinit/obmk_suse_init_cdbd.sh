@@ -5,21 +5,29 @@ BINDIR=$BASEDIR/bin
 CDBDDIR=$BASEDIR/var/cdbd
 CDBDIR=/pub/cdb/oberon
 INTENSITY=$BASEDIR/etc/intensity/cdbd
+PONSDIR=$BASEDIR/var/pons
 ONS_ROOT=127.0.0.1:9880
+CDBD_PORT=127.0.0.1:9882
 
 cmdname=`basename $0`
-usage="Usage $cmdname [-c cdbdir] [-d cdbddir] [-g gid] [-u uid] [-r ons_root]"
+usage="Usage $cmdname [-a auth] [-b host:port] [-c cdbdir] [-d cdbddir] [-g gid] [-u uid] [-r ons_root]"
 
+auth="$PONSDIR/write"
 cdbdir="$CDBDIR"
 cdbddir="$CDBDDIR"
 uidgidflags=""
 root="$ONS_ROOT"
 intensity="$INTENSITY"
+bindto="$CDBD_PORT"
 set -- `getopt c:d:g:u:r: $*`
 while [ $# -gt 0 ]
 do
    case $1
-   in -c)
+   in -a)
+      auth="$2"; shift 2
+   ;; -b)
+      bindto="$2"; shift 2
+   ;; -c)
       cdbdir="$2"; shift 2
    ;; -d)
       cdbddir="$2"; shift 2
@@ -38,6 +46,8 @@ do
       echo >&2 "$usage"; exit 1
    esac
 done
+
+bindto=`echo $bindto | sed 's/:/ /'`
 
 echo "#!/bin/sh
 #------------------------------------------------------------------------------
@@ -58,7 +68,7 @@ start_service() {
    ONS_ROOT=\"$root\"
    export ONS_ROOT
    echo -n \"Starting CDBD \"
-   $BINDIR/onsmkdir -p \"$cdbdir\"
+   $BINDIR/onsmkdir -a \"$auth\" -p \"$cdbdir\"
    INTENSITY=\"$intensity\"
    ioptions=
    if [ -f \$INTENSITY ]
@@ -67,7 +77,9 @@ start_service() {
    fi
    startproc $uidgidflags -l \"$cdbddir\"/cdbd.LOG \\
       $BINDIR/cdbd \\
-	 $ioptions \\
+	 \$ioptions \\
+	 -a \"$auth\" \\
+	 -B $bindto \\
 	 -b \"$cdbdir\" \\
 	 -w \"$cdbddir\"/write \\
 	 \"$cdbddir\"/oberon.db

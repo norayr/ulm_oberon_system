@@ -11,7 +11,6 @@ usage="Usage $cmdname {-b bindto} {-B bindto} [-d ponsdir] [-g gid] [-u uid]"
 
 bindto=
 Bindto=
-root="$ONS_ROOT"
 ponsdir="$PONSDIR"
 uidgidflags=""
 set -- `getopt b:B:d:g:u: $*`
@@ -20,11 +19,9 @@ do
    case $1
    in -b)
       bindto="$bindto -b `echo $2 | sed 's/:/ /'`"
-      root="$2"
       shift 2
-   in -B)
+   ;; -B)
       Bindto="$Bindto -B `echo $2 | sed 's/:/ /'`"
-      root="$2"
       shift 2
    ;; -d)
       ponsdir="$2"; shift 2
@@ -67,7 +64,10 @@ echo "#!/bin/sh
 
 start_service() {
    echo -n \"Starting PONS \"
-   startproc $uidgidflags -l pons.LOG $BINDIR/pons $bindto $Bindto pdb
+   startproc $uidgidflags -l pons.LOG \\
+      $BINDIR/pons $bindto $Bindto \\
+	 -w \"$ponsdir/write\" -s \"$ponsdir/shutdown\" \\
+	 \"$ponsdir/pdb\"
    rc_status -v
 }
 
