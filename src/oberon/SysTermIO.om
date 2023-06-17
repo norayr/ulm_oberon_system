@@ -231,53 +231,55 @@ MODULE SysTermIO;
    TYPE
       RequestType = INTEGER; (* tcgeta.. *)
 
-   PROCEDURE CopyTo (src : ARRAY OF BYTE; off : LONGINT;
-                     VAR dest : ARRAY OF BYTE);
+   PROCEDURE CopyTo(src: ARRAY OF BYTE; off, len: LONGINT;
+                    VAR dest: ARRAY OF BYTE);
       VAR
-	 i : INTEGER;
+	 i: INTEGER;
    BEGIN
-      ASSERT (off + LEN (src) <= LEN (dest));
       i := 0;
-      WHILE i < LEN (src) DO
+      WHILE i < len DO
          dest[off] := src[i];
-	 INC (off); INC (i);
+	 INC(off); INC(i);
       END;
    END CopyTo;
 
-   PROCEDURE CopyFrom (src : ARRAY OF BYTE; off : LONGINT;
-                       VAR dest : ARRAY OF BYTE);
+   PROCEDURE CopyFrom(src: ARRAY OF BYTE; off, len: LONGINT;
+                      VAR dest: ARRAY OF BYTE);
       VAR
-         i : INTEGER;
+         i: INTEGER;
    BEGIN
-      ASSERT (off + LEN (dest) <= LEN (src));
       i := 0;
-      WHILE i < LEN (dest) DO
+      WHILE i < len DO
          dest[i] := src[off];
-	 INC (off); INC (i);
+	 INC(off); INC(i);
       END;
    END CopyFrom;
 
 
-   (* This is less efficient than SysConversions but it's safe wrt
-    * field reordering of the Oberon Compiler. *)
+   (* check the structure to be found at /usr/include/asm/termios.h
+      which unfortunately differs from that of the regular C library
+      interface as all 32-bit flag sets have been compressed to
+      16-bit values
+   *)
+
    PROCEDURE ConvertToSys (termio : TermIO; VAR sys : SysTermIOArr);
    BEGIN
-      CopyTo (termio.inputmodes, 0, sys);
-      CopyTo (termio.outputmodes, 4, sys);
-      CopyTo (termio.controlmodes, 8, sys);
-      CopyTo (termio.linemodes, 12, sys);
-      sys[16] := termio.linedisc;
-      CopyTo (termio.cc, 17, sys);
+      CopyTo(termio.inputmodes, 0, 2, sys);
+      CopyTo(termio.outputmodes, 2, 2, sys);
+      CopyTo(termio.controlmodes, 4, 2, sys);
+      CopyTo(termio.linemodes, 6, 2, sys);
+      sys[8] := termio.linedisc;
+      CopyTo(termio.cc, 9, 8, sys);
    END ConvertToSys;
 
    PROCEDURE ConvertFromSys (VAR termio : TermIO; sys : SysTermIOArr);
    BEGIN
-      CopyFrom (sys, 0, termio.inputmodes);
-      CopyFrom (sys, 4, termio.outputmodes);
-      CopyFrom (sys, 8, termio.controlmodes);
-      CopyFrom (sys, 12, termio.linemodes);
-      termio.linedisc := SYS.VAL (CHAR, sys[16]);
-      CopyFrom (sys, 17, termio.cc);
+      CopyFrom(sys, 0, 2, termio.inputmodes);
+      CopyFrom(sys, 2, 2, termio.outputmodes);
+      CopyFrom(sys, 4, 2, termio.controlmodes);
+      CopyFrom(sys, 6, 2, termio.linemodes);
+      termio.linedisc := SYS.VAL(CHAR, sys[8]);
+      CopyFrom(sys, 9, 8, termio.cc);
    END ConvertFromSys;
 
    PROCEDURE Ioctl(fd: SysIO.File; request: RequestType;

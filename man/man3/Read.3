@@ -1,6 +1,6 @@
 .\" ---------------------------------------------------------------------------
 .\" Ulm's Oberon System Documentation
-.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
 .\" ---------------------------------------------------------------------------
 .\"    Permission is granted to make and distribute verbatim copies of this
 .\" manual provided the copyright notice and this permission notice are
@@ -136,7 +136,7 @@ If
 .BI \\$1 " \\$2"
 ..
 '\"----------------------------------------------------------------------------
-.TH Read 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.TH Read 3 "Last change: 24 September 2004" "Release 0.5" "Ulm's Oberon System"
 .SH NAME
 Read \- formatted input
 .SH SYNOPSIS
@@ -166,7 +166,7 @@ PROCEDURE FieldS(s: Streams.Stream; VAR string: ARRAY OF CHAR) : BOOLEAN;
 .Pe
 .SH DESCRIPTION
 .I Read
-realizes formatted input for streams.
+implements formatted input for streams.
 All procedures read either from the given stream
 .I s
 (procedures ending in "S")
@@ -176,7 +176,7 @@ or from
 All termination characters (e.g. first non-digit after \fIRead.Int\fP)
 are pushed back to the stream by \fIStreams.Back\fP.
 The definition what constitutes white space, a line terminator,
-or a field separator is provided by \fIStreamDisciplines\fP.
+or a field separator is provided by \fIStreamDisciplines(3)\fP.
 .PP
 .IR ShortInt ,
 .IR Int ,
@@ -212,13 +212,14 @@ and guarantees
 .I line
 to be 0X-terminated.
 \fIStreams.stdin.count\fP (resp. \fIs.count\fP for \fILineS\fP)
-equals the number of characters copied into
-.IR line .
+equals the number of characters read including the line terminator.
 Note that the termination character is not pushed back to the input stream.
 .I Ln
 skips input until the next line termination or end of stream.
 Like \fILine\fP,
 \fILn\fP does not push back the line termination character.
+\fIStreams.stdin.count\fP (resp. \fIs.count\fP for \fILnS\fP)
+equals the number of characters read including the line terminator.
 .PP
 .I String
 skips input to the first non-white space character.
@@ -236,27 +237,39 @@ equals the number of characters copied into
 .PP
 .I Field
 returns the next input field into \fIstring\fP.
-Following the UNIX style of small databases,
+Following the UNIX convention of small databases,
 records are separated by line terminators and
 fields are delimited either by field separators or line terminators.
 In normal case, each field separator separates two
 adjacent fields which allows possibly empty fields.
-If, however, the field separators are a subset of whitespace,
-subsequent separators are viewed as one separator.
+However, field separators that are also whitespace
+are skipped at the beginning of a field.
 The resulting \fIstring\fP is trimmed in respect to
 surrounding white space.
+The terminating field separator is consumed.
 .I Field
 returns \fBFALSE\fP if there are no more fields on the line,
 i.e. line terminators must be skipped explicitely.
 The resulting count (\fIStreams.stdin.count\fP resp.
-\fIs.count\fP) equals the number of characters stored
-into \fIfield\fP.
+\fIs.count\fP) equals the number of characters read.
 .I Field
 skips the rest of the field if it does not fit into \fIstring\fP.
 .SH DIAGNOSTICS
 If not defined otherwise
 .I Streams.stdin.count
 (resp. \fIs.count\fP) equals 1 on success and 0 on failure.
+.SH EXAMPLE
+Following code snippet shows how to parse small databases:
+.Pg
+LOOP
+   WHILE Read.FieldS(in, field) DO
+      (* process field *)
+   END;
+   IF in.eof OR in.error THEN EXIT END;
+   Read.LnS(in);
+   IF in.count = 0 THEN EXIT END;
+END;
+.Pe
 .SH "SEE ALSO"
 .Tb StreamDisciplines(3)
 .Tp Reals(3)
@@ -276,10 +289,16 @@ for unbuffered streams.
 Thus termination characters are lost by reading from streams
 with buffering mode
 .IR Streams.nobuf .
+This, for example, causes \fIField\fP and \fIFieldS\fP to consume
+the entire line terminator that terminates the last field on a line.
 .\" ---------------------------------------------------------------------------
-.\" $Id: Read.3,v 1.6 2003/07/10 09:04:01 borchert Exp $
+.\" $Id: Read.3,v 1.7 2004/09/24 16:41:52 borchert Exp $
 .\" ---------------------------------------------------------------------------
 .\" $Log: Read.3,v $
+.\" Revision 1.7  2004/09/24 16:41:52  borchert
+.\" - semantics of Field/FieldS changed
+.\" - s.count has new semantics for Line/LineS, Ln/LnS, and Field/FieldS
+.\"
 .\" Revision 1.6  2003/07/10 09:04:01  borchert
 .\" typos fixed
 .\"
