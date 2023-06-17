@@ -1,7 +1,36 @@
-MODULE TermInfos;
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
 
-   IMPORT ASCII, Disciplines, Events, Objects, Priorities, RelatedEvents, Sets, 
-	  Streams, Strings, SYSTEM, UnixEnvironment, UnixFiles, Write;
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TermInfos.om,v 1.1 2004/06/11 12:11:15 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: TermInfos.om,v $
+   Revision 1.1  2004/06/11 12:11:15  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TermInfos; (* Ralf Beck *)
+
+   IMPORT ASCII, Disciplines, Events, Objects, Priorities, RelatedEvents,
+      Sets, Streams, Strings, SYS := SYSTEM, UnixEnvironment, UnixFiles,
+      Write;
 
    CONST 
       booleans = 37;
@@ -12,6 +41,7 @@ MODULE TermInfos;
       maxParameters = 9;
 
       defaultdir = "/usr/share/lib/terminfo";
+      defaultdir2 = "/usr/share/terminfo";
 
       (* errorcodes *)
       notSupported = 0;
@@ -460,7 +490,8 @@ MODULE TermInfos;
       RETURN (terminfo.strings[cap][0] # ASCII.nul);
    END CapStringOk;
 
-   PROCEDURE GetCapString(terminfo: TermInfo; cap: Capability; VAR string: String);
+   PROCEDURE GetCapString(terminfo: TermInfo; cap: Capability;
+                          VAR string: String);
    BEGIN
       Strings.Copy(string, terminfo.strings[cap]);
    END GetCapString;
@@ -475,8 +506,12 @@ MODULE TermInfos;
       RETURN terminfo.num[cap];
    END GetNumber;
 
-   PROCEDURE PutCapString(terminfo: TermInfo; cap: Capability; plist: ParameterList; 
-                          speed: INTEGER; affcount: INTEGER; stream: Streams.Stream);
+   PROCEDURE PutCapString(terminfo: TermInfo;
+                          cap: Capability;
+			  plist: ParameterList; 
+                          speed: INTEGER;
+			  affcount: INTEGER;
+			  stream: Streams.Stream);
       CONST
          stacksize = 256;  (* max size of parameterstack *) 
          then = 0; else = 1; (* denote then or else branch in formatstring *)
@@ -497,12 +532,12 @@ MODULE TermInfos;
 
       PROCEDURE SetToInt(set: SET): INTEGER;
       BEGIN
-	 RETURN SYSTEM.VAL(INTEGER, set);
+	 RETURN SYS.VAL(INTEGER, set);
       END SetToInt;
 
       PROCEDURE IntToSet(int: INTEGER): SET;
       BEGIN
-	 RETURN SYSTEM.VAL(SET, int);
+	 RETURN SYS.VAL(SET, int);
       END IntToSet;
 
       PROCEDURE Push(para: Parameter);
@@ -589,8 +624,8 @@ MODULE TermInfos;
          END;
       END Skip;
 
-      PROCEDURE WriteFormated;
-      (* convert stacktop according to %..dosxX format *)
+      PROCEDURE WriteFormatted;
+	 (* convert stacktop according to %..dosxX format *)
 	 VAR
 	    width, precision: INTEGER;
 	    pad: INTEGER;
@@ -601,7 +636,6 @@ MODULE TermInfos;
             nindex : INTEGER;
 	    value: INTEGER;
 	    para: Parameter;
-
       BEGIN
          (* init flags to default values *)
          minussign := FALSE; plus := FALSE;
@@ -796,7 +830,7 @@ MODULE TermInfos;
          ELSE
             Error(terminfo, badFormatString);
          END;
-      END WriteFormated;
+      END WriteFormatted;
   
       PROCEDURE Pad;
          VAR
@@ -811,7 +845,8 @@ MODULE TermInfos;
 	 index := capindex+2;
 
 	 (* read {digit} *)
-         WHILE (index < stringlength) & (Sets.CharIn(digits, capstring[index])) DO
+         WHILE (index < stringlength) &
+	       Sets.CharIn(digits, capstring[index]) DO
             delay := 10 * delay + ORD(capstring[index]) - ORD("0");
             INC(index);
          END;
@@ -820,7 +855,8 @@ MODULE TermInfos;
 	 (* read .[digit] *)
          IF (index < stringlength) & (capstring[index] = ".") THEN
             INC(index);
-            IF (index < stringlength) & (Sets.CharIn(digits, capstring[index])) THEN
+            IF (index < stringlength) &
+		  Sets.CharIn(digits, capstring[index]) THEN
                delay := delay + ORD(capstring[index]) - ORD("0"); 
                INC(index);
             END;
@@ -843,13 +879,13 @@ MODULE TermInfos;
          (* read ">" *)
          IF (index = stringlength) OR (capstring[index] # ">") THEN
             (* "$<" with no ">" *)
-            Write.CharS(stream, capstring[capindex]);(* avoid infinite loop *)
-	    RETURN;
+            Write.CharS(stream, capstring[capindex]); (* avoid infinite loop *)
+	    RETURN
          END;
 
          capindex := index;
          IF (speed < terminfo.num[paddingBaudRate]) & ~padalways THEN
-            RETURN;
+            RETURN
          END;
 	 rest := delay * (speed MOD 8000);   (* 8000, because delay is in *) 
          delay := delay * (speed DIV 8000);  (* msecs and byte = 8 bits *)
@@ -860,7 +896,6 @@ MODULE TermInfos;
 	    Write.CharS(stream, terminfo.strings[padChar][0]);
 	    DEC(delay);
          END;
-
       END Pad;
 
    BEGIN (* ConvertCap *)
@@ -1003,8 +1038,10 @@ MODULE TermInfos;
                    Push(intresult);
             | "^": op1 := Pop(); op2 := Pop();
 		   NEW(intresult);
-		   intresult.int := SetToInt((IntToSet(op1(IntPara).int) * (IntToSet(-op2(IntPara).int-1))) +
-					 (IntToSet(op2(IntPara).int) * (IntToSet(-op1(IntPara).int-1))));
+		   intresult.int := SetToInt((IntToSet(op1(IntPara).int) *
+		      (IntToSet(-op2(IntPara).int-1))) +
+		      (IntToSet(op2(IntPara).int) *
+		      (IntToSet(-op1(IntPara).int-1))));
 		   Push(intresult);
             | "~": op1 := Pop();
 	           NEW(intresult);
@@ -1015,12 +1052,12 @@ MODULE TermInfos;
 		   Next;
 		   Push(intresult);
             ELSE
-	       WriteFormated;
+	       WriteFormatted;
             END;
          ELSIF (capstring[capindex] = "$") & 
 	       (capindex+1 < stringlength) &
 	       (capstring[capindex+1] = "<") THEN
-	       Pad;
+	    Pad;
          ELSE
             Write.CharS(stream, capstring[capindex]);
          END;
@@ -1029,7 +1066,7 @@ MODULE TermInfos;
    END PutCapString;
 
    PROCEDURE Open(termname: ARRAY OF CHAR; VAR terminfo: TermInfo;
-		  errors: RelatedEvents.Object): BOOLEAN;
+		  errors: RelatedEvents.Object) : BOOLEAN;
       CONST
          TImagic = 282;           (* magic number of terminfo file *)
          headersize = 6 * 2;      (* size of header in bytes *)
@@ -1048,18 +1085,18 @@ MODULE TermInfos;
       TYPE
 	 Section = SHORTINT; (* boolsec .. stringsec *)
       VAR
-        path: ARRAY 512 OF CHAR;(* complete path to terminfo file *)
-        tname: ARRAY 256 OF CHAR;(* terminal name *)
-        dir: ARRAY 4 OF CHAR;(* first letter of terminal name *)
-        header: Header;(* header of terminfo file *)
-        stream: Streams.Stream;	(* terminfo file *)
-        done: BOOLEAN;(* set to FALSE if anything goes wrong *)
-        info: TermInfo;
+         tidir: ARRAY 512 OF CHAR; (* terminfo directory *)
+         tname: ARRAY 256 OF CHAR; (* terminal name *)
+         header: Header; (* header of terminfo file *)
+         stream: Streams.Stream;	(* terminfo file *)
+         done: BOOLEAN; (* set to FALSE if anything goes wrong *)
+         info: TermInfo;
+	 failures: RelatedEvents.Object;
+	 queue: RelatedEvents.Queue;
 
       PROCEDURE ReadShort(VAR value: INTEGER);
          VAR byte1, byte2: CHAR;
       BEGIN
-         done := TRUE;
          IF Streams.ReadByte(stream, byte1) &
 	       Streams.ReadByte(stream, byte2) THEN
             IF (byte1 = 0FFX) & (byte2 = 0FFX) THEN
@@ -1083,7 +1120,7 @@ MODULE TermInfos;
          ReadShort(header.numcnt);
          ReadShort(header.offcnt);
          ReadShort(header.tabsize);
-         done := (header.magic = TImagic);
+         done := done & (header.magic = TImagic);
       END ReadHeader;
 
       PROCEDURE SeekToSection(section: Section; offset: Streams.Count);
@@ -1173,9 +1210,8 @@ MODULE TermInfos;
             END;
          END ReadString;
 
-      BEGIN
+      BEGIN (* ReadStringSection *)
 	 SeekToSection(offsetsec, 0);
-
 	 index := 0;
          IF header.offcnt > strings THEN
 	    count := strings;
@@ -1203,7 +1239,37 @@ MODULE TermInfos;
          END;
       END ReadStringSection;
 
-   BEGIN
+      PROCEDURE Load(tidir: ARRAY OF CHAR) : BOOLEAN;
+	 (* try to load the terminfo file from the given directory *)
+	 VAR
+	    dir: ARRAY 4 OF CHAR;(* first letter of terminal name *)
+	    path: ARRAY 512 OF CHAR;
+      BEGIN
+	 COPY(tidir, path);
+	 dir[0] := "/"; dir[1] := tname[0]; dir[2] := "/"; dir[3] := 0X;
+	 Strings.Concatenate(path, dir);
+	 Strings.Concatenate(path, tname);
+	 IF ~UnixFiles.Open(stream, path, UnixFiles.read, 
+			   Streams.onebuf, failures) THEN
+	    RETURN FALSE
+	 END;
+	 done := TRUE;
+	 ReadHeader;
+	 NEW(info);
+	 IF done THEN ReadBooleanSection; END;
+	 IF done THEN ReadNumberSection; END;
+	 IF done THEN ReadStringSection; END;
+	 Streams.Release(stream);
+	 IF done THEN
+	    terminfo := info;
+	    RETURN TRUE
+	 ELSE
+	    Error(failures, invalidTerminfo);
+	    RETURN FALSE
+	 END;
+      END Load;
+
+   BEGIN (* Open *)
       IF termname = "" THEN
 	 IF ~UnixEnvironment.String("TERM", tname) THEN
             tname := "dialup";
@@ -1211,31 +1277,16 @@ MODULE TermInfos;
       ELSE
          Strings.Copy(tname, termname);
       END;
-      IF ~UnixEnvironment.String("TERMINFO", path) THEN
-	 Strings.Copy(path, defaultdir);
+      done := TRUE;
+      NEW(failures); RelatedEvents.QueueEvents(failures);
+      IF UnixEnvironment.String("TERMINFO", tidir) & Load(tidir) THEN
+	 RETURN TRUE
       END;
-      dir[0] := "/"; dir[1] := tname[0]; dir[2] := "/"; dir[3] := ASCII.nul;
-      Strings.Concatenate(path, dir);
-      Strings.Concatenate(path, tname);
-      IF UnixFiles.Open(stream, path, UnixFiles.read, 
-			Streams.onebuf, errors) THEN
-         done := TRUE;
-         ReadHeader;
-	 NEW(info);
-         IF done THEN ReadBooleanSection; END;
-         IF done THEN ReadNumberSection; END;
-         IF done THEN ReadStringSection; END;
-         Streams.Release(stream);
-	 IF done THEN
-	    terminfo := info;
-	    RETURN TRUE;
-         ELSE
-	    Error(errors, invalidTerminfo);
-	    RETURN FALSE;
-	 END;
-      ELSE
-	 RETURN FALSE;
-      END;
+      IF Load(defaultdir) THEN RETURN TRUE END;
+      IF Load(defaultdir2) THEN RETURN TRUE END;
+      RelatedEvents.GetQueue(failures, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN FALSE
    END Open;
 
 BEGIN
@@ -1247,16 +1298,15 @@ BEGIN
    Sets.InitSet(digits);
    asciicode := ORD("0");
    REPEAT
-       Sets.InclChar(digits, CHR(asciicode));
-       INC(asciicode);
+      Sets.InclChar(digits, CHR(asciicode));
+      INC(asciicode);
    UNTIL asciicode > ORD("9");
 
    Sets.InitSet(lowerCaseLetters);
    asciicode := ORD("a");
    REPEAT
-       Sets.InclChar(lowerCaseLetters, CHR(asciicode));
-       INC(asciicode);
+      Sets.InclChar(lowerCaseLetters, CHR(asciicode));
+      INC(asciicode);
    UNTIL asciicode > ORD("z");
    InitErrorHandling;
-
 END TermInfos.
