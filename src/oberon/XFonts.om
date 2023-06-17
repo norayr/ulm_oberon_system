@@ -1,0 +1,114 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XFonts;
+
+   IMPORT Disciplines, Events, Resources, XDisplays, XObjects;
+
+   TYPE
+      Font = POINTER TO FontRec;
+      FontRec =
+	 RECORD
+	    (XObjects.ObjectRec)
+	    fid: XDisplays.FontID;
+	    display: XDisplays.Display;
+	    name: ARRAY 256 OF CHAR;
+	 END;
+
+   TYPE
+      DisplayDiscipline = POINTER TO DisplayDisciplineRec;
+      DisplayDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    array: XObjects.Array;
+	 END;
+   VAR
+      ddid: Disciplines.Identifier;
+
+   PROCEDURE ^Close(font: Font);
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    Close(event.resource(Font));
+	 END;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE GetArray(xdisplay: XDisplays.Display;
+                      VAR array: XObjects.Array);
+      VAR
+	 dd: DisplayDiscipline;
+	 resourceIDbase: XDisplays.ResourceID;
+	 resourceIDmask: XDisplays.ResourceID;
+   BEGIN
+      IF ~Disciplines.Seek(xdisplay, ddid, dd) THEN
+	 NEW(dd); dd.id := ddid;
+	 XDisplays.GetResourceIDRange(xdisplay, resourceIDbase, resourceIDmask);
+	 XObjects.CreateArray(dd.array, resourceIDbase, resourceIDmask);
+	 Disciplines.Add(xdisplay, dd);
+      END;
+      array := dd.array;
+   END GetArray;
+
+   PROCEDURE Open(VAR font: Font; display: XDisplays.Display;
+                  name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 array: XObjects.Array;
+	 fid: XDisplays.FontID;
+	 f: Font;
+	 eventType: Events.EventType;
+   BEGIN
+      GetArray(display, array);
+      IF ~XObjects.AllocID(array, fid) THEN
+	 RETURN FALSE
+      END;
+      IF ~XDisplays.OpenFont(display, fid, name) THEN
+	 RETURN FALSE
+      END;
+      NEW(f); XObjects.Init(f, fid); f.fid := fid; f.display := display;
+      COPY(name, f.name);
+      Resources.TakeInterest(f, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      Resources.DependsOn(f, display);
+      font := f;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE Close(font: Font);
+   BEGIN
+      IF Resources.Alive(font) THEN
+	 IF ~XDisplays.CloseFont(font.display, font.fid) THEN
+	    RETURN
+	 END;
+	 XObjects.Dispose(font);
+	 Resources.Notify(font, Resources.terminated);
+      END;
+   END Close;
+
+BEGIN
+   ddid := Disciplines.Unique();
+END XFonts.

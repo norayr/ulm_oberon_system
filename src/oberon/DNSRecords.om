@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: DNSRecords.om,v 1.1 2004/03/10 12:52:39 borchert Exp $
+   $Id: DNSRecords.om,v 1.1 2004/03/10 12:52:39 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: DNSRecords.om,v $
    Revision 1.1  2004/03/10 12:52:39  borchert
@@ -527,6 +527,83 @@ MODULE DNSRecords;
 	     ReadInt32(record.pdata, expire) &
 	     ReadInt32(record.pdata, minimum)
    END ExtractSOA;
+
+   PROCEDURE WriteA(s: Streams.Stream;
+                    ipaddr: IPv4Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, ipaddr, 0, 4)
+   END WriteA;
+
+   PROCEDURE WriteAAAA(s: Streams.Stream;
+                       ipaddr: IPv6Addresses.Address) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WritePart(s, ipaddr, 0, IPv6Addresses.nbytes)
+   END WriteAAAA;
+
+   PROCEDURE WriteMX(s: Streams.Stream;
+                     preference: INTEGER;
+		     name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 byte1, byte2: CHAR;
+   BEGIN
+      byte1 := CHR(preference DIV 256);
+      byte2 := CHR(preference MOD 256);
+      RETURN Streams.WriteByte(s, byte1) & Streams.WriteByte(s, byte2) &
+	     WriteName(s, name)
+   END WriteMX;
+
+   PROCEDURE WriteTXT(s: Streams.Stream;
+                      list: ListOfTextRecords) : BOOLEAN;
+      VAR
+	 len: LONGINT;
+	 lenbyte: BYTE;
+   BEGIN
+      WHILE list # NIL DO
+	 len := Strings.Len(list.text);
+	 IF len > 255 THEN RETURN FALSE END;
+	 lenbyte := CHR(len);
+	 IF ~Streams.WriteByte(s, lenbyte) OR
+	       ~Streams.WritePart(s, list.text, 0, len) THEN
+	    RETURN FALSE
+	 END;
+	 list := list.next;
+      END;
+      RETURN TRUE
+   END WriteTXT;
+
+   PROCEDURE WriteSOA(s: Streams.Stream;
+                      mname: ARRAY OF CHAR;
+		      rname: ARRAY OF CHAR;
+		      serial: Types.Int32;
+		      refresh: Types.Int32;
+		      retry: Types.Int32;
+		      expire: Types.Int32;
+		      minimum: Types.Int32) : BOOLEAN;
+
+      PROCEDURE WriteInt32(s: Streams.Stream;
+                           int32: Types.Int32) : BOOLEAN;
+	 VAR
+	    byte1, byte2, byte3, byte4: CHAR;
+      BEGIN
+	 byte1 := CHR(int32 DIV ASH(1, 24) MOD ASH(1, 8));
+	 byte2 := CHR(int32 DIV ASH(1, 16) MOD ASH(1, 8));
+	 byte3 := CHR(int32 DIV ASH(1, 8) MOD ASH(1, 8));
+	 byte4 := CHR(int32 MOD ASH(1, 8));
+	 RETURN Streams.WriteByte(s, byte1) &
+	        Streams.WriteByte(s, byte2) &
+	        Streams.WriteByte(s, byte3) &
+	        Streams.WriteByte(s, byte4)
+      END WriteInt32;
+
+   BEGIN (* WriteSOA *)
+      RETURN WriteName(s, mname) &
+             WriteName(s, rname) &
+	     WriteInt32(s, serial) &
+	     WriteInt32(s, refresh) &
+	     WriteInt32(s, retry) &
+	     WriteInt32(s, expire) &
+	     WriteInt32(s, minimum)
+   END WriteSOA;
 
 BEGIN
    Init;

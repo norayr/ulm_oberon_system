@@ -1,0 +1,98 @@
+MODULE PeanoGosper;
+
+   IMPORT Args := UnixArguments, Conclusions, Errors, Plot5Streams, Plotters,
+      Read, RelatedEvents, Streams, TurtleGraphics, UnixFiles, XPlotters;
+
+   VAR
+      level: INTEGER;
+      graphic: TurtleGraphics.Graphic;
+      plotter: Plotters.Plotter;
+
+   PROCEDURE ProcessArgs;
+      VAR
+	 s: Streams.Stream;
+	 flag: CHAR;
+	 outfile: ARRAY 512 OF CHAR;
+	 errors: RelatedEvents.Object;
+	 out: Streams.Stream;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      out := NIL;
+      Args.Init("[-o outfile] level");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "o":   Args.FetchString(outfile);
+		  IF ~UnixFiles.Open(out, outfile,
+			UnixFiles.write + UnixFiles.create, Streams.onebuf,
+			errors) THEN
+		     Conclusions.Conclude(errors, Errors.fatal, "");
+		  END;
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.Fetch(s); Read.IntS(s, level);
+      Args.AllArgs;
+      IF out # NIL THEN
+	 Plot5Streams.Create(plotter, out);
+      ELSE
+	 IF ~XPlotters.Create(plotter, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      END;
+   END ProcessArgs;
+
+   PROCEDURE DrawCurve(graphic: TurtleGraphics.Graphic; level: INTEGER);
+
+      (* Hexagonal Gosper Curve
+
+	 X -> X+YF++YF-FX--FXFX-YF+
+	 Y -> -FX+YFYF++YF+FX--FX-Y
+      *)
+
+      PROCEDURE Left;
+      BEGIN
+	 TurtleGraphics.Left(graphic);
+      END Left;
+
+      PROCEDURE Right;
+      BEGIN
+	 TurtleGraphics.Right(graphic);
+      END Right;
+
+      PROCEDURE Forward;
+      BEGIN
+	 TurtleGraphics.Forward(graphic);
+      END Forward;
+
+      PROCEDURE ^ Y(n: INTEGER);
+
+      PROCEDURE X(n: INTEGER);
+      BEGIN
+	 IF n > 0 THEN
+	    X(n-1); Left; Y(n-1); Forward; Left; Left; Y(n-1); Forward;
+	    Right; Forward; X(n-1); Right; Right; Forward; X(n-1); Forward;
+	    X(n-1); Right; Y(n-1); Forward; Left;
+	 END;
+      END X;
+
+      PROCEDURE Y(n: INTEGER);
+      BEGIN
+	 IF n > 0 THEN
+	    Right; Forward; X(n-1); Left; Y(n-1); Forward; Y(n-1); Forward;
+	    Left; Left; Y(n-1); Forward; Left; Forward; X(n-1); Right;
+	    Right; Forward; X(n-1); Right; Y(n-1);
+	 END;
+      END Y;
+
+   BEGIN (* DrawCurve *)
+      Forward; X(level);
+   END DrawCurve;
+
+BEGIN
+   ProcessArgs;
+   TurtleGraphics.Create(graphic, 60);
+   TurtleGraphics.EnableRoundCorners(graphic, 0.3);
+   DrawCurve(graphic, level);
+   TurtleGraphics.Plot(graphic, plotter);
+END PeanoGosper.

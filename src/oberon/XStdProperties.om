@@ -17,49 +17,47 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: PersistentN.od,v 1.2 2004/03/31 16:43:55 borchert Exp borchert $
+   $Id$
    ----------------------------------------------------------------------------
-   $Log: PersistentN.od,v $
-   Revision 1.2  2004/03/31 16:43:55  borchert
-   error event declarations added
-
-   Revision 1.1  2004/03/29 14:12:27  borchert
-   Initial revision
-
+   $Log$
    ----------------------------------------------------------------------------
 *)
 
-DEFINITION PersistentNodes;
+MODULE XStdProperties;
 
-   IMPORT Containers, Events, Names, Shards;
+   IMPORT Args := UnixArguments, BlockingEvents, Streams,
+      String := XStringProperties, UnixHost, XResources,
+      XWMDeleteWindowMessages;
 
    CONST
-      dbfailure = 0;
-      dbinconsistent = 1;
-      transfailure = 2;
-      noroot = 3;
-      linkwithoutparent = 4;
-      nonunique = 5;
-      badlink = 6;
-      errors = 7;
-   TYPE
-      ErrorCode = SHORTINT; (* dbfailure ... *)
-   TYPE
-      ErrorEvent = POINTER TO ErrorEventRec;
-      ErrorEventRec =
-	 RECORD
-	    (Events.EventRec)
-	    errorcode: ErrorCode;
-	 END;
-   VAR
-      errormsg: ARRAY errors OF Events.Message;
-      error: Events.EventType;
+      defaultLocale = "iso_8859_1";
 
-   PROCEDURE Init(container: Containers.Container;
-                  permissions: Names.Permissions) : BOOLEAN;
-      (* to be called on a newly created container before Open *)
+   PROCEDURE SetDefaults(win: XResources.Window) : BOOLEAN;
+      (* set reasonable defaults for the standard properties *)
+      VAR
+	 pathname, cmdname, hostname: ARRAY 512 OF CHAR;
+	 as: Streams.Stream;
+	 ok: BOOLEAN;
+	 et: BlockingEvents.EventType;
+   BEGIN
+      Args.GetCommandName(cmdname);
+      Args.GetPathName(pathname);
+      UnixHost.GetHostName(hostname);
+      ok := String.Replace(win, "WM_NAME", cmdname) &
+            String.Replace(win, "WM_ICON_NAME", cmdname) &
+	    String.Replace(win, "WM_LOCALE_NAME", defaultLocale) &
+	    String.Replace(win, "WM_CLIENT_MACHINE", hostname) &
+	    String.Replace(win, "WM_COMMAND", pathname);
+      IF ~ok THEN RETURN FALSE END;
+      Args.Init("");
+      WHILE Args.OpenArg(as) &
+	    String.Append0(win, "WM_COMMAND") &
+	    String.AppendS(win, "WM_COMMAND", as) DO
+      END;
+      IF ~ok THEN RETURN FALSE END;
+      (* includes WM_DELETE_WINDOW in WM_PROTOCOLS: *)
+      XWMDeleteWindowMessages.GetEventType(win, et);
+      RETURN TRUE
+   END SetDefaults;
 
-   PROCEDURE Open(VAR root: Names.Node;
-                  container: Containers.Container) : BOOLEAN;
-
-END PersistentNodes.
+END XStdProperties.

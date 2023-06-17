@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: DNSStdResol.om,v 1.1 2004/03/09 16:31:40 borchert Exp $
+   $Id: DNSStdResol.om,v 1.2 2005/03/15 07:28:36 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: DNSStdResol.om,v $
+   Revision 1.2  2005/03/15 07:28:36  borchert
+   do no longer generate all possible suffixes from the local domain
+
    Revision 1.1  2004/03/09 16:31:40  borchert
    Initial revision
 
@@ -148,49 +151,29 @@ MODULE DNSStdResolvers;
 	 domain: DNSRecords.Name;
 	 cs: ConstStrings.String;
 	 slit: Iterators.Iterator;
+	 any: BOOLEAN;
 
-      PROCEDURE GenerateAllDomainsOf(domain: ARRAY OF CHAR);
+      PROCEDURE Generate(domain: ARRAY OF CHAR);
 	 VAR
-	    index: INTEGER;
-	    dot: BOOLEAN;
 	    cs: ConstStrings.String;
-	    s: Streams.Stream;
-	    i: INTEGER;
       BEGIN
 	 ConstStrings.Create(cs, domain);
 	 Iterators.Yield(it, cs);
-	 index := 1; dot := FALSE;
-	 LOOP
-	    IF index >= LEN(domain) THEN EXIT END;
-	    IF domain[index] = 0X THEN EXIT END;
-	    IF dot & (domain[index] # ".") THEN
-	       ConstStrings.Init(s);
-	       i := index;
-	       WHILE (i < LEN(domain)) & (domain[i] # 0X) DO
-		  Write.CharS(s, domain[i]);
-		  INC(i);
-	       END;
-	       ConstStrings.Close(s, cs);
-	       Iterators.Yield(it, cs);
-	    END;
-	    dot := domain[index] = ".";
-	    INC(index);
-	 END;
-      END GenerateAllDomainsOf;
+      END Generate;
 
    BEGIN (* IterateSuffixes *)
       IF UnixEnvironment.String("LOCALDOMAIN", domain) &
 	    (domain[0] # 0X) THEN
-	 GenerateAllDomainsOf(domain);
+	 Generate(domain);
       ELSE
 	 WITH ref: Resolver DO
-	    IF ResolvConfParser.GetLocalDomain(ref.conf, domain) THEN
-	       GenerateAllDomainsOf(domain);
-	    ELSE
-	       ResolvConfParser.IterateSearchList(ref.conf, slit);
-	       WHILE Iterators.Get(slit, cs) DO
-		  Iterators.Yield(it, cs);
-	       END;
+	    any := FALSE;
+	    ResolvConfParser.IterateSearchList(ref.conf, slit);
+	    WHILE Iterators.Get(slit, cs) DO
+	       Iterators.Yield(it, cs); any := TRUE;
+	    END;
+	    IF ~any & ResolvConfParser.GetLocalDomain(ref.conf, domain) THEN
+	       Generate(domain);
 	    END;
 	 END;
       END;
