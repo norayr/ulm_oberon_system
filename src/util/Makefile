@@ -1,5 +1,6 @@
 #------------------------------------------------------------------------------
-Dirs := genobrts load_libsources mkoblib obbuild oblink obstage \
+Dirs := genobrts load_libsources mkoblib obbuild oblink \
+	obmkinit obstage \
 	start_cdbd start_pons tof2elf
 #------------------------------------------------------------------------------
 define propagate-target

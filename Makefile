@@ -17,10 +17,12 @@ CDBDDir := $(VarDir)/cdbd
 CDBDir := /pub/cdb/oberon
 ManDir := $(DestDir)/man
 SrcDir := $(DestDir)/src/oberon
+InitDir := $(DestDir)/etc/init.d
 InstallPonsDir := $(InstallDir)/var/pons
 InstallManDir := $(InstallDir)/man
 InstallSrcDir := $(InstallDir)/src
 InstallVarDir := $(InstallDir)/var
+InstallInitDir := $(InstallDir)/etc/init.d
 RcFile := $(InstallDir)/rc
 ONSRoot := 127.0.0.1:9880
 ONSRootOfStage1 := 127.0.0.1:9881
@@ -29,6 +31,9 @@ ScriptDir := $(Root)/build/scripts
 Binaries := cdbd nsh obci obco obdeps obload obtofgen obzap pons onsstat \
 	onsshut onsmkdir onswait
 InstalledBinaries := $(patsubst %,$(InstallBinDir)/%,$(Binaries))
+InitScripts := cdbd pons
+InstalledInitScripts := $(patsubst %,$(InstallInitDir)/%,$(InitScripts))
+InsertableInitScripts := $(patsubst %,$(InitDir)/%,$(InitScripts))
 MakeParams := DestDir=$(DestDir) BinDir=$(BinDir) DBAuth=$(DBAuth) \
 	ONSRoot=$(ONSRoot) PonsDir=$(PonsDir) CDBDDir=$(CDBDDir) \
 	CDBDir=$(CDBDir) SrcDir=$(SrcDir) \
@@ -39,6 +44,12 @@ Stage2Dir := $(Root)/stage2
 
 .PHONY:	install
 install: installbin installman installsrc installvar installrc
+
+.PHONY:	installsuse
+installsuse: install installsuseinit
+
+.PHONY:	runsuse
+runsuse:	installsuse suserun
 
 .PHONY:	bindir
 bindir:
@@ -120,6 +131,30 @@ $(RcFile):
 	echo MANPATH=$(ManDir):$$MANPATH >>$@
 	echo ONS_ROOT=$(ONSRoot) >>$@
 	echo export OBERON PATH MANPATH ONS_ROOT >>$@
+
+.PHONY:	installsuseinit initdir
+installsuseinit:	initdir $(InstalledInitScripts)
+initdir:
+	mkdir -p $(InstallInitDir)
+$(InstallInitDir)/cdbd:		scripts
+	BASEDIR=$(DestDir) BINDIR=$(BinDir) \
+	   $(ScriptDir)/obmk_suse_init_cdbd \
+	      -c $(CDBDir) -d $(CDBDDir) -r $(ONSRoot) >$@
+	chmod 755 $@
+$(InstallInitDir)/pons:		$(ScriptDir)/obmk_suse_init_pons
+	ONS_ROOT=$(ONSRoot) BASEDIR=$(DestDir) BINDIR=$(BinDir) \
+	   $(ScriptDir)/obmk_suse_init_pons \
+	      -d $(PonsDir) >$@
+	chmod 755 $@
+
+.PHONY:	suseinsserv
+suseinsserv:	$(InsertableInitScripts) 
+	insserv -v $(InitDir)/pons
+	insserv -v $(InitDir)/cdbd
+.PHONY:	suserun
+suserun:	suseinsserv
+	sh $(InitDir)/pons start
+	sh $(InitDir)/cdbd start
 
 .PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest finishstage1
 stage1:

@@ -17,9 +17,14 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixNames.om,v 1.4 2004/04/02 18:34:39 borchert Exp $
+   $Id: UnixNames.om,v 1.5 2004/09/20 08:32:43 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: UnixNames.om,v $
+   Revision 1.5  2004/09/20 08:32:43  borchert
+   Alternative methods to find a name space are no longer tried
+   if the ONS_ROOT environment variable is provided, and if this
+   specification fails.
+
    Revision 1.4  2004/04/02 18:34:39  borchert
    entirely rewritten: we no longer find the address of the Oberon
    name service within a file but through a network service that
@@ -67,10 +72,16 @@ MODULE UnixNames;
 	 VAR
 	    rootspec: DNSRecords.Name;
       BEGIN
-	 IF UnixEnvironment.String(rootEnvironment, rootspec) &
-	       Try(rootspec) THEN
-	    RETURN TRUE
+	 IF UnixEnvironment.String(rootEnvironment, rootspec) THEN
+	    (* do not attempt any other methods if the pointer
+	       in the environment fails; otherwise we might accidently
+	       access another (default) namespace
+	    *)
+	    RETURN Try(rootspec)
 	 END;
+	 (* by default we attempt to find the pointer through
+	    TXT records in the DNS system
+	 *)
 	 UnixHost.GetFullyQualifiedHostName(rootspec);
 	 IF Try(rootspec) THEN RETURN TRUE END;
 	 UnixHost.GetDomainName(rootspec);
