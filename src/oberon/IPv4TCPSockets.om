@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: IPv4TCPSock.om,v 1.7 2005/01/24 10:08:57 borchert Exp $
+   $Id: IPv4TCPSock.om,v 1.8 2007/11/26 21:52:20 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: IPv4TCPSock.om,v $
+   Revision 1.8  2007/11/26 21:52:20  borchert
+   support of EphemeralPortRange added to ListenOn
+
    Revision 1.7  2005/01/24 10:08:57  borchert
    Drop added
 
@@ -246,7 +249,27 @@ MODULE IPv4TCPSockets;
 	 addr: SysAddress;
 	 fd: SysSockets.Socket;
 	 interrupted: BOOLEAN;
+	 portnum: INTEGER;
+	 attempt: INTEGER;
    BEGIN
+      portnum := IPv4Addresses.GetPort(address);
+      IF portnum = 0 THEN
+	 (* attempt to chose an unpredictable random port
+	    instead of defaulting to the quite predictable
+	    selection of the network stack
+	 *)
+	 attempt := 0;
+	 WHILE attempt < 10 DO
+	    IPv4Addresses.SetPort(address, EphemeralPortRange.GetRandomPort());
+	    IPv4Addresses.ConvertToSys(address, addr);
+	    IF UnixSockets.Listen(socket, SysSockets.afINET,
+		  SysSockets.stream, addr, RelatedEvents.null) THEN
+	       RETURN TRUE
+	    END;
+	    INC(attempt);
+	 END;
+	 IPv4Addresses.SetPort(address, 0);
+      END;
       IPv4Addresses.ConvertToSys(address, addr);
       IF UnixSockets.Listen(socket, SysSockets.afINET, SysSockets.stream,
 	       addr, errors) THEN
