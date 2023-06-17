@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: PipeReaders.om,v 1.1 2005/02/04 19:30:27 borchert Exp $
+   $Id: PipeReaders.om,v 1.2 2005/02/06 22:29:20 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: PipeReaders.om,v $
+   Revision 1.2  2005/02/06 22:29:20  borchert
+   bug fix: send also fillsig on eof, if asked for
+
    Revision 1.1  2005/02/04 19:30:27  borchert
    Initial revision
 
@@ -30,7 +33,7 @@ MODULE PipeReaders;
 
    IMPORT Conditions, Jobs, LocalSemaphores, MemOps, RelatedEvents,
       Semaphores, Services, Signals, StreamConditions, Streams,
-      SYS := SYSTEM;
+      SYS := SYSTEM, Tasks;
 
    CONST
       maxbuflen = 512;
@@ -52,6 +55,7 @@ MODULE PipeReaders;
 	    pos: Streams.Count; (* position in current packet *)
 	    mutex: Semaphores.Semaphore;
 	    fillsig: Signals.Signal;
+	    termsig: Signals.Signal;
 	    finished: BOOLEAN;
 	    pipe: Streams.Stream;
 	 END;
@@ -85,10 +89,20 @@ MODULE PipeReaders;
 	 count: Streams.Count;
 	 buffer: Buffer;
 	 packet: Packet;
+	 readCond: Conditions.Condition;
+	 termCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
    BEGIN
       WITH job: Job DO
+	 StreamConditions.Create(readCond, job.pipe, StreamConditions.read);
+	 Signals.CreateCondition(termCond, job.s.termsig);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, readCond);
+	 Conditions.Incl(conditions, termCond);
 	 LOOP
 	    NEW(buffer);
+	    Tasks.WaitForOneOf(conditions);
+	    IF Signals.Raised(job.s.termsig) THEN EXIT END;
 	    count := Streams.ReadPacket(job.pipe, buffer^, 0, maxbuflen);
 	    IF count = 0 THEN EXIT END;
 	    NEW(packet);
@@ -104,10 +118,18 @@ MODULE PipeReaders;
 	    job.s.tail := packet;
 	    IF job.s.fillsig # NIL THEN
 	       Signals.Raise(job.s.fillsig);
+	       job.s.fillsig := NIL;
 	    END;
 	    Semaphores.V(job.s.mutex);
 	 END;
+	 Semaphores.P(job.s.mutex);
 	 job.s.finished := TRUE;
+	 IF job.s.fillsig # NIL THEN
+	    Signals.Raise(job.s.fillsig);
+	    job.s.fillsig := NIL;
+	 END;
+	 Semaphores.V(job.s.mutex);
+	 Streams.Release(job.s.pipe);
       END;
    END Reader;
 
@@ -174,12 +196,11 @@ MODULE PipeReaders;
    END ReadByte;
 
    PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
    BEGIN
       WITH s: Stream DO
-	 Semaphores.P(s.mutex);
-	 s.finished := TRUE; s.head := NIL; s.tail := NIL;
-	 Streams.Release(s.pipe);
-	 Semaphores.V(s.mutex);
+	 Signals.Raise(s.termsig);
 	 RETURN TRUE
       END;
    END Close;
@@ -244,7 +265,9 @@ MODULE PipeReaders;
       Streams.Init(news, if, caps, Streams.nobuf);
       news.head := NIL; news.tail := NIL; news.pos := 0;
       LocalSemaphores.Create(news.mutex);
-      news.fillsig := NIL; news.finished := FALSE;
+      news.fillsig := NIL;
+      Signals.Create(news.termsig);
+      news.finished := FALSE;
       news.pipe := pipe;
       RelatedEvents.Forward(pipe, s);
       NEW(job); job.pipe := pipe; job.s := news;

@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,10 +17,10 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Scan.om,v 1.2 1994/07/05 12:51:15 borchert Exp $
+   $Id: Scan.om,v 1.2 1994/07/05 12:51:15 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Scan.om,v $
-   Revision 1.2  1994/07/05  12:51:15  borchert
+   Revision 1.2  1994/07/05 12:51:15  borchert
    bug fix: ReadInt didn't process lower case hex digits correctly
 
    Revision 1.1  1994/02/23  07:46:53  borchert
@@ -270,6 +270,8 @@ MODULE Scan;
 		  intarg: INTEGER;
 		  anydigits: BOOLEAN;
 		  sign: INTEGER;
+		  lastmaxdigit: INTEGER; (* last digit of MIN/MAX INTEGER *)
+		  maxdivbase: INTEGER; (* MIN/MAX INTEGER DIV base *)
 	    BEGIN
 	       IF ~Skip() THEN RETURN FALSE END;
 	       val := 0;
@@ -287,6 +289,13 @@ MODULE Scan;
 		  END;
 		  sign := 1;
 	       END;
+	       IF sign > 0 THEN
+		  lastmaxdigit := MAX(INTEGER) MOD base;
+		  maxdivbase := MAX(INTEGER) DIV base;
+	       ELSE
+		  lastmaxdigit := ABS(MIN(INTEGER) MOD base - base);
+		  maxdivbase := MIN(INTEGER) DIV base + 1;
+	       END;
 	       WHILE ((i < width) OR (width = 0)) &
 		     ((ch >= "0") & (ch <= "7") OR
 		      (base >= 10) & (ch >= "8") & (ch <= "9") OR
@@ -297,6 +306,18 @@ MODULE Scan;
 		     digit := ORD(ch) - ORD("0");
 		  ELSE
 		     digit := ORD(CAP(ch)) - ORD("A") + 10;
+		  END;
+		  (* check for overflows *)
+		  IF sign > 0 THEN
+		     IF (val > maxdivbase) OR
+			   (val = maxdivbase) & (digit > lastmaxdigit) THEN
+			RETURN FALSE
+		     END;
+		  ELSE
+		     IF (val < maxdivbase) OR
+			   (val = maxdivbase) & (digit > lastmaxdigit) THEN
+			RETURN FALSE
+		     END;
 		  END;
 		  val := val * base + sign * digit;
 		  IF ~Read() THEN

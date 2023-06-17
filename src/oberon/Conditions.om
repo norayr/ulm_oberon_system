@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,13 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Conditions.om,v 1.5 2004/09/03 08:59:34 borchert Exp $
+   $Id: Conditions.om,v 1.6 2005/02/06 22:26:59 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Conditions.om,v $
+   Revision 1.6  2005/02/06 22:26:59  borchert
+   bug fix: assure that the priority of asynchronous events exceeds
+            those of interrupting events
+
    Revision 1.5  2004/09/03 08:59:34  borchert
    hash tab size for ConditionSet changed from 128 to 64
 
@@ -454,57 +458,61 @@ MODULE Conditions;
 
 	 PROCEDURE Add(condition: Condition);
 	    VAR
-	       elp: Element;
 	       domain: Domain;
-	       list: List;
-	 BEGIN
+
+	    PROCEDURE AddTo(list: List);
+	       VAR
+		  elp: Element;
+	    BEGIN
+	       elp := list.head;
+	       WHILE (elp # NIL) & (elp.domain # domain) DO
+		  elp := elp.next;
+	       END;
+	       IF elp = NIL THEN
+		  NEW(elp);
+		  elp.next := list.head;
+		  elp.domain := condition.domain;
+		  CreateSet(elp.cset);
+		  list.head := elp;
+		  IF list IS Ring THEN
+		     WITH list: Ring DO
+			IF list.tail = NIL THEN
+			   list.tail := elp;
+			END;
+			list.tail.next := list.head;
+		     END;
+		  END;
+	       END;
+	       Incl(elp.cset, condition);
+	    END AddTo;
+
+	 BEGIN (* Add *)
 	    domain := condition.domain;
 	    IF timecond IN domain.desc.caps THEN
 	       IF timeList = NIL THEN
 		  CreateList(timeList);
 	       END;
-	       list := timeList;
+	       AddTo(timeList);
 	    ELSIF async IN domain.desc.caps THEN
 	       IF asyncList = NIL THEN
 		  CreateList(asyncList);
 	       END;
-	       list := asyncList;
+	       AddTo(asyncList);
 	    ELSIF (select IN domain.desc.caps) &
 		  (timelimit IN domain.desc.caps) THEN
 	       IF ring = NIL THEN
 		  CreateRing(ring);
 	       END;
-	       list := ring;
+	       AddTo(ring);
 	    ELSE
 	       IF others = NIL THEN
 		  CreateList(others);
 	       END;
-	       list := others;
+	       AddTo(others);
 	       IF ~domain.desc.internal THEN
 		  otherAreInternal := FALSE;
 	       END;
 	    END;
-
-	    elp := list.head;
-	    WHILE (elp # NIL) & (elp.domain # domain) DO
-	       elp := elp.next;
-	    END;
-	    IF elp = NIL THEN
-	       NEW(elp);
-	       elp.next := list.head;
-	       elp.domain := condition.domain;
-	       CreateSet(elp.cset);
-	       list.head := elp;
-	       IF list IS Ring THEN
-		  WITH list: Ring DO
-		     IF list.tail = NIL THEN
-			list.tail := elp;
-		     END;
-		     list.tail.next := list.head;
-		  END;
-	       END;
-	    END;
-	    Incl(elp.cset, condition);
 	 END Add;
 
       BEGIN (* SortConditions *)
@@ -525,9 +533,14 @@ MODULE Conditions;
                                    VAR wakeupEvent: WakeupEvent);
 	 VAR
 	    wakeup: Events.EventType;
+	    priority: Priorities.Priority;
       BEGIN
 	 Events.Define(wakeup);
-	 Events.SetPriority(wakeup, Events.GetPriority() + 1);
+	 priority := Events.GetPriority() + 1;
+	 IF priority < Priorities.interrupts + 1 THEN
+	    priority := Priorities.interrupts + 1;
+	 END;
+	 Events.SetPriority(wakeup, priority);
 	 Events.Handler(wakeup, WakeupHandler);
 	 NEW(wakeupEvent); wakeupEvent.type := wakeup;
 	 wakeupEvent.condition := condition;
@@ -769,7 +782,7 @@ MODULE Conditions;
 	    ringMember := NIL; largeRing := FALSE;
 	 END;
 	 GetMinTime(minTime, minTimeCond);
-	 busyLoop := largeRing OR ~otherAreInternal;
+	 busyLoop := largeRing OR ~otherAreInternal OR (asyncList # NIL);
 
 	 loopCnt := 0;
 	 LOOP (* until one of the conditions becomes TRUE *)

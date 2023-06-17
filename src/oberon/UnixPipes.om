@@ -17,9 +17,16 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixPipes.om,v 1.6 2005/02/04 19:34:01 borchert Exp $
+   $Id: UnixPipes.om,v 1.8 2005/02/07 00:00:43 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: UnixPipes.om,v $
+   Revision 1.8  2005/02/07 00:00:43  borchert
+   support of StreamConditions added
+
+   Revision 1.7  2005/02/06 22:28:16  borchert
+   bug fix: childs no longer attempt to close twice the other side of
+            the pipeline
+
    Revision 1.6  2005/02/04 19:34:01  borchert
    support of multiple pipes to the same child added
 
@@ -62,6 +69,7 @@ MODULE UnixPipes;
    TYPE
       Stream = Streams.Stream;
       Mode = UnixFiles.Mode;
+      Child = POINTER TO ChildRec;
       Pipe = POINTER TO PipeRec;
       PipeRec = 
 	 RECORD
@@ -78,6 +86,7 @@ MODULE UnixPipes;
 	    ioCond: Conditions.Condition;
 	    waitCond: Conditions.Condition;
 	    exceptions: RelatedEvents.Object;
+	    child: Child; (* belongs to this child *)
 	    prev, next: Pipe; (* list of pipes *)
 	 END;
    TYPE
@@ -88,7 +97,6 @@ MODULE UnixPipes;
 	    pipe: Pipe;
 	    next: Pipeline;
 	 END;
-      Child = POINTER TO ChildRec;
       ChildRec =
 	 RECORD
 	    (Disciplines.DisciplineRec)
@@ -223,6 +231,7 @@ MODULE UnixPipes;
    END RemovePipe;
 
    PROCEDURE CreatePipe(VAR pipe: Pipe;
+			child: Child;
                         fd: SysIO.File;
 			caps: Streams.CapabilitySet;
 			bufmode: Streams.BufMode;
@@ -238,6 +247,7 @@ MODULE UnixPipes;
       pipe.retry := TRUE;
       pipe.interrupted := FALSE;
       pipe.waitCond := NIL;
+      pipe.child := child;
       NEW(pipe.exceptions);
       RelatedEvents.QueueEvents(pipe.exceptions);
       UnixFileConditions.Create(pipe.ioCond, NIL, pipe.file, condMode);
@@ -332,8 +342,8 @@ MODULE UnixPipes;
 	 IF SYS.TAS(s.closed) THEN
 	    RETURN FALSE (* was already closed *)
 	 END;
-         ok := SysIO.Close(s.file, s, s.retry, s.interrupted);
 	 RemovePipe(s);
+         ok := SysIO.Close(s.file, s, s.retry, s.interrupted);
 	 IF (s.pid # 0) & (s.mypid = SysProcess.Getpid()) THEN
 	    Tasks.WaitFor(s.waitCond);
 	    UnixWaitConditions.FetchStatus(s.waitCond, stat);
@@ -360,6 +370,26 @@ MODULE UnixPipes;
       END;
       RETURN ok
    END Close;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Pipe DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+	       UnixFileConditions.Create(msg.condition,
+					 s, s.file, msg.operation);
+	       msg.stream := s;
+	       msg.msgProcessed := TRUE;
+	    END;
+	 ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       msg.wouldblock := ~UnixFileConditions.Test(
+				    s, s.file, msg.operation, msg.errors);
+	       msg.msgProcessed := TRUE;
+	    END;
+	 END;
+      END;
+   END Handler;
 
    (* === exported procedures ========================================== *)
 
@@ -391,7 +421,7 @@ MODULE UnixPipes;
       pipeline.myside := myside;
       pipeline.yourside := yourside;
       pipeline.childfd := childfd;
-      CreatePipe(pipeline.pipe, myside, mycaps, bufmode, condMode);
+      CreatePipe(pipeline.pipe, child, myside, mycaps, bufmode, condMode);
       pipeline.next := NIL;
       IF child.head = NIL THEN
 	 child.head := pipeline;
@@ -440,7 +470,9 @@ MODULE UnixPipes;
 	 (* close all other pipes to assure that we receive SysSignals.PIPE *)
 	 ptr := pipes; pipes := NIL;
 	 WHILE ptr # NIL DO
-	    IF ~SysIO.Close(ptr.file, NIL, TRUE, interrupted) THEN END;
+	    IF (ptr.child # child) & ~SYS.TAS(ptr.closed) THEN
+	       IF ~SysIO.Close(ptr.file, NIL, TRUE, interrupted) THEN END;
+	    END;
 	    ptr := ptr.next;
 	 END;
 	 Events.RemoveHandlers(SysSignals.PIPE);
@@ -574,7 +606,8 @@ BEGIN
    if.addrread := ReadBuf; if.addrwrite := WriteBuf;
    if.read := ReadByte; if.write := WriteByte;
    if.close := Close;
-   caps := {Streams.addrio, Streams.close};
+   if.handler := Handler;
+   caps := {Streams.addrio, Streams.close, Streams.handler};
    Services.CreateType(type, "UnixPipes.Pipe", "Streams.Stream");
    Events.Handler(SysSignals.PIPE, Events.NilHandler);
    Events.Define(error);
