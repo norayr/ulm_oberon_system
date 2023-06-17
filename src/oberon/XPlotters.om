@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: XPlotters.om,v 1.1 2005/04/15 13:18:35 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: XPlotters.om,v $
+   Revision 1.1  2005/04/15 13:18:35  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -444,9 +447,11 @@ MODULE XPlotters;
 		  plotter.height / displayHeight THEN
 	    height := displayHeight DIV 2;
 	    width := SHORT(ENTIER(height * aspectRatioOfPlotter));
+	    IF width < 2*border THEN width := 2*border END;
 	 ELSE
 	    width := displayWidth DIV 2;
 	    height := SHORT(ENTIER(width / aspectRatioOfPlotter));
+	    IF height < 2*border THEN height := 2*border END;
 	 END;
 	 IF ~XResources.CreateSimpleWindow(win, plotter.display,
 	                                   NIL, 0, 0,
@@ -503,10 +508,16 @@ MODULE XPlotters;
 	    scaleX := aspectRatioOfPlotter / aspectRatioOfX;
 	    scaleY := 1;
 	    width := SHORT(ENTIER(width * scaleX));
+	    IF width < 2*border THEN
+	       width := 2*border;
+	    END;
 	 ELSE
 	    scaleX := 1;
 	    scaleY := aspectRatioOfX / aspectRatioOfPlotter;
 	    height := SHORT(ENTIER(height * scaleY));
+	    IF height < 2*border THEN
+	       height := 2*border;
+	    END;
 	 END;
 	 (* attempt to resize our window if its aspect ratio
 	    differs too much
@@ -552,8 +563,10 @@ MODULE XPlotters;
 	 Signals.Create(plotter.signal);
 	 Signals.WaitFor(plotter.signal);
 	 plotter.signal := NIL;
+	 IF ~Resources.Alive(plotter) THEN RETURN END;
       END;
       IF ~CreateWindow() THEN RETURN END;
+      IF ~Resources.Alive(plotter) THEN RETURN END;
       Conditions.CreateSet(conditions);
       Resources.TakeInterest(plotter.win, eventType);
       EventConditions.Create(termCondition, eventType);
@@ -782,6 +795,9 @@ MODULE XPlotters;
    PROCEDURE Close(plotter: Plotters.Plotter);
    BEGIN
       WITH plotter: Plotter DO
+	 IF plotter.signal # NIL THEN
+	    Signals.Raise(plotter.signal);
+	 END;
 	 X.Close(plotter.display);
       END;
    END Close;

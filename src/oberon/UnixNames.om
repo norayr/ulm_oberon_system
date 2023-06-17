@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixNames.om,v 1.5 2004/09/20 08:32:43 borchert Exp $
+   $Id: UnixNames.om,v 1.6 2005/04/28 08:16:33 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: UnixNames.om,v $
+   Revision 1.6  2005/04/28 08:16:33  borchert
+   takes now advantage of RobustRoots
+
    Revision 1.5  2004/09/20 08:32:43  borchert
    Alternative methods to find a name space are no longer tried
    if the ONS_ROOT environment variable is provided, and if this
@@ -46,8 +49,8 @@
 
 MODULE UnixNames;
 
-   IMPORT ConstStrings, DNSRecords, IPv4NameSystems, Names, RelatedEvents,
-      UnixEnvironment, UnixHost;
+   IMPORT ConstStrings, DNSRecords, IPv4NameSystems, Names, Networks,
+      RelatedEvents, RobustRoots, UnixEnvironment, UnixHost;
 
    CONST
       rootEnvironment = "ONS_ROOT";
@@ -59,13 +62,11 @@ MODULE UnixNames;
 
    PROCEDURE ImportPublicRoot(errors: RelatedEvents.Object) : BOOLEAN;
       VAR
-	 root: Names.Node;
-	 name: Names.Name;
-	 ok: BOOLEAN;
+	 addr: Networks.Address;
 
       PROCEDURE Try(spec: ARRAY OF CHAR) : BOOLEAN;
       BEGIN
-	 RETURN IPv4NameSystems.ImportFrom(spec, root, errors)
+	 RETURN IPv4NameSystems.Convert(spec, addr, errors)
       END Try;
 
       PROCEDURE TryThemAll() : BOOLEAN;
@@ -93,13 +94,8 @@ MODULE UnixNames;
 
    BEGIN (* ImportRoot *)
       IF ~TryThemAll() THEN RETURN FALSE END;
-      ASSERT(root # NIL);
-      ConstStrings.Create(name, rootLinkName);
-      RelatedEvents.Save(Names.root);
-      RelatedEvents.Forward(Names.root, errors);
-      ok := Names.Insert(Names.root, root, name, NIL);
-      RelatedEvents.Restore(Names.root);
-      RETURN ok
+      RobustRoots.Import(addr, rootLinkName, NIL, errors);
+      RETURN TRUE
    END ImportPublicRoot;
 
 BEGIN

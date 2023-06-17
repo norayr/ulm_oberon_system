@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,24 +17,29 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: PathWaiter.om,v 1.1 2005/02/16 14:00:02 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: PathWaiter.om,v $
+   Revision 1.1  2005/02/16 14:00:02  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
 MODULE PathWaiter;
 
-   IMPORT Args := UnixArguments, Conclusions, Conditions, Errors,
+   IMPORT Args := UnixArguments, Clocks, Conclusions, Conditions, Errors,
       LoaderErrors, Names, PathConditions, Paths, PersistentObjects,
-      PrivateShards, Process, RelatedEvents, RemoteCDBNames,
-      RemoteCommandNodes, Services, Shards, Streams, UnixFiles, UnixNames;
+      PrivateShards, Process, Read, RelatedEvents, RemoteCDBNames,
+      RemoteCommandNodes, Services, Shards, Streams, Tasks, TimeConditions,
+      Times, UnixFiles, UnixNames, Write;
 
    VAR
       lidType: Services.Type;
       errors: RelatedEvents.Object;
       auth: Shards.Lid;
       path: ARRAY 512 OF CHAR;
+      timecond: Conditions.Condition;
 
    PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
       VAR
@@ -54,14 +59,22 @@ MODULE PathWaiter;
       VAR
 	 flag: CHAR;
 	 filename: ARRAY 512 OF CHAR;
+	 as: Streams.Stream;
+	 seconds: INTEGER;
+	 timeout: Times.Time;
    BEGIN
-      auth := NIL;
-      Args.Init("[-a auth] path");
+      auth := NIL; timecond := NIL;
+      Args.Init("[-a auth] [-t timeout] path");
       WHILE Args.GetFlag(flag) DO
 	 CASE flag OF
 	 | "a":
 	    Args.FetchString(filename);
 	    CreateLid(auth, filename);
+	 | "t":
+	    Args.Fetch(as); Read.IntS(as, seconds);
+	    IF as.count = 0 THEN Args.Usage END;
+	    Times.CreateAndSet(timeout, Times.relative, 0, seconds, 0);
+	    TimeConditions.Create(timecond, Clocks.system, timeout);
 	 ELSE
 	    Args.Usage;
 	 END;
@@ -72,12 +85,28 @@ MODULE PathWaiter;
 
    PROCEDURE WaitFor(path: ARRAY OF CHAR);
       VAR
-	 condition: PathConditions.Condition;
+	 pathcond: PathConditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 selected: Conditions.ConditionSet;
 	 node: Names.Node;
+	 cmdname: ARRAY 128 OF CHAR;
    BEGIN
-      PathConditions.Create(condition, path, Names.root, auth);
-      IF ~PathConditions.GetNode(condition, node, errors) THEN
-	 Conclusions.Conclude(errors, Errors.fatal, path);
+      Conditions.CreateSet(conditions);
+      PathConditions.Create(pathcond, path, Names.root, auth);
+      Conditions.Incl(conditions, pathcond);
+      IF timecond # NIL THEN
+	 Conditions.Incl(conditions, timecond);
+      END;
+      Tasks.Select(conditions, selected);
+      IF Conditions.In(selected, pathcond) THEN
+	 IF ~PathConditions.GetNode(pathcond, node, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, path);
+	 END;
+      ELSE
+	 Args.GetCommandName(cmdname);
+	 Write.StringS(Streams.stderr, cmdname);
+	 Write.LineS(Streams.stderr, ": timelimit exceeded");
+	 Process.Exit(Process.indicateFailure);
       END;
    END WaitFor;
 
