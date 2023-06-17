@@ -1,0 +1,37 @@
+#!/sbin/runscript
+
+depend() {
+	need pons
+}
+
+start() {
+	ebegin "Starting cdbd"
+	$BINDIR/onsmkdir -a $PONSDIR/write -p $CDBDIR || return 1 
+	local LOGFILE=$CDBDDIR/cdbd.LOG
+	local bindto=$(echo $CDBD_PORT | sed 's/:/ /')
+	local options=
+	if [ -f $INTENSITY ] ; then
+		options="$options -i $(cat $INTENSITY)"
+	fi
+	echo "start of pons at $(date)" >> $LOGFILE
+	start-stop-daemon --start --background --quiet --make-pidfile --chuid cdbd \
+		--pidfile /var/run/cdbd.pid --exec $BINDIR/cdbd -- $options -a $PONSDIR/write \
+		-w $CDBDDIR/write -B $bindto -b $CDBDIR $CDBDDIR/oberon.db >>$LOGFILE 2>&1
+	local RESULT=$?
+	local RETRY=30
+	local CHECK=1
+	while [ $RETRY -gt 0 ] && [ $RESULT -eq 0 ] && [ $CHECK -ne 0 ]; do
+		sleep 1
+		$BINDIR/onsstat $CDBDIR/cdbd > /dev/null 2>&1
+		CHECK=$?
+		let 'RETRY--'
+	done	
+	let RESULT=$RESULT+$CHECK
+	eend $RESULT "Failed to start cdbd."
+}
+
+stop() {
+	ebegin "Stopping cdbd"
+	start-stop-daemon --stop --quiet --pidfile /var/run/cdbd.pid
+	eend $?
+}

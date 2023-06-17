@@ -17,9 +17,17 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: InetTCP.om,v 1.7 2004/05/22 06:11:54 borchert Exp borchert $
+   $Id: InetTCP.om,v 1.9 2005/04/20 21:03:34 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: InetTCP.om,v $
+   Revision 1.9  2005/04/20 21:03:34  borchert
+   InetTCP attempts to avoid to write an 0-valued IPv4 address
+   into a persistent stream; instead the local IP address returned
+   by UnixHost.GetLocalIPv4Address is taken, if available.
+
+   Revision 1.8  2005/04/16 05:27:23  borchert
+   IPv4TCPSockets.Listen replaced by IPv4TCPSockets.ListenOn
+
    Revision 1.7  2004/05/22 06:11:54  borchert
    bug fix: IPv4 addresses are not to be read or written through NetIO
             as their representation is already architecture-independent
@@ -53,9 +61,9 @@
 
 MODULE InetTCP;
 
-   IMPORT Conditions, InetResolver, IPv4Addresses, IPv4TCPSockets, NetIO,
-      Networks, PersistentObjects, RelatedEvents, Services, Streams,
-      SysConversions, SysSockets, UnixSockets;
+   IMPORT Conditions, IPv4Addresses, IPv4TCPSockets, NetIO, Networks,
+      PersistentObjects, RelatedEvents, Services, Streams, SysConversions,
+      SysSockets, UnixHost, UnixSockets;
 
    TYPE
       Socket = UnixSockets.Socket;
@@ -194,14 +202,21 @@ MODULE InetTCP;
 			     object: PersistentObjects.Object) : BOOLEAN;
       VAR
 	 portnum: INTEGER;
+	 host: IPv4Addresses.Address;
    BEGIN
       WITH object: NetworkAddress DO
 	 portnum := IPv4Addresses.GetPort(object.ipaddr);
+	 (* do not write a 0-valued IPv4 address into a persistent
+	    stream as this would be perfectly useless for other hosts
+	 *)
+	 host := object.ipaddr.host;
+	 IF host = 0 THEN
+	    host := ourHost;
+	 END;
 	 (* do not pass the IPv4 address through NetIO
 	    as its representation is already architecture-independent
 	 *)
-	 RETURN Streams.Write(s, object.ipaddr.host) &
-		NetIO.WriteInteger(s, portnum)
+	 RETURN Streams.Write(s, host) & NetIO.WriteInteger(s, portnum)
       END;
    END WriteNetAddress;
 
@@ -229,8 +244,7 @@ MODULE InetTCP;
       VAR
 	 netif: Networks.Interface;
 	 if: PersistentObjects.Interface;
-	 hostname: ARRAY 128 OF CHAR;
-	 address: Address;
+	 address: IPv4Addresses.Address;
    BEGIN
       NEW(netif);
       netif.open := NetOpen;
@@ -251,10 +265,9 @@ MODULE InetTCP;
       PersistentObjects.RegisterType(addressType,
 			"InetTCP.NetworkAddress", "Networks.Address", if);
 
-      (* retrieve own Internet address *)
-      InetResolver.GetHostName(hostname);
-      IF InetResolver.AddrByHost(hostname, address, RelatedEvents.null) THEN
-	 ourHost := address.host;
+      (* retrieve our own IPv4 address *)
+      IF UnixHost.GetLocalIPv4Address(address) THEN
+	 ourHost := address;
       ELSE
 	 ourHost := 0;
       END;

@@ -2753,6 +2753,7 @@ MODULE XDisplays;
       VAR
 	 hostname: DNSRecords.Name;
 	 displayNumber: INTEGER;
+	 gotAuth: BOOLEAN;
 
       PROCEDURE ParseDisplay(s: Streams.Stream;
                              VAR hostname: ARRAY OF CHAR;
@@ -2780,6 +2781,37 @@ MODULE XDisplays;
 	 auth.number.len := SHORT(Strings.Len(auth.number.string));
       END SetDisplayNumber;
 
+      PROCEDURE GetAuth(address: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 IF address # "" THEN
+	    NEW(auth.address);
+	    COPY(address, auth.address.string);
+	    auth.address.len := SHORT(Strings.Len(auth.address.string));
+	 END;
+	 IF XAuthority.GetAuthByAddr(auth, errors) THEN
+	    IF auth.name = NIL THEN NEW(auth.name); auth.name.len := 0; END;
+	    IF auth.data = NIL THEN NEW(auth.data); auth.data.len := 0; END;
+	    RETURN TRUE
+	 ELSE
+	    NEW(auth.name); auth.name.len := 0;
+	    NEW(auth.data); auth.data.len := 0;
+	    RETURN FALSE
+	 END;
+      END GetAuth;
+
+      PROCEDURE TryLocalHostnames;
+	 VAR
+	    hostname: ARRAY 512 OF CHAR;
+      BEGIN
+	 auth.family := XAuthority.familyLocal;
+	 UnixHost.GetHostName(hostname);
+	 gotAuth := GetAuth(hostname);
+	 IF ~gotAuth THEN
+	    UnixHost.GetFullyQualifiedHostName(hostname);
+	    gotAuth := GetAuth(hostname);
+	 END;
+      END TryLocalHostnames;
+
       PROCEDURE TryLocalConnection() : BOOLEAN;
 	 VAR
 	    socketname: ARRAY 512 OF CHAR;
@@ -2791,10 +2823,7 @@ MODULE XDisplays;
 	 IF ~UnixDomainSockets.Open(s, socketname, Streams.onebuf, errors) THEN
 	    RETURN FALSE
 	 END;
-	 auth.family := XAuthority.familyLocal;
-	 NEW(auth.address);
-	 UnixHost.GetHostName(auth.address.string);
-	 auth.address.len := SHORT(Strings.Len(auth.address.string));
+	 TryLocalHostnames;
 	 RETURN TRUE
       END TryLocalConnection;
 
@@ -2820,14 +2849,13 @@ MODULE XDisplays;
 		  the hostname in the authorization db
 		  with auth.family set to familyLocal
 	       *)
-	       UnixHost.GetHostName(auth.address.string);
-	       auth.address.len := SHORT(Strings.Len(auth.address.string));
-	       auth.family := XAuthority.familyLocal;
+	       TryLocalHostnames;
 	    ELSE
 	       auth.address.len := SHORT(SYS.SIZE(IPv4Addresses.Address));
 	       MemOps.Copy(SYS.ADR(ipaddr), SYS.ADR(auth.address.string),
 		  auth.address.len);
 	       auth.family := XAuthority.familyInternet;
+	       gotAuth := GetAuth("");
 	    END;
 	    RETURN TRUE
 	 END Try;
@@ -2847,17 +2875,6 @@ MODULE XDisplays;
 	 END;
 	 RETURN FALSE
       END TryNetworkConnection;
-
-      PROCEDURE GetAuth;
-      BEGIN
-	 IF XAuthority.GetAuthByAddr(auth, errors) THEN
-	    IF auth.name = NIL THEN NEW(auth.name); auth.name.len := 0; END;
-	    IF auth.data = NIL THEN NEW(auth.data); auth.data.len := 0; END;
-	 ELSE
-	    NEW(auth.name); auth.name.len := 0;
-	    NEW(auth.data); auth.data.len := 0;
-	 END;
-      END GetAuth;
 
       PROCEDURE SendGreeting() : BOOLEAN;
 	 VAR
@@ -2979,6 +2996,8 @@ MODULE XDisplays;
 	 ConnectionError(errors, invalidScreenNumber, ds, "");
 	 RETURN FALSE
       END;
+      SetDisplayNumber;
+      gotAuth := FALSE;
       IF hostname = "" THEN
 	 IF ~TryLocalConnection() THEN
 	    ConnectionError(errors, localConnectionFailed, ds, "");
@@ -2990,8 +3009,6 @@ MODULE XDisplays;
 	    RETURN FALSE
 	 END;
       END;
-      SetDisplayNumber;
-      GetAuth;
       RelatedEvents.Forward(s, errors);
       IF ~SendGreeting() THEN
 	 ConnectionError(errors, greetingFailed, ds, "");

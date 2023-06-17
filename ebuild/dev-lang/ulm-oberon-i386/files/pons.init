@@ -1,0 +1,29 @@
+#!/sbin/runscript
+
+start() {
+	ebegin "Starting pons"
+	local bindto1=$(echo $ONS_ROOT | sed 's/:/ /')
+	local bindto2=$(echo $ONS_PORT | sed 's/:/ /')
+	local LOGFILE=$PONSDIR/pons.LOG
+	echo "start of pons at $(date)" >> $LOGFILE
+	start-stop-daemon --start --background --quiet --chuid pons --make-pidfile \
+		--pidfile /var/run/pons.pid --exec $BINDIR/pons -- -b $bindto1 -B $bindto2 \
+		-w $PONSDIR/write -s $PONSDIR/shutdown $PONSDIR/pdb >>$LOGFILE 2>&1
+	local RESULT=$?
+	local RETRY=30
+	local CHECK=1
+	while [ $RETRY -gt 0 ] && [ $RESULT -eq 0 ] && [ $CHECK -ne 0 ]; do
+		sleep 1
+		$BINDIR/onsstat /pub/pons > /dev/null 2>&1
+		CHECK=$?
+		let 'RETRY--'
+	done	
+	let RESULT=$RESULT+$CHECK
+	eend $RESULT "Failed to start pons."
+}
+
+stop() {
+	ebegin "Stopping pons"
+	start-stop-daemon --stop --quiet --pidfile /var/run/pons.pid
+	eend $?
+}
