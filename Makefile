@@ -135,8 +135,8 @@ $(InstallBinDir)/onswait:	scripts mkoblib
 installrc:	$(RcFile)
 $(RcFile):
 	echo OBERON=$(DestDir) >$@
-	echo PATH=$(BinDir):$$PATH >>$@
-	echo MANPATH=$(ManDir):$$MANPATH >>$@
+	echo PATH=$(BinDir):\$$PATH >>$@
+	echo MANPATH=$(ManDir):\$$MANPATH >>$@
 	echo ONS_ROOT=$(ONSRoot) >>$@
 	echo export OBERON PATH MANPATH ONS_ROOT >>$@
 

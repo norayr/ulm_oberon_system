@@ -1250,13 +1250,20 @@ MODULE I386ObCodeGen; (* Christian Ehrhardt *)
 	 ELSE
 	    (* Both registers are used by the base. We have to add
 	     * the index manually *)
-	    ops[0] := Op.RegOp (op2.reg1, 4 (* pointer *));
+	    IF ~Regs.Traced (op2.reg1) THEN
+	       ASSERT (Regs.Traced (op2.reg2));
+	       ops[0] := Op.RegOp (op2.reg2, 4 (* pointer *));
+	    ELSE
+	       ops[0] := Op.RegOp (op2.reg1, 4 (* pointer *));
+	    END;
 	    ops[1] := op2;
 	    op2.memsz := 4; (* This is ok, we just load the address *)
 	    Emit.Instr (proc.s, Pentium.LEA, 2, ops);
 	    Regs.SetMode (ops[0].reg1, Regs.addrM);
-	    Regs.DestroyValue (op2.reg2);
-	    op2 := Op.MemOp2 (op2.reg1, op.reg1, 4(* set below *), 0, 0, scale);
+	    IF op2.reg2 # ops[0].reg1 THEN
+	       Regs.DestroyValue (op2.reg2);
+	    END;
+	    op2 := Op.MemOp2 (ops[0].reg1, op.reg1, 4(* set below *), 0, 0, scale);
 	 END;
 	 (* Ok. op2 is the result Operand, but what if the caller
 	  * requested byvalue ? *)

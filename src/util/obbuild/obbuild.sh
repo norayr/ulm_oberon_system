@@ -24,7 +24,7 @@ then
    intensity=`cat $INTENSITY`
 fi
 
-set -- `getopt a:b:l:o: $*`
+set -- `getopt a:b:i:l:o: $*`
 while [ $# -gt 0 ]
 do
    case $1
