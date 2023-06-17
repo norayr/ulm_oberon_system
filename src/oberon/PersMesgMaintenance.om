@@ -1,0 +1,167 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersMesgMai.om,v 1.1 1998/04/06 21:18:09 martin Exp martin $
+   ----------------------------------------------------------------------------
+   $Log: PersMesgMai.om,v $
+   Revision 1.1  1998/04/06 21:18:09  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, 1996
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersMesgMaintenance;
+
+   IMPORT
+      Messages, Names, NetIO, PersistentObjects, RelatedEvents,
+      RemoteObjects, Services, Shards, Streams;
+
+   TYPE
+      SupplyBoxMsg = POINTER TO SupplyBoxMsgRec;
+      SupplyBoxMsgRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    name: Names.Name;	(* IN *)
+	    perm: Shards.Pot;	(* IN *)
+	    box:  Names.Node;	(* OUT *)
+	 END;
+
+   VAR
+      supplyBoxMsgType: Services.Type;
+
+   (* ===== marshalling procedures ===== *)
+
+   PROCEDURE CreateSupplyBoxMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: SupplyBoxMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, supplyBoxMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateSupplyBoxMsg;
+
+   PROCEDURE WriteSupplyBoxMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: SupplyBoxMsg DO
+	 IF msg.processed THEN
+	    RETURN ~msg.done OR RemoteObjects.Export(s, msg.box)
+	 END;
+	 RETURN
+	    NetIO.WriteConstString(s, msg.name) &
+	    PersistentObjects.Write(s, msg.perm)
+      END;
+   END WriteSupplyBoxMsg;
+
+   PROCEDURE ReadSupplyBoxMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: SupplyBoxMsg DO
+	 IF msg.processed THEN
+	    RETURN ~msg.done OR RemoteObjects.Import(s, msg.box)
+	 END;
+	 RETURN
+	    NetIO.ReadConstString(s, msg.name) &
+	    PersistentObjects.Read(s, msg.perm)
+      END;
+   END ReadSupplyBoxMsg;
+
+   (* ===== implementation ===== *)
+
+   PROCEDURE DoSupplyBox(msgsys: Names.Node;
+			name: Names.Name; perm: Shards.Pot;
+			VAR box: Names.Node): BOOLEAN;
+      VAR
+	 status: Names.Status;
+	 amode: Names.AccessMode;
+   BEGIN
+      NEW(status);
+      amode := 0;
+      WHILE amode < Names.accessmodes DO
+	 status.perm[amode] := perm;
+	 INC(amode);
+      END;
+      Shards.CreateSimplePot(status.perm[Names.insert], TRUE);
+      Names.CreateNode(box, status, Names.allCaps);
+      IF Names.Insert(msgsys, box, name, NIL) THEN
+	 RETURN TRUE
+      END;
+      box := NIL;
+      RETURN FALSE
+   END DoSupplyBox;
+
+   (* ===== message handling ===== *)
+
+   PROCEDURE Handler(obj: Messages.Object; VAR msg: Messages.Message);
+   BEGIN
+      IF msg IS SupplyBoxMsg THEN
+	 WITH msg: SupplyBoxMsg DO
+	    WITH obj: Names.Node DO
+	       RelatedEvents.Save(obj);
+	       RelatedEvents.Forward(obj, msg.errors);
+	       msg.done := DoSupplyBox(obj, msg.name, msg.perm, msg.box);
+	       RelatedEvents.Restore(obj);
+	       msg.processed := TRUE;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   (* ===== exported procedures ===== *)
+
+   PROCEDURE InitServer(msgsys: Names.Node);
+   BEGIN
+      Messages.InstallHandler(msgsys, Handler);
+   END InitServer;
+
+   PROCEDURE SupplyBox( msgsys: Names.Node;
+			name: Names.Name; perm: Shards.Pot;
+			VAR box: Names.Node): BOOLEAN;
+      VAR
+	 msg: SupplyBoxMsg;
+   BEGIN
+      CreateSupplyBoxMsg(msg);
+      msg.name := name;
+      msg.perm := perm;
+      Messages.Send(msgsys, msg);
+      box := msg.box;
+      RETURN msg.done;
+   END SupplyBox;
+
+   (* ===== initializations ===== *)
+
+   PROCEDURE InitInterface;
+      VAR
+	 if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := CreateSupplyBoxMsg;
+      if.read := ReadSupplyBoxMsg;
+      if.write := WriteSupplyBoxMsg;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(supplyBoxMsgType,
+	 "PersMesgMaintenance.SupplyBoxMsg", "Messages.Message", if);
+   END InitInterface;
+
+BEGIN
+   InitInterface;
+END PersMesgMaintenance.

@@ -1,0 +1,177 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ProxyNodes.om,v 1.2 2004/09/09 21:07:20 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ProxyNodes.om,v $
+   Revision 1.2  2004/09/09 21:07:20  borchert
+   assure that error events are queued for newly created proxy nodes
+   (that conforms to the standard behaviour of Names)
+
+   Revision 1.1  2004/08/28 13:39:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ProxyNodes;
+
+   (* support of Proxies for Names.Node *)
+
+   IMPORT Events, Names, Proxies, RelatedEvents, Services, Shards;
+
+   TYPE
+      Proxy = POINTER TO ProxyRec;
+      ProxyRec = RECORD (Names.NodeRec) END;
+   VAR
+      type: Services.Type;
+      if: Names.Interface;
+
+   (* === Names interface ================================================= *)
+
+   PROCEDURE Access(node: Names.Node; mode: Names.AccessMode;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.Access(orig, mode, auth)
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node; auth: Shards.Lid;
+                       VAR status: Names.StatusRec) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.GetStatus(orig, auth, status)
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node; status: Names.Status;
+		       auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.SetStatus(orig, status, auth)
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+                        VAR members: Names.Lister) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.GetMembers(orig, auth, members)
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.TakeInterest(orig, auth, eventType)
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name;
+                     auth: Shards.Lid; VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.GetNode(orig, name, auth, subnode)
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.Insert(orig, subnode, name, auth)
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status; caps: Names.CapabilitySet;
+			 auth: Shards.Lid;
+			 VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.MakeSubnode(orig, name, status, caps, auth, subnode)
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.Delete(orig, name, auth)
+   END Delete;
+
+   PROCEDURE Destroy(node: Names.Node; auth: Shards.Lid): BOOLEAN;
+      VAR
+	 orig: Names.Node;
+   BEGIN
+      Proxies.GetOrig(node, orig);
+      RETURN Names.Destroy(orig, auth)
+   END Destroy;
+
+   (* === Proxies interface =============================================== *)
+
+   PROCEDURE CreateProxy(VAR object: Services.Object; orig: Services.Object);
+      VAR
+	 proxy: Proxy;
+   BEGIN
+      NEW(proxy); Services.Init(proxy, type);
+      RelatedEvents.QueueEvents(proxy);
+      object := proxy;
+   END CreateProxy;
+
+   PROCEDURE InitProxy(object, orig: Services.Object);
+   BEGIN
+      WITH object: Names.Node DO
+	 Names.InitNode(object, if, Names.allCaps);
+      END;
+   END InitProxy;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 ntype: Services.Type;
+	 pif: Proxies.Interface;
+   BEGIN
+      Services.SeekType("Names.Node", ntype); ASSERT(ntype # NIL);
+      NEW(pif); pif.createProxy := CreateProxy; pif.initProxy := InitProxy;
+      Proxies.Register(ntype, pif);
+      Services.CreateType(type, "ProxyNodes.Proxy", "Names.Node");
+      NEW(if); if.access := Access; if.getStatus := GetStatus;
+      if.setStatus := SetStatus; if.getMembers := GetMembers;
+      if.takeInterest := TakeInterest; if.getNode := GetNode;
+      if.insert := Insert; if.makeSubnode := MakeSubnode;
+      if.delete := Delete; if.destroy := Destroy;
+   END InitModule;
+
+BEGIN
+   InitModule;
+END ProxyNodes.

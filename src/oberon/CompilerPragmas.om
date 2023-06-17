@@ -1,0 +1,575 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerPra.om,v 1.1 2001/04/22 06:26:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerPra.om,v $
+   Revision 1.1  2001/04/22 06:26:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerPragmas;
+
+   (* process compilation pragmas *)
+
+   IMPORT Args, ASCII, BoolArgs, BoolDisciplines, CompilerErrors,
+      CompilerObjects, ConstStrings, Disciplines, Errors, Events, NetIO,
+      PersistentDisciplines, PersistentObjects, Priorities, Read,
+      RelatedEvents, Services, Sets, Sources := CompilerSources,
+      StreamDisciplines, Streams, Strings, StrListArgs, Write;
+
+   CONST
+      argname = "pragma";
+      nofchars = ORD(MAX(CHAR)) + 1;
+
+   TYPE
+      LocalPragmas = POINTER TO LocalPragmasRec;
+      LocalPragmasRec =
+	 RECORD
+	    loc: Streams.Count;
+	    pragmas: Args.Arguments; (* with actual values *)
+	    next: LocalPragmas;
+	 END;
+      PragmaStack = POINTER TO PragmaStackRec;
+      PragmaStackRec =
+	 RECORD
+	    value: Args.Value;
+	    prev: PragmaStack;
+	 END;
+      PragmaContext = POINTER TO PragmaContextRec;
+      PragmaContextRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    pragmas: Args.Arguments; (* with default values *)
+	    head, tail: LocalPragmas; (* sorted list *)
+	    current: LocalPragmas;
+	    stack: ARRAY nofchars OF PragmaStack; (* temporary *)
+	 END;
+   VAR
+      pragmaContextType: Services.Type;
+
+   CONST
+      elementSY = "P"; endSY = "E";
+   VAR
+      argsType: Services.Type;
+
+   CONST
+      (* error events of ProcessArgs: *)
+      usageError = 0; (* syntax error in pragma definition *)
+      unknownPragma = 1; (* unknown pragma variable *)
+      invalidValue = 2; (* invalid pragma value *)
+      errors = 3;
+   TYPE
+      ErrorCode = SHORTINT; (* usageError..invalidValue *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   (* === error handling ============================================= *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[usageError] := "syntax error in pragma definition";
+      errormsg[unknownPragma] := "unknown pragma variable";
+      errormsg[invalidValue] := "invalid pragma value";
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === PersistentObjects interface for PragmaContext ============== *)
+
+   PROCEDURE CreatePragmaContext(VAR object: PersistentObjects.Object);
+      VAR
+	 pcontext: PragmaContext;
+	 index: INTEGER;
+   BEGIN
+      NEW(pcontext);
+      PersistentObjects.Init(pcontext, pragmaContextType);
+      pcontext.head := NIL; pcontext.tail := NIL; pcontext.current := NIL;
+      index := 0;
+      WHILE index < nofchars DO
+	 pcontext.stack[index] := NIL; INC(index);
+      END;
+      object := pcontext;
+   END CreatePragmaContext;
+
+   PROCEDURE ReadPragmaContext(s: Streams.Stream;
+			       object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 localPragmas: LocalPragmas;
+   BEGIN
+      WITH object: PragmaContext DO
+	 IF ~PersistentObjects.GuardedReadObjectOrNIL(s,
+	       argsType, object.pragmas) THEN
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Forward(object.pragmas, object);
+	 object.head := NIL; object.tail := NIL;
+	 LOOP
+	    IF ~NetIO.ReadChar(s, sy) THEN RETURN FALSE END;
+	    IF sy = endSY THEN EXIT END;
+	    IF sy # elementSY THEN RETURN FALSE END;
+	    NEW(localPragmas);
+	    IF ~NetIO.ReadLongInt(s, localPragmas.loc) OR
+		  ~PersistentObjects.GuardedReadObjectOrNIL(s,
+		     argsType, localPragmas.pragmas) THEN
+	       RETURN FALSE
+	    END;
+	    localPragmas.next := NIL;
+	    IF object.head = NIL THEN
+	       object.head := localPragmas;
+	    ELSE
+	       object.tail.next := localPragmas;
+	    END;
+	    object.tail := localPragmas;
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadPragmaContext;
+
+   PROCEDURE WritePragmaContext(s: Streams.Stream;
+			        object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 localPragmas: LocalPragmas;
+   BEGIN
+      WITH object: PragmaContext DO
+	 IF ~PersistentObjects.WriteObjectOrNIL(s, object.pragmas) THEN
+	    RETURN FALSE
+	 END;
+	 localPragmas := object.head;
+	 WHILE localPragmas # NIL DO
+	    IF ~NetIO.WriteChar(s, elementSY) OR
+		  ~NetIO.WriteLongInt(s, localPragmas.loc) OR
+		  ~PersistentObjects.WriteObjectOrNIL(s,
+		     localPragmas.pragmas) THEN
+	       RETURN FALSE
+	    END;
+	    localPragmas := localPragmas.next;
+	 END;
+	 RETURN NetIO.WriteChar(s, endSY)
+      END;
+   END WritePragmaContext;
+
+   (* === module initialization ====================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(persif);
+      persif.create := CreatePragmaContext;
+      persif.read := ReadPragmaContext;
+      persif.write := WritePragmaContext;
+      PersistentObjects.RegisterType(pragmaContextType,
+	 "CompilerPragmas.PragmaContext", "PersistentDisciplines.Object",
+	 persif);
+      Services.SeekType("Args.Arguments", argsType); ASSERT(argsType # NIL);
+   END Init;
+
+   (* === private procedures ========================================= *)
+
+   PROCEDURE SetupBoolDisciplines(object: Disciplines.Object);
+   BEGIN
+      BoolDisciplines.InclTrue(object, "+");
+      BoolDisciplines.InclFalse(object, "-");
+      BoolDisciplines.InclTrue(object, "on");
+      BoolDisciplines.InclFalse(object, "off");
+   END SetupBoolDisciplines;
+
+   PROCEDURE UndefineFieldSeparatorAndWhiteSpace(s: Streams.Stream);
+      VAR
+	 charset: Sets.CharSet;
+   BEGIN
+      Sets.InitSet(charset);
+      Sets.InclChar(charset, 0X);
+      StreamDisciplines.SetFieldSepSet(s, charset);
+      StreamDisciplines.SetWhiteSpace(s, charset);
+   END UndefineFieldSeparatorAndWhiteSpace;
+
+   (* === exported procedures ======================================== *)
+
+   PROCEDURE DefineArgs(args: Args.Arguments);
+   BEGIN
+      Args.Define(args, argname, 0X, StrListArgs.type,
+	 "compiler pragmas");
+      SetupBoolDisciplines(args);
+   END DefineArgs;
+
+   PROCEDURE Create(VAR pcontext: PragmaContext; pragmas: Args.Arguments);
+      VAR
+	 context: PragmaContext;
+   BEGIN
+      CreatePragmaContext(context);
+      context.pragmas := pragmas;
+      RelatedEvents.Forward(context.pragmas, context);
+      context.head := NIL; context.tail := NIL;
+      pcontext := context;
+   END Create;
+
+   PROCEDURE ProcessArgs(pcontext: PragmaContext;
+			 args: Args.Arguments) : BOOLEAN;
+      VAR
+	 value: StrListArgs.Value;
+	 definition: StrListArgs.Member;
+	 cs: Streams.Stream;
+	 varname, valstring: ARRAY 128 OF CHAR;
+	 vals: Streams.Stream;
+	 arg: Args.Argument;
+	 val: Args.Value;
+
+   BEGIN (* ProcessArgs *)
+      Args.GetValue(args, argname, value);
+      IF value = NIL THEN RETURN TRUE END;
+      definition := value.head;
+      WHILE definition # NIL DO
+	 ConstStrings.Open(cs, definition.string);
+	 RelatedEvents.Forward(cs, pcontext);
+	 StreamDisciplines.SetFieldSep(cs, "=");
+	 IF ~Read.FieldS(cs, varname) OR (varname = "") OR
+	       ~Read.FieldS(cs, valstring) THEN
+	    Error(pcontext, usageError); RETURN FALSE
+	 END;
+	 IF ~Args.Exists(pcontext.pragmas, varname) THEN
+	    Error(pcontext, unknownPragma); RETURN FALSE
+	 END;
+	 Args.Seek(pcontext.pragmas, varname, arg); ASSERT(arg # NIL);
+	 Strings.Open(vals, valstring); RelatedEvents.Forward(vals, pcontext);
+	 SetupBoolDisciplines(vals);
+	 UndefineFieldSeparatorAndWhiteSpace(vals);
+	 IF ~Args.ReadValue(vals, arg.type, val) THEN RETURN FALSE END;
+	 Args.SetValue(pcontext.pragmas, varname, val);
+	 definition := definition.next;
+      END;
+      RETURN TRUE
+   END ProcessArgs;
+
+   PROCEDURE ProcessPragmas(pcontext: PragmaContext;
+			    loc: CompilerObjects.Location;
+			    text: Streams.Stream);
+      CONST
+	 eofSY = 0; dollarSY = 1; plusSY = 2; minusSY = 3; equalSY = 4;
+	 identSY = 5; valueSY = 6; otherSY = 7;
+	 tokenlen = 64;
+      TYPE
+	 Token =
+	    RECORD
+	       begin, end: Streams.Count;
+	       string: ARRAY tokenlen OF CHAR;
+	    END;
+      VAR
+	 sy: INTEGER;
+	 ch: CHAR;
+	 eof: BOOLEAN;
+	 whitespace: Sets.CharSet;
+	 token: Token;
+	 pos, lastpos: Streams.Count;
+
+      PROCEDURE NextCh;
+      BEGIN
+	 lastpos := pos;
+	 IF eof OR ~Streams.ReadByte(text, ch) THEN
+	    eof := TRUE; ch := 0X;
+	 ELSE
+	    INC(pos);
+	 END;
+      END NextCh;
+
+      PROCEDURE Error(token: Token; msg: ARRAY OF CHAR);
+	 VAR
+	    es: Streams.Stream;
+	    errorloc: CompilerObjects.Location;
+      BEGIN
+	 CompilerObjects.CreateLocation(errorloc, loc.src,
+	    token.begin, token.end);
+	 CompilerErrors.Open(es);
+	 Write.StringS(es, msg);
+	 CompilerErrors.At1(es, errorloc);
+	 CompilerErrors.Close(es, pcontext);
+      END Error;
+
+      PROCEDURE GetSy;
+	 VAR
+	    index: INTEGER;
+      BEGIN
+	 WHILE ~eof & Sets.CharIn(whitespace, ch) DO
+	    NextCh;
+	 END;
+	 token.begin := lastpos;
+	 IF eof THEN sy := eofSY; token.end := pos; RETURN END;
+	 CASE ch OF
+	 | "$":   sy := dollarSY; NextCh;
+	 | "+":   sy := plusSY; NextCh;
+	 | "-":   sy := minusSY; NextCh;
+	 | "=":   sy := equalSY; NextCh;
+	 | "A".."Z", "a".."z":
+		  index := 0;
+		  REPEAT
+		     IF index < tokenlen THEN
+			token.string[index] := ch; INC(index);
+		     END;
+		     NextCh;
+		  UNTIL eof OR
+		     (ch # "_") &
+		     ~(("a" <= ch) & (ch <= "z")) &
+		     ~(("A" <= ch) & (ch <= "Z")) &
+		     ~(("0" <= ch) & (ch <= "9"));
+		  IF index < tokenlen THEN token.string[index] := 0X END;
+		  sy := identSY;
+	 | "0".."9":
+		  index := 0;
+		  REPEAT
+		     IF index < tokenlen THEN
+			token.string[index] := ch; INC(index);
+		     END;
+		     NextCh;
+		  UNTIL eof OR ~(("0" <= ch) & (ch <= "9"));
+		  IF index < tokenlen THEN token.string[index] := 0X END;
+		  sy := valueSY;
+	 | ASCII.quote:
+		  index := 0; NextCh;
+		  WHILE ~eof & (ch # ASCII.quote) DO
+		     IF index < tokenlen THEN
+			token.string[index] := ch; INC(index);
+		     END;
+		     NextCh;
+		  END;
+		  IF index < tokenlen THEN token.string[index] := 0X END;
+		  IF eof THEN
+		     sy := otherSY; token.end := lastpos;
+		     Error(token,
+			"unterminated string quoting of pragma value");
+		  ELSE
+		     sy := valueSY; NextCh;
+		  END;
+	 ELSE
+	    sy := otherSY; NextCh;
+	 END;
+	 token.end := lastpos;
+      END GetSy;
+
+      PROCEDURE GetAssignment(VAR varname, value: Token;
+			      VAR fallback: BOOLEAN) : BOOLEAN;
+      BEGIN
+	 fallback := FALSE;
+	 IF sy # dollarSY THEN RETURN FALSE END;
+	 GetSy;
+	 IF sy # identSY THEN RETURN FALSE END;
+	 varname := token;
+	 GetSy;
+	 IF varname.string[1] = 0X THEN
+	    (* old syntax style *)
+	    value := token;
+	    IF sy = equalSY THEN
+	       value.string := ""; fallback := TRUE;
+	    ELSIF sy = plusSY THEN
+	       value.string := "+";
+	    ELSIF sy = minusSY THEN
+	       value.string := "-";
+	    ELSE
+	       RETURN FALSE
+	    END;
+	    GetSy; RETURN TRUE
+	 END;
+	 IF sy # equalSY THEN RETURN FALSE END;
+	 GetSy;
+	 IF sy # valueSY THEN RETURN FALSE END;
+	 value := token; GetSy; RETURN TRUE
+      END GetAssignment;
+
+      PROCEDURE ProcessAssignments;
+	 VAR
+	    varname, value: Token;
+	    fallback: BOOLEAN;
+	    arg: Args.Argument;
+	    argval: Args.Value;
+	    lpragmas: LocalPragmas;
+	    ts: Streams.Stream;
+	    queue: RelatedEvents.Queue;
+	    lastpragmas: Args.Arguments;
+	    errormsg: ARRAY 128 OF CHAR; ems: Streams.Stream;
+
+	 PROCEDURE PushValue(shortname: CHAR; value: Args.Value);
+	    VAR
+	       element: PragmaStack;
+	       index: INTEGER;
+	 BEGIN
+	    IF shortname # 0X THEN
+	       NEW(element); element.value := value;
+	       index := ORD(shortname);
+	       element.prev := pcontext.stack[index];
+	       pcontext.stack[index] := element;
+	    END;
+	 END PushValue;
+
+	 PROCEDURE PopValue(shortname: CHAR; VAR value: Args.Value) : BOOLEAN;
+	    VAR
+	       element: PragmaStack;
+	       index: INTEGER;
+	       name: ARRAY 2 OF CHAR;
+	 BEGIN
+	    ASSERT(shortname # 0X);
+	    index := ORD(shortname);
+	    element := pcontext.stack[index];
+	    IF element = NIL THEN RETURN FALSE END;
+	    pcontext.stack[index] := element.prev;
+	    (* return uncovered value *)
+	    IF element.prev = NIL THEN
+	       name[0] := shortname; name[1] := 0X;
+	       Args.GetValue(pcontext.pragmas, name, value);
+	    ELSE
+	       value := element.prev.value;
+	    END;
+	    RETURN TRUE
+	 END PopValue;
+
+	 PROCEDURE GetLocalPragmas;
+	 BEGIN
+	    IF lpragmas = NIL THEN
+	       IF pcontext.head = NIL THEN
+		  lastpragmas := pcontext.pragmas;
+	       ELSE
+		  lastpragmas := pcontext.tail.pragmas;
+	       END;
+	       NEW(lpragmas); lpragmas.loc := loc.begin;
+	       Args.CreateCopyOf(lpragmas.pragmas, lastpragmas);
+	       SetupBoolDisciplines(lpragmas.pragmas);
+	       lpragmas.next := NIL;
+	       IF pcontext.head = NIL THEN
+		  pcontext.head := lpragmas;
+	       ELSE
+		  pcontext.tail.next := lpragmas;
+	       END;
+	       pcontext.tail := lpragmas;
+	    END;
+	 END GetLocalPragmas;
+
+      BEGIN (* ProcessAssignments *)
+	 lpragmas := NIL;
+	 WHILE GetAssignment(varname, value, fallback) DO
+	    IF Args.Exists(pcontext.pragmas, varname.string) THEN
+	       Args.Seek(pcontext.pragmas, varname.string, arg);
+	       ASSERT(arg # NIL);
+	       IF fallback THEN
+		  IF arg.short = 0X THEN
+		     Error(varname, "nesting not supported for this pragma");
+		  ELSIF PopValue(arg.short, argval) THEN
+		     GetLocalPragmas;
+		     Args.SetValue(lpragmas.pragmas, varname.string, argval);
+		  ELSE
+		     Error(value, "unbalanced pragma definition");
+		  END;
+	       ELSE
+		  Strings.Open(ts, value.string); RelatedEvents.QueueEvents(ts);
+		  SetupBoolDisciplines(ts);
+		  UndefineFieldSeparatorAndWhiteSpace(ts);
+		  IF Args.ReadValue(ts, arg.type, argval) THEN
+		     GetLocalPragmas;
+		     Args.SetValue(lpragmas.pragmas, varname.string, argval);
+		     PushValue(arg.short, argval);
+		  ELSE
+		     IF RelatedEvents.EventsPending(ts) THEN
+			RelatedEvents.GetQueue(ts, queue); ASSERT(queue # NIL);
+			errormsg[0] := 0X; Strings.Open(ems, errormsg);
+			Errors.Write(ems, queue.event);
+			Error(value, errormsg);
+		     ELSE
+			Error(value, "invalid value");
+		     END;
+		  END;
+	       END;
+	    ELSE
+	       Error(varname, "unknown pragma parameter");
+	    END;
+	 END;
+      END ProcessAssignments;
+
+   BEGIN (* ProcessPragmas *)
+      StreamDisciplines.GetWhiteSpace(text, whitespace);
+      pos := loc.begin;
+      ASSERT((pcontext.head = NIL) OR (pos > pcontext.tail.loc));
+      eof := FALSE; NextCh; GetSy;
+      ProcessAssignments;
+   END ProcessPragmas;
+
+   PROCEDURE LookupPragma(pcontext: PragmaContext;
+		          location: CompilerObjects.Location;
+			  pname: ARRAY OF CHAR;
+			  VAR value: Args.Value);
+      VAR
+	 pragmas: Args.Arguments;
+	 last, lpragmas: LocalPragmas;
+   BEGIN
+      IF pcontext.head = NIL THEN
+	 pragmas := pcontext.pragmas;
+      ELSIF pcontext.tail.loc <= location.begin THEN
+	 pragmas := pcontext.tail.pragmas;
+      ELSE
+	 lpragmas := pcontext.current;
+	 IF (lpragmas = NIL) OR (lpragmas.loc > location.begin) THEN
+	    lpragmas := pcontext.head;
+	 END;
+	 last := NIL;
+	 WHILE (lpragmas # NIL) & (location.begin >= lpragmas.loc) DO
+	    last := lpragmas; lpragmas := lpragmas.next;
+	 END;
+	 IF last = NIL THEN
+	    pragmas := pcontext.pragmas;
+	 ELSE
+	    pragmas := last.pragmas;
+	    pcontext.current := last;
+	 END;
+      END;
+      Args.GetValue(pragmas, pname, value);
+   END LookupPragma;
+
+   PROCEDURE LookupFlag(pcontext: PragmaContext;
+			location: CompilerObjects.Location;
+			pname: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 value: Args.Value;
+   BEGIN
+      LookupPragma(pcontext, location, pname, value);
+      IF value = NIL THEN RETURN FALSE END;
+      IF ~(value IS BoolArgs.Value) THEN RETURN FALSE END;
+      RETURN value(BoolArgs.Value).bool
+   END LookupFlag;
+
+BEGIN
+   Init;
+END CompilerPragmas.

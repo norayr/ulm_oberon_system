@@ -1,0 +1,90 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE I386StackAllocations; (* Christian Ehrhardt *)
+
+   IMPORT Conclusions, Disciplines, Emit := I386Emit, FragmentedStreams,
+      Gen := I386OpCodeGenerator, Op := I386Operands,
+      Pentium := I386Instructions, Regs := CompilerRegisters,
+      StackAlloc := CompilerStackAllocations, Streams;
+
+   TYPE
+      StackSpace = POINTER TO StackSpaceRec;
+      
+      Stack = POINTER TO StackRec;
+      StackRec = RECORD
+         (StackAlloc.StackRec)
+	 stream : FragmentedStreams.Stream;
+	 obj : StackSpace;
+      END;
+
+   TYPE
+      StackSpaceRec = RECORD
+         (Disciplines.ObjectRec)
+      END;
+
+
+   PROCEDURE Create (VAR stack : Stack; s : FragmentedStreams.Stream;
+                     baseoff, align : LONGINT; dir : StackAlloc.Direction);
+   BEGIN
+      ASSERT (s # NIL);
+      NEW (stack);
+      StackAlloc.Init (stack, baseoff, align, dir);
+      stack.stream := s;
+      NEW(stack.obj);
+      FragmentedStreams.IncludeObject (stack.stream, stack.obj, 0, 100);
+   END Create;
+
+   PROCEDURE Close (stack : Stack);
+      VAR
+         reg : Regs.Value;
+	 regop, immop : Op.Operand;
+	 tmps : FragmentedStreams.Stream;
+	 maxoff, len, dummy : LONGINT;
+	 ok : BOOLEAN;
+   BEGIN
+      reg := NIL;
+      FragmentedStreams.Create (tmps);
+      Regs.UntracedValue (reg, Gen.gensp);
+      maxoff := StackAlloc.GetSize (stack);
+      ASSERT (maxoff <= 0);
+      IF maxoff # 0 THEN
+	 regop := Op.RegOp (reg, 4);
+	 immop := Op.ImmInt (maxoff);
+	 Emit.Instr2 (tmps, Pentium.ADD, regop, immop);
+	 FragmentedStreams.Length (tmps, len, dummy);
+	 ASSERT (len = dummy);
+	 FragmentedStreams.SetObjectSize (stack.obj, len);
+	 FragmentedStreams.FixObject (stack.obj);
+	 ok := Streams.Seek (tmps, 0, Streams.fromStart); ASSERT (ok);
+	 ok := Streams.Copy (tmps, stack.stream, len); ASSERT (ok);
+      ELSE
+         FragmentedStreams.SetObjectSize (stack.obj, 0);
+         FragmentedStreams.FixObject (stack.obj);
+      END;
+      ok := Streams.Seek (stack.stream, 0, Streams.fromEnd); ASSERT (ok);
+   END Close;
+
+END I386StackAllocations.

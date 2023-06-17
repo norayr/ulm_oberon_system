@@ -1,0 +1,264 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysMain.om,v 1.8 2004/09/09 20:56:48 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysMain.om,v $
+   Revision 1.8  2004/09/09 20:56:48  borchert
+   avoid floods of newly created tasks within ProcessEvents
+
+   Revision 1.7  2004/06/05 05:19:03  borchert
+   bug fix: queued events were processed in reverse order
+
+   Revision 1.6  2004/03/30 17:49:05  borchert
+   bug fix: in some cases, events were no longer processed due to
+            the higher priority of the scheduler tasks (was necessary
+            to avoid deadlocks); this problem is now solved by
+            handling the queue of Events by ProcessEvents which creates
+            a new task for each queued event
+
+   Revision 1.5  2004/03/09 21:36:31  borchert
+   mainTaskFinished event type added
+
+   Revision 1.4  2004/02/20 08:54:59  borchert
+   main scheduler put at priority Priorities.interrupts - 1
+
+   Revision 1.3  1995/02/06  08:51:23  borchert
+   support of default task group added
+
+   Revision 1.2  1994/07/05  12:56:33  borchert
+   minor change due to new out-parameter of Schedulers.AddTask
+
+   Revision 1.1  1994/02/23  07:59:33  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysMain;
+
+   (* this module is initialized by the runtime startoff
+      and serves as handle for code which determines the
+      initialization order of the other modules;
+      not all modules which are linked together need to be initialized
+      (this could be useful if the decision about the module selection
+      depends on the command line arguments or the environment)
+
+      further hints:
+	 + it doesn't matter if a module is initialized multiple times
+	 + each modules initializes all modules it imports
+   *)
+
+   IMPORT Conditions, Coroutines, Events, Priorities, PrioritySchedulers,
+      RelatedEvents, RoundRobin, Schedulers, Signals, Storage, SYS := SYSTEM,
+      SysModules, Tasks;
+
+   VAR
+      defaulttg: Schedulers.TaskGroup;
+
+   VAR
+      mainTaskFinished: Events.EventType;
+	 (* is raised when the main task which initializes all modules
+	    finishes
+	 *)
+      allTasksFinished: Signals.Signal;
+      roottg: Schedulers.TaskGroup;
+
+   TYPE
+      Queue = POINTER TO QueueRec;
+      QueueRec =
+	 RECORD
+	    event: Events.Event;
+	    next: Queue;
+	 END;
+   VAR
+      queueHead, queueTail: Queue; (* of unprocessed events *)
+      queueLock: BOOLEAN;
+
+   PROCEDURE InitAllModules(VAR cr: Coroutines.Coroutine);
+      VAR
+	 module: SysModules.Module;
+	 event: Events.Event;
+   BEGIN
+      SYS.CRSPAWN(cr);
+      module := SysModules.modules;
+      WHILE module # NIL DO
+	 module.init;
+	 module := module.next;
+      END;
+      NEW(event); event.type := mainTaskFinished;
+      event.message := "main task finished";
+      Events.Raise(event);
+      Storage.GarbageCollection;
+      Tasks.Terminate;
+   END InitAllModules;
+
+   PROCEDURE QueueHandler(event: Events.Event);
+      VAR
+	 member: Queue;
+   BEGIN
+      ASSERT(event # NIL);
+      IF ~SYS.TAS(queueLock) THEN
+	 NEW(member); member.event := event; member.next := NIL;
+	 IF queueTail = NIL THEN
+	    queueHead := member;
+	 ELSE
+	    queueTail.next := member;
+	 END;
+	 queueTail := member;
+	 queueLock := FALSE;
+      END;
+   END QueueHandler;
+
+   PROCEDURE TestQueueCondition(domain: Conditions.Domain;
+                                condition: Conditions.Condition;
+				errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN queueHead # NIL
+   END TestQueueCondition;
+
+   PROCEDURE ProcessEvent(VAR cr: Coroutines.Coroutine;
+                          event: Events.Event);
+      (* task that processes one queued event *)
+   BEGIN
+      SYS.CRSPAWN(cr);
+      Events.Raise(event);
+      Tasks.Terminate;
+   END ProcessEvent;
+
+   PROCEDURE ProcessEvents(VAR cr: Coroutines.Coroutine);
+      (* task that creates a separate task for each queued event *)
+      VAR
+	 termCondition: Conditions.Condition;
+	 queueCondition: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 event: Events.Event;
+	 count: INTEGER;
+
+      PROCEDURE CreateQueueCondition(VAR condition: Conditions.Condition);
+	 VAR
+	    if: Conditions.Interface;
+	    desc: Conditions.Description;
+	    domain: Conditions.Domain;
+      BEGIN
+	 NEW(if); if.test := TestQueueCondition;
+	 NEW(desc); desc.caps := {}; desc.internal := TRUE;
+	 NEW(domain); Conditions.InitDomain(domain, if, desc);
+	 NEW(condition); Conditions.Init(condition, domain);
+      END CreateQueueCondition;
+
+      PROCEDURE Spawn(event: Events.Event);
+	 VAR
+	    cr: Coroutines.Coroutine;
+	    task: PrioritySchedulers.Task;
+      BEGIN
+	 ProcessEvent(cr, event); Schedulers.AddTask(roottg, cr, task);
+	 PrioritySchedulers.SetPriority(task,
+	    Events.GetEventPriority(event.type));
+      END Spawn;
+
+   BEGIN (* ProcessEvents *)
+      SYS.CRSPAWN(cr);
+      Conditions.CreateSet(conditions);
+      Signals.CreateCondition(termCondition, allTasksFinished);
+      Conditions.Incl(conditions, termCondition);
+      queueLock := FALSE; queueHead := NIL; queueTail := NIL;
+      Events.QueueHandler(QueueHandler);
+      CreateQueueCondition(queueCondition);
+      Conditions.Incl(conditions, queueCondition);
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 IF Signals.Raised(allTasksFinished) THEN EXIT END;
+	 count := 0;
+	 LOOP
+	    event := NIL;
+	    IF SYS.TAS(queueLock) THEN EXIT END;
+	    IF queueHead # NIL THEN
+	       event := queueHead.event;
+	       queueHead := queueHead.next;
+	       IF queueHead = NIL THEN
+		  queueTail := NIL;
+	       END;
+	    END;
+	    queueLock := FALSE;
+	    IF event = NIL THEN EXIT END;
+	    Spawn(event);
+	    (* avoid floods of newly created tasks *)
+	    INC(count);
+	    IF count MOD 16 = 0 THEN
+	       Tasks.Suspend;
+	    END;
+	 END;
+      END;
+      Events.QueueHandler(NIL);
+      WHILE queueHead # NIL DO
+	 Spawn(queueHead.event); queueHead := queueHead.next;
+      END;
+      queueTail := NIL;
+      Tasks.Terminate;
+   END ProcessEvents;
+
+   PROCEDURE CreateTask(VAR task: Tasks.Task; cr: Coroutines.Coroutine);
+   BEGIN
+      Schedulers.AddTask(defaulttg, cr, task);
+   END CreateTask;
+
+   PROCEDURE RunMainTaskGroup(VAR cr: Coroutines.Coroutine);
+      VAR
+	 initcr: Coroutines.Coroutine;
+	 tg: Schedulers.TaskGroup;
+	 task: Tasks.Task;
+   BEGIN
+      SYS.CRSPAWN(cr);
+      Events.Define(mainTaskFinished);
+      Events.SetPriority(mainTaskFinished, Priorities.message);
+      Events.Ignore(mainTaskFinished);
+      InitAllModules(initcr);
+      RoundRobin.CreateTaskGroup(tg);
+      defaulttg := tg; Tasks.SetupDefaultGroup(CreateTask);
+      Schedulers.AddTask(tg, initcr, task);
+      Events.AssertPriority(Priorities.interrupts - 1);
+      Schedulers.StartScheduler(tg);
+      Events.ExitPriority;
+      Signals.Raise(allTasksFinished);
+      Tasks.Terminate;
+   END RunMainTaskGroup;
+
+   PROCEDURE Init;
+      VAR
+	 maincr: Coroutines.Coroutine;
+	 eventcr: Coroutines.Coroutine;
+	 task: PrioritySchedulers.Task;
+   BEGIN
+      Signals.Create(allTasksFinished);
+      PrioritySchedulers.CreateTaskGroup(roottg);
+      RunMainTaskGroup(maincr); Schedulers.AddTask(roottg, maincr, task);
+      PrioritySchedulers.SetPriority(task, 10);
+      ProcessEvents(eventcr); Schedulers.AddTask(roottg, eventcr, task);
+      PrioritySchedulers.SetPriority(task, 20);
+      Events.AssertPriority(Priorities.interrupts - 1);
+      Schedulers.StartScheduler(roottg);
+      Events.ExitPriority;
+   END Init;
+
+BEGIN
+   Init;
+END SysMain.

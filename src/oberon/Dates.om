@@ -1,0 +1,768 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Dates.om,v 1.8 1999/05/30 13:53:12 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Dates.om,v $
+   Revision 1.8  1999/05/30 13:53:12  borchert
+   timezone offsets are now (in conformance with Timezones(3))
+   interpreted as relative to UTC (as opposed to as relative to local time)
+
+   Revision 1.7  1999/05/29  19:34:09  borchert
+   bug fix: off was subtracted from time (instead to add it)
+
+   Revision 1.6  1999/02/26  15:01:06  borchert
+   bug fix: Dates.Evaluate set ydays wrong for 1900, 1800 etc.
+
+   Revision 1.5  1996/01/04  17:04:15  borchert
+   fixes due to changed interface of PersistentObjects
+
+   Revision 1.4  1994/07/18  11:17:11  borchert
+   unused variable aux of procedure GetValue removed
+
+   Revision 1.3  1994/05/14  17:01:03  martin
+   error handling improved
+
+   Revision 1.2  1994/05/03  10:48:51  martin
+   completely replaced by a better version
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Apr 1994
+   (credits to Markus Schauler for an experimental version of this module)
+   ----------------------------------------------------------------------------
+*)
+MODULE Dates;
+
+   IMPORT
+      Events, NetIO, Objects, Operations, Persistent := PersistentObjects,
+      Priorities, Scales, Services, Streams, Times, Timezones;
+
+   CONST
+      january = 1;   april = 4;     july = 7;      october = 10;
+      february = 2;  may = 5;       august = 8;    november = 11;
+      march = 3;     june = 6;      september = 9; december = 12;
+
+      sunday = 0;    tuesday = 2;   thursday = 4;  saturday = 6;
+      monday = 1;    wednesday = 3; friday = 5;
+
+      absolute = Scales.absolute;   relative = Scales.relative;
+
+      epochDays = 24855;	    epochSeconds = 11648;
+      daySeconds = 24 * 60 * 60;
+      msecsPerSecond = 1000;
+      msecsPerDay = daySeconds * msecsPerSecond;
+      usecsPerMsec = 1000;
+      usecsPerSecond = msecsPerSecond * usecsPerMsec;
+
+      baseDayno = 719470;		(* DayNo(1970,1,1) *)
+
+      reformDayno = 578043;         skippedDays = 10;
+      (* Gregor calendar reformation: DayNo(1582,10,15)=DayNo(1582,10,4)+1 *)
+
+      daysIn5months = 153;          daysIn100years = 36525;
+      daysIn4years = 1461;          daysIn400years = 146097;
+
+   TYPE
+      Date = POINTER TO DateRec;
+      DateRec =
+	 RECORD
+	    (Times.TimeRec)
+	    days: Scales.Value;
+	    msecs: Scales.Value;	(* 0..msecsPerDay-1 *)
+	 END;
+
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    days:  Scales.Value;
+	    hours: SHORTINT;		(* 0..23 *)
+	    minutes: SHORTINT;		(* 0..59 *)
+	    seconds: SHORTINT;		(* 0..59 *)
+	    msecs: INTEGER;		(* 0..999 *)
+	 END;
+
+      Info = POINTER TO InfoRec;
+      InfoRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    year: Scales.Value;
+	    month: SHORTINT;		(* january..december *)
+	    day: SHORTINT;		(* 1..31 *)
+	    weekday: SHORTINT;		(* sunday..saturday *)
+	    hour: SHORTINT;		(* 0..23 *)
+	    minute: SHORTINT;		(* 0..59 *)
+	    second: SHORTINT;		(* 0..59 *)
+	    msec: INTEGER;		(* 0..999 *)
+	 END;
+
+      LongInfo = POINTER TO LongInfoRec;
+      LongInfoRec =
+	 RECORD
+	    (InfoRec)
+	    yearday: INTEGER;		(* 1..366 *)
+	    week: SHORTINT;		(* 1..53, week begins on Sunday *)
+	    mweek: SHORTINT;		(* 1..53, week begins on Monday *)
+	    leapyear: BOOLEAN;
+	    daysInMonth: SHORTINT;	(* usu. 28..31, length of month *)
+	    daysInYear: INTEGER;	(* usu. 365..366, length of year *)
+	    tzInfo: Timezones.GlimpseRec;
+	 END;
+
+   VAR
+      scale: Scales.Scale;		(* belonging to Times.family *)
+
+      daysUnit, msecsUnit: Scales.Unit;
+      dateType, durationType: Services.Type;
+      (* "Duration" is a fake type to tell relative from absolute dates *)
+
+   CONST
+      invalidTime = 0;		(* info represents no valid date and time *)
+      invalidDate = 1;		(* year/month/day represent no valid date *)
+      bogusValue = 2;		(* date value has been corrupted *)
+      timeOutOfRange = 3;	(* time can not be represented as a Date *)
+      errorcodes = 4;
+   TYPE
+      ErrorCode = SHORTINT;	(* 0..errorcodes-1 *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+	 (*
+	  * raised if conversions fail due to illegal values;
+	  * priority: Priorities.liberrors
+	  *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[invalidTime] := "info represents no valid date and time";
+      errormsg[invalidDate] := "year/month/day represent no valid date";
+      errormsg[bogusValue] := "date value has been corrupted";
+      errormsg[timeOutOfRange] := "time can not be represented as a Date";
+   END InitErrorHandling;
+
+   PROCEDURE Error(code: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      Events.Raise(event);
+   END Error;
+
+   PROCEDURE Create(VAR time: Times.Time; type: SHORTINT);
+      (* time IS Date, type is absolute or relative *)
+      VAR date: Scales.Measure;
+   BEGIN
+      Scales.CreateMeasure(scale, date, type);
+      time := date(Date);
+   END Create;
+
+   PROCEDURE SetDate(time: Times.Time; days, msecs: Scales.Value);
+      VAR
+	 date: Date;
+	 timeScale: Scales.Scale;
+   BEGIN
+      IF time IS Date THEN
+	 WITH time: Date DO
+	    time.days := days;
+	    time.msecs := msecs;
+	 END;
+      ELSE
+	 Scales.GetScale(time, timeScale);
+	 Create(date, Scales.MeasureType(time));
+	 date.days := days;
+	 date.msecs := msecs;
+	 Scales.ConvertMeasure(timeScale, date);
+	 Operations.Copy(date, time);
+      END;
+   END SetDate;
+
+   PROCEDURE SetValue(time: Times.Time; value: ValueRec);
+      VAR
+	 days, msecs: Scales.Value;
+   BEGIN
+      days := value.days;
+      msecs := ((value.hours * 60 + value.minutes) * 60 +
+	 value.seconds) * msecsPerSecond + value.msecs;
+      IF (msecs < 0) OR (msecs >= msecsPerDay) THEN
+	 INC(days, msecs DIV msecsPerDay);
+	 msecs := msecs MOD msecsPerDay;
+      END;
+      SetDate(time, days, msecs);
+   END SetValue;
+
+   PROCEDURE Split(val: Scales.Value; VAR h, m, s: SHORTINT; VAR ms: INTEGER);
+   BEGIN
+      ms := SHORT(val MOD msecsPerSecond);
+      val := val DIV msecsPerSecond;
+      s := SHORT(SHORT(val MOD 60)); val := val DIV 60;
+      m := SHORT(SHORT(val MOD 60));
+      h := SHORT(SHORT(val DIV 60));
+   END Split;
+
+   PROCEDURE GetValue(time: Times.Time; VAR value: ValueRec);
+      (* value is either relative or relative to Jan 1 1970, 0:00:00 GMT *)
+   BEGIN
+      IF ~(time IS Date) THEN
+	 Scales.ConvertMeasure(scale, time);
+      END;
+      WITH time: Date DO
+	 value.days := time.days;
+	 Split(time.msecs,
+	    value.hours, value.minutes, value.seconds, value.msecs);
+      END;
+   END GetValue;
+
+   PROCEDURE TimeToDate(epoch, second, usec: Scales.Value;
+			VAR days, msecs: Scales.Value) : BOOLEAN;
+      (*
+       * here we allow the largest possible time range that can be hold
+       * in a date value rather than the narrower range GetInfo can handle,
+       * for the benefit of relative or intermediate values that need not
+       * actually be dates of the implemented calendar
+       *)
+      VAR aux: Scales.Value;
+   BEGIN
+      IF (epoch < -daySeconds) OR (epoch >= daySeconds) OR
+	    (second < 0) OR (usec < 0) OR (usec >= usecsPerSecond) THEN
+	 days := 0; msecs := 0;
+	 RETURN FALSE
+      END;
+      aux := second MOD daySeconds + epoch * epochSeconds;
+      days := second DIV daySeconds + aux DIV daySeconds + epoch * epochDays;
+      msecs := usec DIV usecsPerMsec + aux MOD daySeconds * msecsPerSecond;
+      RETURN TRUE
+   END TimeToDate;
+
+   PROCEDURE DateToTime(days, msecs: Scales.Value;
+			VAR epoch, second, usec: Scales.Value) : BOOLEAN;
+      CONST
+	 power12 = 4096;	(* 2^12 *)
+	 oddSeconds = 675;	(* daySeconds / 2^7 *)
+	 dayOdds = 128000;	(* msecsPerDay / oddSeconds *)
+      VAR
+	 aux: Scales.Value;
+   BEGIN
+      IF (msecs < 0) OR (msecs >= msecsPerDay) THEN
+	 epoch := 0; second := 0; usec := 0;
+	 RETURN FALSE
+      END;
+      aux := days MOD power12 * oddSeconds;
+      epoch := (days DIV power12 * oddSeconds + aux DIV power12 +
+	 (aux MOD power12 + msecs DIV dayOdds) DIV power12) DIV power12;
+      (*
+       * while overflows are avoided, this is equivalent to:
+       *
+       * epoch := (days * daySeconds + msecs DIV msecsPerSecond) DIV
+       *             (epochDays * daySeconds + epochSeconds);
+       *)
+      DEC(days, epoch * epochDays + epoch * epochSeconds DIV daySeconds);
+      DEC(msecs, epoch * epochSeconds MOD daySeconds * msecsPerSecond);
+      IF msecs < 0 THEN
+	 INC(msecs, msecsPerDay); DEC(days);
+      END;
+      second := days * daySeconds + msecs DIV msecsPerSecond;
+      usec := msecs MOD msecsPerSecond * usecsPerMsec;
+      RETURN TRUE
+   END DateToTime;
+
+   PROCEDURE Evaluate(year, month, day: Scales.Value; VAR leapyear: BOOLEAN;
+			VAR mdays: SHORTINT; VAR ydays: INTEGER) : BOOLEAN;
+      CONST
+	 month30 = {april, june, september, november};
+	 month31 = {january, march..december} - month30;
+   BEGIN
+      IF (month < january) OR (month > december) OR
+	    (day <= 0) OR (day > 31) THEN
+	 RETURN FALSE
+      END;
+      leapyear := year MOD 4 = 0;
+      IF leapyear THEN
+	 ydays := 366;
+      ELSE
+	 ydays := 365;
+      END;
+      IF year > 1582 THEN
+	 IF leapyear & (year MOD 100 = 0) & (year MOD 400 # 0) THEN
+	    leapyear := FALSE; ydays := 365;
+	 END;
+      ELSIF year = 1582 THEN
+	 ydays := 355;
+	 IF month = october THEN
+	    mdays := 21;
+	    RETURN (day <= 4) OR (day >= 15)
+	 END;
+      END;
+      IF month IN month31 THEN
+	 mdays := 31;
+      ELSIF month IN month30 THEN
+	 mdays := 30;
+      ELSIF leapyear THEN
+	 mdays := 29;
+      ELSE
+	 mdays := 28;
+      END;
+      RETURN day <= mdays
+   END Evaluate;
+
+   PROCEDURE Valid(year, month, day: Scales.Value) : BOOLEAN;
+      CONST
+	 maxYears = 1000000;
+      VAR
+	 leapyear: BOOLEAN;
+	 mdays: SHORTINT;
+	 ydays: INTEGER;
+   BEGIN
+      RETURN (-maxYears <= year) & (year < maxYears+1970) &
+	 Evaluate(year, month, day, leapyear, mdays, ydays)
+   END Valid;
+
+   PROCEDURE DayNo(year, month, day: Scales.Value) : Scales.Value;
+      VAR
+	 dayno: Scales.Value;
+   BEGIN
+      IF month < 3 THEN
+         INC(month, 9); DEC(year);
+      ELSE
+         DEC(month, 3);
+      END;
+      dayno := day + (month * daysIn5months + 2) DIV 5 +
+	 year * daysIn4years DIV 4 - 1;
+      IF dayno >= (reformDayno + skippedDays) THEN
+         DEC(dayno, (dayno DIV daysIn100years * 3 - 5) DIV 4 );
+      END;
+      RETURN dayno
+   END DayNo;
+
+   PROCEDURE AddOffset(time: Times.Time; offset: Timezones.Offset);
+      VAR
+	 delta: Times.Time;
+   BEGIN
+      IF time IS Date THEN
+	 WITH time: Date DO
+	    INC(time.msecs, offset * msecsPerSecond);
+	    IF time.msecs < 0 THEN
+	       DEC(time.days);
+	       INC(time.msecs, msecsPerDay);
+	    ELSIF time.msecs >= msecsPerDay THEN
+	       INC(time.days);
+	       DEC(time.msecs, msecsPerDay);
+	    END;
+	 END;
+      ELSE
+	 Times.CreateAndSet(delta, relative, 0, offset, 0);
+	 Operations.Copy( Operations.Add(time, delta), time);
+      END;
+   END AddOffset;
+
+   (*
+    * Following operations apply to absolute times only.
+    * All SetXXX procedures ignore info.weekday .
+    *)
+
+   PROCEDURE GetInfo(time: Times.Time; off: Timezones.Offset;
+		     VAR dayno: Scales.Value; VAR info: InfoRec);
+      CONST
+	 maxDays = 365242500;
+      VAR
+	 days, msecs,
+	 aux: Scales.Value;
+   BEGIN
+      IF ~(time IS Date) THEN
+	 Scales.ConvertMeasure(scale, time);
+      END;
+      WITH time: Date DO
+	 days := time.days;
+	 IF (days < -maxDays-baseDayno) OR (days >= maxDays) THEN
+	    Error(timeOutOfRange);
+	    days := 0; msecs := 0;
+	 ELSE
+	    msecs := time.msecs + off * msecsPerSecond;
+	    IF msecs < 0 THEN
+	       DEC(days); INC(msecs, msecsPerDay);
+	    ELSIF msecs > msecsPerDay THEN
+	       INC(days); DEC(msecs, msecsPerDay);
+	    END;
+	 END;
+      END;
+      dayno := days + baseDayno;
+      info.weekday := SHORT(SHORT( (dayno + monday) MOD 7 ));
+      aux := dayno;
+      IF dayno >= reformDayno THEN
+	 INC(aux, ((aux * 4 - 5) DIV daysIn400years * 3 - 5) DIV 4 );
+      END;
+      info.year := (aux * 4 + 3) DIV daysIn4years;
+      aux := (aux - info.year * daysIn4years DIV 4) * 5 + 2;
+      info.day := SHORT(SHORT( aux MOD daysIn5months DIV 5 + 1 ));
+      aux := aux DIV daysIn5months;
+      IF aux > 9 THEN
+	 info.month := SHORT(SHORT(aux - 9)); INC(info.year);
+      ELSE
+	 info.month := SHORT(SHORT(aux + 3));
+      END;
+      Split(msecs, info.hour, info.minute, info.second, info.msec);
+   END GetInfo;
+
+   PROCEDURE SetO(time: Times.Time; off: Timezones.Offset; info: InfoRec);
+      (* use specified offset *)
+      CONST
+	 maxAbsOffset = MAX(Scales.Value) DIV msecsPerSecond - daySeconds;
+      VAR
+	 days, msecs: Scales.Value;
+   BEGIN
+      IF ~Valid(info.year, info.month, info.day) OR
+	    (info.hour < 0) OR (info.hour >= 24) OR
+	    (info.minute < 0) OR (info.minute >= 60) OR
+	    (info.second < 0) OR (info.second >= 60) OR
+	    (info.msec < 0) OR (info.msec >= 1000) OR
+	    (off < -maxAbsOffset) OR (off > maxAbsOffset) THEN
+	 Error(invalidTime);
+	 RETURN
+      END;
+      days := DayNo(info.year, info.month, info.day) - baseDayno;
+      msecs := (( LONG(LONG(info.hour)) * 60 + info.minute) * 60 +
+	 info.second - off) * msecsPerSecond + info.msec;
+      IF (msecs < 0) OR (msecs >= msecsPerDay) THEN
+	 INC(days, msecs DIV msecsPerDay);
+	 msecs := msecs MOD msecsPerDay;
+      END;
+      SetDate(time, days, msecs);
+   END SetO;
+
+   PROCEDURE GetO(time: Times.Time; off: Timezones.Offset; VAR info: InfoRec);
+      VAR
+	 dayno: Scales.Value;
+   BEGIN
+      GetInfo(time, off, dayno, info);
+   END GetO;
+
+   PROCEDURE SetT(time: Times.Time; tz: Timezones.Timezone; info: InfoRec);
+      (* use specified time zone to determine offset *)
+      VAR
+	 baseOffset,
+	 offset: Timezones.Offset;
+   BEGIN
+      baseOffset := Timezones.GetOffset(tz, NIL);
+      SetO(time, baseOffset, info);
+      IF Timezones.Unsteady(tz) THEN
+	 offset := Timezones.GetOffset(tz, time);
+	 IF offset # baseOffset THEN
+	    AddOffset(time, baseOffset - offset);
+	 END;
+      END;
+   END SetT;
+
+   PROCEDURE GetT(time: Times.Time; tz: Timezones.Timezone; VAR info: InfoRec);
+   BEGIN
+      GetO(time, Timezones.GetOffset(tz, time), info);
+   END GetT;
+
+   PROCEDURE GetLongT(time: Times.Time; tz: Timezones.Timezone;
+			VAR info: LongInfoRec);
+      VAR
+	 now,
+	 lastyear,
+	 firstweek,
+	 firstmweek: Scales.Value;
+
+      PROCEDURE Firstweek(lastyear: Scales.Value;
+			   firstday: SHORTINT) : Scales.Value;
+      BEGIN
+	 RETURN lastyear + 4 - (lastyear + 4 + monday - firstday) MOD 7
+      END Firstweek;
+
+   BEGIN
+      Timezones.Lookup(tz, time, info.tzInfo);
+      GetInfo(time, info.tzInfo.offset, now, info);
+      IF ~Evaluate(info.year, info.month, info.day,
+	    info.leapyear, info.daysInMonth, info.daysInYear) THEN
+	 (* not reached *)
+      END;
+      lastyear := DayNo(info.year, january, 0);
+      info.yearday := SHORT(now - lastyear);
+      firstweek := Firstweek(lastyear, sunday);
+      firstmweek := Firstweek(lastyear, monday);
+      IF (now < firstweek) OR (now < firstmweek) THEN
+	 lastyear := DayNo(info.year-1, january, 0);
+	 IF now < firstweek THEN
+	    firstweek := Firstweek(lastyear, sunday);
+	 END;
+	 IF now < firstmweek THEN
+	    firstmweek := Firstweek(lastyear, monday);
+	 END;
+      END;
+      info.week := SHORT(SHORT( (now - firstweek) DIV 7 + 1 ));
+      info.mweek := SHORT(SHORT( (now - firstmweek) DIV 7 + 1 ));
+   END GetLongT;
+
+   PROCEDURE Set(time: Times.Time; info: InfoRec);
+      (* use Timezones.local to determine offset in respect to GMT *)
+   BEGIN
+      SetT(time, Timezones.local, info);
+   END Set;
+
+   PROCEDURE Get(time: Times.Time; VAR info: InfoRec);
+   BEGIN
+      GetT(time, Timezones.local, info);
+   END Get;
+
+   PROCEDURE GetLong(time: Times.Time; VAR info: LongInfoRec);
+   BEGIN
+      GetLongT(time, Timezones.local, info);
+   END GetLong;
+
+   PROCEDURE CreateYMD(VAR time: Times.Time; year, month, day: Scales.Value);
+      (*
+       * equivalent to Create(time, absolute); Set(time, info); where
+       * info represents year, month, day, 12:00:00 GMT
+       *)
+      VAR
+	 info: InfoRec;
+   BEGIN
+      Create(time, absolute);
+      IF ~Valid(year, month, day) THEN
+	 Error(invalidDate);
+	 RETURN
+      END;
+      info.year := year;
+      info.month := SHORT(SHORT(month));
+      info.day := SHORT(SHORT(day));
+      info.hour := 12;
+      info.minute := 0;
+      info.second := 0;
+      info.msec := 0;
+      SetO(time, 0, info);
+   END CreateYMD;
+
+   PROCEDURE Weekday(year, month, day: Scales.Value) : SHORTINT;
+   BEGIN
+      IF ~Valid(year, month, day) THEN
+	 Error(invalidDate);
+	 RETURN thursday
+      END;
+      RETURN SHORT(SHORT( (DayNo(year, month, day) + monday) MOD 7 ))
+   END Weekday;
+
+   (* -------- scale implementation -------- *)
+
+   PROCEDURE ScCreate(scale: Scales.Scale; VAR measure: Scales.Measure;
+			abs: BOOLEAN);
+      VAR date: Date;
+   BEGIN
+      NEW(date);
+      date.days := 0;
+      date.msecs := 0;
+      IF abs THEN
+	 Persistent.Init(date, dateType);
+      ELSE
+	 Persistent.Init(date, durationType);
+      END;
+      measure := date;
+   END ScCreate;
+
+   PROCEDURE ScGetValue(measure: Scales.Measure; unit: Scales.Unit;
+			VAR value: Scales.Value);
+   BEGIN
+      IF unit = daysUnit THEN
+	 value := measure(Date).days;
+      ELSE (* unit = msecsUnit *)
+	 value := measure(Date).msecs;
+      END;
+   END ScGetValue;
+
+   PROCEDURE ScSetValue(measure: Scales.Measure; unit: Scales.Unit;
+			value: Scales.Value);
+   BEGIN
+      WITH measure: Date DO
+	 IF unit = daysUnit THEN
+	    measure.days := value;
+	 ELSE (* unit = msecsUnit *)
+	    IF (0 <= value) & (value < msecsPerDay) THEN
+	       measure.msecs := value;
+	    ELSE
+	       measure.msecs := value MOD msecsPerDay;
+	       INC(measure.days, value DIV msecsPerDay);
+	    END;
+	 END;
+      END;
+   END ScSetValue;
+
+   PROCEDURE ScAssign(target, source: Scales.Measure);
+   BEGIN
+      WITH target: Date DO WITH source: Date DO
+	 target.days := source.days;
+	 target.msecs := source.msecs;
+      END END; (*WITH*)
+   END ScAssign;
+
+   PROCEDURE ScOp(op: Scales.Operation; op1, op2, result: Scales.Measure);
+   BEGIN
+      WITH op1: Date DO WITH op2: Date DO WITH result: Date DO
+	 CASE op OF
+	 |  Scales.add:
+	       result.days := op1.days + op2.days;
+	       result.msecs := op1.msecs + op2.msecs;
+	       IF result.msecs > msecsPerDay THEN
+		  INC(result.days);
+		  DEC(result.msecs, msecsPerDay);
+	       END;
+	 |  Scales.sub:
+	       result.days := op1.days - op2.days;
+	       result.msecs := op1.msecs - op2.msecs;
+	       IF result.msecs < 0 THEN
+		  DEC(result.days);
+		  INC(result.msecs, msecsPerDay);
+	       END;
+	 END;
+      END END END; (*WITH*)
+   END ScOp;
+
+   PROCEDURE ScCompare(op1, op2: Scales.Measure) : INTEGER;
+   BEGIN
+      WITH op1: Date DO WITH op2: Date DO
+	 IF op1.days < op2.days THEN
+	    RETURN -1
+	 END;
+	 IF op1.days > op2.days THEN
+	    RETURN 1
+	 END;
+	 IF op1.msecs < op2.msecs THEN
+	    RETURN -1
+	 END;
+	 IF op1.msecs > op2.msecs THEN
+	    RETURN 1
+	 END;
+	 RETURN 0
+      END END; (*WITH*)
+   END ScCompare;
+
+   PROCEDURE ScDateToTime(date, time: Scales.Measure);
+      VAR
+	 tval: Times.TimeValueRec;
+   BEGIN
+      WITH date: Date DO
+	 IF ~DateToTime(date.days, date.msecs,
+	       tval.epoch, tval.second, tval.usec) THEN
+	    Error(bogusValue);
+	 END;
+	 Times.SetValue(time(Times.Time), tval);
+      END;
+   END ScDateToTime;
+
+   PROCEDURE ScTimeToDate(time, date: Scales.Measure);
+      VAR
+	 tval: Times.TimeValueRec;
+   BEGIN
+      Times.GetValue(time(Times.Time), tval);
+      WITH date: Date DO
+	 IF ~TimeToDate(tval.epoch, tval.second, tval.usec,
+	       date.days, date.msecs) THEN
+	    Error(timeOutOfRange);
+	 END;
+      END;
+   END ScTimeToDate;
+
+   PROCEDURE InitScale;
+      VAR
+	 if: Scales.Interface;
+   BEGIN
+      NEW(if);
+      if.create := ScCreate;
+      if.getvalue := ScGetValue;
+      if.setvalue := ScSetValue;
+      if.assign := ScAssign;
+      if.op := ScOp;
+      if.compare := ScCompare;
+      if.scaleToReference := ScDateToTime;
+      if.referenceToScale := ScTimeToDate;
+      NEW(scale);
+      Scales.Init(scale, Times.family, if);
+      NEW(daysUnit);
+      Scales.InitUnit(scale, daysUnit, "days");
+      NEW(msecsUnit);
+      Scales.InitUnit(scale, msecsUnit, "msecs");
+   END InitScale;
+
+   (* -------- persistency -------- *)
+
+   PROCEDURE CreateDate(VAR date: Persistent.Object);
+      VAR
+	 measure: Scales.Measure;
+   BEGIN
+      Scales.CreateMeasure(scale, measure, absolute);
+      date := measure;
+   END CreateDate;
+
+   PROCEDURE CreateDuration(VAR date: Persistent.Object);
+      VAR
+	 measure: Scales.Measure;
+   BEGIN
+      Scales.CreateMeasure(scale, measure, relative);
+      date := measure;
+   END CreateDuration;
+
+   PROCEDURE Read(s: Streams.Stream; date: Persistent.Object) : BOOLEAN;
+   BEGIN
+      WITH date: Date DO
+	 RETURN NetIO.ReadLongInt(s, date.days) &
+	    NetIO.ReadLongInt(s, date.msecs)
+      END;
+   END Read;
+
+   PROCEDURE Write(s: Streams.Stream; date: Persistent.Object) : BOOLEAN;
+   BEGIN
+      WITH date: Date DO
+	 RETURN NetIO.WriteLongInt(s, date.days) &
+	    NetIO.WriteLongInt(s, date.msecs)
+      END;
+   END Write;
+
+   PROCEDURE InitTypes;
+      VAR
+	 face: Persistent.Interface;
+   BEGIN
+      NEW(face);
+      face.read := Read;
+      face.write := Write;
+      face.create := CreateDate;
+      face.createAndRead := NIL;
+      Persistent.RegisterType(dateType, "Dates.Date", "Times.Time", face);
+      NEW(face);
+      face.read := Read;
+      face.write := Write;
+      face.create := CreateDuration;
+      face.createAndRead := NIL;
+      Persistent.RegisterType(durationType, "Dates.Duration", "Times.Time",
+	 face);
+   END InitTypes;
+
+BEGIN
+   InitErrorHandling;
+   InitScale;
+   InitTypes;
+END Dates.

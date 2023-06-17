@@ -1,0 +1,133 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerReg.od,v 1.2 2004/09/10 05:57:31 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerReg.od,v $
+   Revision 1.2  2004/09/10 05:57:31  borchert
+   import list minimized; maxregs increased to 32; formatting fixed
+
+   Revision 1.1  2004/09/06 15:16:16  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION CompilerRegisters; (* Christian Ehrhardt *)
+
+   IMPORT Disciplines, StackAlloc := CompilerStackAllocations, Types;
+
+   CONST
+      stdM = 0; (* normal value *)
+      addrM = 1; (* this register contains a traced address *)
+      ptrM = 2; (* this register contains a traced pointer *)
+   TYPE
+      Mode = SHORTINT; (* stdM .. ptrM *)
+
+   CONST
+      maxregs = 32;
+   TYPE
+      Register = INTEGER;
+      RegSet = POINTER TO RegSetRec;
+      RegSetRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    alloc: StackAlloc.Stack;
+	 END;
+
+   TYPE
+      Owner = LONGINT;
+
+   TYPE
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD (Disciplines.ObjectRec) END;
+
+   TYPE
+      RegIoProc = PROCEDURE (set: RegSet; value: Value;
+	 reg: Register; offset: Types.Size);
+      RegXchgProc = PROCEDURE (set: RegSet; reg1, reg2: Register);
+      RegProc = PROCEDURE (set: RegSet; reg: Register);
+      ValueProc = PROCEDURE (set: RegSet; value: Value);
+
+   PROCEDURE InitSet(ret: RegSet; nregs: INTEGER; defconstraint: SET;
+                     regsz: Types.Size; alloc: StackAlloc.Stack;
+		     read, write: RegIoProc; xchg: RegXchgProc;
+		     create: ValueProc; markused: RegProc);
+
+   PROCEDURE EnterLevel(set: RegSet);
+
+   PROCEDURE LeaveLevel(set: RegSet);
+
+   PROCEDURE DoneLevel(set: RegSet);
+
+   PROCEDURE GetOwner(set: RegSet) : Owner;
+
+   PROCEDURE DebugGetOwn(value: Value) : Owner;
+  
+   PROCEDURE CreateValue(VAR value: Value; set: RegSet;
+                         own: Owner; mode : Mode);
+
+   PROCEDURE DestroyValue(value: Value);
+
+   PROCEDURE DestroyOwnedValue(value: Value; caller: Owner);
+
+   PROCEDURE SaveReg(value: Value);
+      (* allocate stack space for the value and write the value to the stack *)
+
+   PROCEDURE SaveAll(set: RegSet);
+
+   PROCEDURE LoadReg(value: Value; possible: SET);
+      (* load the value to one of registers in possible *)
+
+   PROCEDURE RegCode(value: Value; VAR reg: Register) : BOOLEAN;
+   
+   PROCEDURE SetRegCode(value: Value; reg: Register);
+
+   PROCEDURE StackOffset(value: Value; VAR offset: Types.Size) : BOOLEAN;
+
+   PROCEDURE GetSize(set: RegSet) : Types.Size;
+
+   PROCEDURE Chown(value: Value; newowner: Owner);
+
+   PROCEDURE SetMode(value: Value; new: Mode);
+
+   PROCEDURE GetMode(value: Value) : Mode;
+
+   PROCEDURE AddConstraint(reg: Value; constraint: SET);
+
+   PROCEDURE RemoveConstraint(reg: Value);
+
+   PROCEDURE GetConstraint(reg: Value) : SET;
+
+   PROCEDURE PrepareInstruction(nregs : INTEGER; regs: ARRAY OF Value;
+				possible: ARRAY OF SET) : BOOLEAN;
+
+   PROCEDURE DestroyOwnerOnError(set: RegSet; owner: Owner);
+
+   PROCEDURE Traced(value: Value) : BOOLEAN;
+
+   PROCEDURE UntracedValue(VAR value: Value; reg: Register);
+
+   PROCEDURE MakeUntraced(VAR value: Value; own: Owner);
+
+   PROCEDURE CheckLoc(reg: Value);
+
+   PROCEDURE Foreach(set: RegSet; proc: ValueProc);
+
+END CompilerRegisters.

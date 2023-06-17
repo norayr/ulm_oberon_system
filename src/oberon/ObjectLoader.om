@@ -1,0 +1,1164 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ObjectLoade.om,v 1.1 2001/04/03 13:25:37 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ObjectLoade.om,v $
+   Revision 1.1  2001/04/03 13:25:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ObjectLoader;
+
+   IMPORT Architectures, CompilerDatabases, CompilerKeys, CompilerLogs,
+      CompilerObjects, Compilers, CompilerSources, Conclusions, ConstStrings,
+      Dates, Errors, Events, Iterators, Listers, ModularizedStructures,
+      PersistentObjects, PersistentTexts, Print, Priorities, RelatedEvents,
+      Services, Sources := CompilerSources, Streams, Texts, Write;
+
+   VAR
+      coType: Services.Type; (* that of CompilerObjects.Object *)
+
+   CONST
+      defkinds = {Sources.definition, Sources.defmod};
+      modkinds = {Sources.module, Sources.defmod};
+
+   CONST
+      (* log levels *)
+      logLoading = 0;
+      logLoadingResult = 1;
+      logCompiling = 2; (* includes 3 and 4 *)
+      logStoring = 5;
+      logChecks = 6;
+      logErrors = 7;
+
+   CONST
+      noSrcFound = 0;
+      compilationFailed = 1;
+      loadFailed = 2;
+      refCycle = 3;
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* noSrcFound ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: ErrorCode;
+	    modname: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+   BEGIN
+      WITH event: ErrorEvent DO
+	 Write.StringS(s, "module ");
+	 ConstStrings.Write(s, event.modname);
+	 Write.StringS(s, ": ");
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[noSrcFound] := "no source file found in data base";
+      errormsg[compilationFailed] := "compilation failed";
+      errormsg[loadFailed] := "unable to load object";
+      errormsg[refCycle] := "object with given key not found (reference cycle?)";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode;
+		   modname: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.modname := modname;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE ^ LoadObject(compiler: Compilers.Compiler;
+                          context: Compilers.Context;
+		          modname: ConstStrings.String;
+		          type: CompilerObjects.ObjectType;
+		          arch: Architectures.Architecture;
+		          VAR header: CompilerObjects.Header;
+		          VAR object: CompilerObjects.Object;
+		          errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ^ LoadHeader(compiler: Compilers.Compiler;
+                          context: Compilers.Context;
+		          modname: ConstStrings.String;
+		          type: CompilerObjects.ObjectType;
+		          arch: Architectures.Architecture;
+		          VAR header: CompilerObjects.Header;
+		          errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE LoadImportedModules(compiler: Compilers.Compiler;
+				 context: Compilers.Context;
+				 modname: ConstStrings.String;
+				 header: CompilerObjects.Header;
+				 errors: RelatedEvents.Object) : BOOLEAN;
+      (* check header.dependencies and load all dependent modules
+	 not yet loaded; this is necessary to permit a conversion
+	 from texts to objects -- otherwise
+	 CompilerObjects.ConvertTextToObject would fail
+      *)
+      VAR
+	 it: Iterators.Iterator;
+	 key: CompilerKeys.Key;
+	 headerInCache: CompilerObjects.Header;
+	 objectInCache: CompilerObjects.Object;
+	 newHeader: CompilerObjects.Header;
+	 newObject: CompilerObjects.Object;
+   BEGIN
+      CompilerKeys.GetKeys(header.dependencies, it);
+      WHILE Iterators.Get(it, key) DO
+	 IF (header.arch # NIL) &
+	       ~LoadObject(compiler, context, key.modname,
+			   CompilerObjects.public, NIL,
+			   newHeader, newObject, errors) THEN
+	    (* we need to load the architecture-independent variant
+	       first because the architecture-dependent version
+	       may depend on it
+	    *)
+	    RETURN FALSE
+	 END;
+	 IF ~LoadObject(compiler, context, key.modname,
+			CompilerObjects.public, header.arch,
+			newHeader, newObject, errors) THEN
+	    RETURN FALSE
+	 END;
+      END;
+      IF header.arch # NIL THEN
+	 (* load results from 1st pass *)
+	 IF ~LoadObject(compiler, context, modname,
+	                CompilerObjects.public, NIL,
+	                newHeader, newObject, errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF header.type = CompilerObjects.private THEN
+	    IF ~LoadObject(compiler, context, modname,
+			   CompilerObjects.private, NIL,
+			   newHeader, newObject, errors) THEN
+	       RETURN FALSE
+	    END;
+	 END;
+      END;
+      RETURN TRUE
+   END LoadImportedModules;
+
+   PROCEDURE LookupHeader(context: Compilers.Context;
+                          modname: ConstStrings.String;
+			  type: CompilerObjects.ObjectType;
+			  arch: Architectures.Architecture;
+			  VAR header: CompilerObjects.Header;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN CompilerObjects.LookupHeader(context.mtab, modname, type,
+                                          arch, header) OR
+             CompilerDatabases.LookupHeader(context.db, modname,
+		   type, arch, context.keys, header, errors)
+   END LookupHeader;
+
+   (*
+   PROCEDURE InternalUpToDate(context: Compilers.Context;
+			      key: CompilerKeys.Key;
+			      dependencies: CompilerKeys.Set; (* may be NIL *)
+			      type: CompilerObjects.ObjectType;
+			      VAR newcontext: Compilers.Context) : BOOLEAN;
+   *)
+
+   PROCEDURE UpToDate(context: Compilers.Context;
+                      header: CompilerObjects.Header) : BOOLEAN;
+      VAR
+	 newcontext: Compilers.Context;
+	 key: CompilerKeys.Key;
+	 src: Sources.Source;
+	 otherkey: CompilerKeys.Key;
+	 hdr: CompilerObjects.Header;
+	 obj: CompilerObjects.Object;
+	 uptodate: BOOLEAN;
+	 logkey: INTEGER;
+
+      PROCEDURE LogParameters;
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logChecks, s) THEN
+	    Write.StringS(s, "checking if the most recent ");
+	    IF key.arch = NIL THEN
+	       Write.StringS(s, "architecture-independent ");
+	    ELSE
+	       Write.StringS(s, "architecture-dependent ");
+	    END;
+	    CASE header.type OF
+	    | CompilerObjects.public:
+		  Write.StringS(s, "public interface of ");
+	    | CompilerObjects.private:
+		  Write.StringS(s, "module ");
+	    END;
+	    ConstStrings.Write(s, key.modname);
+	    Write.StringS(s, " is up-to-date");
+	    Streams.Release(s);
+	 END;
+      END LogParameters;
+
+      PROCEDURE EnterLevel;
+      BEGIN
+	 CompilerLogs.EnterLevel(context.log, logkey);
+      END EnterLevel;
+
+      PROCEDURE LeaveLevel;
+      BEGIN
+	 CompilerLogs.LeaveLevel(context.log, logkey);
+      END LeaveLevel;
+
+      PROCEDURE LogMsg(msg: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF (msg # "") &
+	       CompilerLogs.Open(context.log, logChecks, s) THEN
+	    Write.StringS(s, msg);
+	    Streams.Release(s);
+	 END;
+      END LogMsg;
+
+      PROCEDURE LogSrcMatch(kind: Sources.SourceKind;
+                            srcid1, srcid2: ConstStrings.String);
+	 VAR
+	    s: Streams.Stream;
+	    ok: BOOLEAN;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logChecks, s) THEN
+	    ok := ConstStrings.Compare(srcid1, srcid2) = 0;
+	    Write.StringS(s, "has ");
+	    IF ~ok THEN
+	       Write.StringS(s, "not ");
+	    END;
+	    Write.StringS(s, "been derived from newest source of ");
+	    IF kind = Sources.definition THEN
+	       Write.StringS(s, "definition");
+	    ELSE
+	       Write.StringS(s, "module");
+	    END;
+	    IF ~ok THEN
+	       Write.StringS(s, " (");
+	       ConstStrings.Write(s, srcid1);
+	       Write.StringS(s, " vs ");
+	       ConstStrings.Write(s, srcid2);
+	       Write.CharS(s, ")");
+	    END;
+	    Streams.Release(s);
+	 END;
+      END LogSrcMatch;
+
+      PROCEDURE LogSuccess(msg: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF (msg # "") &
+	       CompilerLogs.Open(context.log, logChecks, s) THEN
+	    Write.StringS(s, msg);
+	    Streams.Release(s);
+	 END;
+	 LeaveLevel;
+      END LogSuccess;
+
+      PROCEDURE LogFailure;
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logChecks, s) THEN
+	    Write.StringS(s, "is not up-to-date");
+	    Streams.Release(s);
+	 END;
+	 LeaveLevel;
+      END LogFailure;
+
+      PROCEDURE AnythingUpdated(dependencies: CompilerKeys.Set;
+				arch: Architectures.Architecture) : BOOLEAN;
+	 (* `dependencies' is the set of dependencies of an object
+	    we have found in the database; the task of AnythingUpdated is
+	    to decide whether we are happy with it (because it depends
+	    on the most recent versions) or if we are in the need of
+	    recompiling it because newer versions of the sources have
+	    been checked in;
+	 *)
+	 VAR
+	    it: Iterators.Iterator;
+	    key: CompilerKeys.Key;
+	    header: CompilerObjects.Header;
+
+      BEGIN (* AnythingUpdated *)
+	 IF dependencies = NIL THEN RETURN FALSE END;
+	 LogMsg("checking dependencies");
+	 CompilerKeys.GetKeys(dependencies, it);
+	 WHILE Iterators.Get(it, key) DO
+	    IF ~LookupHeader(newcontext, key.modname,
+			     CompilerObjects.public, arch, header,
+			     RelatedEvents.null) THEN
+	       LogMsg("one of the architecture-independent ifs is missing");
+	       RETURN TRUE
+	    END;
+	    IF ~UpToDate(newcontext, header) THEN
+	       LogMsg("one of the architecture-independent ifs is out-of-date");
+	       RETURN TRUE
+	    END;
+	 END;
+	 RETURN FALSE
+      END AnythingUpdated;
+
+      PROCEDURE FromNewestSource(srcid: ConstStrings.String;
+                                 kinds: SET;
+				 VAR src: Sources.Source) : BOOLEAN;
+	 VAR
+	    kind: Sources.SourceKind;
+      BEGIN
+	 kind := Sources.definition;
+	 WHILE kind <= Sources.defmod DO
+	    IF (kind IN kinds) &
+	          CompilerDatabases.LookupSrc(newcontext.db,
+		     key.modname, kind, src, RelatedEvents.null) THEN
+	       LogSrcMatch(kind, srcid, src.header.srcid);
+	       RETURN ConstStrings.Compare(srcid, src.header.srcid) = 0
+	    END;
+	    INC(kind);
+	 END;
+	 LogMsg("no sources found");
+	 RETURN TRUE (* well, no sources are available... *)
+      END FromNewestSource;
+
+      PROCEDURE FromNewestSourceByKey(key: CompilerKeys.Key) : BOOLEAN;
+	 (* check if the given key depends on the newest sources
+	    (or, if not present, objects) available;
+	    note that we have to consider the threat of updates
+	    in case of architecture-dependent public interfaces;
+	    everything has to be seen in the restricting context of
+	    newcontext.keys
+	 *)
+	 VAR
+	    objFound, srcFound: BOOLEAN;
+	    src, src1, src2: Sources.Source;
+	    header: CompilerObjects.Header;
+	    combined: CompilerKeys.Key;
+
+	 PROCEDURE ReferenceCycle(header: CompilerObjects.Header) : BOOLEAN;
+	    VAR
+	       key: CompilerKeys.Key;
+	 BEGIN
+	    RETURN CompilerKeys.Lookup(header.dependencies, header.modname,
+	                               key)
+	 END ReferenceCycle;
+
+      BEGIN (* FromNewestSourceByKey *)
+	 IF ~FromNewestSource(key.defsrcid, defkinds, src1) THEN
+	    RETURN FALSE
+	 END;
+	 IF (key.modsrcid # NIL) &
+	       ~FromNewestSource(key.modsrcid, modkinds, src2) THEN
+	    RETURN FALSE
+	 END;
+	 IF (key.arch = NIL) OR (key.modsrcid # NIL) THEN RETURN TRUE END;
+
+	 IF src1 = NIL THEN
+	    (* check whether we have an architecture-independent
+	       symbol file that seems to be more current than our key
+	    *)
+	    IF LookupHeader(newcontext, key.modname, CompilerObjects.public,
+			    NIL, header, RelatedEvents.null) &
+		  (ConstStrings.Compare(header.srcid, key.defsrcid) # 0) THEN
+	       LogMsg("more recent architecture-independent interface found");
+	       RETURN FALSE
+	    END;
+	 END;
+
+	 (* check whether we have a not yet fully compiled source of the
+	    associated module that could update the symbol file of key
+	 *)
+	 LogMsg("checking update threat of associated module");
+	 IF LookupHeader(newcontext, key.modname, CompilerObjects.private,
+	                 key.arch, header, RelatedEvents.null) THEN
+	    LogMsg("checking architecture-dependent object in CDB");
+	    IF ReferenceCycle(header) THEN
+	       LogMsg("no update threat because of reference cycle");
+	       RETURN TRUE
+	    END;
+	    RETURN FromNewestSource(header.srcid, modkinds, src) &
+		   ~AnythingUpdated(header.dependencies, NIL)
+	 END;
+	 IF LookupHeader(newcontext, key.modname, CompilerObjects.private, NIL,
+		         header, RelatedEvents.null) THEN
+	    LogMsg("checking architecture-independent object in CDB");
+	    IF ReferenceCycle(header) THEN
+	       LogMsg("no update threat because of reference cycle");
+	       RETURN TRUE
+	    END;
+	    RETURN FromNewestSource(header.srcid, modkinds, src) &
+		   ~AnythingUpdated(header.dependencies, NIL)
+	 END;
+	 IF CompilerDatabases.LookupSrc(newcontext.db,
+				 key.modname, Sources.module, src,
+				 RelatedEvents.null) THEN
+	    LogMsg("found module source but no derived objects in CDB");
+	    RETURN FALSE
+	 ELSE
+	    LogMsg("no objects or sources for associated module found in CDB");
+	    RETURN TRUE
+	 END;
+      END FromNewestSourceByKey;
+
+   BEGIN (* UpToDate *)
+      key := header.key;
+      ASSERT(CompilerKeys.CompatibleWith(key, context.keys));
+      IF CompilerObjects.LookupHeader(context.mtab, key.modname,
+                                      header.type, key.arch, hdr) THEN
+	 (*
+	 LogSuccess("we consider it up-to-date because it is in our cache");
+	 *)
+	 RETURN TRUE
+      END;
+
+      LogParameters; EnterLevel;
+
+      Compilers.CreateCopyOfContext(newcontext, context);
+      CompilerObjects.AddHeader(newcontext.mtab, header);
+
+      IF (header.type = CompilerObjects.public) &
+            CompilerKeys.Lookup(context.keys, key.modname, otherkey) &
+	    ((otherkey.arch = NIL) & (key.arch = NIL) OR
+	       (otherkey.arch # NIL)) THEN
+	 (* we have no alternative because it is in our key set,
+	    so we interpret it as up-to-date as well
+	 *)
+	 LogMsg("we are enforced to consider it as up-to-date");
+	 uptodate := TRUE;
+      ELSE
+	 IF key.arch = NIL THEN
+	    CASE header.type OF
+	    | CompilerObjects.public:
+		  uptodate := FromNewestSource(key.defsrcid, defkinds, src);
+	    | CompilerObjects.private:
+		  uptodate := FromNewestSource(key.defsrcid, defkinds, src) &
+			      ((key.defsrcid = key.modsrcid) OR
+			      FromNewestSource(key.modsrcid, modkinds, src));
+	    END;
+	 ELSE (* key.arch # NIL *)
+	    CASE header.type OF
+	    | CompilerObjects.public:
+		  uptodate := FromNewestSourceByKey(key);
+	    | CompilerObjects.private:
+		  IF LookupHeader(newcontext, key.modname, CompilerObjects.public,
+				  key.arch, hdr, RelatedEvents.null) &
+			UpToDate(newcontext, hdr) THEN
+		     uptodate := FromNewestSourceByKey(key);
+		  ELSE
+		     uptodate := FALSE;
+		     LogMsg("associated arch-dep public if is missing");
+		  END;
+	    END;
+	 END;
+	 IF uptodate & AnythingUpdated(header.dependencies, key.arch) THEN
+	    LogMsg("updates found in the set of dependencies");
+	    uptodate := FALSE;
+	 END;
+      END;
+      IF uptodate THEN
+	 Compilers.SynchronizeContext(context, newcontext);
+	 LogSuccess(""); RETURN TRUE
+      ELSE
+	 LogFailure; RETURN FALSE
+      END;
+   END UpToDate;
+
+   (*
+   PROCEDURE UpToDate(context: Compilers.Context;
+                      header: CompilerObjects.Header) : BOOLEAN;
+      VAR
+	 newcontext: Compilers.Context;
+   BEGIN
+      IF InternalUpToDate(context, header.key,
+			  header.dependencies, header.type,
+			  newcontext) THEN
+	 CompilerObjects.AddHeader(context.mtab, header);
+	 Compilers.SynchronizeContext(context, newcontext);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END UpToDate;
+   *)
+
+   PROCEDURE AddToContext(context: Compilers.Context;
+                          header: CompilerObjects.Header;
+			  object: CompilerObjects.Object);
+      (* adding an object to a compilation context includes
+	 - adding the object to context.mtab
+	   (cache of compilation objects)
+	 - include header.key to the set of keys
+	   (header.dependencies are already included
+	   indirectly by LoadImportedModules)
+      *)
+   BEGIN
+      CompilerObjects.AddModule(context.mtab, header, object);
+      CompilerKeys.Incl(context.keys, header.key);
+   END AddToContext;
+
+   PROCEDURE LoadDefinition(compiler: Compilers.Compiler;
+                            context: Compilers.Context;
+			    modname: ConstStrings.String;
+			    arch: Architectures.Architecture;
+			    VAR definition: Compilers.Result;
+			    VAR updatesPermitted: BOOLEAN;
+			    errors: RelatedEvents.Object) : BOOLEAN;
+      (* for the 2nd pass we try to process the definition and
+	 the module both at the same time to allow for updates;
+	 this procedure tries to load the associated definition
+	 of a module and decides whether updates are permitted or not
+	 (updates are not permitted if we already depend on it,
+	 i.e. the architecture-dependent variant is already a member of
+	 context.mtab and context.keys);
+	 note that the loaded definition is in context.tab but
+	 not yet in context.mtab (except if it is architecture-independent)
+      *)
+      VAR
+	 header: CompilerObjects.Header;
+	 object: CompilerObjects.Object;
+	 text: PersistentTexts.Text;
+	 key: CompilerKeys.Key;
+
+      PROCEDURE CreateResult;
+      BEGIN
+	 NEW(definition);
+	 definition.header := header;
+	 definition.object := object;
+      END CreateResult;
+
+      PROCEDURE LogMsg(msg: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF (msg # "") &
+	       CompilerLogs.Open(context.log, logChecks, s) THEN
+	    Write.StringS(s, msg);
+	    Streams.Release(s);
+	 END;
+      END LogMsg;
+
+   BEGIN (* LoadDefinition *)
+      IF CompilerObjects.Lookup(context.mtab, modname,
+				CompilerObjects.public, arch,
+				header, object) THEN
+	 (* bad news, we depend already on the architecture-dependent
+	    variant
+	 *)
+	 LogMsg("we depend already on the architecture-dependent variant");
+	 CreateResult; updatesPermitted := FALSE; RETURN TRUE
+      END;
+      IF CompilerKeys.Lookup(context.keys, modname, key) &
+	    (key.arch # NIL) THEN
+	 (* bad news, we have already a key which prohibits updates *)
+	 LogMsg("we have already a key which prohibits updates");
+	 IF ~LoadObject(compiler, context, modname, CompilerObjects.public,
+			arch, header, object, errors) THEN
+	    RETURN FALSE
+	 END;
+	 CreateResult; updatesPermitted := FALSE; RETURN TRUE
+      END;
+      (* good news, we do not depend on an architecture-dependent variant;
+         so check whether we start from an already present
+	 architecture-dependent symbol file in the data base (this
+	 would avoid recompilations if no updates are needed)
+	 or from an architecture-independent symbol file
+      *)
+      LogMsg("we do not depend on an architecture-dependent variant");
+      IF LookupHeader(context, modname, CompilerObjects.public, arch,
+		      header, RelatedEvents.null) &
+	    UpToDate(context, header) THEN
+	 LogMsg("found up-to-date architecture-dependent public interface");
+	 IF LoadImportedModules(compiler, context, modname, header,
+	                        RelatedEvents.null) &
+	       CompilerDatabases.Lookup(context.db, modname,
+					CompilerObjects.public, arch,
+					context.keys, header, text,
+					RelatedEvents.null) &
+	       CompilerObjects.ConvertTextToObject(text, context.tab, header,
+						   object, errors) THEN
+	    LogMsg("load of imported modules successful");
+	    CreateResult; updatesPermitted := TRUE; RETURN TRUE
+	 ELSE
+	    LogMsg("load of imported modules was not successful");
+	    RETURN FALSE
+	 END;
+      END;
+      (* there is no up-to-date architecture-dependent symbol file
+	 in the data base, so take an architecture-independent symbol file;
+	 this is supposed to be up-to-date because otherwise we would
+	 have recompiled it already
+      *)
+      IF LoadObject(compiler, context, modname, CompilerObjects.public,
+		    NIL, header, object, errors) THEN
+	 LogMsg("taking architecture-independent public interface");
+	 CreateResult; updatesPermitted := TRUE; RETURN TRUE
+      END;
+      LogMsg("unable to load public interface");
+      RETURN FALSE
+   END LoadDefinition;
+
+   PROCEDURE Load(compiler: Compilers.Compiler;
+		  context: Compilers.Context;
+		  modname: ConstStrings.String;
+		  type: CompilerObjects.ObjectType;
+		  arch: Architectures.Architecture;
+		  VAR header: CompilerObjects.Header;
+		  VAR object: CompilerObjects.Object;
+		  VAR text: PersistentTexts.Text;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+	 (* return header and either object or text (whatever we
+	    have at hand)
+	 *)
+      VAR
+	 skind: Sources.SourceKind;
+	 src: Sources.Source;
+	 result, definition, module, code: Compilers.Result;
+	 symObject: CompilerObjects.Object; updatesPermitted: BOOLEAN;
+	 symHeader: CompilerObjects.Header;
+	 symfile: Compilers.Result;
+	 modHeader: CompilerObjects.Header; modObject: CompilerObjects.Object;
+	 modText: PersistentTexts.Text;
+	 ok: BOOLEAN;
+	 key: CompilerKeys.Key;
+	 oldkeys, newkeys: CompilerKeys.Set;
+	 srcErrors: RelatedEvents.Object;
+	 queue: RelatedEvents.Queue;
+	 moderrors: RelatedEvents.Object;
+	 newcontext: Compilers.Context;
+	 logkey: INTEGER;
+	 tries: INTEGER;
+
+      PROCEDURE EnterLevel;
+      BEGIN
+	 CompilerLogs.EnterLevel(context.log, logkey);
+      END EnterLevel;
+
+      PROCEDURE LeaveLevel;
+      BEGIN
+	 CompilerLogs.LeaveLevel(context.log, logkey);
+      END LeaveLevel;
+
+      PROCEDURE LogParameters;
+	 VAR
+	    s: Streams.Stream;
+	    archstring: ConstStrings.String;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logLoading, s) THEN
+	    Write.StringS(s, "loading ");
+	    CASE type OF
+	    | CompilerObjects.public:
+		  Write.StringS(s, "public interface");
+	    | CompilerObjects.private:
+		  Write.StringS(s, "module");
+	    END;
+	    Write.CharS(s, " ");
+	    ConstStrings.Write(s, modname);
+	    IF arch # NIL THEN
+	       Write.StringS(s, " for the ");
+	       Architectures.GetString(arch, archstring);
+	       ConstStrings.Write(s, archstring);
+	       Write.StringS(s, " architecture");
+	    END;
+	    Streams.Release(s);
+	 END;
+      END LogParameters;
+
+      PROCEDURE LogPass1;
+	 VAR
+	    s: Streams.Stream;
+	    header: CompilerSources.Header;
+	    info: Dates.InfoRec;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logCompiling, s) THEN
+	    header := src.header;
+	    Write.StringS(s, "compiling ");
+	    CASE header.kind OF
+	    | CompilerSources.definition:
+		  Write.StringS(s, "DEFINITION");
+	    | CompilerSources.module, CompilerSources.defmod:
+		  Write.StringS(s, "MODULE");
+	    END;
+	    Write.CharS(s, " ");
+	    ConstStrings.Write(s, header.modname);
+	    IF CompilerLogs.LogLevel(context.log) > logCompiling THEN
+	       Write.StringS(s, " as of ");
+	       Dates.Get(header.date, info);
+	       Print.S6(s, "%4d-%02d-%02d %02d:%02d:%02d",
+		  info.year, info.month, info.day,
+		  info.hour, info.minute, info.second);
+	       IF CompilerLogs.LogLevel(context.log) > logCompiling + 1 THEN
+		  Write.StringS(s, " with srcid ");
+		  ConstStrings.Write(s, header.srcid);
+	       END;
+	    END;
+	    Streams.Release(s);
+	 END;
+      END LogPass1;
+
+      PROCEDURE LogPass2;
+	 VAR
+	    s: Streams.Stream;
+	    archstring: ConstStrings.String;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logCompiling, s) THEN
+	    Write.StringS(s, "compiling ");
+	    IF symHeader.arch = NIL THEN
+	       Write.StringS(s, "public interface");
+	       IF modObject # NIL THEN
+		  Write.StringS(s, " and ");
+	       END;
+	    END;
+	    IF modObject # NIL THEN
+	       Write.StringS(s, "module");
+	    END;
+	    Write.StringS(s, " of ");
+	    ConstStrings.Write(s, modname);
+	    Write.StringS(s, " for ");
+	    Architectures.GetString(arch, archstring);
+	    ConstStrings.Write(s, archstring);
+	    IF symHeader.arch # NIL THEN
+	       Write.StringS(s, " (updates of interface ");
+	       IF updatesPermitted THEN
+	          Write.StringS(s, "permitted)");
+	       ELSE
+	          Write.StringS(s, "prohibited)");
+	       END;
+	    END;
+	    Streams.Release(s);
+	 END;
+      END LogPass2;
+
+      PROCEDURE LogMsg(msg: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF (msg # "") &
+	       CompilerLogs.Open(context.log, logLoadingResult, s) THEN
+	    Write.StringS(s, msg);
+	    Streams.Release(s);
+	 END;
+      END LogMsg;
+
+      PROCEDURE LogErrors(errors: RelatedEvents.Object);
+	 (* log errors that would be suppressed otherwise *)
+	 VAR
+	    s: Streams.Stream;
+	    logkey: INTEGER;
+      BEGIN
+	 IF RelatedEvents.EventsPending(errors) &
+	       CompilerLogs.Open(context.log, logErrors, s) THEN
+	    CompilerLogs.EnterLevel(context.log, logkey);
+	    Listers.GenListing(s, errors);
+	    IF RelatedEvents.EventsPending(errors) THEN
+	       Conclusions.ConcludeS(s, errors, Errors.debug, "");
+	    END;
+	    Streams.Release(s);
+	    CompilerLogs.LeaveLevel(context.log, logkey);
+	 END;
+      END LogErrors;
+
+      PROCEDURE LogSuccess(msg: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF (msg # "") &
+	       CompilerLogs.Open(context.log, logLoadingResult, s) THEN
+	    Write.StringS(s, msg);
+	    Streams.Release(s);
+	 END;
+	 LeaveLevel;
+      END LogSuccess;
+
+      PROCEDURE LogFailure;
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF CompilerLogs.Open(context.log, logLoadingResult, s) THEN
+	    Write.StringS(s, "failed");
+	    Streams.Release(s);
+	 END;
+	 LeaveLevel;
+      END LogFailure;
+
+      PROCEDURE AddResult(result: Compilers.Result);
+	 VAR
+	    text: PersistentTexts.Text;
+	    s: Streams.Stream;
+      BEGIN
+	 IF result # NIL THEN
+	    AddToContext(context, result.header, result.object);
+	    IF (result.header.type * result.header.stage IN context.cachemode) &
+		  CompilerObjects.ConvertObjectToText(result.object,
+		                                      context.tab,
+			result.header, text, errors) &
+		  CompilerDatabases.Store(context.db, result.header,
+					  text, errors) THEN
+	       IF CompilerLogs.Open(context.log, logStoring, s) THEN
+		  Write.StringS(s, "stored ");
+		  IF result.header.arch = NIL THEN
+		     Write.StringS(s, "architecture-independent");
+		  ELSE
+		     Write.StringS(s, "architecture-dependent");
+		  END;
+		  Write.CharS(s, " ");
+		  CASE result.header.type OF
+		  | CompilerObjects.public:
+			Write.StringS(s, "public interface of ");
+		  | CompilerObjects.private:
+			Write.StringS(s, "module ");
+		  END;
+		  ConstStrings.Write(s, result.header.modname);
+		  Write.StringS(s, " into database");
+		  Streams.Release(s);
+	       END;
+	    END;
+	 END;
+      END AddResult;
+
+      PROCEDURE GetSource(type: CompilerObjects.ObjectType;
+                          VAR src: Sources.Source) : BOOLEAN;
+	 VAR
+	    kind: Sources.SourceKind;
+	    kinds: SET;
+      BEGIN
+	 CASE type OF
+	 | CompilerObjects.public:  kinds := defkinds;
+	 | CompilerObjects.private: kinds := modkinds;
+	 END;
+	 kind := Sources.definition;
+	 WHILE kind <= Sources.defmod DO
+	    IF (kind IN kinds) &
+	          CompilerDatabases.LookupSrc(context.db, modname,
+		     kind, src, errors) THEN
+	       RETURN TRUE
+	    END;
+	    INC(kind);
+	 END;
+	 RETURN FALSE
+      END GetSource;
+
+   BEGIN (* Load *)
+      LogParameters; EnterLevel;
+
+      (* we operate on a copy of context.keys because we do not
+	 want to insert bogus keys in case of failures;
+	 this technique enforces us to restore context.keys if
+	 we return FALSE
+      *)
+      CompilerKeys.CreateSet(newkeys);
+      CompilerKeys.InclSet(newkeys, context.keys);
+      oldkeys := context.keys; context.keys := newkeys;
+
+      IF CompilerObjects.Lookup(context.mtab, modname, type, arch,
+                                header, object) THEN
+	 (* header & object in mtab cache *)
+	 text := NIL;
+	 LogSuccess("found in cache"); RETURN TRUE
+      END;
+      LogMsg("not in cache");
+
+      tries := 0;
+      LOOP
+	 (* loops only in case of multiple tries because of
+	    load processes running in parallel
+	 *)
+	 IF LookupHeader(context, modname, type,
+			 arch, header, RelatedEvents.null) &
+	       UpToDate(context, header) &
+	       CompilerDatabases.Lookup(context.db, modname, type,
+		  arch, newkeys, header, text, errors) THEN
+	    object := NIL;
+	    LogSuccess("found up-to-date version in database"); RETURN TRUE
+	 END;
+	 LogMsg("no up-to-date version in database");
+
+	 IF (type = CompilerObjects.public) &
+	       CompilerKeys.Lookup(newkeys, modname, key) &
+	       ((arch = NIL) OR (key.arch # NIL)) THEN
+	    LogMsg("illegal reference cycle detected");
+	    Error(errors, refCycle, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+
+	 IF arch = NIL THEN EXIT END;
+	 IF type = CompilerObjects.private THEN EXIT END;
+
+	 (* try to load the module if possible because it might
+	    update the requested symfile -- but do not fail on errors;
+	    note that we load the architecture-independent module
+	    first to check for reference cycles which would prohibit
+	    symfile updates
+	 *)
+	 LogMsg("loading associated module because of possible updates");
+	 IF LoadHeader(compiler, context, modname, CompilerObjects.private,
+		       NIL, modHeader, RelatedEvents.null) THEN
+	    IF CompilerKeys.Lookup(modHeader.dependencies, modname, key) THEN
+	       LogMsg("will not load it yet because of reference cycle");
+	       EXIT
+	    ELSE
+	       NEW(moderrors); RelatedEvents.QueueEvents(moderrors);
+	       Compilers.CreateCopyOfContext(newcontext, context);
+	       IF LoadObject(compiler, newcontext, modname,
+			     CompilerObjects.private, arch,
+			     modHeader, modObject, moderrors) THEN
+		  Compilers.SynchronizeContext(context, newcontext);
+		  (* we will find the requested object in our mtab cache
+		     as long LoadObject was not satisfied by an object
+		     generated in parallel
+		  *)
+		  ok := CompilerObjects.Lookup(context.mtab, modname,
+					       type, arch, header, object);
+		  IF ok THEN
+		     text := NIL;
+		     LogSuccess("now found in cache"); RETURN TRUE
+		  END;
+		  LogMsg("still not in cache");
+	       ELSE
+		  LogMsg("unable to load associated module");
+		  LogErrors(moderrors);
+		  EXIT
+	       END;
+	    END;
+	 ELSE
+	    LogMsg("unable to load architecture-independent object");
+	    EXIT
+	 END;
+	 INC(tries);
+	 IF tries > 5 THEN
+	    LogMsg("giving up to load associated module"); EXIT
+	 END;
+	 LogMsg("starting next attempt...");
+      END;
+
+      IF arch = NIL THEN
+	 (* compile source and generate architecture-independent
+	    intermediate form
+	 *)
+	 IF ~GetSource(type, src) THEN
+	    Error(errors, noSrcFound, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+	 LogMsg("source loaded");
+	 RelatedEvents.Forward(src, errors);
+	 LogPass1;
+	 IF ~Compilers.Pass1(compiler, context, src, definition, module) THEN
+	    Error(errors, compilationFailed, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+	 CASE type OF
+	 | CompilerObjects.public:  result := definition;
+	 | CompilerObjects.private: result := module;
+	 END;
+	 IF result = NIL THEN
+	    Error(errors, compilationFailed, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+	 AddResult(definition); AddResult(module);
+      ELSE
+	 (* run 2nd pass *)
+	 LogMsg("loading architecture-independent object");
+	 IF ~LoadObject(compiler, context, modname, type, (* arch = *) NIL,
+	                modHeader, modObject, errors) THEN
+	    context.keys := oldkeys; LogFailure; RETURN FALSE
+	 END;
+	 IF type = CompilerObjects.private THEN
+	    LogMsg("loading associated architecture-dependent interface");
+	    IF ~LoadDefinition(compiler, context, modname, arch,
+			       symfile, updatesPermitted, errors) THEN
+	       context.keys := oldkeys; LogFailure; RETURN FALSE
+	    END;
+	    symObject := symfile.object;
+	    symHeader := symfile.header;
+	    IF CompilerKeys.Lookup(modHeader.dependencies, modname, key) THEN
+	       (* legal reference cycle:
+	          prohibit update of symfile and put it into the cache
+	       *)
+	       LogMsg("legal reference cycle detected");
+	       updatesPermitted := FALSE;
+	       AddToContext(context, symfile.header, symfile.object);
+	       symfile := NIL;
+	    END;
+	 ELSE
+	    (* we have already looked for the object and were unsuccessful *)
+	    symObject := modObject;
+	    symHeader := modHeader;
+	    modObject := NIL;
+	    updatesPermitted := TRUE;
+	    symfile := NIL;
+	 END;
+	 LogPass2;
+	 IF ~Compilers.Pass2(compiler, context,
+	                     symObject, modObject,
+			     arch, updatesPermitted,
+			     definition, code, errors) THEN
+	    Error(errors, compilationFailed, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+	 CASE type OF
+	 | CompilerObjects.public:  result := definition;
+	 | CompilerObjects.private: result := code;
+	 END;
+	 IF result = NIL THEN
+	    Error(errors, compilationFailed, modname);
+	    context.keys := oldkeys;
+	    LogFailure; RETURN FALSE
+	 END;
+	 IF (definition # NIL) & updatesPermitted THEN
+	    AddResult(definition);
+	 ELSIF (symfile # NIL) & (symfile.header.arch # NIL) THEN
+	    (* we have to add it to our context anyway because
+	       it is already in tab (of ModularizedStructures)
+	    *)
+	    AddToContext(context, symfile.header, symfile.object);
+	 END;
+	 AddResult(code);
+      END;
+
+      object := result.object; header := result.header; text := NIL;
+      LogSuccess("");
+      RETURN TRUE
+   END Load;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE LoadObject(compiler: Compilers.Compiler;
+                        context: Compilers.Context;
+		        modname: ConstStrings.String;
+		        type: CompilerObjects.ObjectType;
+		        arch: Architectures.Architecture;
+		        VAR header: CompilerObjects.Header;
+		        VAR object: CompilerObjects.Object;
+		        errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 text: PersistentTexts.Text;
+	 logkey: INTEGER;
+   BEGIN
+      CompilerLogs.EnterLevel(context.log, logkey);
+      IF ~Load(compiler, context, modname, type, arch,
+               header, object, text, errors) THEN
+	 Error(errors, loadFailed, modname);
+	 CompilerLogs.LeaveLevel(context.log, logkey);
+	 RETURN FALSE
+      END;
+      IF object = NIL THEN
+	 IF LoadImportedModules(compiler, context, modname,
+	                        header, errors) &
+	       CompilerObjects.ConvertTextToObject(text, context.tab, header,
+	                                           object, errors) THEN
+	    AddToContext(context, header, object);
+	    CompilerLogs.LeaveLevel(context.log, logkey);
+	    RETURN TRUE
+	 ELSE
+	    CompilerLogs.LeaveLevel(context.log, logkey);
+	    RETURN FALSE
+	 END;
+      ELSE
+	 CompilerLogs.LeaveLevel(context.log, logkey);
+	 RETURN TRUE
+      END;
+   END LoadObject;
+
+   PROCEDURE LoadText(compiler: Compilers.Compiler;
+                      context: Compilers.Context;
+		      modname: ConstStrings.String;
+		      type: CompilerObjects.ObjectType;
+		      arch: Architectures.Architecture;
+		      VAR header: CompilerObjects.Header;
+		      VAR text: PersistentTexts.Text;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 object: CompilerObjects.Object;
+	 logkey: INTEGER;
+	 ok: BOOLEAN;
+   BEGIN
+      CompilerLogs.EnterLevel(context.log, logkey);
+      IF ~Load(compiler, context, modname, type, arch,
+               header, object, text, errors) THEN
+	 Error(errors, loadFailed, modname);
+	 CompilerLogs.LeaveLevel(context.log, logkey);
+	 RETURN FALSE
+      END;
+      IF text = NIL THEN
+	 ok := CompilerObjects.ConvertObjectToText(object, context.tab,
+		                                   header, text, errors)
+      ELSE
+	 ok := TRUE;
+      END;
+      CompilerLogs.LeaveLevel(context.log, logkey);
+      RETURN ok
+   END LoadText;
+
+   PROCEDURE LoadHeader(compiler: Compilers.Compiler;
+                        context: Compilers.Context;
+		        modname: ConstStrings.String;
+		        type: CompilerObjects.ObjectType;
+		        arch: Architectures.Architecture;
+		        VAR header: CompilerObjects.Header;
+		        errors: RelatedEvents.Object) : BOOLEAN;
+      (* load up-to-date version of specified header *)
+      VAR
+	 object: CompilerObjects.Object;
+   BEGIN
+      IF CompilerObjects.LookupHeader(context.mtab, modname,
+                                      type, arch, header) THEN
+	 (* consider it up-to-date if it is in our cache *)
+	 RETURN TRUE
+      END;
+      IF CompilerDatabases.LookupHeader(context.db, modname,
+			type, arch, context.keys, header, errors) &
+	    UpToDate(context, header) THEN
+	 RETURN TRUE
+      END;
+      (* finally we have to (re-)create the associated object to
+	 return an up-to-date object
+      *)
+      RETURN LoadObject(compiler, context, modname, type, arch,
+                        header, object, errors)
+   END LoadHeader;
+
+BEGIN
+   Services.SeekType("CompilerObjects.Object", coType);
+   InitErrorHandling;
+END ObjectLoader.

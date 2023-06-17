@@ -1,0 +1,370 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Architectur.om,v 1.1 2001/03/08 07:42:15 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Architectur.om,v $
+   Revision 1.1  2001/03/08 07:42:15  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Architectures;
+
+   IMPORT ConstStrings, NetIO, PersistentDisciplines, PersistentObjects,
+      Services, Streams, Write;
+
+   (* classification of hardware architectures and operating systems *)
+
+   TYPE
+      Architecture = POINTER TO ArchitectureRec;
+      ArchitectureRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    (* following fields must not be modified after being
+	       initialized after creation -- create new architecture
+	       objects instead
+	    *)
+	    class: ConstStrings.String;
+	       (* is always defined and addresses the parties responsible
+		  for this hardware architecture
+	       *)
+	    (* optional components that may be NIL:
+	       the less specified they are the more likely it is to
+	       be compatible with other architectures
+	    *)
+	    variant: ConstStrings.String;
+	       (* minor variant of the hardware architecture *)
+	    vendor: ConstStrings.String;
+	       (* hardware vendor *)
+	    model: ConstStrings.String;
+	       (* set of conventions that specifies the size of the
+		  address space and long integers
+	       *)
+	    os, osrelease: ConstStrings.String;
+	       (* defined in case of os dependencies *)
+	 END;
+   VAR
+      type: Services.Type;
+
+   VAR
+      system: Architecture; (* architecture of our system / process *)
+
+   (* === PersistentObjects if for Architecture =========================== *)
+
+   PROCEDURE ReadConstString(s: Streams.Stream;
+			     VAR string: ConstStrings.String) : BOOLEAN;
+      VAR
+	 isNIL: BOOLEAN;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, isNIL) THEN RETURN FALSE END;
+      IF isNIL THEN
+	 string := NIL; RETURN TRUE
+      ELSE
+	 RETURN NetIO.ReadConstString(s, string)
+      END;
+   END ReadConstString;
+
+   PROCEDURE WriteConstString(s: Streams.Stream;
+			      VAR string: ConstStrings.String) : BOOLEAN;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, string = NIL) THEN RETURN FALSE END;
+      IF string = NIL THEN
+	 RETURN TRUE
+      ELSE
+	 RETURN NetIO.WriteConstString(s, string)
+      END;
+   END WriteConstString;
+
+   PROCEDURE CreateArchitecture(VAR object: PersistentObjects.Object);
+      VAR
+	 arch: Architecture;
+   BEGIN
+      NEW(arch); arch.class := NIL; arch.variant := NIL;
+      arch.vendor := NIL; arch.model := NIL;
+      arch.os := NIL; arch.osrelease := NIL;
+      PersistentObjects.Init(arch, type);
+      object := arch;
+   END CreateArchitecture;
+
+   PROCEDURE ReadArchitecture(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Architecture DO
+	 RETURN ReadConstString(s, object.class) &
+	        ReadConstString(s, object.variant) &
+	        ReadConstString(s, object.vendor) &
+	        ReadConstString(s, object.model) &
+	        ReadConstString(s, object.os) &
+	        ReadConstString(s, object.osrelease)
+      END;
+   END ReadArchitecture;
+
+   PROCEDURE WriteArchitecture(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Architecture DO
+	 RETURN WriteConstString(s, object.class) &
+	        WriteConstString(s, object.variant) &
+	        WriteConstString(s, object.vendor) &
+	        WriteConstString(s, object.model) &
+	        WriteConstString(s, object.os) &
+	        WriteConstString(s, object.osrelease)
+      END;
+   END WriteArchitecture;
+
+   (* === initialization ================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(persif);
+      persif.create := CreateArchitecture;
+      persif.read := ReadArchitecture;
+      persif.write := WriteArchitecture;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(type,
+         "Architectures.Architecture", "PersistentDisciplines.Object",
+	 persif);
+      system := NIL;
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Create(VAR arch: Architecture; class: ARRAY OF CHAR);
+   BEGIN
+      ASSERT(class[0] # 0X);
+      CreateArchitecture(arch);
+      ConstStrings.Create(arch.class, class);
+   END Create;
+
+   PROCEDURE CreateCopy(VAR arch: Architecture; orig: Architecture);
+   BEGIN
+      IF orig = NIL THEN
+	 arch := NIL;
+      ELSE
+	 CreateArchitecture(arch);
+	 arch.class := orig.class;
+	 arch.variant := orig.variant;
+	 arch.vendor := orig.vendor;
+	 arch.model := orig.model;
+	 arch.os := orig.os;
+	 arch.osrelease := orig.osrelease;
+      END;
+   END CreateCopy;
+
+   PROCEDURE Compatible(arch1, arch2: Architecture;
+                        VAR combined: Architecture) : BOOLEAN;
+      (* checks whether objects of arch1 and arch2 can be combined
+         with each other and, if true, returns the combined architecture
+	 in combined
+      *)
+      VAR
+	 new: Architecture;
+
+      PROCEDURE Check(spec1, spec2: ConstStrings.String;
+                      VAR combined: ConstStrings.String) : BOOLEAN;
+      BEGIN
+	 IF spec1 = NIL THEN
+	    combined := spec2; RETURN TRUE
+	 ELSIF (spec2 = NIL) OR (ConstStrings.Compare(spec1, spec2) = 0) THEN
+	    combined := spec1; RETURN TRUE
+	 ELSE
+	    combined := NIL; RETURN FALSE
+	 END;
+      END Check;
+
+   BEGIN (* Compatible *)
+      IF arch1 = arch2 THEN
+	 CreateCopy(combined, arch1); RETURN TRUE
+      END;
+      IF (arch1 = NIL) OR (arch2 = NIL) THEN
+	 IF arch1 # NIL THEN
+	    CreateCopy(combined, arch1);
+	 ELSIF arch2 # NIL THEN
+	    CreateCopy(combined, arch2);
+	 ELSE
+	    combined := NIL;
+	 END;
+	 RETURN TRUE
+      END;
+      IF ConstStrings.Compare(arch1.class, arch2.class) # 0 THEN
+	 combined := NIL; RETURN FALSE
+      END;
+      CreateArchitecture(new); new.class := arch1.class;
+      IF Check(arch1.variant, arch2.variant, new.variant) &
+	    Check(arch1.vendor, arch2.vendor, new.vendor) &
+	    Check(arch1.model, arch2.model, new.model) &
+	    Check(arch1.os, arch2.os, new.os) &
+	    Check(arch1.osrelease, arch2.osrelease, new.osrelease) THEN
+	 combined := new; RETURN TRUE
+      ELSE
+	 combined := NIL; RETURN FALSE
+      END;
+   END Compatible;
+
+   PROCEDURE Identical(arch1, arch2: Architecture) : BOOLEAN;
+
+      PROCEDURE Check(spec1, spec2: ConstStrings.String) : BOOLEAN;
+      BEGIN
+	 IF (spec1 = NIL) OR (spec2 = NIL) THEN
+	    RETURN spec1 = spec2
+	 ELSE
+	    RETURN ConstStrings.Compare(spec1, spec2) = 0
+	 END;
+      END Check;
+
+   BEGIN (* Identical *)
+      IF (arch1 = NIL) OR (arch2 = NIL) THEN
+	 RETURN (arch1 = NIL) & (arch2 = NIL)
+      END;
+      RETURN Check(arch1.class, arch2.class) &
+             Check(arch2.variant, arch2.variant) &
+             Check(arch2.vendor, arch2.vendor) &
+             Check(arch2.model, arch2.model) &
+             Check(arch2.os, arch2.os) &
+             Check(arch2.osrelease, arch2.osrelease)
+   END Identical;
+
+   PROCEDURE GetString(arch: Architecture; VAR string: ConstStrings.String);
+      (* return the architecture encoded into one string:
+
+	 ArchString = Hardware [ ";" Model ] [ "-" Software ] .
+	 Hardware = Class [ ":" [ Variant ] [ ":" Vendor ] ] .
+	 Model = AlphaNum .
+	 Software = OS [ ":" Release ] .
+	 Class = AlphaNum .
+	 Variant = AlphaNum .
+	 Vendor = AlphaNum .
+	 OS = AlphaNum .
+	 Release = AlphaNum .
+      *)
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      ASSERT((arch # NIL) & (arch.class # NIL));
+      ConstStrings.Init(s);
+      ConstStrings.Write(s, arch.class);
+      IF (arch.variant # NIL) OR (arch.vendor # NIL) THEN
+	 Write.CharS(s, ":");
+	 IF arch.variant # NIL THEN
+	    ConstStrings.Write(s, arch.variant);
+	 END;
+	 IF arch.vendor # NIL THEN
+	    Write.CharS(s, ":");
+	    ConstStrings.Write(s, arch.vendor);
+	 END;
+      END;
+      IF arch.model # NIL THEN
+	 Write.CharS(s, ";");
+	 ConstStrings.Write(s, arch.model);
+      END;
+      IF arch.os # NIL THEN
+	 Write.CharS(s, "-");
+	 ConstStrings.Write(s, arch.os);
+	 IF arch.osrelease # NIL THEN
+	    Write.CharS(s, ":");
+	    ConstStrings.Write(s, arch.osrelease);
+	 END;
+      END;
+      ConstStrings.Close(s, string);
+   END GetString;
+
+   PROCEDURE GetArch(string: ConstStrings.String; VAR arch: Architecture);
+      (* reconstruct an architecture object from the given string *)
+      VAR
+	 s: Streams.Stream;
+	 new: Architecture;
+	 delim: CHAR;
+
+      PROCEDURE ReadString(VAR string: ConstStrings.String);
+	 VAR
+	    ch: CHAR;
+	    cs: Streams.Stream;
+	    gotch: BOOLEAN;
+	    count: INTEGER;
+      BEGIN
+	 ConstStrings.Init(cs);
+	 count := 0;
+	 LOOP
+	    gotch := Streams.ReadByte(s, ch);
+	    IF ~gotch OR (ch = "-") OR (ch = ":") OR (ch = ";") THEN
+	       EXIT
+	    END;
+	    INC(count); Write.CharS(cs, ch);
+	 END;
+	 ConstStrings.Close(cs, string);
+	 IF count = 0 THEN
+	    string := NIL;
+	 END;
+	 IF ~gotch THEN
+	    delim := 0X;
+	 ELSE
+	    delim := ch;
+	 END;
+      END ReadString;
+
+      PROCEDURE ReadHardware() : BOOLEAN;
+      BEGIN
+	 ReadString(new.class);
+	 IF new.class = NIL THEN RETURN FALSE END;
+	 IF delim = ":" THEN
+	    ReadString(new.variant);
+	    IF delim = ":" THEN
+	       ReadString(new.vendor);
+	    END;
+	 END;
+	 RETURN TRUE
+      END ReadHardware;
+
+      PROCEDURE ReadModel() : BOOLEAN;
+      BEGIN
+	 IF delim = ";" THEN
+	    ReadString(new.model);
+	 END;
+	 RETURN TRUE
+      END ReadModel;
+
+      PROCEDURE ReadSoftware() : BOOLEAN;
+      BEGIN
+	 IF delim = "-" THEN
+	    ReadString(new.os);
+	    IF delim = ":" THEN
+	       ReadString(new.osrelease);
+	    END;
+	 END;
+	 RETURN TRUE
+      END ReadSoftware;
+
+   BEGIN (* GetArch *)
+      ConstStrings.Open(s, string);
+      CreateArchitecture(new);
+      IF ReadHardware() & ReadModel() & ReadSoftware() & (delim = 0X) THEN
+	 arch := new;
+      ELSE
+	 arch := NIL;
+      END;
+      Streams.Release(s);
+   END GetArch;
+
+BEGIN
+   Init;
+END Architectures.

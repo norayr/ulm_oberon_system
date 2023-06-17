@@ -1,0 +1,118 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: VolatileSha.om,v 1.1 1995/12/22 15:14:55 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: VolatileSha.om,v $
+   Revision 1.1  1995/12/22  15:14:55  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE VolatileShards;
+(*
+ *	Implementation of a not quite persistent shard type to ensure
+ *	process identity
+ *)
+
+   IMPORT PersistentObjects, Services, Shards;
+
+   TYPE
+      Pot = POINTER TO PotRec;
+      PotRec =
+	 RECORD
+	    (Shards.PotRec)
+	 END;
+
+      Lid = POINTER TO LidRec;
+      LidRec =
+	 RECORD
+	    (Shards.LidRec)
+	 END;
+
+   VAR
+      mypot: Pot;
+      mylid,
+      foreignlid: Lid;
+
+   PROCEDURE Fits(pot: Shards.Pot; lid: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN lid = mylid
+   END Fits;
+
+   PROCEDURE Supply(pot: Shards.Pot; VAR lid: Shards.Lid): BOOLEAN;
+   BEGIN
+      lid := mylid;
+      RETURN TRUE
+   END Supply;
+
+   PROCEDURE CreatePot(VAR obj: PersistentObjects.Object);
+   BEGIN
+      obj := mypot;
+   END CreatePot;
+
+   PROCEDURE CreateLid(VAR obj: PersistentObjects.Object);
+   BEGIN
+      obj := foreignlid;		(* will never fit to mypot *)
+   END CreateLid;
+
+   PROCEDURE InitDatatypes;
+      VAR
+	 potif: Shards.Interface;
+	 potType,
+	 lidType: Services.Type;
+	 face: PersistentObjects.Interface;
+   BEGIN
+      NEW(face);
+      face.read := NIL;
+      face.write := NIL;
+      face.create := CreatePot;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(potType,
+	 "VolatileShards.Pot", "Shards.Pot", face);
+      NEW(face);
+      face.read := NIL;
+      face.write := NIL;
+      face.create := CreateLid;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(lidType,
+	 "VolatileShards.Lid", "Shards.Lid", face);
+      NEW(potif);
+      potif.fits := Fits;
+      potif.supply := Supply;
+      NEW(mypot);
+      PersistentObjects.Init(mypot, potType);
+      Shards.Init(mypot, potif);
+      NEW(mylid);
+      PersistentObjects.Init(mylid, lidType);
+      NEW(foreignlid);
+      PersistentObjects.Init(foreignlid, lidType);
+   END InitDatatypes;
+
+   PROCEDURE Create(VAR pot: Shards.Pot; VAR lid: Shards.Lid);
+   BEGIN
+      pot := mypot; lid := mylid;
+   END Create;
+
+BEGIN
+   InitDatatypes;
+END VolatileShards.

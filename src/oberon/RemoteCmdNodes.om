@@ -1,0 +1,161 @@
+(* Edit RemoteCmdNo.rm instead of this file which has been generated
+   by genrem at Fri Mar 12 14:22:15 MET 1999
+*)
+
+MODULE RemoteCmdNodes;
+
+   IMPORT CmdNodes, Messages, NetIO, PersistentObjects, RelatedEvents,
+      RemoteObjects, Services, Shards, Streams;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec = RECORD (CmdNodes.NodeRec) END;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      ExecuteMessage = POINTER TO ExecuteMessageRec;
+      ExecuteMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            in: Streams.Stream; (* IN via REF *)
+            out: Streams.Stream; (* IN via REF *)
+         END;
+   VAR
+      executeMessageType: Services.Type;
+
+   VAR
+      if: CmdNodes.Interface; (* of CmdNodes *)
+      type: Services.Type; (* of RemoteCmdNodes.Node *)
+
+   PROCEDURE CreateExecuteMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ExecuteMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, executeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateExecuteMessage;
+
+   PROCEDURE WriteExecuteMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ExecuteMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Export(s, msg.in) &
+                   RemoteObjects.Export(s, msg.out)
+         END;
+      END;
+   END WriteExecuteMessage;
+
+   PROCEDURE ReadExecuteMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ExecuteMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Import(s, msg.in) &
+                   RemoteObjects.Import(s, msg.out)
+         END;
+      END;
+   END ReadExecuteMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: CmdNodes.Node DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS ExecuteMessage THEN
+            WITH msg: ExecuteMessage DO
+               msg.done := CmdNodes.Execute(object, msg.auth, msg.in, msg.out);
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE Execute(node: CmdNodes.Node;
+                     auth: Shards.Lid;
+                     in: Streams.Stream;
+                     out: Streams.Stream) : BOOLEAN;
+      VAR msg: ExecuteMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateExecuteMessage(msg);
+      msg.auth := auth;
+      msg.in := in;
+      msg.out := out;
+      Messages.Send(node, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(node, queue);
+      RETURN msg.done
+   END Execute;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.execute := Execute;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteCmdNodes.Message", "Messages.Message", NIL);
+      InitPO(executeMessageType, "RemoteCmdNodes.ExecuteMessage", "RemoteCmdNodes.Message",
+             CreateExecuteMessage, ReadExecuteMessage, WriteExecuteMessage);
+      Services.CreateType(type,
+         "RemoteCmdNodes.Node", "CmdNodes.Node");
+
+      Services.SeekType("CmdNodes.Node", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := NIL;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.serial);
+   END InitIFs;
+
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+	 params: PersistentObjects.Object);
+      VAR n: Node;
+   BEGIN
+      NEW(n);
+      Services.Init(n, type);
+      CmdNodes.Init(n, if);
+      RelatedEvents.QueueEvents(n);
+      object := n;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteCmdNodes.

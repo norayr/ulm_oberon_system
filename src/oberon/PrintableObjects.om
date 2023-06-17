@@ -1,0 +1,85 @@
+MODULE PrintableObjects;
+
+   (* secondary abstraction for printable objects
+      which is usually to be supported directly by the primary implementation
+   *)
+
+   IMPORT Disciplines, Streams, Strings;
+
+   CONST
+      defaultText = "?";
+
+   TYPE
+      PrintProc = PROCEDURE (s: Streams.Stream; object: Disciplines.Object);
+
+   TYPE
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    print: PrintProc;
+	 END;
+   VAR
+      objectDiscID: Disciplines.Identifier;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    defaultText: ARRAY 32 OF CHAR;
+	 END;
+   VAR
+      streamDiscID: Disciplines.Identifier;
+
+   PROCEDURE Init(object: Disciplines.Object; print: PrintProc);
+      (* assign a print method to an object;
+	 usually called by the creator of `object'
+	    (i.e. the primary implementation)
+      *)
+      VAR
+	 objectDisc: ObjectDiscipline;
+   BEGIN
+      NEW(objectDisc); objectDisc.id := objectDiscID;
+      objectDisc.print := print;
+      Disciplines.Add(object, objectDisc);
+   END Init;
+
+   PROCEDURE SetDefault(s: Streams.Stream; default: ARRAY OF CHAR);
+      (* sets the per-stream default output text for objects
+	 which do not have an associated print method
+      *)
+      VAR
+	 streamDisc: StreamDiscipline;
+   BEGIN
+      NEW(streamDisc); streamDisc.id := streamDiscID;
+      COPY(default, streamDisc.defaultText);
+      Disciplines.Add(s, streamDisc);
+   END SetDefault;
+
+   PROCEDURE WriteString(s: Streams.Stream; string: ARRAY OF CHAR);
+   BEGIN
+      IF ~Streams.WritePart(s, string, 0, Strings.Len(string)) THEN END;
+   END WriteString;
+
+   PROCEDURE Print(s: Streams.Stream; object: Disciplines.Object);
+      (* call the print method of `object', or, if not present,
+	 the per-stream default text, or, if not present, a question mark
+      *)
+      VAR
+	 objectDisc: ObjectDiscipline;
+	 streamDisc: StreamDiscipline;
+   BEGIN
+      IF Disciplines.Seek(object, objectDiscID, objectDisc) THEN
+	 objectDisc.print(s, object);
+      ELSIF Disciplines.Seek(s, streamDiscID, streamDisc) THEN
+	 WriteString(s, streamDisc.defaultText);
+      ELSE
+	 WriteString(s, defaultText);
+      END;
+   END Print;
+
+BEGIN
+   objectDiscID := Disciplines.Unique();
+   streamDiscID := Disciplines.Unique();
+END PrintableObjects.

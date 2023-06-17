@@ -1,0 +1,94 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Modularized.od,v 1.1 2001/02/03 17:35:53 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Modularized.od,v $
+   Revision 1.1  2001/02/03 17:35:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION ModularizedStructures;
+
+   IMPORT ConstStrings, Disciplines, Events, Iterators, PersistentObjects,
+      Services, Streams;
+
+   TYPE
+      ObjectTable = POINTER TO ObjectTableRec;
+      ObjectTableRec = RECORD (Disciplines.ObjectRec) END;
+
+   CONST
+      corruptedInput = 0;
+      readFailed = 1;
+      typeGuardFailure = 2;
+      unknownObject = 3;
+      writeFailed = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* corruptedInput ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    s: Streams.Stream;
+	    code: ErrorCode;
+	    otype, guard: Services.Type;
+	    modname, name: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE CreateTable(VAR table: ObjectTable);
+   PROCEDURE Add(table: ObjectTable;
+                 object: PersistentObjects.Object;
+		 modname, name: ConstStrings.String);
+   PROCEDURE Insert(table: ObjectTable;
+                    object: PersistentObjects.Object;
+		    modname: ConstStrings.String;
+		    VAR name: ConstStrings.String);
+   PROCEDURE Lookup(table: ObjectTable;
+                    modname, name: ConstStrings.String;
+		    VAR object: PersistentObjects.Object) : BOOLEAN;
+   PROCEDURE GetObjects(table: ObjectTable; it: Iterators.Iterator);
+   PROCEDURE InTab(table: ObjectTable; modname: ConstStrings.String) : BOOLEAN;
+   PROCEDURE CreateCopyOfTable(VAR newtab: ObjectTable; orig: ObjectTable);
+   PROCEDURE SynchronizeTable(tab, extendedtab: ObjectTable);
+
+   PROCEDURE Init(s: Streams.Stream;
+                  modname: ConstStrings.String;
+		  table: ObjectTable);
+   PROCEDURE GetParams(s: Streams.Stream;
+                       VAR modname: ConstStrings.String;
+		       VAR table: ObjectTable);
+
+   PROCEDURE Read(s: Streams.Stream;
+                  VAR object: PersistentObjects.Object) : BOOLEAN;
+
+   PROCEDURE GuardedRead(s: Streams.Stream;
+			 guard: Services.Type;
+                         VAR object: PersistentObjects.Object) : BOOLEAN;
+
+   PROCEDURE Write(s: Streams.Stream;
+                   object: PersistentObjects.Object;
+		   modname, name: ConstStrings.String) : BOOLEAN;
+
+END ModularizedStructures.

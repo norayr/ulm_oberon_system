@@ -1,0 +1,505 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Modularized.om,v 1.2 2004/09/04 16:08:10 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Modularized.om,v $
+   Revision 1.2  2004/09/04 16:08:10  borchert
+   Iterators.Create replaced by Iterators.CreateQuickIterator
+
+   Revision 1.1  2001/02/03 17:35:55  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ModularizedStructures;
+
+   IMPORT ConstStrings, Disciplines, Errors, Events, Iterators,
+      LinearizedStructures, NetIO, PersistentObjects, Priorities,
+      Random := RandomGenerators, RelatedEvents, Services, Streams,
+      W := Write;
+
+   CONST
+      hashtablen = 223;
+   TYPE
+      Entry = POINTER TO EntryRec;
+      HashTable = POINTER TO ARRAY hashtablen OF Entry;
+      EntryRec =
+	 RECORD
+	    name: ConstStrings.String;
+	    next: Entry;
+	    object: PersistentObjects.Object;
+	    objects: HashTable;
+	 END;
+
+      ObjectTable = POINTER TO ObjectTableRec;
+      ObjectTableRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    modules: HashTable;
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    modname: ConstStrings.String;
+	    table: ObjectTable;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   CONST
+      objectSY = "O";
+      referenceSY = "R";
+
+   (* for unique names, see below *)
+   CONST
+      length = 7;
+   TYPE
+      String = ARRAY length+1 OF CHAR;
+
+   CONST
+      corruptedInput = 0;
+      readFailed = 1;
+      typeGuardFailure = 2;
+      unknownObject = 3;
+      writeFailed = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* corruptedInput ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    s: Streams.Stream;
+	    code: ErrorCode;
+	    otype, guard: Services.Type;
+	    modname, name: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+
+      VAR
+	 disc: StreamDiscipline;
+
+      PROCEDURE WriteType(type: Services.Type);
+	 VAR
+	    buf: ARRAY 80 OF CHAR;
+      BEGIN
+	 Services.GetTypeName(type, buf);
+	 W.StringS(s, buf);
+      END WriteType;
+
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF Disciplines.Seek(event.s, sdID, disc) THEN
+	    W.StringS(s, "in persistent module ");
+	    ConstStrings.Write(s, disc.modname);
+	    W.StringS(s, ": ");
+	 END;
+	 W.StringS(s, event.message);
+	 W.StringS(s, " (");
+	 IF event.modname # NIL THEN
+	    ConstStrings.Write(s, event.modname);
+	    W.CharS(s, ".");
+	    ConstStrings.Write(s, event.name);
+	 END;
+	 CASE event.code OF
+	 | writeFailed:
+	       W.StringS(s, " of type "); WriteType(event.otype);
+	 | readFailed:
+	       W.StringS(s, "expected "); WriteType(event.guard);
+	 | typeGuardFailure:
+	       W.StringS(s, "expected "); WriteType(event.guard);
+	       W.StringS(s, " but got "); WriteType(event.otype);
+	 ELSE
+	 END;
+	 W.StringS(s, ")");
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[corruptedInput] :=
+	 "unable to read object due to corrupted input";
+      errormsg[readFailed] := "read operation failed";
+      errormsg[typeGuardFailure] := "type guard failure";
+      errormsg[unknownObject] := "unknown object";
+      errormsg[writeFailed] := "write operation failed";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(s: Streams.Stream; code: ErrorCode;
+                   type, guard: Services.Type;
+		   modname, name: ConstStrings.String);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.s := s;
+      event.code := code;
+      event.otype := type;
+      event.guard := guard;
+      event.modname := modname;
+      event.name := name;
+      RelatedEvents.Raise(s, event);
+   END Error;
+
+   (* === unique names (stolen from UniqueNames by Martin Hasch) =========== *)
+
+   PROCEDURE InventName(VAR string: String);
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := 0;
+      REPEAT
+	 string[index] := CHR(Random.Val(ORD("a"), ORD("z")));
+	 INC(index);
+      UNTIL index = length;
+      string[length] := 0X;
+   END InventName;
+
+   PROCEDURE ModifyName(VAR string: String);
+      VAR
+	 index,
+	 value,
+	 newvalue: INTEGER;
+	 ch: CHAR;
+   BEGIN
+      value := 0;
+      index := 0;
+      REPEAT
+	 ch := string[index];
+	 value := value * 2;
+	 IF ch = CAP(ch) THEN
+	    INC(value);
+	 END;
+	 INC(index);
+      UNTIL index = length;
+      newvalue := value+1;
+      REPEAT
+	 DEC(index);
+	 IF ODD(value) THEN
+	    IF ~ODD(newvalue) THEN
+	       string[index] := CHR( ORD(string[index])+(ORD("a")-ORD("A")) );
+	    END;
+	 ELSE
+	    IF ODD(newvalue) THEN
+	       string[index] := CAP(string[index]);
+	    END;
+	 END;
+	 value := value DIV 2; newvalue := newvalue DIV 2;
+      UNTIL index = 0;
+      IF newvalue # 0 THEN
+	 InventName(string);
+      END;
+   END ModifyName;
+
+   (* === hash table management ============================================ *)
+
+   PROCEDURE Search(table: HashTable; name: ConstStrings.String;
+                    VAR entry: Entry) : BOOLEAN;
+   BEGIN
+      entry := table[name.hashval MOD hashtablen];
+      WHILE (entry # NIL) & (ConstStrings.Compare(name, entry.name) # 0) DO
+	 entry := entry.next;
+      END;
+      RETURN entry # NIL
+   END Search;
+
+   PROCEDURE InsertEntry(table: HashTable; name: ConstStrings.String;
+                         VAR entry: Entry);
+      VAR
+	 index: LONGINT;
+   BEGIN
+      index := name.hashval MOD hashtablen;
+      NEW(entry); entry.name := name; entry.next := table[index];
+      table[index] := entry;
+   END InsertEntry;
+
+   PROCEDURE IterateObjects(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 i, j: INTEGER;
+	 module, entry: Entry;
+   BEGIN
+      WITH ref: ObjectTable DO
+	 i := 0;
+	 WHILE i < hashtablen DO
+	    module := ref.modules[i];
+	    WHILE module # NIL DO
+	       j := 0;
+	       WHILE j < hashtablen DO
+		  entry := module.objects[j];
+		  WHILE entry # NIL DO
+		     Iterators.Yield(it, entry.object);
+		     entry := entry.next;
+		  END;
+		  INC(j);
+	       END;
+	       module := module.next;
+	    END;
+	    INC(i);
+	 END;
+      END;
+   END IterateObjects;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE CreateTable(VAR table: ObjectTable);
+   BEGIN
+      NEW(table); NEW(table.modules);
+   END CreateTable;
+
+   PROCEDURE Add(table: ObjectTable;
+                 object: PersistentObjects.Object;
+		 modname, name: ConstStrings.String);
+      VAR
+	 module, entry: Entry;
+	 ok: BOOLEAN;
+   BEGIN
+      ASSERT(object # NIL);
+      IF ~Search(table.modules, modname, module) THEN
+	 InsertEntry(table.modules, modname, module);
+	 NEW(module.objects);
+      END;
+      IF Search(module.objects, name, entry) THEN
+	 ASSERT(object = entry.object);
+	 RETURN
+      END;
+      InsertEntry(module.objects, name, entry);
+      entry.object := object;
+   END Add;
+
+   PROCEDURE Insert(table: ObjectTable;
+                    object: PersistentObjects.Object;
+		    modname: ConstStrings.String;
+		    VAR name: ConstStrings.String);
+      VAR
+	 module, entry: Entry;
+	 string: String;
+	 unique: ConstStrings.String;
+   BEGIN
+      ASSERT(object # NIL);
+      IF ~Search(table.modules, modname, module) THEN
+	 InsertEntry(table.modules, modname, module);
+	 NEW(module.objects);
+      END;
+      InventName(string);
+      ConstStrings.Create(unique, string);
+      WHILE Search(module.objects, unique, entry) DO
+	 ModifyName(string);
+	 ConstStrings.Create(unique, string);
+      END;
+      InsertEntry(module.objects, unique, entry);
+      entry.object := object;
+      name := unique;
+   END Insert;
+
+   PROCEDURE Lookup(table: ObjectTable;
+                    modname, name: ConstStrings.String;
+		    VAR object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 module, entry: Entry;
+   BEGIN
+      IF Search(table.modules, modname, module) &
+	    Search(module.objects, name, entry) THEN
+	 object := entry.object;
+	 RETURN TRUE
+      ELSE
+	 object := NIL;
+	 RETURN FALSE
+      END;
+   END Lookup;
+
+   PROCEDURE GetObjects(table: ObjectTable; it: Iterators.Iterator);
+   BEGIN
+      Iterators.CreateQuickIterator(it, IterateObjects, table, 0);
+   END GetObjects;
+
+   PROCEDURE InTab(table: ObjectTable; modname: ConstStrings.String) : BOOLEAN;
+      VAR
+	 module: Entry;
+   BEGIN
+      RETURN Search(table.modules, modname, module)
+   END InTab;
+
+   PROCEDURE CreateCopyOfTable(VAR newtab: ObjectTable; orig: ObjectTable);
+      VAR
+	 index: INTEGER;
+	 newentry, entry: Entry;
+   BEGIN
+      CreateTable(newtab);
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := orig.modules[index];
+	 WHILE entry # NIL DO
+	    InsertEntry(newtab.modules, entry.name, newentry);
+	    newentry.objects := entry.objects;
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+   END CreateCopyOfTable;
+
+   PROCEDURE SynchronizeTable(tab, extendedtab: ObjectTable);
+      VAR
+	 index: INTEGER;
+	 entry: Entry;
+	 newentry: Entry;
+   BEGIN
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := extendedtab.modules[index];
+	 WHILE entry # NIL DO
+	    IF ~Search(tab.modules, entry.name, newentry) THEN
+	       InsertEntry(tab.modules, entry.name, newentry);
+	       newentry.objects := entry.objects;
+	    END;
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+   END SynchronizeTable;
+
+   PROCEDURE Init(s: Streams.Stream;
+                  modname: ConstStrings.String;
+		  table: ObjectTable);
+      VAR
+	 disc: StreamDiscipline;
+   BEGIN
+      NEW(disc); disc.id := sdID; disc.modname := modname; disc.table := table;
+      Disciplines.Add(s, disc);
+   END Init;
+
+   PROCEDURE GetParams(s: Streams.Stream;
+                       VAR modname: ConstStrings.String;
+		       VAR table: ObjectTable);
+      VAR
+	 ok: BOOLEAN;
+	 disc: StreamDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(s, sdID, disc); ASSERT(ok);
+      modname := disc.modname; table := disc.table;
+   END GetParams;
+
+   PROCEDURE Read(s: Streams.Stream;
+                  VAR object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 disc: StreamDiscipline;
+	 sy: CHAR;
+	 modname, name: ConstStrings.String;
+   BEGIN
+      IF ~NetIO.ReadChar(s, sy) THEN
+	 Error(s, readFailed, NIL, NIL, NIL, NIL);
+	 RETURN FALSE
+      END;
+      CASE sy OF
+      | objectSY:    ok := LinearizedStructures.Read(s, object);
+                     IF ~ok THEN RETURN FALSE END;
+		     IF object = NIL THEN
+			Error(s, corruptedInput, NIL, NIL, NIL, NIL);
+			RETURN FALSE
+		     END;
+		     RETURN TRUE
+      | referenceSY: IF ~NetIO.ReadConstString(s, modname) OR
+                           ~NetIO.ReadConstString(s, name) THEN
+			Error(s, readFailed, NIL, NIL, NIL, NIL);
+			RETURN FALSE
+		     END;
+                     ok := Disciplines.Seek(s, sdID, disc); ASSERT(ok);
+		     IF Lookup(disc.table, modname, name, object) THEN
+			RETURN TRUE
+		     ELSE
+			Error(s, unknownObject, NIL, NIL, modname, name);
+			RETURN FALSE
+		     END;
+      ELSE
+	 Error(s, corruptedInput, NIL, NIL, NIL, NIL);
+	 RETURN FALSE
+      END;
+   END Read;
+
+   PROCEDURE GuardedRead(s: Streams.Stream;
+			 guard: Services.Type;
+                         VAR object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 obj: PersistentObjects.Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~Read(s, obj) THEN
+	 Error(s, readFailed, NIL, guard, NIL, NIL);
+	 RETURN FALSE
+      END;
+      Services.GetType(obj, type);
+      IF ~Services.IsExtensionOf(type, guard) THEN
+	 Error(s, typeGuardFailure, type, guard, NIL, NIL);
+	 RETURN FALSE
+      END;
+      object := obj;
+      RETURN TRUE
+   END GuardedRead;
+
+   PROCEDURE Write(s: Streams.Stream;
+                   object: PersistentObjects.Object;
+		   modname, name: ConstStrings.String) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 disc: StreamDiscipline;
+	 type: Services.Type;
+   BEGIN
+      ASSERT(object # NIL);
+      ok := Disciplines.Seek(s, sdID, disc);
+      ASSERT(ok);
+      IF (modname = NIL) OR
+	    (ConstStrings.Compare(modname, disc.modname) = 0) THEN
+	 ok := NetIO.WriteChar(s, objectSY) &
+	       LinearizedStructures.Write(s, object)
+      ELSE
+	 ok := NetIO.WriteChar(s, referenceSY) &
+	       NetIO.WriteConstString(s, modname) &
+	       NetIO.WriteConstString(s, name)
+      END;
+      IF ok THEN
+	 RETURN TRUE
+      ELSE
+	 Services.GetType(object, type);
+	 Error(s, writeFailed, type, NIL, modname, name);
+	 RETURN FALSE
+      END;
+   END Write;
+
+BEGIN
+   sdID := Disciplines.Unique();
+   InitErrorHandling;
+END ModularizedStructures.

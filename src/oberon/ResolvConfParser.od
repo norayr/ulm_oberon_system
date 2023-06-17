@@ -1,0 +1,111 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ResolvConfP.od,v 1.1 2004/03/05 07:25:51 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ResolvConfP.od,v $
+   Revision 1.1  2004/03/05 07:25:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION ResolvConfParser;
+
+   IMPORT ConstStrings, Disciplines, Events, IPv4Addresses, Iterators, Objects,
+      RelatedEvents, Streams;
+
+   (* parses resolv.conf configuration files *)
+
+   TYPE
+      Configuration = POINTER TO ConfigurationRec;
+      ConfigurationRec = RECORD (Disciplines.DisciplineRec) END;
+   TYPE
+      SortListMember = POINTER TO SortListMemberRec;
+      SortListMemberRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    ipaddr: IPv4Addresses.Address;
+	    netmask: IPv4Addresses.Address;
+	    netmaskDefined: BOOLEAN;
+	 END;
+   TYPE
+      NameServer = POINTER TO NameServerRec;
+      NameServerRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    ipaddr: IPv4Addresses.Address;
+	 END;
+   TYPE
+      Option = POINTER TO OptionRec;
+      OptionRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name: ConstStrings.String;
+	    value: INTEGER; (* 1 for set BOOLEAN options *)
+	 END;
+
+   CONST
+      dottedDecimalExpected = 0;
+      keywordExpected = 1;
+      domainExpected = 2;
+      multipleDomains = 3;
+      integerExpected = 3;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* dottedEcimalExpected... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    line, col: INTEGER;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   PROCEDURE Parse(VAR conf: Configuration;
+                   s: Streams.Stream;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE IterateNameServers(conf: Configuration;
+                                VAR it: Iterators.Iterator);
+      (* returns NameServer objects *)
+
+   PROCEDURE IterateSearchList(conf: Configuration;
+                               VAR it: Iterators.Iterator);
+      (* returns ConstStrings.String objects *)
+
+   PROCEDURE IterateSortLists(conf: Configuration;
+                              VAR it: Iterators.Iterator);
+      (* returns SortListMember objects *)
+
+   PROCEDURE IterateOptions(conf: Configuration;
+                            VAR it: Iterators.Iterator);
+      (* returns Option objects *)
+
+   PROCEDURE GetOption(conf: Configuration;
+                       name: ARRAY OF CHAR;
+                       VAR value: INTEGER) : BOOLEAN;
+
+   PROCEDURE GetLocalDomain(conf: Configuration;
+                            VAR domain: ARRAY OF CHAR) : BOOLEAN;
+
+END ResolvConfParser.

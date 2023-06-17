@@ -1,0 +1,104 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentD.od,v 1.2 1995/01/31 08:51:58 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PersistentD.od,v $
+   Revision 1.2  1995/01/31  08:51:58  borchert
+   persistent disciplines may now be attached to non-persistent objects
+
+   Revision 1.1  1994/02/22  20:09:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION PersistentDisciplines;
+
+   IMPORT Disciplines, Objects, PersistentObjects, Streams;
+
+   TYPE
+      Identifier = LONGINT;
+
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            id: Identifier; (* should be unique for all types of disciplines *)
+         END;
+
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            (* contains set of disciplines *)
+         END;
+
+      AddProc = PROCEDURE (object: Disciplines.Object; discipline: Discipline);
+      RemoveProc = PROCEDURE (object: Disciplines.Object; id: Identifier);
+      SeekProc = PROCEDURE (object: Disciplines.Object; id: Identifier;
+			    VAR discipline: Discipline) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    add: AddProc;
+	    remove: RemoveProc;
+	    seek: SeekProc;
+	 END;
+
+   PROCEDURE Unique(sample: Discipline) : Identifier;
+      (* returns a unique identifier;
+         this procedure should be called during initialization by
+         all modules defining a discipline type;
+	 a sample of the associated discipline has to be provided
+      *)
+
+   PROCEDURE GetSample(id: Identifier) : Discipline;
+      (* return sample for the given identifier;
+	 NIL will be returned if id has not yet been returned by Unique
+      *)
+
+   PROCEDURE AttachInterface(object: Disciplines.Object; if: Interface);
+      (* override the builtin implementations of Add, Remove and
+	 Seek for `object' with the implementations given by `if'
+      *)
+
+   PROCEDURE UseInterfaceOf(object, host: Disciplines.Object);
+      (* forward Add, Remove and Seek operations from object to host *)
+
+   PROCEDURE Add(object: Disciplines.Object; discipline: Discipline);
+      (* adds a new discipline to the given object;
+         if already a discipline with the same identifier exist
+         it is deleted first
+      *)
+
+   PROCEDURE Remove(object: Disciplines.Object; id: Identifier);
+      (* remove the discipline with the given id from object, if it exists *)
+
+   PROCEDURE Seek(object: Disciplines.Object; id: Identifier;
+                  VAR discipline: Discipline) : BOOLEAN;
+      (* returns TRUE if a discipline with the given id is found *)
+
+   PROCEDURE CreateObject(VAR object: Object);
+      (* creates a new object; this procedures should be called instead of
+	 NEW for objects of type `Object'
+      *)
+
+END PersistentDisciplines.

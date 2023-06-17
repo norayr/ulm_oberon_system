@@ -1,0 +1,125 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TransStream.od,v 1.3 1996/11/28 11:01:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: TransStream.od,v $
+   Revision 1.3  1996/11/28  11:01:54  borchert
+   alreadyClosed error code added
+
+   Revision 1.2  1996/11/19  17:50:37  borchert
+   error codes exported and general cleanup
+
+   Revision 1.1  1996/11/19  17:48:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION TransStreams; (* original version by Werner Stanglow *)
+
+   IMPORT Events, RelatedEvents, Streams;
+
+   CONST
+      last = 0; prior = 1; current = 2;
+   TYPE
+      State = SHORTINT; (* last..current *)
+
+   CONST
+      standard = 0; auto = 4; read = 8;
+   TYPE
+      Mode = SHORTINT; (* additive combination of standard, auto, and read *)
+
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec = RECORD (Streams.StreamRec); END;
+
+   CONST
+      (* errors at opening time *)
+      illegalParam = 0;
+      bufferedStream = 1;
+      badMagic = 2;
+      noLegalState = 3;
+      corruptedFile = 4;
+      cannotAccessFile = 5;
+
+      (* invalid usage *)
+      illegalPos = 6;
+      nestedCall = 7;
+      noPriorState = 8;
+      noTransactionRunning = 9;
+      readOnly = 10;
+      transactionInProgress = 11;
+      alreadyClosed = 12;
+
+      (* troubles with the underlying stream *)
+      cannotAccessSysPages = 13;
+      cannotUpdateSysPages = 14;
+      cannotAccessContents = 15;
+      cannotUpdateContents = 16;
+      recoveringDueToFailure = 17;
+      closeFailed = 18;
+      errorcodes = 19;      (* number of error codes *)
+
+   TYPE
+      ErrorCode = SHORTINT; (* illegalParam..closeFailed *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec);
+            errcode: ErrorCode;
+         END;
+
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errorcodes OF Events.Message;
+
+   PROCEDURE Open(VAR s: Streams.Stream; base: Streams.Stream; 
+                  mode: Mode; errors: RelatedEvents.Object) : BOOLEAN; 
+
+   (* transaction primitives *)
+   PROCEDURE Begin(s: Streams.Stream) : BOOLEAN;
+   PROCEDURE Abort(s: Streams.Stream) : BOOLEAN;
+   PROCEDURE Commit(s: Streams.Stream) : BOOLEAN;
+
+   (* transaction shorthands *)
+   PROCEDURE Touch(s: Streams.Stream) : BOOLEAN; (* Commit & Begin *)
+   PROCEDURE Forget(s: Streams.Stream) : BOOLEAN; (* Abort & Begin *)
+
+   PROCEDURE Switch(s: Streams.Stream) : BOOLEAN;
+
+   PROCEDURE Toggle(s: Streams.Stream) : BOOLEAN;
+
+   PROCEDURE Available(s: Streams.Stream; state: State) : BOOLEAN;
+
+   PROCEDURE GetInfo(s: Streams.Stream; state: State; 
+                     VAR info: ARRAY OF BYTE) : BOOLEAN;
+   PROCEDURE SetInfo(s: Streams.Stream; info: ARRAY OF BYTE) : BOOLEAN;
+
+   (* maximal and effective number of buffers for a stream *)
+   PROCEDURE SetPoolSize(s: Streams.Stream; no: INTEGER);
+   PROCEDURE GetPoolSize(s: Streams.Stream; VAR no: INTEGER);
+   PROCEDURE GetEffPoolSize(s: Streams.Stream; VAR no: INTEGER);
+
+   (* maximal and effective number of buffers for all transaction stream *)
+   PROCEDURE SetNoBufs(no: INTEGER);
+   PROCEDURE GetNoBufs(VAR no: INTEGER);
+   PROCEDURE GetEffNoBufs(VAR no: INTEGER);
+
+END TransStreams.

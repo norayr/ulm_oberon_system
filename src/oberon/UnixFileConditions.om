@@ -1,0 +1,330 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixFileCon.om,v 1.6 2004/09/09 21:12:13 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixFileCon.om,v $
+   Revision 1.6  2004/09/09 21:12:13  borchert
+   Convert replaced by the lookup table flags
+
+   Revision 1.5  2004/09/03 08:57:29  borchert
+   switched from SysSelect to SysPoll
+
+   Revision 1.4  2001/02/06 08:57:19  borchert
+   bug fix: avoid loops caused by ignoring conditions that are true
+            because of remaining input in the stream buffer
+
+   Revision 1.3  1995/04/07  14:09:30  borchert
+   - avoidance of EINVAL of select(2) for invalid time values added
+   - fixes due to changed if of Conditions
+
+   Revision 1.2  1994/07/05  13:07:01  borchert
+   bug fix: Test must not consider Streams.OutputWillBeBuffered
+
+   Revision 1.1  1994/02/23  07:27:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixFileConditions;
+
+   (* creation of conditions for UNIX file descriptors *)
+
+   IMPORT Clocks, Conditions, Op := Operations, RelatedEvents, Scales,
+      StreamConditions, Streams, SYS := SYSTEM, SysPoll, SysStat, SysTime,
+      SysTypes, Times;
+
+   CONST
+      (* operations *)
+      read = StreamConditions.read;
+      write = StreamConditions.write;
+      exception = 2;
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    fd: SysTypes.File; (* UNIX file descriptor *)
+	    valid: BOOLEAN; (* is fd still valid? *)
+	    stream: Streams.Stream; (* stream which represents fd *)
+	    operation: SHORTINT; (* read..exception *)
+	    entry: SysPoll.Entry;
+	 END;
+   VAR
+      domain: Conditions.Domain;
+      flags: ARRAY 3 OF SysPoll.Flags;
+
+   (* ====== private procedures ====================================== *)
+
+   PROCEDURE Check(events, revents: SysPoll.Flags) : BOOLEAN;
+      CONST
+	 errorflags = SysPoll.pollErr + SysPoll.pollHup + SysPoll.pollNval;
+	 errors = SYS.VAL(SET, LONG(errorflags));
+   BEGIN
+      RETURN (SYS.VAL(SET, LONG(events)) + errors) *
+             SYS.VAL(SET, LONG(revents)) # {}
+   END Check;
+
+   PROCEDURE Union(events1, events2: SysPoll.Flags) : SysPoll.Flags;
+   BEGIN
+      RETURN
+	 SYS.VAL(SysPoll.Flags,
+	    SYS.VAL(INTEGER,
+	       SYS.VAL(SET, LONG(events1)) + SYS.VAL(SET, LONG(events2))))
+   END Union;
+
+   (* ====== interface procedures ==================================== *)
+
+   PROCEDURE InternalTest(domain: Conditions.Domain;
+		          condition: Conditions.Condition;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+	 ready: INTEGER;
+	 fdset: SysPoll.FdSet;
+	 entry: SysPoll.Entry;
+	 interrupted: BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 IF ~condition.valid THEN RETURN TRUE END;
+	 IF (condition.stream # NIL) &
+	       (condition.operation = read) &
+	       Streams.InputInBuffer(condition.stream) THEN
+	    RETURN TRUE
+	 END;
+	 SysPoll.CreateSet(fdset);
+	 NEW(entry); entry.fd := condition.fd;
+	 entry.events := flags[condition.operation];
+	 SysPoll.Incl(fdset, entry);
+	 IF SysPoll.Poll(fdset, 0, ready, errors, (* retry = *) TRUE,
+	       interrupted) THEN
+	    RETURN (ready = 1) & Check(entry.events, entry.revents)
+	 ELSE
+	    condition.valid := FALSE;
+	    RETURN TRUE
+	 END;
+      END;
+   END InternalTest;
+
+   PROCEDURE Select(domain: Conditions.Domain;
+		    conditionSet: Conditions.ConditionSet;
+		    time: Times.Time;
+		    VAR setOfTrueConditions: Conditions.ConditionSet;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN;
+		    VAR interrupted: BOOLEAN) : BOOLEAN;
+      CONST
+	 hashtablen = 128;
+      TYPE
+	 Entry = POINTER TO EntryRec;
+	 EntryRec =
+	    RECORD
+	       fd: SysTypes.File;
+	       pollrec: SysPoll.Entry;
+	       next: Entry;
+	    END;
+	 HashTable = ARRAY hashtablen OF Entry;
+      VAR
+	 condition: Condition;
+	 fdset: SysPoll.FdSet;
+	 pollrec: SysPoll.Entry;
+	 systime: SysTime.TimeVal; (* relative timeout as needed by select(2) *)
+	 currentTime: Times.Time; (* current time as returned by the system *)
+	 relTime: Times.Time; (* relative time; derived from time *)
+	 timeval: Times.TimeValueRec; (* timevalue of relTime *)
+	 ready: INTEGER; (* number of ready fds *)
+	 selectOK: BOOLEAN;
+	 cardinality: INTEGER; (* of conditionSet *)
+	 hash: HashTable; i: INTEGER; entry: Entry;
+
+      PROCEDURE CheckValidity;
+	 (* SysSelect returned with EBADF -- so let's check all
+	    file descriptors for validity; invalid file descriptors
+	    are added to setOfTrueConditions
+	 *)
+	 VAR
+	    statbuf: SysStat.StatRec;
+	    condition: Condition;
+      BEGIN
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF ~SysStat.Fstat(condition.fd, statbuf, RelatedEvents.null) THEN
+	       condition.valid := FALSE;
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	 END;
+      END CheckValidity;
+
+   BEGIN (* Select *)
+      i := 0;
+      WHILE i < hashtablen DO
+	 hash[i] := NIL;
+	 INC(i);
+      END;
+      Conditions.CreateSet(setOfTrueConditions);
+      SysPoll.CreateSet(fdset);
+      Conditions.ExamineConditions(conditionSet); cardinality := 0;
+      WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	 IF ~condition.valid OR (condition.stream # NIL) &
+	       (condition.operation = read) &
+	       Streams.InputInBuffer(condition.stream) THEN
+	    Conditions.Incl(setOfTrueConditions, condition);
+	    condition.entry := NIL;
+	 ELSE
+	    i := condition.fd MOD hashtablen; entry := hash[i];
+	    WHILE (entry # NIL) & (entry.fd # condition.fd) DO
+	       entry := entry.next;
+	    END;
+	    IF entry = NIL THEN
+	       NEW(pollrec); pollrec.fd := condition.fd;
+	       pollrec.events := flags[condition.operation];
+	       SysPoll.Incl(fdset, pollrec);
+	       NEW(entry); entry.fd := condition.fd;
+	       entry.pollrec := pollrec;
+	       entry.next := hash[i]; hash[i] := entry;
+	    ELSE
+	       pollrec := entry.pollrec;
+	       pollrec.events :=
+		  Union(entry.pollrec.events, flags[condition.operation]);
+	    END;
+	    condition.entry := pollrec;
+	    INC(cardinality);
+	 END;
+      END;
+      IF (cardinality = 0) OR (Conditions.Card(setOfTrueConditions) > 0) THEN
+	 (* avoid system call *)
+	 interrupted := FALSE;
+	 RETURN TRUE
+      END;
+      IF time = NIL THEN
+	 selectOK := SysPoll.Poll(fdset, -1, ready, errors, retry, interrupted);
+      ELSE
+	 IF Scales.IsRelative(time) THEN
+	    relTime := time;
+	 ELSE
+	    Clocks.GetTime(Clocks.system, currentTime);
+	    Op.Sub3(relTime, time, currentTime);
+	 END;
+	 Times.GetValue(relTime, timeval);
+	 (* bad time values lead to EINVAL (see select(2)) *)
+	 ASSERT(
+	    (timeval.epoch = 0) & (timeval.second <= 100000000) &
+	    (timeval.second >= 0) &
+	    (timeval.usec >= 0) & (timeval.usec < 1000000)
+	 );
+	 systime.sec := timeval.second; systime.usec := timeval.usec;
+	 selectOK := SysPoll.Poll(fdset, SysPoll.ConvertTimeout(systime),
+	                          ready, errors, retry, interrupted);
+      END;
+      IF selectOK THEN
+	 IF ready = 0 THEN
+	    RETURN FALSE (* timelimit exceeded *)
+	 END;
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF Check(flags[condition.operation], condition.entry.revents) THEN
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	    condition.entry := NIL;
+	 END;
+	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
+	 RETURN TRUE
+      ELSE
+	 IF interrupted THEN RETURN FALSE END;
+	 (* one of the fds is apparently invalid, lets check them all *)
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF Check(0, condition.entry.revents) THEN
+	       condition.valid := FALSE;
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	    condition.entry := NIL;
+	 END;
+	 IF Conditions.Card(setOfTrueConditions) = 0 THEN
+	    (* hm... check them with fcntl in case poll(2) didn't
+	       update revents in case of invalid fds
+	    *)
+	    CheckValidity;
+	 END;
+	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
+	 RETURN TRUE
+      END;
+   END Select;
+
+   PROCEDURE Init;
+      VAR
+	 if: Conditions.Interface;
+	 desc: Conditions.Description;
+   BEGIN
+      NEW(if); if.test := InternalTest; if.select := Select;
+      NEW(desc); desc.caps := {Conditions.select, Conditions.timelimit};
+      desc.internal := FALSE;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+      flags[read] := Union(SysPoll.pollRdNorm, SysPoll.pollIn);
+      flags[write] := Union(SysPoll.pollWrNorm, SysPoll.pollOut);
+      flags[exception] := Union(SysPoll.pollRdBand, SysPoll.pollPri);
+   END Init;
+
+   (* === exported procedures ========================================= *)
+
+   PROCEDURE Create(VAR condition: Conditions.Condition;
+		    stream: Streams.Stream;
+		    fd: SysTypes.File; operation: SHORTINT);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, domain);
+      newcond.stream := stream;
+      newcond.fd := fd; newcond.valid := TRUE; newcond.operation := operation;
+      condition := newcond;
+   END Create;
+
+   PROCEDURE Test(stream: Streams.Stream;
+		  fd: SysTypes.File;
+		  operation: SHORTINT;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 fdset: SysPoll.FdSet;
+	 ready: INTEGER;
+	 entry: SysPoll.Entry;
+	 interrupted: BOOLEAN;
+   BEGIN
+      IF (stream # NIL) &
+	    (operation = read) & Streams.InputInBuffer(stream) THEN
+	 RETURN TRUE
+      END;
+      SysPoll.CreateSet(fdset);
+      NEW(entry); entry.fd := fd;
+      entry.events := flags[operation];
+      SysPoll.Incl(fdset, entry);
+      IF SysPoll.Poll(fdset, 0, ready, errors, (* retry = *) TRUE,
+	    interrupted) THEN
+	 RETURN (ready = 1) & Check(entry.events, entry.revents)
+      ELSE
+	 RETURN TRUE
+      END;
+   END Test;
+
+BEGIN
+   Init;
+END UnixFileConditions.

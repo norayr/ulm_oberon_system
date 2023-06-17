@@ -1,0 +1,199 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixStatusS.om,v 1.1 2004/03/09 09:07:09 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixStatusS.om,v $
+   Revision 1.1  2004/03/09 09:07:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixStatusSeeds;
+
+   IMPORT MD5, Objects, OneWayHashes, RandomGenerators, Read, RelatedEvents,
+      Services, Streams, Strings, SYS := SYSTEM, SysArgs, SysIO, Texts,
+      Types, UnixArgLists, UnixFiles, UnixPipes, UntaggedStorage, Write;
+
+   CONST
+      md5len = 128; (* number of bits of MD5 hash value *)
+      values = md5len DIV 32; (* number of 32-bit values extracted from ... *)
+
+   TYPE
+      Command = ARRAY 512 OF CHAR;
+      Member = POINTER TO MemberRec;
+      MemberRec =
+	 RECORD
+	    command: Command;
+	    next: Member;
+	 END;
+      StatusCommandList = POINTER TO StatusCommandListRec;
+      StatusCommandListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    head, tail: Member;
+	 END;
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec =
+	 RECORD
+	    (RandomGenerators.SequenceRec)
+	    head: Member;
+	    values: ARRAY values OF Types.Int32;
+	    index: INTEGER;
+	 END;
+
+   VAR
+      sequenceType: Services.Type;
+   CONST
+      caps = {RandomGenerators.int32ValS};
+   VAR
+      if: RandomGenerators.Interface;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE CreateRawStream(VAR s: Streams.Stream;
+                             cmds: Member;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 output: Texts.Text;
+	 cmd: Streams.Stream;
+	 pathname, arg: ARRAY 512 OF CHAR;
+	 list: Streams.Stream;
+	 first: BOOLEAN;
+	 arglist: SysArgs.Arguments;
+	 pipe: Streams.Stream;
+	 readfd, writefd: SysIO.File;
+	 length: Streams.Count;
+   BEGIN
+      Texts.Open(output);
+      WHILE cmds # NIL DO
+	 Strings.Open(cmd, cmds.command);
+	 UnixArgLists.Open(list);
+	 first := TRUE;
+	 WHILE Read.FieldS(cmd, arg) DO
+	    IF first THEN
+	       first := FALSE; COPY(arg, pathname);
+	    ELSE
+	       UnixArgLists.Next(list);
+	    END;
+	    Write.StringS(list, arg);
+	 END;
+	 ASSERT(~first);
+	 UnixArgLists.Close(list, arglist);
+	 IF ~SysIO.Pipe(readfd, writefd, errors) OR
+	       ~UnixPipes.Spawn(pipe, readfd, writefd, 1, pathname, arglist,
+		  UnixFiles.read, Streams.onebuf, errors) THEN
+	    UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress,
+	       arglist));
+	    RETURN FALSE
+	 END;
+	 UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress, arglist));
+	 RelatedEvents.Forward(pipe, errors);
+	 IF ~Streams.Copy(pipe, output, -1) THEN
+	    Streams.Release(pipe);
+	    RETURN FALSE
+	 END;
+	 Streams.Release(pipe);
+	 cmds := cmds.next;
+      END;
+      IF ~Streams.Tell(output, length) OR (length = 0) THEN
+	 RETURN FALSE
+      END;
+      Streams.SetPos(output, 0);
+      s := output;
+      RETURN TRUE
+   END CreateRawStream;
+
+   PROCEDURE NextSeed(sequence: Sequence) : BOOLEAN;
+      VAR
+	 input: Streams.Stream;
+	 value: OneWayHashes.Value;
+	 hs: Streams.Stream;
+   BEGIN
+      IF ~CreateRawStream(input, sequence.head, sequence) THEN
+	 RETURN FALSE
+      END;
+      OneWayHashes.Generate(MD5.hash, input, value);
+      Streams.Release(input);
+      OneWayHashes.CreateStream(value, hs);
+      IF ~Streams.Read(hs, sequence.values) THEN
+	 RETURN FALSE
+      END;
+      Streams.Release(hs);
+      sequence.index := 0;
+      RETURN TRUE
+   END NextSeed;
+
+   (* === interface procedures =========================================== *)
+
+   PROCEDURE Int32ValS(sequence: RandomGenerators.Sequence) : Types.Int32;
+      VAR
+	 val: Types.Int32;
+   BEGIN
+      WITH sequence: Sequence DO
+	 IF sequence.index >= values THEN
+	    IF ~NextSeed(sequence) THEN
+	       RETURN 0
+	    END;
+	 END;
+	 val := sequence.values[sequence.index]; INC(sequence.index);
+	 RETURN val
+      END;
+   END Int32ValS;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE CreateList(VAR list: StatusCommandList);
+   BEGIN
+      NEW(list); list.head := NIL; list.tail := NIL;
+   END CreateList;
+
+   PROCEDURE Add(list: StatusCommandList; command: ARRAY OF CHAR);
+      VAR
+	 member: Member;
+   BEGIN
+      ASSERT(command[0] # 0X);
+      NEW(member); member.next := NIL; COPY(command, member.command);
+      IF list.head = NIL THEN
+	 list.head := member;
+      ELSE
+	 list.tail.next := member;
+      END;
+      list.tail := member;
+   END Add;
+
+   PROCEDURE Create(VAR sequence: RandomGenerators.Sequence;
+                    list: StatusCommandList);
+      VAR
+	 seq: Sequence;
+   BEGIN
+      ASSERT((list # NIL) & (list.head # NIL));
+      NEW(seq); seq.head := list.head; seq.index := values;
+      Services.Init(seq, sequenceType);
+      RandomGenerators.Init(seq, if, caps);
+      sequence := seq;
+   END Create;
+
+BEGIN
+   ASSERT(OneWayHashes.Bitlength(MD5.hash) = md5len);
+   NEW(if); if.int32ValS := Int32ValS;
+   Services.CreateType(sequenceType,
+      "UnixStatusSeeds.Sequence", "RandomGenerators.Sequence");
+END UnixStatusSeeds.

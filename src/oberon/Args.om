@@ -1,0 +1,821 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Args.om,v 1.5 2004/09/03 09:17:55 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Args.om,v $
+   Revision 1.5  2004/09/03 09:17:55  borchert
+   switched to quick iterators
+
+   Revision 1.4  2004/03/09 21:33:38  borchert
+   CreateCopyOf added
+
+   Revision 1.3  1998/03/24  23:00:26  borchert
+   bug fixes:
+   - Notify was called with arg.change = NIL
+   - the list of scanners was not constructed correctly
+
+   Revision 1.2  1995/04/13  14:24:50  borchert
+   major revision of Args:
+   - see Args.od (rev 1.1 to rev 1.2) for a list of visible changes
+   - lots of simplifications (especially of error handling)
+
+   Revision 1.1  1994/10/28  10:29:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Args;
+
+   (* In comments: U := user, P := Provider, S := System-dependant *)
+
+   IMPORT Disciplines, Errors, Events, IndirectDisciplines, Iterators,
+      NetIO, Objects, PersistentDisciplines, PersistentObjects, Print,
+      Priorities, RelatedEvents, Services, Streams, Strings, Write;
+
+   CONST 
+      nameLen            = 256;
+      hashTableSize      = 5;    (* size of hash table for arguments *)
+
+   CONST
+      lowPriority        = 0;    (* Priority of scanners *)
+      middlePriority     = 1;
+      highPriority       = 2;
+   TYPE
+      Priority = INTEGER;
+	 (* scanners with higher priority are registered later *)
+
+   TYPE
+      Name = ARRAY nameLen OF CHAR;
+
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+      Type = POINTER TO TypeRec;
+
+      Argument = POINTER TO ArgumentRec;
+      ArgumentRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    name: Name;
+	    short: CHAR;
+	    type: Type;
+	    description: Name;
+	    (* private components *)
+	    value: Value;
+	    change: Events.EventType;
+	    next: Argument;
+	 END;
+
+      HashTable = POINTER TO ARRAY hashTableSize OF Argument; (* local *)
+
+      Arguments = POINTER TO ArgumentsRec;
+      ArgumentsRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    (* private *)
+	    card: INTEGER; (* number of arguments *)
+	    collection: HashTable; (* will be filled by define *)
+	    shortNameTab: ARRAY ORD(MAX(CHAR)) OF Argument;
+	 END;
+
+      ReadProc = PROCEDURE (s: Streams.Stream; VAR value: Value) : BOOLEAN;
+      HelpProc = PROCEDURE (s: Streams.Stream);
+      PrintProc = PROCEDURE (s: Streams.Stream; value: Value);
+
+      TypeInterface = POINTER TO TypeInterfaceRec;
+      TypeInterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    read: ReadProc;
+	    print: PrintProc;
+	    help: HelpProc; (* optional *)
+	 END;
+
+      TypeRec =
+	 RECORD 
+	    (Disciplines.ObjectRec)
+	    name: Name; (* how it is called (eg "bool") *)
+	    moduleName: Name; (* where is it defined (eg "BoolArgs") *)
+	    (* private *)
+	    discID: Disciplines.Identifier;
+	       (* discipline for stream-specific print procedures (see below) *)
+	    if: TypeInterface;
+	    valtype: Services.Type;
+	    next: Type; (* linear list of types *)
+	 END;
+
+      StreamTypeDiscipline = POINTER TO StreamTypeDisciplineRec;
+      StreamTypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    print: PrintProc;
+	 END;
+
+   TYPE
+      TypeDiscipline = POINTER TO TypeDisciplineRec;
+	 (* this discipline is attached to valtype of DefineType and
+	    points to the associated argument type
+	 *)
+      TypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    type: Type;
+	 END;
+   VAR
+      typeDiscID: Disciplines.Identifier;
+
+   TYPE
+      ScanProc = PROCEDURE (args: Arguments);
+
+      ScannerList = POINTER TO ScannerListRec;
+      Scanner = POINTER TO ScannerRec;
+      ScannerListRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    (* private *)
+	    scanners: Scanner;
+	 END;
+      ScannerRec =
+	 RECORD
+	    scan: ScanProc;
+	    priority: Priority;
+	    next: Scanner;
+	 END;
+
+      ChangeNotification = POINTER TO ChangeNotificationRec;
+      ChangeNotificationRec =
+	 RECORD
+	    (Events.EventRec)
+	    args: Arguments;
+	    arg: Argument;
+	 END;
+
+   VAR 
+      systemScanners       : ScannerList; (* predefined Scanners *)
+      typeList: Type; (* list of all types *)
+
+   VAR
+      valueType : Services.Type;
+      argsType  : Services.Type;
+      argsIf    : PersistentObjects.Interface;
+
+   CONST
+      cannotReadArgs     = 0;    (* failed to read list of arguments *)
+      unknownTypeName    = 1;    (* unknown type name encountered *)
+      twiceDefined       = 2;    (* an argument name has been defined twice *)
+      cannotWriteArgs    = 3;    (* failed to write list of arguments *)
+      unknownArgName     = 4;    (* an unknown argument name was given *)
+      namedErrors = {unknownTypeName, twiceDefined, unknownArgName};
+      errorcodes         = 5;    (* number of error codes *)
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	    name: Name;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType; 
+
+   PROCEDURE ^ String2Type(string: ARRAY OF CHAR) : Type;
+   PROCEDURE ^ Define (args: Arguments; name: ARRAY OF CHAR; short: CHAR;
+		       type: Type; description: ARRAY OF CHAR);
+   PROCEDURE ^ SetValue (args: Arguments; name: ARRAY OF CHAR; value: Value);
+
+   (* === error handling ================================================== *)
+
+   PROCEDURE PrintError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      IF ~(event IS ErrorEvent) THEN RETURN END;
+      WITH event: ErrorEvent DO
+	 Write.StringS(s, event.message);
+	 IF event.errorcode IN namedErrors THEN
+	    Write.StringS(s, ": ``");
+	    Write.StringS(s, event.name);
+	    Write.StringS(s, "''");
+	 END;
+      END;
+   END PrintError;
+
+   PROCEDURE Error(args: Disciplines.Object; code: SHORTINT;
+		   name: ARRAY OF CHAR);
+      VAR 
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      COPY(name, event.name);
+      RelatedEvents.Raise(args, event);
+   END Error;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[cannotReadArgs] := "failed to read list of arguments";
+      errormsg[unknownTypeName] := "unknown argument type name";
+      errormsg[twiceDefined] := "argument name defined twice";
+      errormsg[cannotWriteArgs] := "failed to write list of arguments";
+      errormsg[unknownArgName] := "unknown argument name";
+
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+
+      Errors.AssignWriteProcedure(error, PrintError);
+   END InitErrorHandling;
+
+   (* ===== locating arguments in the hash table ======================== *)
+
+   PROCEDURE HashName(name: ARRAY OF CHAR) : INTEGER;
+      VAR
+	 index: INTEGER;
+	 val: LONGINT;
+   BEGIN
+      val := 0;
+      index := 0;
+      WHILE (index < LEN(name)) & (name[index] # 0X) DO
+	 val := ASH(val, 3) + ORD(name[index]) - ORD(" ");
+	 INC(index);
+      END;
+      INC(val, index);
+      RETURN SHORT(ABS(val) MOD hashTableSize)
+   END HashName;
+
+   PROCEDURE FindArgument(args : Arguments; name: ARRAY OF CHAR) : Argument;
+      (* find given argument and return a pointer to its place within
+	 the hashtable otherwise return NIL, private
+      *)
+      VAR
+	 hashval: INTEGER;
+	 arg: Argument;
+   BEGIN
+      IF name = "" THEN RETURN NIL END;
+      IF (name[1] = 0X) & (args.shortNameTab[ORD(name[0])] # NIL) THEN
+	 RETURN args.shortNameTab[ORD(name[0])];
+      END;
+      hashval := HashName(name);
+      arg := args.collection[hashval];
+      WHILE (arg # NIL) & (arg.name # name) DO
+	 arg := arg.next;
+      END;
+      RETURN arg
+   END FindArgument;
+
+   (* ===== interface procedures for PersistentObjects =================== *)
+
+   PROCEDURE CreateArgs(VAR object: PersistentObjects.Object);
+      VAR
+	 args: Arguments;
+
+      PROCEDURE CreateHashTable(VAR collection: HashTable);
+	 (* create the hash table for arguments *)
+	 VAR 
+	    i: INTEGER;
+      BEGIN
+	 NEW(collection);
+	 i := 0;
+	 WHILE i < hashTableSize DO
+	    collection[i] := NIL;
+	    INC(i);
+	 END;
+      END CreateHashTable;
+
+   BEGIN
+      NEW(args); 
+      CreateHashTable(args.collection);
+      args.card := 0;
+      RelatedEvents.QueueEvents(args);
+      PersistentObjects.Init(args, argsType);
+      object := args;
+   END CreateArgs;
+
+   PROCEDURE ReadArgs(s: Streams.Stream;
+		      obj: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 count: INTEGER; (* number of arguments to be read *)
+	 name: Name; short: CHAR;
+	 type: Type; description: Name;
+	 value: Value;
+
+      PROCEDURE ReadType(s: Streams.Stream; VAR type: Type) : BOOLEAN;
+	 VAR
+	    typeName: Name;
+      BEGIN
+	 IF ~NetIO.ReadString(s, typeName) THEN
+	    RETURN FALSE
+	 END;
+	 type := String2Type(typeName);
+	 IF type = NIL THEN
+	    Error(s, unknownTypeName, typeName); RETURN FALSE
+	 ELSE
+	    RETURN TRUE
+	 END;
+      END ReadType;
+
+   BEGIN (* ReadArgs *)
+      WITH obj: Arguments DO
+	 IF ~NetIO.ReadInteger(s, count) THEN
+	    Error(s, cannotReadArgs, ""); RETURN FALSE
+	 END;
+
+	 WHILE count > 0 DO
+	    IF ~NetIO.ReadString(s, name) OR
+		  ~NetIO.ReadChar(s, short) OR
+		  ~ReadType(s, type) OR
+		  ~NetIO.ReadString(s, description) THEN
+	       Error(s, cannotReadArgs, ""); RETURN FALSE
+	    END;
+	    Define(obj, name, short, type, description);
+	    IF ~PersistentObjects.ReadObjectOrNIL(s, value) THEN
+	       Error(s, cannotReadArgs, ""); RETURN FALSE
+	    END;
+	    IF value # NIL THEN
+	       SetValue(obj, name, value);
+	    END;
+	    DEC(count);
+	 END;
+      END;
+      RETURN TRUE
+   END ReadArgs;
+
+   PROCEDURE WriteArgs(s: Streams.Stream;
+		       obj: PersistentObjects.Object): BOOLEAN;
+      VAR 
+	 index: INTEGER;
+	 arg: Argument;
+   BEGIN
+      WITH obj: Arguments DO
+	 (* emit number of arguments of the list *)
+	 IF ~NetIO.WriteInteger(s, obj.card) THEN
+	    Error(s, cannotWriteArgs, ""); RETURN FALSE
+	 END;
+
+	 index := 0;
+	 WHILE index < hashTableSize DO
+	    arg := obj.collection[index];
+	    WHILE arg # NIL DO
+	       IF ~NetIO.WriteString(s, arg.name) OR
+		     ~NetIO.WriteChar(s, arg.short) OR
+		     ~NetIO.WriteString(s, arg.type.name) OR
+		     ~NetIO.WriteString(s, arg.description) OR
+		     ~PersistentObjects.WriteObjectOrNIL(s, arg.value) THEN
+		  Error(s, cannotWriteArgs, ""); RETURN FALSE
+	       END;
+	       arg := arg.next;
+	    END;
+	    INC(index);
+	 END;
+      END;
+      RETURN TRUE
+   END WriteArgs;
+
+   (* === misc. private procedures ======================================= *)
+
+   PROCEDURE IterateArguments(it: Iterators.Iterator; args: Objects.Object;
+	                      mode: SHORTINT);
+      VAR 
+	 arg: Argument;
+	 i: INTEGER;
+   BEGIN
+      IF args = NIL THEN RETURN END;
+      WITH args: Arguments DO
+	 i := 0;
+	 WHILE i < hashTableSize DO
+	    arg := args.collection[i];
+	    WHILE arg # NIL DO
+	       Iterators.Yield(it, arg);
+	       arg := arg.next;
+	    END;
+	    INC(i);
+	 END;
+      END;
+   END IterateArguments;
+
+   PROCEDURE TypeIterator(it: Iterators.Iterator; typeList: Objects.Object;
+	                  mode: SHORTINT);
+      VAR 
+	 type: Type;
+   BEGIN
+      IF typeList # NIL THEN
+	 type := typeList(Type);
+	 WHILE type # NIL DO
+	    Iterators.Yield(it, type);
+	    type := type.next;
+	 END;
+      END;
+   END TypeIterator;
+
+   PROCEDURE Notify(args: Arguments; arg: Argument);
+      VAR
+	 event : ChangeNotification;
+   BEGIN
+      ASSERT(arg.change # NIL);
+      NEW(event);
+      event.type := arg.change;
+      event.message := "value changed";
+      event.args := args;
+      event.arg := arg;
+      Events.Raise(event);
+   END Notify;
+
+   PROCEDURE InternHelp (s: Streams.Stream );
+      (* for types without defined help-function *)
+   BEGIN
+      Write.StringS(s, "(no help text available)");
+   END InternHelp;
+
+   (* === exported procedures ====================================== *)
+
+   PROCEDURE IterateArgs(args: Arguments; VAR it: Iterators.Iterator);
+      (* U: Create an Iterator for examinating all arguments. *)
+   BEGIN
+      Iterators.CreateQuickIterator(it, IterateArguments, args, 0);
+   END IterateArgs;
+
+   PROCEDURE Create(VAR args: Arguments);
+      (* U: Create an empty argument collection *)
+   BEGIN
+      CreateArgs(args);
+   END Create;
+
+   PROCEDURE CreateCopyOf(VAR args: Arguments; orig: Arguments);
+      VAR
+	 new: Arguments;
+	 index: INTEGER;
+	 arg, newarg: Argument;
+   BEGIN
+      CreateArgs(new);
+      index := 0;
+      WHILE index < hashTableSize DO
+	 arg := orig.collection[index];
+	 WHILE arg # NIL DO
+	    NEW(newarg);
+	    newarg.name := arg.name; newarg.short := arg.short;
+	    newarg.type := arg.type; newarg.description := arg.description;
+	    newarg.value := arg.value; newarg.change := NIL;
+	    newarg.next := new.collection[index];
+	    new.collection[index] := newarg;
+	    IndirectDisciplines.Forward(newarg, new);
+	    IF newarg.short # 0X THEN
+	       new.shortNameTab[ORD(newarg.short)] := newarg;
+	    END;
+	    arg := arg.next;
+	 END;
+	 INC(index);
+      END;
+      new.card := orig.card;
+      args := new;
+   END CreateCopyOf;
+
+   PROCEDURE Exists(args: Arguments; name: ARRAY OF CHAR) : BOOLEAN;
+      (* S,P : Is name defined ?  Name can be "short" *)
+   BEGIN
+      RETURN FindArgument(args, name) # NIL
+   END Exists;
+
+   PROCEDURE Define (args: Arguments; name: ARRAY OF CHAR; short: CHAR;
+		     type: Type; description: ARRAY OF CHAR);
+      (* U: Define what I want to have. "short" should be 1 CHAR or 0X *)
+      VAR 
+	 shortA: ARRAY 2 OF CHAR;
+	 arg: Argument;
+	 hashVal: INTEGER;
+   BEGIN
+      ASSERT((type # NIL) & (type.if # NIL) & (name # ""));
+
+      shortA[0] := short; shortA[1] := 0X;
+      IF Exists(args, shortA) THEN
+	 Error(args, twiceDefined, shortA); RETURN
+      END;
+      IF Exists(args, name) THEN
+	 Error(args, twiceDefined, name); RETURN
+      END;
+
+      NEW(arg);
+      COPY(name, arg.name);
+      arg.short := short;
+      arg.change := NIL;
+      COPY(description, arg.description);
+      arg.type  := type;
+      arg.value := NIL;
+      arg.next  := NIL;
+      IndirectDisciplines.Forward(arg, args);
+
+      IF short # 0X THEN
+	 args.shortNameTab[ORD(short)] := arg;
+      END;
+
+      hashVal := HashName(name);
+      arg.next := args.collection[hashVal];
+      args.collection[hashVal] := arg;
+      INC(args.card);
+   END Define;
+
+   PROCEDURE Scan (args: Arguments; scanners: ScannerList);
+      (* U: Call to Scannerlist like systemScanners to fill the arguments *)
+      VAR 
+	 sl: ScannerList;
+	 scanner: Scanner;
+   BEGIN
+      ASSERT(args # NIL);
+      scanner := scanners.scanners;
+      WHILE scanner # NIL DO
+	 scanner.scan(args);
+	 scanner := scanner.next;
+      END;
+   END Scan;
+
+   PROCEDURE GetValue (args: Arguments; name: ARRAY OF CHAR; VAR value: Value);
+      VAR 
+	 arg: Argument;
+   BEGIN
+      arg := FindArgument(args, name);
+      IF arg = NIL THEN
+	 value := NIL;
+	 Error(args, unknownArgName, name); RETURN
+      END;
+      value := arg.value;
+   END GetValue;
+
+   PROCEDURE SetValue (args: Arguments; name: ARRAY OF CHAR; value: Value);
+      (* U: Set the value of name to value *)
+      VAR 
+	 arg: Argument;
+	 valtype: Services.Type;
+   BEGIN
+      arg := FindArgument(args, name);
+      IF arg = NIL THEN
+	 Error(args, unknownArgName, name); RETURN
+      END;
+      IF value # NIL THEN
+	 Services.GetType(value, valtype);
+	 ASSERT(Services.IsExtensionOf(valtype, arg.type.valtype));
+      END;
+      arg.value := value;
+      IF arg.change # NIL THEN
+	 Notify(args, arg);
+      END;
+   END SetValue;
+
+   PROCEDURE GetNotification (args: Arguments; name: ARRAY OF CHAR;
+	                      VAR eventType: Events.EventType);
+      (* U: RETURNS NIL in `eventType' in case of the argument of name is not *)
+      (*    existent; the eventtype of `name' otherwise. *)
+      VAR 
+	 arg : Argument;
+   BEGIN
+      arg := FindArgument(args, name);
+      IF arg = NIL THEN 
+	 eventType := NIL;
+	 Error(args, unknownArgName, name); RETURN
+      END;
+      IF arg.change = NIL THEN
+	 Events.Define(arg.change);
+	 Events.SetPriority(arg.change, Priorities.message);
+      END;
+      eventType := arg.change;
+   END GetNotification;
+
+   PROCEDURE Seek(args: Arguments; name: ARRAY OF CHAR; VAR arg: Argument);
+      (* U: returnes the specified arg, if present *)
+   BEGIN
+      arg := FindArgument(args, name);
+   END Seek;
+
+   PROCEDURE ScanValue(args: Arguments; name: ARRAY OF CHAR;
+	               stream: Streams.Stream) : BOOLEAN;
+      (* S: fill the value belonging to name in. *)
+      VAR 
+	 arg: Argument;
+	 val: Value;
+	 valtype: Services.Type;
+   BEGIN
+      ASSERT(args # NIL);
+      arg := FindArgument(args, name);
+      IF arg = NIL THEN
+	 Error(args, unknownArgName, name); RETURN FALSE
+      END;
+      IndirectDisciplines.Forward(stream, arg);
+      val := arg.value; (* read is free to update value *)
+      IF ~arg.type.if.read(stream, val) THEN
+	 IndirectDisciplines.Forward(stream, NIL);
+	 RETURN FALSE
+      END;
+      IndirectDisciplines.Forward(stream, NIL);
+      IF val # NIL THEN
+	 Services.GetType(val, valtype);
+	 ASSERT(Services.IsExtensionOf(valtype, arg.type.valtype));
+      END;
+      arg.value := val;
+      IF arg.change # NIL THEN
+	 Notify(args, arg);
+      END;
+      RETURN TRUE
+   END ScanValue;
+
+   PROCEDURE DefineType (type: Type; if: TypeInterface; valtype: Services.Type);
+      (* P: called by XXXArgs modules to define a new type;
+	    NEW(type) is to be called by the caller before;
+	    valtype is the Services.Type of the associated extension
+	    of Args.Value
+      *)
+      VAR
+	 disc: TypeDiscipline;
+   BEGIN
+      ASSERT(if # NIL);
+      ASSERT((if.read # NIL) & (if.print # NIL));
+      ASSERT(String2Type(type.name) = NIL);
+      ASSERT((valtype # NIL) & Services.IsExtensionOf(valtype, valueType));
+      type.discID := Disciplines.Unique();
+      type.if := if;
+      IF type.if = NIL THEN
+	 type.if.help := InternHelp;
+      END;
+      type.valtype := valtype;
+      type.next := typeList; typeList := type;
+
+      NEW(disc); disc.id := typeDiscID;
+      disc.type := type;
+      Disciplines.Add(valtype, disc);
+   END DefineType;
+
+   PROCEDURE TypeHelp(args: Arguments; type: Type; s: Streams.Stream);
+   BEGIN
+      type.if.help(s);
+   END TypeHelp;
+
+   PROCEDURE IterateTypes(VAR it: Iterators.Iterator);
+      (* U: Create an Iterator for examinating all defined types.*)
+      VAR 
+	 mode : SHORTINT;
+   BEGIN
+      Iterators.CreateQuickIterator(it, TypeIterator, typeList, mode);
+   END IterateTypes;
+
+   PROCEDURE Print(args: Arguments; name: ARRAY OF CHAR; s: Streams.Stream);
+      (* U: Prints the value of the given argument onto the stream s. *)
+      VAR 
+	 arg: Argument;
+	 disc: StreamTypeDiscipline;
+   BEGIN
+      arg := FindArgument(args, name);
+      IF arg = NIL THEN 
+	 Error(args, unknownArgName, name); RETURN
+      END;
+      IF arg.value = NIL THEN
+	 Write.StringS(s, "(undefined)");
+      ELSE
+	 IndirectDisciplines.Forward(s, arg);
+	 IF Disciplines.Seek(s, arg.type.discID, disc) THEN
+	    disc.print(s, arg.value);
+	 ELSE
+	    arg.type.if.print(s, arg.value);
+	 END;
+	 IndirectDisciplines.Forward(s, NIL);
+      END;
+   END Print;
+
+   PROCEDURE PrintValue(s: Streams.Stream; value: Value);
+      (* U: Print the given value onto the stream s;
+	    the value must have a type which has been declared by DefineType
+      *)
+      VAR
+	 valtype: Services.Type;
+	 disc: TypeDiscipline;
+	 sdisc: StreamTypeDiscipline;
+	 ok: BOOLEAN;
+	 type: Type;
+
+      PROCEDURE GetTypeDisc(type: Services.Type; VAR disc: TypeDiscipline);
+      BEGIN
+	 WHILE ~Disciplines.Seek(type, typeDiscID, disc) DO
+	    Services.GetBaseType(type, type);
+	    ASSERT((type # NIL) & (type # valueType));
+	 END;
+      END GetTypeDisc;
+
+   BEGIN
+      IF value = NIL THEN
+	 Write.StringS(s, "(undefined)");
+      ELSE
+	 Services.GetType(value, valtype);
+	 GetTypeDisc(valtype, disc);
+	 type := disc.type;
+	 IF Disciplines.Seek(s, type.discID, sdisc) THEN
+	    sdisc.print(s, value);
+	 ELSE
+	    type.if.print(s, value);
+	 END;
+      END;
+   END PrintValue;
+
+   PROCEDURE ReadValue(s: Streams.Stream; type: Type;
+                       VAR value: Value) : BOOLEAN;
+      (* UP: Read a value of the given type from the given stream *)
+      VAR
+	 valtype: Services.Type;
+	 val: Value;
+   BEGIN
+      ASSERT(type # NIL);
+      val := value; (* read is free to update value *)
+      IF ~type.if.read(s, val) THEN RETURN FALSE END;
+      IF val # NIL THEN
+	 Services.GetType(val, valtype);
+	 ASSERT(Services.IsExtensionOf(valtype, type.valtype));
+      END;
+      value := val;
+      RETURN TRUE
+   END ReadValue;
+
+   PROCEDURE AssignPrintProc(s : Streams.Stream; type: Type; print: PrintProc);
+      (* U: Assign a new PrintProc for type to a stream *)
+      VAR 
+	 disc: StreamTypeDiscipline;
+   BEGIN
+      IF ~Disciplines.Seek(s, type.discID, disc) THEN
+	 NEW(disc); disc.id := type.discID;
+      END;
+      disc.print := print;
+      Disciplines.Add(s, disc);
+   END AssignPrintProc;
+
+   PROCEDURE RegisterScanner (scanners: ScannerList; scan: ScanProc; 
+	                      priority: Priority);
+      VAR 
+	 scanner, prev, p: Scanner;
+   BEGIN
+      ASSERT(scan # NIL);
+      NEW(scanner); scanner.scan := scan; scanner.priority := priority;
+      (* keep list of scanners in ascending order *)
+      IF (scanners.scanners = NIL) OR
+	    (scanners.scanners.priority >= priority) THEN
+	 scanner.next := scanners.scanners;
+	 scanners.scanners := scanner;
+      ELSE
+	 p := scanners.scanners; prev := NIL;
+	 WHILE (p # NIL) & (p.priority < priority) DO
+	    prev := p; p := p.next;
+	 END;
+	 scanner.next := p;
+	 prev.next := scanner;
+      END;
+   END RegisterScanner;
+
+   PROCEDURE CreateScannerList(VAR list: ScannerList);
+   BEGIN
+      NEW (list); list.scanners := NIL;
+   END CreateScannerList;
+
+   PROCEDURE String2Type(string: ARRAY OF CHAR) : Type;
+      (* U: Returns e.g. for "bool" the Type. Now it's possible to get more *)
+      (*    information by calling TypeHelp. *)
+      VAR 
+	 type: Type;
+   BEGIN
+      type := typeList;
+      WHILE (type # NIL) & (type.name # string) DO
+	 type := type.next;
+      END;
+      RETURN type
+   END String2Type;
+
+BEGIN
+   typeList := NIL;
+   typeDiscID := Disciplines.Unique();
+   InitErrorHandling;
+
+   CreateScannerList(systemScanners);
+
+   PersistentObjects.RegisterType(valueType, "Args.Value",
+      "PersistentDisciplines.Object", NIL);
+
+   NEW(argsIf);
+   argsIf.read := ReadArgs;
+   argsIf.write := WriteArgs;
+   argsIf.create := CreateArgs;
+   argsIf.createAndRead := NIL;
+   PersistentObjects.RegisterType(argsType, "Args.Arguments",
+      "PersistentDisciplines.Object", argsIf);
+END Args.

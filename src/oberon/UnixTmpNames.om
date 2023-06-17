@@ -1,0 +1,95 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixTmpName.om,v 1.2 1997/04/02 07:43:25 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixTmpName.om,v $
+   Revision 1.2  1997/04/02  07:43:25  borchert
+   imported module Random has been renamed to RandomGenerators
+
+   Revision 1.1  1996/01/05  12:04:42  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixTmpNames;
+
+   (* generation of unique file names *)
+
+   IMPORT Print, Random := RandomGenerators, Streams, Strings, SysProcess,
+      UnixArguments, UnixEnvironment;
+
+   CONST
+      cmdlen = 8; (* take only the first cmdlen chars of
+                     the name of our command
+		  *)
+   VAR
+      pid: SysProcess.ProcessId;
+      cmdname: ARRAY 512 OF CHAR;
+      tmpdir: ARRAY 512 OF CHAR;
+      unique: LONGINT;
+
+   PROCEDURE CreateD(dir: ARRAY OF CHAR; VAR name: ARRAY OF CHAR);
+      (* returns an unique filename which resides in the given dir *)
+      CONST
+	 length = 7;
+      VAR
+	 s: Streams.Stream;
+	 random: ARRAY length + 1 OF CHAR;
+
+      PROCEDURE InventName(VAR string: ARRAY OF CHAR);
+	 VAR
+	    index: INTEGER;
+      BEGIN
+	 index := 0;
+	 REPEAT
+	    string[index] := CHR(Random.Val(ORD("a"), ORD("z")));
+	    INC(index);
+	 UNTIL index = length;
+	 string[length] := 0X;
+      END InventName;
+
+   BEGIN
+      InventName(random);
+      Strings.Open(s, name);
+      IF dir = "" THEN
+	 Print.S4(s, "%s.%d.%d.%s", cmdname, pid, unique, random);
+      ELSE
+	 Print.S5(s, "%s/%s.%d.%d.%s", dir, cmdname, pid, unique, random);
+      END;
+      INC(unique);
+      Streams.Release(s);
+   END CreateD;
+
+   PROCEDURE Create(VAR name: ARRAY OF CHAR);
+      (* returns an unique filename which resides in the default tmp dir *)
+   BEGIN
+      CreateD(tmpdir, name);
+   END Create;
+
+BEGIN
+   pid := SysProcess.Getpid();
+   UnixArguments.GetCommandName(cmdname);
+   cmdname[cmdlen] := 0X;
+   IF ~UnixEnvironment.String("TMPDIR", tmpdir) THEN
+      tmpdir := "/tmp";
+   END;
+   unique := 1;
+END UnixTmpNames.

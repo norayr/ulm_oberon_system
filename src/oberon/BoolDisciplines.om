@@ -1,0 +1,202 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: BoolDiscipl.om,v 1.2 1995/04/10 12:03:06 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: BoolDiscipl.om,v $
+   Revision 1.2  1995/04/10  12:03:06  borchert
+   - reformatted
+   - simpler names
+
+   Revision 1.1  1994/10/28  10:25:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE BoolDisciplines;
+
+   IMPORT ConstStrings, Disciplines := IndirectDisciplines, Events, Iterators,
+      Objects, Sets;
+
+   TYPE
+      StringSet = POINTER TO StringSetRec;
+      StringSetRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    string: ConstStrings.String;
+	    next: StringSet;
+	 END;
+
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    namesOfTrue, namesOfFalse: StringSet;
+	 END;
+
+   VAR 
+      discID: Disciplines.Identifier;
+
+   (* === private procedures ============================================ *)
+
+   PROCEDURE Include(VAR set: StringSet; name: ARRAY OF CHAR);
+      VAR
+	 string: ConstStrings.String;
+	 member: StringSet;
+   BEGIN
+      ConstStrings.Create(string, name);
+      member := set;
+      WHILE (member # NIL) & (member.string # string) DO
+	 member := member.next;
+      END;
+      IF member # NIL THEN RETURN END;
+      NEW(member); member.string := string;
+      member.next := set; set := member;
+   END Include;
+
+   PROCEDURE Exclude(VAR set: StringSet; name: ARRAY OF CHAR);
+      VAR
+	 string: ConstStrings.String;
+	 prev, member: StringSet;
+   BEGIN
+      ConstStrings.Create(string, name);
+      member := set; prev := NIL;
+      WHILE (member # NIL) & (member.string # string) DO
+	 prev := member; member := member.next;
+      END;
+      IF member = NIL THEN RETURN END;
+      IF prev = NIL THEN
+	 set := member.next;
+      ELSE
+	 prev.next := member.next;
+      END;
+   END Exclude;
+
+   PROCEDURE IsMember(set: StringSet; name: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 string: ConstStrings.String;
+	 member: StringSet;
+   BEGIN
+      ConstStrings.Create(string, name);
+      member := set;
+      WHILE (member # NIL) & (member.string # string) DO
+	 member := member.next;
+      END;
+      RETURN member # NIL
+   END IsMember;
+
+   PROCEDURE IterateSet(it: Iterators.Iterator; obj: Objects.Object;
+	                mode: SHORTINT);
+      VAR 
+	 member: StringSet;
+   BEGIN
+      member := obj(StringSet);
+      WHILE member # NIL DO
+	 Iterators.Yield(it, member.string);
+	 member := member.next;
+      END;
+   END IterateSet;
+
+   PROCEDURE GetDiscipline(obj: Disciplines.Object;
+			   VAR disc: Discipline);
+   BEGIN
+      IF ~Disciplines.Seek(obj, discID, disc) THEN
+	 NEW(disc);
+	 disc.id := discID;
+	 disc.namesOfTrue := NIL; Include(disc.namesOfTrue, "TRUE");
+	 disc.namesOfFalse := NIL; Include(disc.namesOfFalse, "FALSE");
+	 Disciplines.Add(obj, disc);
+      END;
+   END GetDiscipline;
+
+   (* === exported procedures =========================================== *)
+
+   PROCEDURE InclTrue (obj: Disciplines.Object; name: ARRAY OF CHAR);
+      VAR 
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      Include(disc.namesOfTrue, name);
+   END InclTrue;
+
+   PROCEDURE InclFalse (obj: Disciplines.Object; name: ARRAY OF CHAR);
+      VAR 
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      Include(disc.namesOfFalse, name);
+   END InclFalse;
+
+   PROCEDURE ExclTrue (obj: Disciplines.Object; name: ARRAY OF CHAR);
+      VAR 
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      Exclude(disc.namesOfTrue, name);
+   END ExclTrue;
+
+   PROCEDURE ExclFalse (obj: Disciplines.Object; name: ARRAY OF CHAR);
+      VAR 
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      Exclude(disc.namesOfFalse, name);
+   END ExclFalse;
+
+   PROCEDURE IsTrue(obj: Disciplines.Object;
+		    name: ARRAY OF CHAR) : BOOLEAN;
+      (* TRUE if name was include by InclTrue *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      RETURN IsMember(disc.namesOfTrue, name)
+   END IsTrue;
+
+   PROCEDURE IsFalse(obj: Disciplines.Object;
+		     name: ARRAY OF CHAR) : BOOLEAN;
+      (* TRUE if name was include by InclFalse *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      RETURN IsMember(disc.namesOfFalse, name)
+   END IsFalse;
+
+   PROCEDURE CreateIterator(VAR it: Iterators.Iterator;
+                            obj: Disciplines.Object;
+	                    bool: BOOLEAN);
+      (* the returned strings are of the type ConstStrings.String *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDiscipline(obj, disc);
+      IF bool THEN
+	 Iterators.Create(it, IterateSet, disc.namesOfTrue, 0);
+      ELSE
+	 Iterators.Create(it, IterateSet, disc.namesOfFalse, 0);
+      END;
+   END CreateIterator;
+
+BEGIN
+   discID := Disciplines.Unique();
+END BoolDisciplines.

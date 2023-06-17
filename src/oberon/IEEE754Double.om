@@ -1,0 +1,205 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IEEE754Double;
+
+   IMPORT CompilerErrors, CompilerObjects, IEEE, Reals, RelatedEvents,
+      Streams, Write;
+
+   (* floating point double format (ANSI/IEEE Standard 754-1985)
+ 
+       0 1       11 12                                          63
+      +-+----------+------------------------------- - - - --------+
+      |S|    X     |          F                                   |
+      +-+----------+------------------------------- - - - --------+
+ 
+      where
+ 
+      S:      sign bit
+      X:      biased exponent (11 bits)
+      F:      fraction (52 bits)
+              
+      most negative:               ffef ffff ffff ffff -1.797693134862315e+308
+      least negative/normalized:   8010 0000 0000 0000 -2.225073858507201e-308
+      least negative/denormalized: 8010 0000 0000 0001 -4.940656458412465e-324
+      least positive/denormalized: 0010 0000 0000 0001  4.940656458412465e-324
+      least positive/normalized:   0010 0000 0000 0000  2.225073858507201e-308
+      most positive:               7fef ffff ffff ffff  1.797693134862315e+308
+   *)
+
+   TYPE
+      Value = REAL; (* compiler-dependent *)
+
+   CONST
+      maxfractdigits = "1797693134862315";
+      minfractdigits = "4940656458412465";
+
+      maxexp = 308;
+      minexp = -324;
+      maxdignum = Reals.maxdignum;
+
+   TYPE
+      Digits = ARRAY maxdignum + 1 OF CHAR;
+
+   PROCEDURE Read(s: Streams.Stream; VAR realval: Value;
+                  loc: CompilerObjects.Location;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 neg = FALSE; (* we do not process signs *)
+      VAR
+	 digits: Digits; index: INTEGER;
+	 ch: CHAR;
+	 eos: BOOLEAN;
+	 expneg: BOOLEAN;
+	 exp, exponent: INTEGER;
+	 dotseen, nonzero: BOOLEAN;
+	 error: BOOLEAN; (* print just one error message *)
+	 mantissa: LONGREAL;
+      
+      PROCEDURE NextCh;
+      BEGIN
+	 IF eos THEN
+	    ch := 0X;
+	 ELSIF ~Streams.ReadByte(s, ch) THEN
+	    eos := TRUE;
+	    ch := 0X;
+	 END;
+      END NextCh;
+
+      PROCEDURE CheckExponent;
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 IF error THEN RETURN END;
+	 IF exponent > maxexp THEN
+	    CompilerErrors.Open(es);
+	    CompilerErrors.At1(es, loc);
+	    Write.StringS(es, "exponent is too large (");
+	    Write.IntS(es, maxexp, 1);
+	    Write.StringS(es, " max)");
+	    CompilerErrors.Close(es, errors);
+	    error := TRUE; exponent := 0;
+	 ELSIF exponent < minexp THEN
+	    CompilerErrors.Open(es);
+	    CompilerErrors.At1(es, loc);
+	    Write.StringS(es, "exponent exceeds minimal value (");
+	    Write.IntS(es, minexp, 1);
+	    Write.StringS(es, " min)");
+	    CompilerErrors.Close(es, errors);
+	    error := TRUE; exponent := 0;
+	 END;
+      END CheckExponent;
+
+      PROCEDURE Overflow;
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 IF error THEN RETURN END;
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+	 Write.StringS(es, "real constant is too large");
+	 CompilerErrors.Close(es, errors);
+      END Overflow;
+
+      PROCEDURE Underflow;
+	 VAR
+	    es: Streams.Stream;
+      BEGIN
+	 IF error THEN RETURN END;
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.At1(es, loc);
+	 Write.StringS(es, "real constant cannot be distinguished from 0.0");
+	 CompilerErrors.Close(es, errors);
+      END Underflow;
+
+   BEGIN (* Read *)
+      dotseen := FALSE; eos := FALSE; error := FALSE; nonzero := FALSE; NextCh;
+      ASSERT(~eos);
+      exp := 0; index := 0;
+      WHILE (ch >= "0") & (ch <= "9") OR (ch = ".") DO
+	 IF ch = "." THEN
+	    ASSERT(~dotseen); dotseen := TRUE;
+	 ELSE
+	    IF ch > "0" THEN nonzero := TRUE END;
+	    IF nonzero THEN
+	       IF index < maxdignum THEN
+		  digits[index] := ch; INC(index);
+	       END;
+	       IF ~dotseen THEN INC(exp) END;
+	    ELSIF dotseen THEN
+	       DEC(exp);
+	    END;
+	 END;
+	 NextCh;
+      END;
+      digits[index] := 0X;
+      IF index = 0 THEN realval := 0.0; RETURN TRUE END;
+
+      exponent := 0;
+      IF (CAP(ch) = "E") OR (CAP(ch) = "D") THEN
+	 NextCh; expneg := ch = "-"; IF expneg OR (ch = "+") THEN NextCh END;
+	 WHILE (ch >= "0") & (ch <= "9") DO
+	    exponent := ORD(ch) - ORD("0") + 10 * exponent;
+	    IF exponent > 10 * (ABS(minexp) + exp) THEN
+	       (* protect against overflows of the exponent *)
+	       IF expneg THEN exponent := - exponent; END;
+	       CheckExponent; ASSERT(error);
+	    END;
+	    NextCh;
+	 END;
+      END;
+      ASSERT(eos);
+
+      IF expneg THEN exponent := - exponent END;
+      INC(exponent, exp - 1);
+      CheckExponent;
+      IF (exponent = maxexp) & (digits > maxfractdigits) THEN
+	 Overflow;
+      ELSIF (exponent = minexp) & (digits < minfractdigits) THEN
+	 Underflow;
+      END;
+
+      IF error THEN
+	 realval := IEEE.nan; RETURN FALSE
+      ELSE
+	 Reals.Convert(digits, 10, neg, mantissa);
+	 realval := SHORT(mantissa * Reals.Power(10.0, exponent));
+	 RETURN TRUE
+      END;
+   END Read;
+
+   PROCEDURE Min() : Value;
+   BEGIN
+      RETURN MIN(Value)
+   END Min;
+
+   PROCEDURE Max() : Value;
+   BEGIN
+      RETURN MAX(Value)
+   END Max;
+
+END IEEE754Double.

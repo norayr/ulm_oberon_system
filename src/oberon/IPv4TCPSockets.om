@@ -1,0 +1,207 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv4TCPSock.om,v 1.5 2004/03/09 21:28:55 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv4TCPSock.om,v $
+   Revision 1.5  2004/03/09 21:28:55  borchert
+   - renamed from Internet to IPv4TCPSockets
+   - address types and conversion routines factorized out to IPv4Addresses
+
+   Revision 1.4  2001/05/16 20:59:51  borchert
+   CreateSomeSocketOn and ListenOn added
+
+   Revision 1.3  2001/05/01 05:17:33  borchert
+   OpenAs and CreateOpenConditionAs added
+
+   Revision 1.2  2001/04/25 13:13:07  borchert
+   addressFmt fixed
+
+   Revision 1.1  1994/09/27  19:08:29  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IPv4TCPSockets;
+
+   IMPORT Conditions, EphemeralPortRange, IPv4Addresses, RelatedEvents,
+      Streams, SysConversions, SysSockets, UnixSockets;
+
+   TYPE
+      Socket = UnixSockets.Socket;
+      Address = IPv4Addresses.Address;
+      SocketAddress = IPv4Addresses.SocketAddress;
+      SysAddress = IPv4Addresses.SysAddress;
+
+   PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+				 address: SocketAddress);
+      VAR
+	 peerAddr: SysAddress;
+   BEGIN
+      IPv4Addresses.ConvertToSys(address, peerAddr);
+      UnixSockets.CreateOpenCondition(condition, SysSockets.afINET,
+	 SysSockets.stream, peerAddr, (* bind = *) FALSE, 0);
+   END CreateOpenCondition;
+
+   PROCEDURE CreateOpenConditionAs(VAR condition: Conditions.Condition;
+				   address, bindto: SocketAddress);
+      VAR
+	 peerAddr, myAddr: SysAddress;
+   BEGIN
+      IPv4Addresses.ConvertToSys(address, peerAddr);
+      IPv4Addresses.ConvertToSys(bindto, myAddr);
+      UnixSockets.CreateOpenCondition(condition, SysSockets.afINET,
+	 SysSockets.stream, peerAddr, (* bind = *) TRUE, myAddr);
+   END CreateOpenConditionAs;
+
+   PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+			 condition: Conditions.Condition;
+			 bufmode: Streams.BufMode;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN UnixSockets.TestAndOpen(s, condition, bufmode, errors)
+   END TestAndOpen;
+
+   PROCEDURE Open(VAR s: Streams.Stream; address: SocketAddress;
+		  bufmode: Streams.BufMode;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 condition: Conditions.Condition;
+	 peerAddr: SysAddress;
+   BEGIN
+      IPv4Addresses.ConvertToSys(address, peerAddr);
+      RETURN UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
+	       peerAddr, (* bind = *) FALSE, 0,
+	       bufmode, errors)
+   END Open;
+
+   PROCEDURE OpenAs(VAR s: Streams.Stream; address, bindto: SocketAddress;
+		    bufmode: Streams.BufMode;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 condition: Conditions.Condition;
+	 peerAddr, myAddr: SysAddress;
+   BEGIN
+      IPv4Addresses.ConvertToSys(address, peerAddr);
+      IPv4Addresses.ConvertToSys(bindto, myAddr);
+      RETURN UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
+	       peerAddr, (* bind = *) TRUE, myAddr,
+	       bufmode, errors)
+   END OpenAs;
+
+   PROCEDURE Listen(VAR socket: Socket; portnum: INTEGER;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+	 fd: SysSockets.Socket;
+	 address: SocketAddress;
+	 interrupted: BOOLEAN;
+	 attempt: INTEGER;
+   BEGIN
+      address.host := 0;
+      IF portnum = 0 THEN
+	 (* attempt to chose an unpredictable random port
+	    instead of defaulting to the quite predictable
+	    selection of the network stack
+	 *)
+	 attempt := 0;
+	 WHILE attempt < 10 DO
+	    IPv4Addresses.SetPort(address, EphemeralPortRange.GetRandomPort());
+	    IPv4Addresses.ConvertToSys(address, addr);
+	    IF UnixSockets.Listen(socket, SysSockets.afINET,
+		  SysSockets.stream, addr, RelatedEvents.null) THEN
+	       RETURN TRUE
+	    END;
+	    INC(attempt);
+	 END;
+      END;
+      IPv4Addresses.SetPort(address, portnum);
+      IPv4Addresses.ConvertToSys(address, addr);
+      RETURN UnixSockets.Listen(socket, SysSockets.afINET,
+	       SysSockets.stream, addr, errors)
+   END Listen;
+
+   PROCEDURE ListenOn(VAR socket: Socket; address: SocketAddress;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+	 fd: SysSockets.Socket;
+	 interrupted: BOOLEAN;
+   BEGIN
+      IPv4Addresses.ConvertToSys(address, addr);
+      RETURN UnixSockets.Listen(socket, SysSockets.afINET, SysSockets.stream,
+	       addr, errors)
+   END ListenOn;
+
+   PROCEDURE Accept(socket: Socket;
+		    VAR s: Streams.Stream; bufmode: Streams.BufMode;
+		    VAR peer: SocketAddress) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+   BEGIN
+      IF UnixSockets.Accept(socket, s, bufmode, addr) THEN
+	 IPv4Addresses.ConvertFromSys(addr, peer);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Accept;
+
+   PROCEDURE GetName(socket: Socket; VAR address: SocketAddress;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: SysAddress;
+   BEGIN
+      IF UnixSockets.GetName(socket, addr, errors) THEN
+	 IPv4Addresses.ConvertFromSys(addr, address);
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetName;
+
+   PROCEDURE CreateSomeSocket(VAR socket: Socket;
+			      VAR address: SocketAddress;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN Listen(socket, 0, errors) &
+	     GetName(socket, address, errors)
+   END CreateSomeSocket;
+
+   PROCEDURE CreateSomeSocketOn(VAR socket: Socket;
+			        VAR address: SocketAddress;
+			        errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN ListenOn(socket, address, errors) &
+	     GetName(socket, address, errors)
+   END CreateSomeSocketOn;
+
+   PROCEDURE Release(socket: Socket);
+   BEGIN
+      UnixSockets.Release(socket);
+   END Release;
+
+   PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+			           socket: Socket);
+   BEGIN
+      UnixSockets.CreateAcceptCondition(condition, socket);
+   END CreateAcceptCondition;
+
+END IPv4TCPSockets.

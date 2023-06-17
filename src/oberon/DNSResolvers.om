@@ -1,0 +1,523 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSResolver.om,v 1.2 2004/06/09 23:42:42 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSResolver.om,v $
+   Revision 1.2  2004/06/09 23:42:42  borchert
+   bug fix: GetHostByIPv4Addr did not take care of endianess
+
+   Revision 1.1  2004/03/02 14:46:59  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE DNSResolvers;
+
+   IMPORT ASCII, DNSRecords, Errors, Events, IPv4Addresses, IPv6Addresses,
+      Objects, RelatedEvents, Services, Streams, Strings, Types, Write;
+
+   TYPE
+      Resolver = POINTER TO ResolverRec;
+   TYPE
+      IPv4AddressList = POINTER TO IPv4AddressListRec;
+      IPv4AddressListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addr: IPv4Addresses.Address;
+	    next: IPv4AddressList;
+	 END;
+   TYPE
+      IPv6AddressList = POINTER TO IPv6AddressListRec;
+      IPv6AddressListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addr: IPv6Addresses.Address;
+	    next: IPv6AddressList;
+	 END;
+   TYPE
+      HostnameList = POINTER TO HostnameListRec;
+      HostnameListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    hostname: DNSRecords.Name;
+	    next: HostnameList;
+	 END;
+   TYPE
+      MXList = POINTER TO MXListRec;
+      MXListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    hostname: DNSRecords.Name;
+	    preference: INTEGER;
+	    next: MXList;
+	 END;
+   TYPE
+      TXTList = POINTER TO TXTListRec;
+      TXTListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    text: DNSRecords.Name;
+	    next: TXTList;
+	 END;
+   TYPE
+      GetRecordsProc =
+	 PROCEDURE(resolver: Resolver;
+	    hostname: ARRAY OF CHAR;
+	    rrtype: DNSRecords.RRType;
+	    trysuffixes: BOOLEAN;
+	    VAR records: DNSRecords.Record;
+	    errors: RelatedEvents.Object) : BOOLEAN;
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    getRecords: GetRecordsProc;
+	 END;
+   TYPE
+      ResolverRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	 END;
+   VAR
+      type: Services.Type;
+   VAR
+      std: Resolver; (* standard resolver *)
+
+   CONST
+      corruptedRecords = 0;
+      errors = 1;
+   TYPE
+      ErrorCode = SHORTINT; (* corruptedRecords... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    domain: DNSRecords.Name;
+	    rrtype: DNSRecords.RRType;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.domain[0] # 0X THEN
+	    Write.StringS(s, event.domain);
+	    Write.StringS(s, ": ");
+	 END;
+	 IF (event.rrtype >= 0) & (event.rrtype < LEN(DNSRecords.rrName)) &
+	       (DNSRecords.rrName[event.rrtype][0] # 0X) THEN
+	    Write.StringS(s, event.message);
+	    Write.StringS(s, " while looking for ");
+	    Write.StringS(s, DNSRecords.rrName[event.rrtype]);
+	    Write.StringS(s, " records");
+	 ELSE
+	    Write.StringS(s, event.message);
+	 END;
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[corruptedRecords] := "got corrupted records";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   rrtype: DNSRecords.RRType;
+		   domain: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.rrtype := rrtype;
+      COPY(domain, event.domain);
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE Init(resolver: Resolver; if: Interface);
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.GetType(resolver, type); ASSERT(type # NIL);
+      ASSERT(if.getRecords # NIL);
+      resolver.if := if;
+   END Init;
+
+   PROCEDURE GetRecords(resolver: Resolver;
+                        hostname: ARRAY OF CHAR;
+			rrtype: DNSRecords.RRType;
+			trysuffixes: BOOLEAN;
+			VAR records: DNSRecords.Record;
+			errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN resolver.if.getRecords(resolver, hostname, rrtype,
+         trysuffixes, records, errors)
+   END GetRecords;
+
+   PROCEDURE GetReverseRecords(resolver: Resolver;
+                               revname: ARRAY OF CHAR;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 head, tail, entry: HostnameList;
+	 records: DNSRecords.Record;
+	 name: DNSRecords.Name;
+   BEGIN
+      IF GetRecords(resolver, revname,
+	    DNSRecords.ptr, (* try suffixes = *) FALSE, records, errors) THEN
+	 ASSERT(records # NIL);
+	 head := NIL; tail := NIL;
+	 WHILE records # NIL DO
+	    IF DNSRecords.ExtractName(records, name) THEN
+	       NEW(entry); entry.hostname := name;
+	       entry.next := NIL;
+	       IF head = NIL THEN
+		  head := entry;
+	       ELSE
+		  tail.next := entry;
+	       END;
+	       tail := entry;
+	    ELSE
+	       Error(errors, corruptedRecords, DNSRecords.ptr, revname);
+	       RETURN FALSE
+	    END;
+	    records := records.next;
+	 END;
+	 ASSERT(head # NIL);
+	 hosts := head;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetReverseRecords;
+
+   PROCEDURE GetIPv4AddrByHost(resolver: Resolver;
+                               hostname: ARRAY OF CHAR;
+			       VAR addresses: IPv4AddressList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 records: DNSRecords.Record;
+	 head, tail, entry: IPv4AddressList;
+	 addr: IPv4Addresses.Address;
+   BEGIN
+      IF GetRecords(resolver, hostname,
+	    DNSRecords.a, (* try suffixes = *) TRUE, records, errors) THEN
+	 ASSERT(records # NIL);
+	 head := NIL; tail := NIL;
+	 WHILE records # NIL DO
+	    IF DNSRecords.ExtractA(records, addr) THEN
+	       NEW(entry); entry.addr := addr;
+	       entry.next := NIL;
+	       IF head = NIL THEN
+		  head := entry;
+	       ELSE
+		  tail.next := entry;
+	       END;
+	       tail := entry;
+	    ELSE
+	       Error(errors, corruptedRecords, DNSRecords.a, hostname);
+	       RETURN FALSE
+	    END;
+	    records := records.next;
+	 END;
+	 ASSERT(head # NIL);
+	 addresses := head;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetIPv4AddrByHost;
+
+   PROCEDURE GetIPv6AddrByHost(resolver: Resolver;
+                               hostname: ARRAY OF CHAR;
+			       VAR addresses: IPv6AddressList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 records: DNSRecords.Record;
+	 head, tail, entry: IPv6AddressList;
+	 addr: IPv6Addresses.Address;
+   BEGIN
+      IF GetRecords(resolver, hostname,
+	    DNSRecords.aaaa, (* try suffixes = *) TRUE, records, errors) THEN
+	 head := NIL; tail := NIL;
+	 WHILE records # NIL DO
+	    IF DNSRecords.ExtractAAAA(records, addr) THEN
+	       NEW(entry); entry.addr := addr;
+	       entry.next := NIL;
+	       IF head = NIL THEN
+		  head := entry;
+	       ELSE
+		  tail.next := entry;
+	       END;
+	       tail := entry;
+	    ELSE
+	       Error(errors, corruptedRecords, DNSRecords.aaaa, hostname);
+	       RETURN FALSE
+	    END;
+	    records := records.next;
+	 END;
+	 addresses := head;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetIPv6AddrByHost;
+
+   PROCEDURE GetHostByIPv4Addr(resolver: Resolver;
+                               address: IPv4Addresses.Address;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 revDomain = "in-addr.arpa";
+      VAR
+	 revname: DNSRecords.Name;
+	 s: Streams.Stream;
+   BEGIN
+      revname[0] := 0X; Strings.Open(s, revname);
+      CASE Types.byteorder OF
+      | Types.littleEndian:
+	    Write.IntS(s, address DIV ASH(1, 24) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address DIV ASH(1, 16) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address DIV ASH(1, 8) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address MOD 256, 1);
+      | Types.bigEndian:
+	    Write.IntS(s, address MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address DIV ASH(1, 8) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address DIV ASH(1, 16) MOD 256, 1);
+	    Write.CharS(s, ".");
+	    Write.IntS(s, address DIV ASH(1, 24) MOD 256, 1);
+      END;
+      Write.CharS(s, ".");
+      Write.StringS(s, revDomain);
+      RETURN GetReverseRecords(resolver, revname, hosts, errors)
+   END GetHostByIPv4Addr;
+
+   PROCEDURE GetHostByIPv6Addr(resolver: Resolver;
+                               address: IPv6Addresses.Address;
+			       VAR hosts: HostnameList;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+	 revDomain = "ip6.arpa"; (* RFC 3152 *)
+	 obsoleteRevDomain = "ip6.int"; (* RFC 1886 *)
+      VAR
+	 revname: DNSRecords.Name;
+	 s: Streams.Stream;
+	 index: INTEGER;
+	 pos: Streams.Count;
+	 err: RelatedEvents.Object;
+	 ok: BOOLEAN;
+	 endpos: Streams.Count;
+	 queue: RelatedEvents.Queue;
+
+      PROCEDURE WriteHex(val: INTEGER);
+      BEGIN
+	 ASSERT((val >= 0) & (val < 16));
+	 IF val < 10 THEN
+	    Write.CharS(s, CHR(ORD("0") + val));
+	 ELSE
+	    Write.CharS(s, CHR(ORD("a") + val - 10));
+	 END;
+      END WriteHex;
+
+   BEGIN (* GetHostByIPv6Addr *)
+      revname[0] := 0X; Strings.Open(s, revname);
+      index := LEN(address) - 1;
+      WHILE index >= 0 DO
+	 WriteHex(ORD(address[index]) MOD 16);
+	 Write.CharS(s, ".");
+	 WriteHex(ORD(address[index]) DIV 16 MOD 16);
+	 Write.CharS(s, ".");
+	 DEC(index);
+      END;
+      Streams.GetPos(s, pos);
+      NEW(err); RelatedEvents.QueueEvents(err);
+
+      (* attempt to reverse according to RFC 3152 *)
+      Write.StringS(s, revDomain);
+      IF GetReverseRecords(resolver, revname, hosts, err) THEN
+	 RETURN TRUE
+      END;
+      (* fall back to RFC 1886 *)
+      Streams.SetPos(s, pos);
+      Write.StringS(s, obsoleteRevDomain);
+      Streams.GetPos(s, endpos);
+      ok := Streams.Trunc(s, endpos); ASSERT(ok);
+      IF GetReverseRecords(resolver, revname, hosts, err) THEN
+	 RETURN TRUE
+      END;
+
+      (* return collected errors *)
+      RelatedEvents.GetQueue(err, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+      RETURN FALSE
+   END GetHostByIPv6Addr;
+
+   PROCEDURE GetMXRecords(resolver: Resolver;
+                          domain: ARRAY OF CHAR;
+			  VAR mxrecords: MXList;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 head, tail, entry: MXList;
+	 records: DNSRecords.Record;
+	 hostname: DNSRecords.Name;
+	 preference: INTEGER;
+   BEGIN
+      IF GetRecords(resolver, domain,
+	    DNSRecords.mx, (* try suffixes = *) TRUE, records, errors) THEN
+	 head := NIL; tail := NIL;
+	 WHILE records # NIL DO
+	    IF DNSRecords.ExtractMX(records, preference, hostname) THEN
+	       NEW(entry);
+	       entry.preference := preference;
+	       entry.hostname := hostname;
+	       entry.next := NIL;
+	       IF head = NIL THEN
+		  head := entry;
+	       ELSE
+		  tail.next := entry;
+	       END;
+	       tail := entry;
+	    ELSE
+	       Error(errors, corruptedRecords, DNSRecords.mx, domain);
+	       RETURN FALSE
+	    END;
+	    records := records.next;
+	 END;
+	 mxrecords := head;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetMXRecords;
+
+   PROCEDURE GetTXTRecords(resolver: Resolver;
+                           domain: ARRAY OF CHAR;
+			   VAR txtrecords: TXTList;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 head, tail, entry: TXTList;
+	 records: DNSRecords.Record;
+	 list: DNSRecords.ListOfTextRecords;
+   BEGIN
+      IF GetRecords(resolver, domain,
+	    DNSRecords.txt, (* try suffixes = *) TRUE, records, errors) THEN
+	 head := NIL; tail := NIL;
+	 WHILE records # NIL DO
+	    IF DNSRecords.ExtractTXT(records, list) THEN
+	       WHILE list # NIL DO
+		  NEW(entry);
+		  entry.text := list.text;
+		  entry.next := NIL;
+		  IF head = NIL THEN
+		     head := entry;
+		  ELSE
+		     tail.next := entry;
+		  END;
+		  tail := entry;
+		  list := list.next;
+	       END;
+	    ELSE
+	       Error(errors, corruptedRecords, DNSRecords.txt, domain);
+	       RETURN FALSE
+	    END;
+	    records := records.next;
+	 END;
+	 txtrecords := head;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END GetTXTRecords;
+
+   PROCEDURE GetAttribute(resolver: Resolver;
+                          domain: ARRAY OF CHAR;
+			  attribute: ARRAY OF CHAR;
+			  VAR value: ARRAY OF CHAR;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      (* return attributes embedded in TXT records according to RFC 1464 *)
+      VAR
+	 txtrecords: TXTList;
+	 index: INTEGER;
+	 ati: INTEGER;
+	 skipspaces: BOOLEAN;
+	 quoted: BOOLEAN;
+	 ch: CHAR;
+	 len: LONGINT;
+	 found: BOOLEAN;
+   BEGIN
+      IF ~GetTXTRecords(resolver, domain, txtrecords, errors) THEN
+	 RETURN FALSE
+      END;
+      len := Strings.Len(attribute);
+      WHILE txtrecords # NIL DO
+	 IF (txtrecords.text[0] # 0X) & (txtrecords.text[0] # "=") THEN
+	    index := 0; ati := 0; skipspaces := TRUE; quoted := FALSE;
+	    found := FALSE;
+	    LOOP
+	       IF index >= DNSRecords.namelen THEN EXIT END;
+	       ch := txtrecords.text[index]; INC(index);
+	       IF ch = 0X THEN EXIT END;
+	       IF quoted THEN
+		  IF ati >= len THEN EXIT END;
+		  IF attribute[ati] # ch THEN EXIT END; INC(ati);
+		  quoted := FALSE;
+	       ELSIF ch = "`" THEN
+		  quoted := TRUE; skipspaces := FALSE;
+	       ELSIF ch = "=" THEN
+		  found := ati = len; EXIT
+	       ELSIF ~skipspaces OR (ch # " ") OR (ch # ASCII.tab) THEN
+		  IF ati >= len THEN EXIT END;
+		  IF (ch >= "A") & (ch <= "Z") THEN
+		     ch := CHR(ORD(ch) - ORD("A") + ORD("a"));
+		  END;
+		  IF attribute[ati] # ch THEN EXIT END; INC(ati);
+		  skipspaces := FALSE;
+	       END;
+	    END;
+	    IF found THEN
+	       Strings.PartCopy(value, 0, txtrecords.text, index);
+	       RETURN TRUE
+	    END;
+	 END;
+	 txtrecords := txtrecords.next;
+      END;
+      RETURN FALSE
+   END GetAttribute;
+
+BEGIN
+   InitErrorHandling;
+   Services.CreateType(type, "DNSResolvers.Resolver", "");
+   std := NIL;
+END DNSResolvers.

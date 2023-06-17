@@ -1,0 +1,169 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentT.om,v 1.1 1998/03/30 14:05:09 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PersistentT.om,v $
+   Revision 1.1  1998/03/30 14:05:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersistentTexts;
+
+   IMPORT Events, MemStreams, NetIO, PersistentDisciplines,
+      PersistentObjects, RelatedEvents, Resources, Services, Streams,
+      SubStreams, SYS := SYSTEM, Types;
+
+   TYPE
+      Text = POINTER TO TextRec;
+      TextRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    (* private components *)
+	    s: Streams.Stream;
+	    length: Streams.Count;
+	 END;
+   VAR
+      type: Services.Type;
+
+   (* === Resources handler ================================================ *)
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      VAR
+	 text: Text;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change IN {Resources.unreferenced, Resources.terminated} THEN
+	    text := event.resource(Text);
+	    IF text.s # NIL THEN
+	       Streams.Release(text.s); text.s := NIL; text.length := 0;
+	    END;
+	 END;
+      END;
+   END TerminationHandler;
+
+   (* === PersistentObjects if procedures for Text ========================= *)
+
+   PROCEDURE CreateText(VAR object: PersistentObjects.Object);
+      VAR
+	 text: Text;
+	 eventType: Events.EventType;
+   BEGIN
+      NEW(text); PersistentObjects.Init(text, type);
+      Resources.TakeInterest(text, eventType);
+      Events.Handler(eventType, TerminationHandler);
+      text.s := NIL; text.length := 0;
+      object := text;
+   END CreateText;
+
+   PROCEDURE ReadText(s: Streams.Stream;
+                      object: PersistentObjects.Object) : BOOLEAN;
+      CONST
+	 maxlength = MAX(Streams.Count) DIV 2 - 16;
+      VAR
+	 length: Streams.Count;
+	 p: POINTER TO ARRAY maxlength OF CHAR;
+   BEGIN
+      WITH object: Text DO
+	 IF ~NetIO.ReadLongInt(s, length) OR (length < 0) OR
+	       (length > maxlength) THEN
+	    RETURN FALSE
+	 END;
+	 object.length := length;
+	 IF length = 0 THEN
+	    object.s := Streams.null;
+	 ELSE
+	    SYS.NEW(p, length);
+	    IF ~Streams.ReadPart(s, p^, 0, length) THEN
+	       RETURN FALSE
+	    END;
+	    MemStreams.Open(object.s, SYS.VAL(Types.Address, p),
+			    length, MemStreams.read);
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadText;
+
+   PROCEDURE WriteText(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 substream: Streams.Stream;
+   BEGIN
+      WITH object: Text DO
+	 RETURN NetIO.WriteLongInt(s, object.length) &
+		SubStreams.Open(substream, object.s, 0, object.length, s) &
+	        Streams.Copy(substream, s, -1) &
+		Streams.Close(substream) &
+		(s.count = object.length)
+      END;
+   END WriteText;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(persif);
+      persif.create := CreateText;
+      persif.read := ReadText;
+      persif.write := WriteText;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(type,
+         "PersistentTexts.Text", "PersistentDisciplines.Object", persif);
+   END Init;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Create(VAR text: Text; s: Streams.Stream) : BOOLEAN;
+      VAR
+	 length: Streams.Count;
+	 substream: Streams.Stream;
+	 new: Text;
+   BEGIN
+      IF ~Streams.Seek(s, 0, Streams.fromEnd) OR
+            ~Streams.Tell(s, length) OR
+	    ~Streams.Seek(s, 0, Streams.fromStart) OR
+	    ~SubStreams.Open(substream, s, 0, length, s) THEN
+	 RETURN FALSE
+      END;
+      CreateText(new);
+      new.s := substream; new.length := length;
+      Resources.DependsOn(new, substream);
+      text := new;
+      RETURN TRUE
+   END Create;
+
+   PROCEDURE Open(VAR s: Streams.Stream; text: Text;
+                  VAR errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      IF Resources.Terminated(text) THEN
+	 RETURN FALSE
+      ELSIF text.s = NIL THEN
+	 s := Streams.null; RETURN TRUE
+      ELSE
+	 RETURN SubStreams.Open(s, text.s, 0, text.length, errors)
+      END;
+   END Open;
+
+BEGIN
+   Init;
+END PersistentTexts.

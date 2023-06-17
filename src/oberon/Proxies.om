@@ -1,0 +1,238 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Proxies.om,v 1.1 2004/08/27 15:24:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Proxies.om,v $
+   Revision 1.1  2004/08/27 15:24:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Proxies;
+
+   IMPORT Disciplines, Forwarders, Objects, Services;
+
+   (* support of proxies to _local_ objects;
+      see RemoteObjects for proxy objects to remote objects
+   *)
+
+   TYPE
+      CreateProxyProc = PROCEDURE (VAR object: Services.Object;
+                                   orig: Services.Object);
+      InitProxyProc = PROCEDURE (object: Services.Object;
+                                 orig: Services.Object);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    createProxy: CreateProxyProc;
+	    initProxy: InitProxyProc;
+	 END;
+
+   TYPE
+      TypeDiscipline = POINTER TO TypeDisciplineRec;
+      TypeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    type: Services.Type;
+	    if: Interface;
+	    base: TypeDiscipline;
+	 END;
+   VAR
+      tdid: Disciplines.Identifier;
+
+   TYPE
+      ProxyDiscipline = POINTER TO ProxyDisciplineRec;
+      ProxyDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    td: TypeDiscipline;
+	    orig: Services.Object;
+	 END;
+   VAR
+      pdid: Disciplines.Identifier;
+
+   VAR
+      service: Services.Service;
+
+   (* === privated procedures ========================================= *)
+
+   PROCEDURE InitializeModule;
+   BEGIN
+      tdid := Disciplines.Unique();
+      pdid := Disciplines.Unique();
+      Services.Create(service, "Proxies");
+   END InitializeModule;
+
+   PROCEDURE SeekSupportedBaseType(type: Services.Type;
+                                   VAR td: TypeDiscipline);
+      VAR
+	 basetype: Services.Type;
+   BEGIN
+      LOOP
+	 IF Disciplines.Seek(type, tdid, td) THEN RETURN END;
+	 Services.GetBaseType(type, basetype);
+	 IF basetype = NIL THEN td := NIL; RETURN END;
+	 type := basetype;
+      END;
+   END SeekSupportedBaseType;
+
+   PROCEDURE InternalCreateProxy(VAR proxy: Services.Object;
+                                 orig: Services.Object;
+				 VAR td: TypeDiscipline);
+      VAR
+	 type: Services.Type;
+	 p: Services.Object;
+	 pd: ProxyDiscipline;
+   BEGIN
+      Services.GetType(orig, type);
+      SeekSupportedBaseType(type, td);
+      td.if.createProxy(p, orig);
+      ASSERT(p # NIL);
+      NEW(pd); pd.id := pdid; pd.td := td; pd.orig := orig;
+      Disciplines.Add(p, pd);
+      proxy := p;
+   END InternalCreateProxy;
+
+   PROCEDURE InitializeProxy(proxy, orig: Services.Object;
+                             td, exclude: TypeDiscipline);
+   BEGIN
+      IF (td.base # NIL) & (td.base # exclude) THEN
+	 InitializeProxy(proxy, orig, td.base, exclude);
+      END;
+      td.if.initProxy(proxy, orig);
+   END InitializeProxy;
+
+   PROCEDURE IsAnExtensionOf(proxy: Services.Object;
+                             guard: Services.Type) : BOOLEAN;
+      (* check that the type of proxy extends type;
+         i.e. that proxy IS type
+      *)
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.GetType(proxy, type);
+      RETURN Services.IsExtensionOf(type, guard);
+   END IsAnExtensionOf;
+
+   (* === exported procedures ========================================= *)
+      
+   PROCEDURE Register(type: Services.Type; if: Interface);
+      VAR
+	 btd, td: TypeDiscipline;
+   BEGIN
+      ASSERT((if # NIL) & (if.createProxy # NIL));
+      NEW(td); td.id := tdid; td.type := type; td.if := if; td.base := NIL;
+      (* link this discipline to the discipline of the basetype, if any *)
+      SeekSupportedBaseType(type, btd);
+      IF btd # NIL THEN
+	 ASSERT(btd.type # type);
+	 td.base := btd;
+      END;
+      Disciplines.Add(type, td);
+   END Register;
+
+   PROCEDURE Supported(type: Services.Type) : BOOLEAN;
+      VAR
+	 td: TypeDiscipline;
+   BEGIN
+      SeekSupportedBaseType(type, td);
+      RETURN td # NIL
+   END Supported;
+
+   PROCEDURE GetSupportedBaseType(type: Services.Type;
+                                  VAR baseType: Services.Type);
+      VAR
+	 td: TypeDiscipline;
+   BEGIN
+      SeekSupportedBaseType(type, td);
+      baseType := td.type;
+   END GetSupportedBaseType;
+
+   PROCEDURE CreateProxy(VAR proxy: Services.Object;
+                         orig: Services.Object);
+      VAR
+	 td: TypeDiscipline;
+	 p: Services.Object;
+   BEGIN
+      InternalCreateProxy(p, orig, td);
+      InitializeProxy(p, orig, td, NIL);
+      Forwarders.Forward(p, orig);
+      proxy := p;
+   END CreateProxy;
+
+   PROCEDURE CreateUninitializedProxy(VAR proxy: Services.Object;
+                                      orig: Services.Object);
+      VAR
+	 td: TypeDiscipline;
+	 p: Services.Object;
+   BEGIN
+      InternalCreateProxy(p, orig, td);
+      proxy := p;
+   END CreateUninitializedProxy;
+
+   PROCEDURE InitializeAllInterfacesUpTo(proxy: Services.Object;
+                                         type: Services.Type);
+      (* includes all interfaces from the basetype up to and
+	 _including_ type
+      *)
+      VAR
+	 pd: ProxyDiscipline;
+	 td: TypeDiscipline;
+	 ptype: Services.Type;
+	 ok: BOOLEAN;
+   BEGIN
+      ASSERT(IsAnExtensionOf(proxy, type));
+      ok := Disciplines.Seek(proxy, pdid, pd); ASSERT(ok); td := pd.td;
+      IF ~Services.IsExtensionOf(type, td.type) THEN
+	 SeekSupportedBaseType(type, td);
+      END;
+      InitializeProxy(proxy, pd.orig, td, NIL);
+   END InitializeAllInterfacesUpTo;
+
+   PROCEDURE InitializeAllInterfacesBeyond(proxy: Services.Object;
+                                           type: Services.Type);
+      VAR
+	 pd: ProxyDiscipline;
+	 td: TypeDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      ASSERT(IsAnExtensionOf(proxy, type));
+      ok := Disciplines.Seek(proxy, pdid, pd); ASSERT(ok);
+      IF ~Services.IsExtensionOf(type, pd.td.type) THEN
+	 SeekSupportedBaseType(type, td);
+	 InitializeProxy(proxy, pd.orig, pd.td, td);
+      END;
+      Forwarders.Forward(proxy, pd.orig);
+   END InitializeAllInterfacesBeyond;
+
+   PROCEDURE GetOrig(proxy: Services.Object; VAR orig: Services.Object);
+      VAR
+	 ok: BOOLEAN;
+	 pd: ProxyDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(proxy, pdid, pd); ASSERT(ok);
+      orig := pd.orig;
+   END GetOrig;
+
+BEGIN
+   InitializeModule;
+END Proxies.

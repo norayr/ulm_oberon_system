@@ -1,0 +1,222 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: I386OberonP.om,v 1.1 2004/05/06 08:49:51 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: I386OberonP.om,v $
+   Revision 1.1  2004/05/06 08:49:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE I386OberonProcedures;
+
+   (* built-in procedures for I386 specific registers *)
+
+   IMPORT BaseTypes := OberonBaseTypes, CompilerErrors, CompilerObjects,
+      ConstantObjects, ConstStrings, NetIO, Services, Streams,
+      Strings, Sym := OberonSymbols, Types := OberonTypes, Write;
+
+   CONST
+      getcr = 0;
+      getfsr = 1;
+      setfsr = 2;
+      sqrt = 3;
+      sin = 4;
+      cos = 5;
+
+   TYPE
+      StdProc = SHORTINT; (* getcr .. cos *)
+
+   TYPE
+      StdProcedure = POINTER TO StdProcedureRec;
+      StdProcedureRec =
+	 RECORD
+	    (Sym.BuiltInProcedureRec)
+	    stdproc: StdProc;
+	 END;
+   VAR
+      stdprocType: Services.Type;
+
+   VAR
+      getcrF : Sym.Ident;
+      getfsrP : Sym.Ident;
+      setfsrP : Sym.Ident;
+      sqrtF : Sym.Ident;
+      sinF : Sym.Ident;
+      cosF : Sym.Ident;
+
+   (* === OberonSymbols if for StdProcedure =============================== *)
+
+   PROCEDURE CheckArgs(builtinproc: Sym.BuiltInProcedure;
+                       args: Sym.Attribute;
+		       VAR restype: Sym.Type);
+      CONST
+	 maxargs = 2;
+      VAR
+	 stdproc: StdProc;
+	 arg: Sym.Attribute;
+	 nofargs: INTEGER;
+	 index: INTEGER;
+	 types: ARRAY maxargs OF Sym.Type;
+	 forms: ARRAY maxargs OF Sym.Form;
+	 at: ARRAY maxargs OF Sym.Attribute;
+	 es: Streams.Stream;
+	 error: BOOLEAN;
+
+      PROCEDURE OpenError(at: Sym.Attribute);
+      BEGIN
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.AtObject1(es, at);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, at[0].loc.src);
+      END CloseError;
+
+      PROCEDURE Error(at: Sym.Attribute; msg: ARRAY OF CHAR);
+      BEGIN
+	 OpenError(at);
+	 Write.StringS(es, msg);
+	 CloseError;
+      END Error;
+
+      PROCEDURE CheckInteger(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer});
+      END CheckInteger;
+
+      PROCEDURE CheckSet(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.set});
+      END CheckSet;
+
+      PROCEDURE CheckNumeric(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, Sym.numeric);
+      END CheckNumeric;
+
+   BEGIN (* CheckArgs *)
+      stdproc := builtinproc(StdProcedure).stdproc;
+      restype := NIL;
+      error := FALSE;
+      nofargs := 0;
+      arg := args;
+      WHILE arg # NIL DO
+	 IF nofargs < maxargs THEN
+	    at[nofargs] := arg;
+	    types[nofargs] := at[nofargs].type;
+	    IF types[nofargs] = NIL THEN
+	       RETURN (* do not check if there are already errors *)
+	    END;
+	    forms[nofargs] := types[nofargs].form;
+	 END;
+	 IF ~(arg.mode IN Sym.opModes) THEN
+	    Error(arg, "expression expected");
+	 END;
+	 INC(nofargs); arg := arg.next;
+      END;
+      ASSERT(nofargs >= builtinproc.minargs);
+
+      IF error THEN RETURN END;
+
+      CASE stdproc OF
+      | getcr:
+	 CheckInteger(at[0]);
+	 restype := BaseTypes.integer;
+      | getfsr:
+	 CheckSet(at[0]);
+	 IF ~(at[0].mode = Sym.varAt) THEN
+	    Error(arg, "variable expected");
+	 END;
+      | setfsr:
+	 CheckSet(at[0]);
+      | sqrt, sin, cos:
+	 CheckNumeric (at[0]);
+	 restype := BaseTypes.longreal;
+      END;
+   END CheckArgs;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+   BEGIN
+      ConstantObjects.RegisterType(stdprocType,
+         "I386OberonProcedures.StdProcedure", "OberonSymbols.BuiltInProcedure");
+   END Init;
+
+   PROCEDURE InitStd;
+
+      PROCEDURE Create(name: ARRAY OF CHAR;
+                       stdproc: StdProc;
+		       minargs, maxargs: INTEGER;
+		       function: BOOLEAN;
+		       VAR ident: Sym.Ident);
+	 VAR
+	    cstring: ConstStrings.String;
+	    stdprocedure: StdProcedure;
+	    qualifiedName: ARRAY 256 OF CHAR;
+      BEGIN
+	 NEW(stdprocedure);
+	 qualifiedName := "I386OberonProcedures.";
+	 Strings.Concatenate(qualifiedName, name);
+	 ConstantObjects.Init(stdprocedure, stdprocType, qualifiedName);
+	 Sym.InitBuiltInProcedure(stdprocedure, minargs, maxargs, CheckArgs);
+	 ConstStrings.Create(cstring, name);
+	 IF function THEN
+	    Sym.CreateBuiltInFunction(ident, cstring, stdprocedure);
+	 ELSE
+	    Sym.CreateBuiltInProcedure(ident, cstring, stdprocedure);
+	 END;
+	 CompilerObjects.InitBuiltInObject(ident);
+	 stdprocedure.stdproc := stdproc;
+      END Create;
+
+      PROCEDURE CreateFunc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, TRUE, ident);
+      END CreateFunc;
+
+      PROCEDURE CreateProc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, FALSE, ident);
+      END CreateProc;
+
+   BEGIN (* Init *)
+      CreateFunc("GETCR", getcr, 1, 1, getcrF);
+      CreateProc("GETFSR", getfsr, 1, 1, getfsrP);
+      CreateProc("SETFSR", setfsr, 1, 1, setfsrP);
+      CreateFunc("SQRT", sqrt, 1, 1, sqrtF);
+      CreateFunc("SIN", sin, 1, 1, sinF);
+      CreateFunc("COS", cos, 1, 1, cosF);
+   END InitStd;
+
+BEGIN
+   Init;
+   InitStd;
+END I386OberonProcedures.

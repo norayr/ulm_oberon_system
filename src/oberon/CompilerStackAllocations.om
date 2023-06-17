@@ -1,0 +1,316 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerSta.om,v 1.2 2004/09/10 06:03:22 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerSta.om,v $
+   Revision 1.2  2004/09/10 06:03:22  borchert
+   new invariant: stack.maxoffset is always aligned
+   ASSERTs added that make sure that we do not accidently overflow
+   offsets by allocating or aligning (TBD notice added that we
+   should be able to generate CompilerErrors in these cases instead
+   of having failed assertions);
+   various comments added and formatting fixed
+
+   Revision 1.1  2004/09/06 12:10:26  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerStackAllocations; (* Christian Ehrhardt *)
+
+   IMPORT Disciplines, Types;
+
+   (* TBD:
+      currently we have no way to generate appropriate CompilerErrors;
+      hence we resort to ASSERTs in case of insufficient space;
+      this requires a change of the definition
+   *)
+
+   TYPE
+      Allocation = POINTER TO AllocationRec;
+      AllocationRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    offset, size: Types.Size;
+	    next, prev: Allocation; (* sorted linear list (by offset) *)
+	    autofree: BOOLEAN; (* to released on Close *)
+	 END;
+
+   CONST
+      growsup = 1; growsdown = 2;
+   TYPE
+      Direction = SHORTINT;
+
+   CONST
+      open = 0; closed = 1; terminated = 2; (* state of a stack *)
+   TYPE
+      Stack = POINTER TO StackRec;
+      StackRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    (* public *)
+	    align: Types.Size; (* general stack alignment *)
+	    (* private *)
+	    maxoffset: Types.Size; (* maximal offset so far, always aligned *)
+	    dir: Direction; (* growing direction *)
+	    allocs: Allocation; (* # NIL, 1st one is a 0-sized dummy element *)
+	    state: SHORTINT;  (* open .. terminated *)
+	 END;
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE AlignUp(VAR newalloc: Types.Size; align: Types.Size);
+   BEGIN
+      ASSERT(newalloc < MAX(Types.Size) - align);
+      INC(newalloc, align - newalloc MOD align);
+   END AlignUp;
+
+   PROCEDURE AlignDown(VAR newalloc : Types.Size; align: Types.Size);
+   BEGIN
+      ASSERT(newalloc > MIN(Types.Size) + align);
+      DEC(newalloc, align - ABS(newalloc) MOD align);
+   END AlignDown;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Init(stack: Stack; baseoff, align: Types.Size; dir: Direction);
+   BEGIN
+      ASSERT(
+	 (stack # NIL) &
+	 (dir IN {growsup, growsdown}) &
+	 (baseoff MOD align = 0)
+      );
+      stack.dir := dir;
+      stack.maxoffset := baseoff;
+      stack.align := align;
+      stack.state := open;
+      (* allocate dummy element *)
+      NEW(stack.allocs);
+      stack.allocs.prev := NIL;
+      stack.allocs.next := NIL;
+      stack.allocs.size := 0;
+      stack.allocs.offset := baseoff;
+   END Init;
+
+   PROCEDURE Allocate(stack: Stack; size, align: Types.Size;
+                      autofree: BOOLEAN) : Types.Size;
+      VAR
+         best: Allocation; (* best fit so far is between best & best.next *)
+	 alloc: Allocation; (* runs through stack.allocs *)
+	 preda: Allocation; (* predessor of alloc *)
+	 alignstart, alignend: Types.Size; (* a possible fit is here *)
+	 waste, newwaste: INTEGER;
+	    (* degrees of wasteness:
+	       0: fits exactly
+	       1: fragmentation at one end
+	       2: fragmentation at both ends
+	       3: used as maximal waste only
+	    *)
+	 badness, newbadness: Types.Size; (* actual fragmentation *)
+	 newalloc: Allocation; (* new allocation record *)
+	 start, end, space, offset: Types.Size;
+	 
+   BEGIN (* Allocate *)
+      ASSERT(
+	 (size > 0) &
+	 (stack.align MOD align = 0) &
+	 (stack.state = open)
+      );
+      AlignUp(size, align);
+      best := NIL; waste := 3; badness := 0;
+      preda := stack.allocs; alloc := stack.allocs.next;
+      WHILE alloc # NIL DO
+	 IF stack.dir = growsdown THEN
+	    start := alloc.offset + alloc.size;
+	    end := preda.offset;
+	 ELSE
+	    start := preda.offset + preda.size;
+	    end := alloc.offset;
+	 END;
+	 alignstart := start; AlignUp(alignstart, align);
+	 alignend := end; AlignDown(alignend, align);
+	 space := alignend - alignstart;
+	 IF space >= size THEN
+	    newwaste := 0;
+	    IF alignend # end THEN
+	       INC(newwaste);
+	    END;
+	    IF alignstart # start THEN
+	       INC(newwaste);
+	    END;
+	    newbadness := end-start-size;
+	    IF (newwaste < waste) OR
+		  (newwaste = waste) & (newbadness < badness) THEN
+	       best := preda;
+	       badness := newbadness;
+	       waste := newwaste;
+	    END;
+	 END;
+	 preda := alloc; alloc := alloc.next;
+      END;
+      IF best = NIL THEN
+         best := preda;
+      END;
+      alloc := best.next;
+      IF alloc = NIL THEN
+         IF stack.dir = growsdown THEN
+	    offset := best.offset - size;
+	    AlignDown(offset, align);
+	 ELSE
+	    offset := best.offset + best.size;
+	    AlignUp(offset, align);
+	 END;
+      ELSE
+	 IF stack.dir = growsdown THEN
+	    start := alloc.offset + alloc.size;
+	    end := best.offset;
+	 ELSE
+	    start := best.offset + best.size;
+	    end := alloc.offset;
+	 END;
+	 alignstart := start; AlignUp(alignstart, align);
+	 alignend := end; AlignDown(alignend, align);
+	 IF (start = alignstart) & (end = alignend) OR
+	       (start # alignstart) & (end # alignend) THEN
+	    (* choose the offset next to the base *)
+	    IF stack.dir = growsdown THEN
+	       ASSERT(alignend > MIN(Types.Size) + size);
+	       offset := alignend - size;
+	       AlignDown(offset, align);
+	    ELSE
+	       ASSERT(alignstart < MAX(Types.Size) - align - size);
+	       offset := alignstart;
+	       AlignUp(offset, align);
+	    END;
+	 ELSIF start = alignstart THEN
+	    offset := alignstart;
+	 ELSE
+	    offset := alignend - size;
+	 END;
+      END;
+      NEW(newalloc);
+      newalloc.offset := offset;
+      newalloc.size := size;
+      newalloc.next := best.next;
+      newalloc.prev := best;
+      newalloc.autofree := autofree;
+      best.next := newalloc;
+      IF newalloc.next # NIL THEN
+         newalloc.next.prev := newalloc;
+      END;
+      IF stack.dir = growsdown THEN
+         ASSERT(offset < stack.allocs.offset);
+	 IF offset < stack.maxoffset THEN
+	    stack.maxoffset := offset;
+	    AlignDown(stack.maxoffset, stack.align);
+	 END;
+      ELSE
+         ASSERT(offset >= stack.allocs.offset);
+	 INC(offset, size);
+	 IF offset > stack.maxoffset THEN
+	    stack.maxoffset := offset;
+	    AlignUp(stack.maxoffset, stack.align);
+	 END;
+      END;
+      RETURN newalloc.offset
+   END Allocate;
+
+   PROCEDURE Free(stack: Stack; offset: Types.Size);
+      VAR
+         tmp: Allocation;
+   BEGIN
+      ASSERT(stack.state = open);
+      IF stack.dir = growsdown THEN
+	 ASSERT(offset < stack.allocs.offset);
+      ELSE
+         ASSERT(offset >= stack.allocs.offset);
+      END;
+      tmp := stack.allocs.next;
+      LOOP
+         ASSERT(tmp # NIL); (* offset must exist! *)
+	 IF tmp.offset = offset THEN
+	    EXIT
+	 END;
+	 tmp := tmp.next;
+      END;
+      ASSERT((tmp # NIL) & ~tmp.autofree);
+      IF tmp.next # NIL THEN
+         tmp.next.prev := tmp.prev;
+      END;
+      tmp.prev.next := tmp.next;
+      tmp.prev := NIL;
+      tmp.next := NIL;
+   END Free;
+
+   PROCEDURE Close(stack: Stack);
+      VAR
+         tmp: Allocation;
+   BEGIN
+      tmp := NIL;
+      ASSERT(stack.state = open);
+      tmp := stack.allocs.next;
+      WHILE tmp # NIL DO
+         IF tmp.autofree THEN
+	    IF tmp.next # NIL THEN
+	       tmp.next.prev := tmp.prev;
+	    END;
+	    tmp.prev.next := tmp.next;
+	 END;
+	 tmp := tmp.next;
+      END;
+      ASSERT(stack.allocs.next = NIL);
+      stack.state := closed;
+   END Close;
+
+   PROCEDURE AllocateClosed(stack: Stack; size: Types.Size) : Types.Size;
+      (* Allocate permanent storage after the stack is closed;
+	 This is useful if we want to save only those registers that
+	 are actually trashed. We don't know this until we generated
+	 code for the whole block, but at this point normal stack
+	 allocations don't work.
+      *)
+      VAR
+	 ret: Types.Size;
+   BEGIN
+      ASSERT(stack.state = closed);
+      AlignUp(size, stack.align);
+      ASSERT(stack.maxoffset MOD stack.align = 0); (* invariant *)
+      IF stack.dir = growsdown THEN
+	 ASSERT(stack.maxoffset >= MIN(Types.Size) + size);
+         DEC(stack.maxoffset, size);
+	 ret := stack.maxoffset;
+      ELSE
+	 ASSERT(stack.maxoffset <= MAX(Types.Size) - size);
+         ret := stack.maxoffset;
+         INC(stack.maxoffset, size);
+      END;
+      RETURN ret
+   END AllocateClosed;
+
+   PROCEDURE GetSize(stack: Stack) : Types.Size;
+   BEGIN
+      ASSERT(stack.state IN {closed, terminated});
+      ASSERT(stack.maxoffset MOD stack.align = 0); (* invariant *)
+      stack.state := terminated;
+      RETURN stack.maxoffset
+   END GetSize;
+
+END CompilerStackAllocations.

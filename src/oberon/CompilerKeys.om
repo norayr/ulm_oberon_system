@@ -1,0 +1,612 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerKey.om,v 1.3 2004/09/04 16:08:25 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerKey.om,v $
+   Revision 1.3  2004/09/04 16:08:25  borchert
+   Iterators.Create replaced by Iterators.CreateQuickIterator
+
+   Revision 1.2  2004/05/20 07:43:30  borchert
+   performance enhancement for Compatible
+   (contributed by Christian Ehrhardt)
+
+   Revision 1.1  2000/04/02 10:12:48  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerKeys;
+
+   IMPORT Architectures, Clocks, ConstStrings, Dates, Iterators, Keys, NetIO,
+      Operations, PersistentDisciplines, PersistentObjects, Print,
+      RandomGenerators, Scan, Services, Streams, Times, Timezones, Types;
+
+   TYPE
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (PersistentObjects.ObjectRec)
+	    time: Times.Time; (* date of creation *)
+	    unique1, unique2: INTEGER; (* hopefully unique *)
+	 END;
+   VAR
+      valueType: Services.Type;
+
+   TYPE
+      Key = POINTER TO KeyRec;
+      KeyRec =
+	 RECORD
+	    (Keys.ValueRec)
+	    modname: ConstStrings.String;
+	    defsrcid, modsrcid: ConstStrings.String;
+	    genkey: Value;
+	    arch: Architectures.Architecture;
+	    archkey: Value;
+	 END;
+   VAR
+      keyType: Services.Type;
+      key: Keys.Key; (* for Key *)
+
+   CONST
+      hashtablen = 127;
+      entrySY = "E"; endSY = "$";
+   TYPE
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    key: Key;
+	    next: Entry;
+	 END;
+      BucketTable = ARRAY hashtablen OF Entry;
+      Set = POINTER TO SetRec;
+      SetRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    bucket: BucketTable;
+	    arch: Architectures.Architecture;
+	    card: INTEGER; (* cardinality of the set *)
+	 END;
+   VAR
+      setType: Services.Type;
+
+   VAR
+      timeType: Services.Type; (* that of Times.Time *)
+      archType: Services.Type; (* that of Architectures.Architecture *)
+
+   (* === PersistentObjects if for Value =================================== *)
+
+   PROCEDURE InternalCreateValue(VAR object: PersistentObjects.Object);
+      VAR
+	 value: Value;
+   BEGIN
+      NEW(value); PersistentObjects.Init(value, valueType);
+      value.time := NIL; value.unique1 := 0; value.unique2 := 0;
+      object := value;
+   END InternalCreateValue;
+
+   PROCEDURE ReadValue(s: Streams.Stream;
+                       object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Value DO
+	 RETURN PersistentObjects.Read(s, object.time) &
+	        NetIO.ReadInteger(s, object.unique1) &
+	        NetIO.ReadInteger(s, object.unique2)
+      END;
+   END ReadValue;
+
+   PROCEDURE WriteValue(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Value DO
+	 RETURN PersistentObjects.Write(s, object.time) &
+	        NetIO.WriteInteger(s, object.unique1) &
+	        NetIO.WriteInteger(s, object.unique2)
+      END;
+   END WriteValue;
+
+   (* === PersistentObjects if for Key ===================================== *)
+
+   PROCEDURE ReadConstString(s: Streams.Stream;
+			     VAR string: ConstStrings.String) : BOOLEAN;
+      VAR
+	 isNIL: BOOLEAN;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, isNIL) THEN RETURN FALSE END;
+      IF isNIL THEN
+	 string := NIL; RETURN TRUE
+      ELSE
+	 RETURN NetIO.ReadConstString(s, string)
+      END;
+   END ReadConstString;
+
+   PROCEDURE WriteConstString(s: Streams.Stream;
+			      VAR string: ConstStrings.String) : BOOLEAN;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, string = NIL) THEN RETURN FALSE END;
+      IF string = NIL THEN
+	 RETURN TRUE
+      ELSE
+	 RETURN NetIO.WriteConstString(s, string)
+      END;
+   END WriteConstString;
+
+   PROCEDURE CreateKey(VAR object: PersistentObjects.Object);
+      VAR
+	 key: Key;
+   BEGIN
+      NEW(key); PersistentObjects.Init(key, keyType);
+      key.modname := NIL; key.genkey := NIL;
+      key.arch := NIL; key.archkey := NIL;
+      object := key;
+   END CreateKey;
+
+   PROCEDURE ReadKey(s: Streams.Stream;
+                     object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Key DO
+	 RETURN NetIO.ReadConstString(s, object.modname) &
+		NetIO.ReadConstString(s, object.defsrcid) &
+		ReadConstString(s, object.modsrcid) &
+	        PersistentObjects.GuardedReadObjectOrNIL(s, valueType,
+		                                         object.genkey) &
+		PersistentObjects.GuardedReadObjectOrNIL(s, archType,
+		                                         object.arch) &
+	        PersistentObjects.GuardedReadObjectOrNIL(s, valueType,
+		                                         object.archkey)
+      END;
+   END ReadKey;
+
+   PROCEDURE WriteKey(s: Streams.Stream;
+                      object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Key DO
+	 RETURN NetIO.WriteConstString(s, object.modname) &
+		NetIO.WriteConstString(s, object.defsrcid) &
+		WriteConstString(s, object.modsrcid) &
+	        PersistentObjects.WriteObjectOrNIL(s, object.genkey) &
+		PersistentObjects.WriteObjectOrNIL(s, object.arch) &
+	        PersistentObjects.WriteObjectOrNIL(s, object.archkey)
+      END;
+   END WriteKey;
+
+   (* === PersistentObjects if for Set ===================================== *)
+
+   PROCEDURE InternalCreateSet(VAR object: PersistentObjects.Object);
+      VAR
+	 set: Set;
+   BEGIN
+      NEW(set); PersistentObjects.Init(set, setType);
+      set.card := 0;
+      object := set;
+   END InternalCreateSet;
+
+   PROCEDURE ReadSet(s: Streams.Stream;
+                     object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 sy: CHAR;
+	 key: Key;
+	 entry: Entry;
+	 index: LONGINT;
+   BEGIN
+      WITH object: Set DO
+	 IF ~PersistentObjects.GuardedReadObjectOrNIL(s,
+	       archType, object.arch) THEN
+	    RETURN FALSE
+	 END;
+	 WHILE NetIO.ReadChar(s, sy) & (sy = entrySY) DO
+	    IF ~PersistentObjects.GuardedRead(s, keyType, key) THEN
+	       RETURN FALSE
+	    END;
+	    index := key.modname.hashval MOD hashtablen;
+	    NEW(entry); entry.key := key;
+	    entry.next := object.bucket[index];
+	    object.bucket[index] := entry;
+	    INC(object.card);
+	 END;
+	 RETURN sy = endSY
+      END;
+   END ReadSet;
+
+   PROCEDURE WriteSet(s: Streams.Stream;
+                      object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 index: INTEGER;
+	 entry: Entry;
+   BEGIN
+      WITH object: Set DO
+	 IF ~PersistentObjects.WriteObjectOrNIL(s, object.arch) THEN
+	    RETURN FALSE
+	 END;
+	 index := 0;
+	 WHILE index < hashtablen DO
+	    entry := object.bucket[index];
+	    WHILE entry # NIL DO
+	       IF ~NetIO.WriteChar(s, entrySY) OR
+		     ~PersistentObjects.Write(s, entry.key) THEN
+		  RETURN FALSE
+	       END;
+	       entry := entry.next;
+	    END;
+	    INC(index);
+	 END;
+	 RETURN NetIO.WriteChar(s, endSY)
+      END;
+   END WriteSet;
+
+   (* === Keys if procedures =============================================== *)
+
+   PROCEDURE CompareValues(val1, val2: Value) : INTEGER;
+      VAR
+	 cmpval: INTEGER;
+   BEGIN
+      IF (val1 = NIL) & (val2 = NIL) THEN RETURN 0 END;
+      IF val1 = NIL THEN RETURN 1 END;
+      IF val2 = NIL THEN RETURN -1 END;
+      cmpval := Operations.Compare(val1.time, val2.time);
+      IF cmpval # 0 THEN RETURN cmpval END;
+      cmpval := val1.unique1 - val2.unique1;
+      IF cmpval # 0 THEN RETURN cmpval END;
+      RETURN val1.unique2 - val2.unique2
+   END CompareValues;
+
+   PROCEDURE CompareKeys(key: Keys.Key;
+                         object1, object2: Keys.Value) : INTEGER;
+      VAR
+	 cmpval: INTEGER;
+	 string1, string2: ConstStrings.String;
+   BEGIN
+      WITH object1: Key DO WITH object2: Key DO
+	 cmpval := ConstStrings.Compare(object1.modname, object2.modname);
+	 IF cmpval # 0 THEN RETURN cmpval END;
+	 cmpval := CompareValues(object1.genkey, object2.genkey);
+	 IF cmpval # 0 THEN RETURN cmpval END;
+	 cmpval := ConstStrings.Compare(object1.defsrcid, object2.defsrcid);
+	 IF cmpval # 0 THEN RETURN cmpval END;
+	 IF (object1.modsrcid = NIL) # (object2.modsrcid = NIL) THEN
+	    IF object1.modsrcid = NIL THEN
+	       RETURN -1
+	    ELSE
+	       RETURN 1
+	    END;
+	 END;
+	 cmpval := ConstStrings.Compare(object1.modsrcid, object2.modsrcid);
+	 IF cmpval # 0 THEN RETURN cmpval END;
+	 IF (object1.arch = NIL) & (object2.arch = NIL) THEN RETURN 0 END;
+	 IF object1.arch = NIL THEN RETURN -1 END;
+	 IF object2.arch = NIL THEN RETURN 1 END;
+	 IF ~Architectures.Identical(object1.arch, object2.arch) THEN
+	    Architectures.GetString(object1.arch, string1);
+	    Architectures.GetString(object2.arch, string2);
+	    RETURN ConstStrings.Compare(string1, string2)
+	 END;
+	 RETURN CompareValues(object1.archkey, object2.archkey);
+      END END;
+   END CompareKeys;
+
+   (* === iterator ========================================================= *)
+   
+   PROCEDURE IterateKeys(it: Iterators.Iterator;
+                         ref: Iterators.Reference;
+			 mode: Iterators.Mode);
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+   BEGIN
+      WITH ref: Set DO
+	 index := 0;
+	 WHILE index < hashtablen DO
+	    entry := ref.bucket[index];
+	    WHILE entry # NIL DO
+	       Iterators.Yield(it, entry.key);
+	       entry := entry.next;
+	    END;
+	    INC(index);
+	 END;
+      END;
+   END IterateKeys;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+
+      VAR
+	 keyService: Services.Service;
+
+      PROCEDURE Register(VAR type: Services.Type;
+                         name, basename: ARRAY OF CHAR;
+			 create: PersistentObjects.CreateProc;
+			 read: PersistentObjects.ReadProc;
+			 write: PersistentObjects.WriteProc);
+	 VAR
+	    persif: PersistentObjects.Interface;
+      BEGIN
+	 NEW(persif);
+	 persif.create := create; persif.read := read; persif.write := write;
+	 persif.createAndRead := NIL;
+	 PersistentObjects.RegisterType(type, name, basename, persif);
+      END Register;
+
+   BEGIN (* Init *)
+      Register(valueType, "CompilerKeys.Value", "",
+         InternalCreateValue, ReadValue, WriteValue);
+      Register(keyType, "CompilerKeys.Key", "PersistentDisciplines.Object",
+         CreateKey, ReadKey, WriteKey);
+      Register(setType, "CompilerKeys.Set", "PersistentDisciplines.Object",
+	 InternalCreateSet, ReadSet, WriteSet);
+      Services.SeekType("Times.Time", timeType);
+      ASSERT(timeType # NIL);
+      Services.SeekType("Architectures.Architecture", archType);
+      ASSERT(archType # NIL);
+
+      Keys.DefineService("CompilerKeys", keyType, CompareKeys, keyService);
+   END Init;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE CreateValue(VAR value: Value);
+      (* creates value and initializes time, unique1 and unique2 *)
+      VAR
+	 val: Value;
+   BEGIN
+      InternalCreateValue(val);
+      Clocks.GetTime(Clocks.system, val.time);
+      val.unique1 := SHORT(RandomGenerators.Int32Val());
+      val.unique2 := SHORT(RandomGenerators.Int32Val());
+      value := val;
+   END CreateValue;
+
+   PROCEDURE Create(VAR key: Key; modname: ConstStrings.String);
+      VAR
+	 newkey: Key;
+   BEGIN
+      ASSERT(modname # NIL);
+      CreateKey(newkey); newkey.modname := modname;
+      key := newkey;
+   END Create;
+
+   PROCEDURE CreateCopy(VAR key: Key; orig: Key);
+   BEGIN
+      Create(key, orig.modname);
+      key.defsrcid := orig.defsrcid;
+      key.modsrcid := orig.modsrcid;
+      key.genkey := orig.genkey;
+      Architectures.CreateCopy(key.arch, orig.arch);
+      key.archkey := orig.archkey;
+   END CreateCopy;
+
+   PROCEDURE ValueToString(value: Value; VAR string: ConstStrings.String);
+      VAR
+	 s: Streams.Stream;
+	 info: Dates.InfoRec;
+   BEGIN
+      ConstStrings.Init(s);
+      Dates.GetT(value.time, Timezones.utc, info);
+      Print.S9(s, "%4d-%02d-%02d,%02d:%02d:%02d:%03d,%010d,%010d",
+         info.year, info.month, info.day,
+	 info.hour, info.minute, info.second, info.msec,
+	 value.unique1, value.unique2);
+      ConstStrings.Close(s, string);
+   END ValueToString;
+
+   PROCEDURE StringToValue(string: Streams.Stream; VAR value: Value);
+      VAR
+	 val: Value;
+	 info: Dates.InfoRec;
+   BEGIN
+      InternalCreateValue(val);
+      Scan.S9(string, "%4d-%02d-%02d,%02d:%02d:%02d:%03d,%010d,%010d",
+         info.year, info.month, info.day,
+	 info.hour, info.minute, info.second, info.msec,
+	 val.unique1, val.unique2);
+      Dates.SetT(val.time, Timezones.utc, info);
+      value := val;
+   END StringToValue;
+
+   PROCEDURE CreateSet(VAR set: Set);
+   BEGIN
+      InternalCreateSet(set); set.arch := NIL;
+   END CreateSet;
+
+   PROCEDURE CombineKeys(key1: Key; key2: Key; VAR combined: Key) : BOOLEAN;
+      (* combine key1 with key2 if possible *)
+      VAR
+	 new: Key;
+   BEGIN
+      combined := NIL;
+      IF ConstStrings.Compare(key1.modname, key2.modname) # 0 THEN
+	 RETURN FALSE
+      END;
+      IF ConstStrings.Compare(key1.defsrcid, key2.defsrcid) # 0 THEN
+	 RETURN FALSE
+      END;
+      IF (key1.modsrcid # NIL) & (key2.modsrcid # NIL) &
+	    (ConstStrings.Compare(key1.modsrcid, key2.modsrcid) # 0) THEN
+	 RETURN FALSE
+      END;
+      IF CompareValues(key1.genkey, key2.genkey) # 0 THEN RETURN FALSE END;
+      Create(new, key1.modname);
+      new.defsrcid := key1.defsrcid;
+      IF key1.modsrcid # NIL THEN
+	 new.modsrcid := key1.modsrcid;
+      ELSIF key2.modsrcid # NIL THEN
+	 new.modsrcid := key2.modsrcid;
+      END;
+      new.genkey := key1.genkey;
+      IF ~Architectures.Compatible(key1.arch, key2.arch, new.arch) THEN
+	 RETURN FALSE
+      END;
+      IF new.arch = NIL THEN
+	 combined := new; RETURN TRUE
+      END;
+      IF (key1.arch = NIL) OR (key2.arch = NIL) THEN
+	 IF key1.arch # NIL THEN
+	    new.archkey := key1.archkey;
+	 ELSE
+	    ASSERT(key2.arch # NIL);
+	    new.archkey := key2.archkey;
+	 END;
+	 combined := new; RETURN TRUE
+      END;
+      IF CompareValues(key1.archkey, key2.archkey) # 0 THEN RETURN FALSE END;
+      new.archkey := key1.archkey;
+      combined := new;
+      RETURN TRUE
+   END CombineKeys;
+
+   PROCEDURE Incl(set: Set; key: Key);
+      VAR
+	 entry: Entry;
+	 index: LONGINT;
+	 combinedKey: Key;
+	 combinedArch: Architectures.Architecture;
+	 ok: BOOLEAN;
+   BEGIN
+      ASSERT(key.modname # NIL);
+      ok := Architectures.Compatible(set.arch, key.arch, combinedArch);
+      ASSERT(ok);
+      set.arch := combinedArch;
+      index := key.modname.hashval MOD hashtablen;
+      entry := set.bucket[index];
+      WHILE entry # NIL DO
+	 IF ConstStrings.Compare(key.modname, entry.key.modname) = 0 THEN
+	    ok := CombineKeys(key, entry.key, combinedKey); ASSERT(ok);
+	    entry.key := combinedKey;
+	    RETURN
+	 END;
+	 entry := entry.next;
+      END;
+      NEW(entry); entry.key := key;
+      entry.next := set.bucket[index]; set.bucket[index] := entry;
+      INC(set.card);
+   END Incl;
+
+   PROCEDURE CreateSetCopy(VAR set: Set; orig: Set);
+      VAR
+	 entry: Entry;
+	 index: LONGINT;
+	 key: Key;
+   BEGIN
+      InternalCreateSet(set);
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := orig.bucket[index];
+	 WHILE entry # NIL DO
+	    CreateCopy(key, entry.key);
+	    Incl(set, key);
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+   END CreateSetCopy;
+
+   PROCEDURE InclSet(set, keys: Set);
+      VAR
+	 entry: Entry;
+	 index: LONGINT;
+   BEGIN
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := keys.bucket[index];
+	 WHILE entry # NIL DO
+	    Incl(set, entry.key);
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+   END InclSet;
+
+   PROCEDURE Lookup(set: Set; modname: ConstStrings.String;
+                    VAR key: Key) : BOOLEAN;
+      VAR
+	 entry: Entry;
+	 index: LONGINT;
+   BEGIN
+      index := modname.hashval MOD hashtablen;
+      entry := set.bucket[index];
+      WHILE entry # NIL DO
+	 IF ConstStrings.Compare(modname, entry.key.modname) = 0 THEN
+	    key := entry.key; RETURN TRUE
+	 END;
+	 entry := entry.next;
+      END;
+      key := NIL;
+      RETURN FALSE
+   END Lookup;
+
+   PROCEDURE Union(VAR set: Set; set1, set2: Set);
+   BEGIN
+      InternalCreateSet(set);
+      InclSet(set, set1);
+      InclSet(set, set2);
+   END Union;
+
+   PROCEDURE GetKeys(set: Set; VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.CreateQuickIterator(it, IterateKeys, set, 0);
+   END GetKeys;
+
+   PROCEDURE Compatible(set1, set2: Set) : BOOLEAN;
+      VAR
+	 index: LONGINT;
+	 entry: Entry;
+	 otherkey: Key;
+	 combinedKey: Key;
+	 combinedArch: Architectures.Architecture;
+	 tmp: Set;
+   BEGIN
+      IF ~Architectures.Compatible(set1.arch, set2.arch, combinedArch) THEN
+	 RETURN FALSE
+      END;
+      (* let set1 be the smaller set of the two to improve performance *)
+      IF set2.card < set1.card THEN
+	 tmp := set2; set2 := set1; set1 := tmp;
+      END;
+      (* check all keys of set1 against those of set2 *)
+      index := 0;
+      WHILE index < hashtablen DO
+	 entry := set1.bucket[index];
+	 WHILE entry # NIL DO
+	    IF Lookup(set2, entry.key.modname, otherkey) &
+		  ~CombineKeys(entry.key, otherkey, combinedKey) THEN
+	       RETURN FALSE
+	    END;
+	    entry := entry.next;
+	 END;
+	 INC(index);
+      END;
+      RETURN TRUE
+   END Compatible;
+
+   PROCEDURE CompatibleWith(key: Key; set: Set) : BOOLEAN;
+      VAR
+	 otherkey, combinedKey: Key;
+	 combinedArch: Architectures.Architecture;
+   BEGIN
+      IF ~Architectures.Compatible(key.arch, set.arch, combinedArch) THEN
+	 RETURN FALSE
+      END;
+      RETURN ~Lookup(set, key.modname, otherkey) OR
+             CombineKeys(key, otherkey, combinedKey)
+   END CompatibleWith;
+
+BEGIN
+   Init;
+END CompilerKeys.

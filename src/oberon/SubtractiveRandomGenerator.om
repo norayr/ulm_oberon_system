@@ -1,0 +1,192 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Subtractive.om,v 1.4 2004/09/03 09:33:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Subtractive.om,v $
+   Revision 1.4  2004/09/03 09:33:03  borchert
+   supports now Services
+
+   Revision 1.3  1997/10/10  16:29:31  martin
+   adapted to new RandomGenerators definition
+   RandomGenerators.std won't implicitly be reset any more
+
+   Revision 1.2  1997/04/02  07:32:41  borchert
+   CreateSequence renamed to Create
+
+   Revision 1.1  1997/04/01  16:41:02  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   bases on original implementation of Random (now RandomGenerators)
+   extracted as implementation of RandomGenerators by Frank B.J. Fischer
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SubtractiveRandomGenerator;
+
+   (*    Anyone who considers arithmetical
+         methods of producing random digits
+         is, of course, in a state of sin.
+                 - John von Neumann (1951)
+   *)
+
+   IMPORT RandomGenerators, Services;
+
+   (* implementation uses subtractive method taken from
+      Knuth, Seminumerical Algorithms, 3.2.2 and 3.6
+      X[n] = (X[n-k] - X[n-l]) MOD m
+      pairs of (l, k) which yields long periods mod 2 are
+      found in Table 1 in 3.2.2
+      examples:
+      (24,55), (7, 57), (19, 58),
+      (4, 81), (16, 81), (35, 81), (27, 98)
+   *)
+
+   CONST
+      (* subscript pair: l < k *)
+      l = 24; k = 55; values = k;
+
+   TYPE
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec =
+	 RECORD
+	    (RandomGenerators.SequenceRec)
+	    value: ARRAY values OF LONGREAL;
+	    index: INTEGER;
+	    seed : LONGREAL;
+	 END;
+   VAR
+      sequenceType: Services.Type;
+   
+   CONST
+      caps = {RandomGenerators.longRealValS, RandomGenerators.rewindSequence};
+
+   VAR
+      if: RandomGenerators.Interface;
+
+
+   PROCEDURE NextValues(sequence: RandomGenerators.Sequence);
+      VAR
+         i  : INTEGER;
+         val: LONGREAL;
+   BEGIN
+      WITH sequence: Sequence DO
+         i := 0;
+         WHILE i < l DO
+	    val := sequence.value[i] - sequence.value[i+k-l];
+	    IF val < 0 THEN
+	       val := val + 1;
+	    END;
+	    sequence.value[i] := val;
+	    INC(i);
+         END;
+         WHILE i < k DO
+	    val := sequence.value[i] - sequence.value[i-l];
+	    IF val < 0 THEN
+	       val := val + 1;
+	    END;
+	    sequence.value[i] := val;
+	    INC(i);
+         END;
+         sequence.index := 0;
+      END;
+   END NextValues;
+
+
+   PROCEDURE LongRealValS(sequence: RandomGenerators.Sequence): LONGREAL;
+   BEGIN
+      WITH sequence : Sequence DO
+	 IF sequence.index >= values THEN
+	    NextValues(sequence);
+	 END;
+         INC(sequence.index);
+         RETURN sequence.value[sequence.index-1] 
+      END;
+   END LongRealValS;
+
+
+   PROCEDURE RewindSequence(sequence: RandomGenerators.Sequence);
+      VAR
+	 seedval   : LONGREAL;
+	 i, j      : INTEGER;
+	 val1, val2: LONGREAL;
+   BEGIN
+      WITH sequence: Sequence DO
+	 i := 0;
+	 val1 := sequence.seed;
+	 val2 := 0.731;
+	 WHILE i < values DO
+	    j := 21 * i MOD values;
+	    sequence.value[j] := val1;
+	    val1 := val2 - val1;
+	    IF val1 < 0 THEN
+	       val1 := val1 + 1;
+	    END;
+	    val2 := sequence.value[j];
+	    INC(i);
+         END;
+
+         (* "warm up" the generator *)
+         i := 0;
+         WHILE i < values DO
+	    NextValues(sequence); 
+	    INC(i);
+         END;
+      END;
+   END RewindSequence;
+
+
+   PROCEDURE Create(VAR sequence: RandomGenerators.Sequence; seed: LONGINT);
+      (* initializes the random generator;
+	 the sequence of random numbers depends on seed
+      *)
+      VAR
+	 s      : Sequence;
+	 i      : INTEGER;
+         seedval: LONGREAL;
+   BEGIN
+      IF seed = MIN(LONGINT) THEN
+         seed := MAX(LONGINT);
+      ELSIF seed < 0 THEN
+         seed := ABS(seed);
+      END;
+      IF seed > 1 THEN
+         seedval := 1 / seed;
+      ELSE
+         seedval := 0.172;
+      END;
+      (* seedval now in [0..1) *)
+
+      NEW(s);
+      Services.Init(s, sequenceType);
+      s.seed := seedval;
+      RandomGenerators.Init(s,if,caps);
+      RewindSequence(s);
+      sequence := s;
+   END Create;
+
+
+BEGIN
+   NEW(if);
+   if.longRealValS := LongRealValS;
+   if.rewindSequence := RewindSequence;
+   Services.CreateType(sequenceType,
+      "SubtractiveRandomGenerator.Sequence", "RandomGenerators.Sequence");
+END SubtractiveRandomGenerator.

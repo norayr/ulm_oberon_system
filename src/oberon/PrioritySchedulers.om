@@ -1,0 +1,179 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PrioritySch.om,v 1.1 2001/05/18 16:42:57 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PrioritySch.om,v $
+   Revision 1.1  2001/05/18 16:42:57  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PrioritySchedulers;
+
+   (* task scheduler with priorities *)
+
+   IMPORT Schedulers, Tasks;
+
+   TYPE
+      Priority = INTEGER; (* >= 0; 0: lowest priority *)
+
+   TYPE
+      TaskGroup = POINTER TO TaskGroupRec;
+      Task = POINTER TO TaskRec;
+      TaskGroupRec =
+	 RECORD
+	    (Schedulers.TaskGroupRec)
+	    head, tail: Task;
+	    clock: INTEGER; (* current clock, starting from 0 *)
+	 END;
+      TaskRec =
+	 RECORD
+	    (Schedulers.TaskRec)
+	    tg: TaskGroup;
+	    next, prev: Task;
+	    priority: Priority;
+	    last: INTEGER; (* when was it scheduled last time? *)
+	 END;
+   VAR
+      if: Schedulers.Interface;
+
+   (* ====== private procedures ============================= *)
+
+   PROCEDURE InsertTaskIntoList(tg: TaskGroup; task: Task);
+      VAR
+	 element: Task;
+   BEGIN
+      task.last := tg.clock;
+      element := tg.tail;
+      WHILE (element # NIL) &
+	    (task.priority > element.priority + tg.clock - element.last) DO
+	 element := element.next;
+      END;
+      IF element = NIL THEN
+	 (* put it at top of the list *)
+	 task.prev := tg.head; task.next := NIL;
+	 IF tg.head = NIL THEN
+	    tg.tail := task;
+	 ELSE
+	    tg.head.next := task;
+	 END;
+	 tg.head := task;
+      ELSE
+	 (* put it behind element *)
+	 task.next := element;
+	 task.prev := element.prev;
+	 task.next.prev := task;
+	 IF tg.tail = element THEN
+	    tg.tail := task;
+	 ELSE
+	    task.prev.next := task;
+	 END;
+      END;
+      ASSERT((tg.head = NIL) = (tg.tail = NIL));
+   END InsertTaskIntoList;
+
+   PROCEDURE RemoveTaskFromList(tg: TaskGroup; task: Task);
+   BEGIN
+      IF task.prev # NIL THEN
+	 task.prev.next := task.next;
+      ELSE
+	 tg.tail := task.next;
+      END;
+      IF task.next # NIL THEN
+	 task.next.prev := task.prev;
+      ELSE
+	 tg.head := task.prev;
+      END;
+      ASSERT((tg.head = NIL) = (tg.tail = NIL));
+   END RemoveTaskFromList;
+
+   (* ====== interface procedures =========================== *)
+
+   PROCEDURE Dispatch(tg: Schedulers.TaskGroup; VAR task: Schedulers.Task);
+      VAR
+	 t: Task;
+   BEGIN
+      WITH tg: TaskGroup DO
+	 t := tg.head;
+	 WHILE ~Schedulers.Ready(t) DO
+	    t := t.prev;
+	 END;
+	 RemoveTaskFromList(tg, t);
+	 InsertTaskIntoList(tg, t);
+	 INC(tg.clock);
+      END;
+      task := t;
+   END Dispatch;
+
+   PROCEDURE Create(tg: Schedulers.TaskGroup; VAR task: Schedulers.Task);
+      VAR
+	 newtask: Task;
+   BEGIN
+      WITH tg: TaskGroup DO
+	 NEW(newtask);
+	 newtask.tg := tg;
+	 newtask.priority := 0;
+	 newtask.last := 0;
+	 InsertTaskIntoList(tg, newtask);
+	 task := newtask;
+      END;
+   END Create;
+
+   PROCEDURE Remove(tg: Schedulers.TaskGroup; task: Schedulers.Task);
+   BEGIN
+      WITH tg: TaskGroup DO WITH task: Task DO
+	 RemoveTaskFromList(tg, task);
+      END; END;
+   END Remove;
+
+   PROCEDURE InitInterface;
+   BEGIN
+      NEW(if);
+      if.dispatch := Dispatch; if.create := Create; if.remove := Remove;
+   END InitInterface;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE CreateTaskGroup(VAR tg: Tasks.TaskGroup);
+      (* create scheduler with priorities for Schedulers *)
+      VAR
+	 newtg: TaskGroup;
+   BEGIN
+      NEW(newtg); Schedulers.InitGroup(newtg, if);
+      newtg.head := NIL; newtg.tail := NIL; newtg.clock := 0;
+      tg := newtg;
+   END CreateTaskGroup;
+
+   PROCEDURE SetPriority(task: Task; priority: Priority);
+   BEGIN
+      task.priority := priority;
+      RemoveTaskFromList(task.tg, task);
+      InsertTaskIntoList(task.tg, task);
+   END SetPriority;
+
+   PROCEDURE GetPriority(task: Task; VAR priority: Priority);
+   BEGIN
+      priority := task.priority;
+   END GetPriority;
+
+BEGIN
+   InitInterface;
+END PrioritySchedulers.

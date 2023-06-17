@@ -1,0 +1,258 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: TerminalLis.om,v 1.1 1998/04/10 09:15:27 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: TerminalLis.om,v $
+   Revision 1.1  1998/04/10 09:15:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TerminalLister;
+
+   IMPORT ASCII, Disciplines, Listers, Print, Streams, TermAttributes,
+      Terminals, Write;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    llength: Streams.Count;
+	    lnwidth: Streams.Count;
+	    standout: TermAttributes.AttributeSet;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   VAR
+      if: Listers.Interface;
+
+   (* === private stuff ==================================================== *)
+
+   PROCEDURE SelectAttribute(s: Streams.Stream;
+                             VAR at: TermAttributes.AttributeSet) : BOOLEAN;
+      VAR
+	 atset: TermAttributes.AttributeSet;
+
+      PROCEDURE Test(attribute: SHORTINT) : BOOLEAN;
+      BEGIN
+	 IF attribute IN atset THEN
+	    at := {attribute};
+	    RETURN TRUE
+	 END;
+	 RETURN FALSE
+      END Test;
+
+   BEGIN
+      atset := TermAttributes.Available(s);
+      RETURN Test(TermAttributes.standout) OR
+             Test(TermAttributes.reverse) OR
+             Test(TermAttributes.underline) OR
+             Test(TermAttributes.dim) OR
+             Test(TermAttributes.bold) OR
+             Test(TermAttributes.blink)
+   END SelectAttribute;
+
+   PROCEDURE GetDiscipline(out: Streams.Stream; VAR sd: StreamDiscipline);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Disciplines.Seek(out, sdID, sd); ASSERT(ok);
+   END GetDiscipline;
+
+   PROCEDURE WriteLine(out: Streams.Stream;
+		       line: Streams.Stream;
+		       lineNumber, lineNumberWidth: Streams.Count;
+		       m1begin, m1end,
+ 		       m2begin, m2end: Streams.Count) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+	 index, endOfLine: Streams.Count;
+	 ch: CHAR;
+	 needStandout, standout: BOOLEAN;
+	 inpos, pos: Streams.Count;
+	 firstNonWhiteSpace, lastNonWhiteSpace: Streams.Count;
+
+      PROCEDURE WriteChar(ch: CHAR) : BOOLEAN;
+      BEGIN
+	 IF pos = sd.llength - 1 THEN
+	    IF standout THEN
+	       TermAttributes.Set(out, {});
+	    END;
+	    Write.LnS(out);
+	    pos := 0;
+	    WHILE pos < lineNumberWidth DO
+	       IF ~Streams.WriteByte(out, " ") THEN RETURN FALSE END;
+	       INC(pos);
+	    END;
+	    Write.StringS(out, "+ "); INC(pos, 2);
+	    IF standout THEN
+	       TermAttributes.Set(out, sd.standout);
+	    END;
+	 END;
+	 IF needStandout # standout THEN
+	    standout := needStandout;
+	    IF standout THEN
+	       TermAttributes.Set(out, sd.standout);
+	    ELSE
+	       TermAttributes.Set(out, {});
+	    END;
+	 END;
+	 IF Streams.WriteByte(out, ch) THEN
+	    INC(pos); RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END WriteChar;
+
+      PROCEDURE WriteBlanks(count: Streams.Count) : BOOLEAN;
+	 VAR
+	    i: Streams.Count;
+      BEGIN
+	 i := 0;
+	 WHILE i < count DO
+	    IF ~WriteChar(" ") THEN RETURN FALSE END;
+	    INC(i);
+	 END;
+	 RETURN TRUE
+      END WriteBlanks;
+
+      PROCEDURE WriteOther(ch: CHAR) : BOOLEAN;
+	 CONST
+	    base = 8;
+	 VAR
+	    val: INTEGER;
+	    digit1, digit2, digit3: INTEGER;
+
+	 PROCEDURE WriteDigit(digit: INTEGER) : BOOLEAN;
+	 BEGIN
+	    RETURN WriteChar(CHR(ORD("0") + digit))
+	 END WriteDigit;
+
+      BEGIN
+	 val := ORD(ch);
+	 digit3 := val MOD base; val := val DIV base;
+	 digit2 := val MOD base; val := val DIV base;
+	 digit1 := val MOD base; val := val DIV base;
+	 RETURN WriteChar("\") &
+	        WriteDigit(digit1) & WriteDigit(digit2) & WriteDigit(digit3)
+      END WriteOther;
+
+   BEGIN (* WriteLine *)
+      GetDiscipline(out, sd); sd.lnwidth := lineNumberWidth;
+      Print.S2(out, " %*d ", lineNumberWidth, lineNumber);
+      IF out.error THEN RETURN FALSE END;
+
+      (* remove trailing white space and do not mark initial white space *)
+      index := 0; lastNonWhiteSpace := -1; firstNonWhiteSpace := -1;
+      WHILE Streams.ReadByte(line, ch) DO
+	 IF (ch # " ") & (ch # ASCII.tab) THEN
+	    IF firstNonWhiteSpace = -1 THEN
+	       firstNonWhiteSpace := index;
+	    END;
+	    lastNonWhiteSpace := index;
+	 END;
+	 INC(index);
+      END;
+      endOfLine := lastNonWhiteSpace + 1;
+      IF (m1begin < firstNonWhiteSpace) &
+	    ((m1end < 0) OR (m1end >= firstNonWhiteSpace)) THEN
+	 m1begin := firstNonWhiteSpace;
+      END;
+
+      (* emit line *)
+      index := 0; pos := lineNumberWidth + 2; inpos := 0;
+      standout := FALSE; needStandout := FALSE;
+      Streams.SetPos(line, 0);
+      WHILE (index < endOfLine) & Streams.ReadByte(line, ch) DO
+	 IF (index = m1begin) OR (index = m2begin) THEN
+	    needStandout := TRUE;
+	 ELSIF (index = m1end) OR (index = m2end) THEN
+	    needStandout := FALSE;
+	 END;
+	 IF ch = ASCII.tab THEN
+	    IF ~WriteBlanks(8 - inpos MOD 8) THEN RETURN FALSE END;
+	    INC(inpos, 8 - inpos MOD 8);
+	 ELSIF (ch >= " ") & (ch <= "~") THEN
+	    IF ~WriteChar(ch) THEN RETURN FALSE END; INC(inpos);
+	 ELSE
+	    IF ~WriteOther(ch) THEN RETURN FALSE END; INC(inpos);
+	 END;
+	 INC(index);
+      END;
+      IF standout THEN
+	 TermAttributes.Set(out, {});
+      END;
+      Write.LnS(out);
+      RETURN ~out.error
+   END WriteLine;
+
+   PROCEDURE WriteMsg(out, msg: Streams.Stream) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+	 i: Streams.Count;
+   BEGIN
+      GetDiscipline(out, sd);
+      IF ~Streams.WriteByte(out, " ") THEN RETURN FALSE END;
+      i := 0;
+      WHILE (i < sd.lnwidth) & Streams.WriteByte(out, "*") DO
+	 INC(i);
+      END;
+      IF ~Streams.WriteByte(out, " ") THEN RETURN FALSE END;
+      IF ~Streams.Copy(msg, out, -1) THEN RETURN FALSE END;
+      Write.LnS(out);
+      RETURN ~out.error
+   END WriteMsg;
+
+   PROCEDURE InitModule;
+   BEGIN
+      NEW(if); if.writeLine := WriteLine; if.writeMsg := WriteMsg;
+      sdID := Disciplines.Unique();
+   END InitModule;
+
+   (* === exported procedure =============================================== *)
+
+   PROCEDURE Init(s: Streams.Stream) : BOOLEAN;
+      (* installs Lister if for s if supports Terminals and
+	 TermAttributes
+      *)
+      VAR
+	 standout: TermAttributes.AttributeSet;
+	 sd: StreamDiscipline;
+	 termstat: Terminals.Status;
+   BEGIN
+      IF (Terminals.Capabilities(s) # {}) &
+	    SelectAttribute(s, standout) THEN
+	 Terminals.GetStatus(s, termstat);
+	 IF termstat.columns < 32 THEN RETURN FALSE END;
+	 NEW(sd); sd.id := sdID; sd.standout := standout;
+	 sd.llength := termstat.columns; sd.lnwidth := 5;
+	 Disciplines.Add(s, sd);
+	 Listers.Init(s, if);
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END Init;
+
+BEGIN
+   InitModule;
+END TerminalLister.

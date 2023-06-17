@@ -1,0 +1,874 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerReg.om,v 1.2 2004/09/10 05:58:33 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerReg.om,v $
+   Revision 1.2  2004/09/10 05:58:33  borchert
+   formatting fixed
+
+   Revision 1.1  2004/09/06 15:16:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerRegisters;
+
+   IMPORT Disciplines, StackAlloc := CompilerStackAllocations, Types;
+
+   CONST
+      stdM = 0; (* normal value *)
+      addrM = 1; (* this register contains a traced address *)
+      ptrM = 2; (* this register contains a traced pointer *)
+   TYPE
+      Mode = SHORTINT; (* stdM .. ptrM *)
+
+   CONST
+      maxregs = 32;
+   TYPE
+      Register = INTEGER;
+      RegSet = POINTER TO RegSetRec;
+
+   VAR
+      nextid: INTEGER;
+
+   TYPE
+      Owner = LONGINT;
+
+   CONST
+      none = 0;
+      register = 1;    (* the value actually is in a register *)
+      stack = 2;    (* the value is on the stack *)
+   TYPE
+      Location = SHORTINT;  (* none .. stack *)
+
+   TYPE
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    loc: Location;
+	    mode: Mode;
+	    reg: Register;      (* if register in loc: the register *)
+	 END;
+
+   TYPE
+      RegIoProc = PROCEDURE (set: RegSet; value: Value;
+	 reg: Register; offset: Types.Size);
+      RegXchgProc = PROCEDURE (set: RegSet; reg1, reg2: Register);
+      RegProc = PROCEDURE (set: RegSet; reg: Register);
+      ValueProc = PROCEDURE (set: RegSet; value: Value);
+
+   TYPE
+      Level = INTEGER;
+      TracedValue = POINTER TO TracedValueRec;
+      TracedValueRec =
+	 RECORD
+	    (ValueRec)
+	    set: RegSet;
+	    owner: Owner;       (* The owner of a register *)
+	    offset: Types.Size; (* if storelevel >= 0: the offset from esp *)
+	    createlevel, storelevel: Level;
+	       (* createlevel is the level that created the value;
+		  storelevel is the level that first wrote it to the stack
+	       *)
+	    next, prev: TracedValue;
+	    constraint: SET;
+	    regid: Owner;
+	 END;
+
+      RegStack = POINTER TO RegStackRec;
+      RegStackRec =
+	 RECORD
+	    up: RegStack;
+	    regs: ARRAY maxregs OF TracedValue;
+	 END;
+
+   CONST
+      maxfreelist = 100; (* maximal length of freelist in RegSetRec *)
+   TYPE
+      RegSetRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    alloc: StackAlloc.Stack;
+	    next, prev: TracedValue;
+	    freelist: TracedValue;
+	    nelem, size: LONGINT;
+	    level: Level;
+	    nregs: INTEGER;
+	    regsz: Types.Size;
+	    stack: RegStack;
+	    read, write: RegIoProc;
+	    xchg: RegXchgProc;
+	    create: ValueProc;
+	    markused: RegProc;
+	    defconstraint: SET;
+	    nextowner: Owner;
+	 END;
+
+
+   PROCEDURE InitSet(ret: RegSet; nregs: INTEGER; defconstraint: SET;
+                     regsz: Types.Size; alloc: StackAlloc.Stack;
+		     read, write: RegIoProc; xchg: RegXchgProc;
+		     create: ValueProc; markused: RegProc);
+      VAR
+	 i: Register;
+   BEGIN
+      ASSERT((nregs > 0) & (nregs <= maxregs));
+      ASSERT((read # NIL) & (write # NIL) & (xchg # NIL) &
+              (markused # NIL) & (defconstraint # {}));
+      ASSERT(alloc # NIL);
+      ret.next := NIL;
+      ret.prev := NIL;
+      ret.nregs := nregs;
+      ret.nelem := 0;
+      ret.size := 0;
+      ret.level := 0;
+      ret.read := read;
+      ret.write := write;
+      ret.xchg := xchg;
+      ret.create := create;
+      ret.markused := markused;
+      ret.defconstraint := defconstraint;
+      ret.regsz := regsz;
+      ret.alloc := alloc;
+      NEW(ret.stack);
+      ret.stack.up := NIL;
+      i := 0;
+      WHILE i < nregs DO
+	 ret.stack.regs[i] := NIL;
+	 INC(i);
+      END;
+      ret.nextowner := 1;
+   END InitSet;
+
+   PROCEDURE EnterLevel(set: RegSet);
+      VAR
+	 stck: RegStack;
+	 i: Register;
+   BEGIN
+      NEW(stck);
+      i := 0;
+      WHILE i < set.nregs DO
+	 stck.regs[i] := set.stack.regs[i];
+	 INC(i);
+      END;
+      stck.up := set.stack;
+      set.stack := stck;
+      INC(set.level);
+   END EnterLevel;
+
+   PROCEDURE LeaveLevel(set: RegSet);
+      VAR
+	 val: TracedValue;
+	 i: Register;
+
+      PROCEDURE FindVal(stck: RegStack; value: TracedValue) : Register;
+	 VAR
+	    i: Register;
+      BEGIN
+	 i := 0;
+	 WHILE i < set.nregs DO
+	    IF stck.regs[i] = value THEN
+	       RETURN i
+	    END;
+	    INC(i);
+	 END;
+	 RETURN -1;
+      END FindVal;
+
+      PROCEDURE RestoreRegs(src, dest : RegStack);
+	 VAR
+	    reg, target: Register;
+	    tmp: TracedValue;
+      BEGIN
+         tmp := NIL;
+	 ASSERT((src # NIL) & (dest # NIL));
+	 reg := 0;
+         WHILE reg < set.nregs DO
+	    IF src.regs[reg] # NIL THEN
+	       target := FindVal(dest, src.regs[reg]);
+	       IF target < 0 THEN
+		  ASSERT(src.regs[reg].storelevel >= 0);
+		  ASSERT(src.regs[reg].storelevel < set.level);
+		  set.write(set, src.regs[reg], reg, src.regs[reg].offset);
+		  src.regs[reg].loc := stack;
+		  src.regs[reg] := NIL;
+	       ELSIF reg # target THEN
+		  set.xchg (set, reg, target);
+		  tmp := src.regs[reg];
+		  src.regs[reg] := src.regs[target];
+		  src.regs[target] := tmp;
+		  ASSERT(src.regs[target] # NIL);
+                  ASSERT(src.regs[target].loc = register);
+		  ASSERT(src.regs[target].reg = reg);
+		  src.regs[target].reg := target;
+                  IF src.regs[reg] # NIL THEN
+		     ASSERT(src.regs[reg].loc = register);
+		     ASSERT(src.regs[reg].reg = target);
+                     src.regs[reg].reg := reg;
+		  END;
+		  reg := -1;
+	       END;
+            END;
+	    INC(reg);
+	 END;
+	 reg := 0;
+	 WHILE reg < set.nregs DO
+	    IF dest.regs[reg] # NIL THEN
+	       IF dest.regs[reg].loc = none THEN
+		  ASSERT(src.regs[reg] = NIL);
+		  src.regs[reg] := dest.regs[reg];
+	       ELSIF dest.regs[reg].loc = stack THEN
+		  ASSERT(src.regs[reg] = NIL);
+		  set.read (set, dest.regs[reg], reg, dest.regs[reg].offset);
+		  set.stack.regs[reg] := dest.regs[reg];
+		  set.stack.regs[reg].loc := register;
+		  set.stack.regs[reg].reg := reg;
+	       END;
+	    END;
+	    INC(reg);
+	 END;
+      END RestoreRegs;
+
+   BEGIN (* LeaveLevel *)
+      val := NIL;
+      ASSERT(set.level > 0);
+      val := set.next;
+      WHILE val # NIL DO
+	 (* a Value must be destroyed by the Level that created it
+	    before leaving the level
+	 *)
+	 ASSERT(val.createlevel < set.level);
+	 val := val.next;
+      END;
+      ASSERT(set.stack.up # NIL);
+      RestoreRegs(set.stack, set.stack.up);
+      i := 0;
+      WHILE i < set.nregs DO
+	 ASSERT(set.stack.regs[i] = set.stack.up.regs[i]);
+         ASSERT((set.stack.regs[i] = NIL) OR (set.stack.regs[i].reg = i));
+	 INC(i);
+      END;
+      val := set.next;
+      WHILE val # NIL DO
+	 IF val.storelevel = set.level THEN
+	    ASSERT(val.createlevel < val.storelevel);
+	    ASSERT(val.loc = register);
+	    val.storelevel := -1;
+	    StackAlloc.Free(set.alloc, val.offset);
+	 END;
+	 val := val.next;
+      END;
+   END LeaveLevel;
+
+   PROCEDURE DoneLevel(set: RegSet);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < set.nregs DO
+	 ASSERT(set.stack.regs[i] = set.stack.up.regs[i]);
+         ASSERT((set.stack.regs[i] = NIL) OR (set.stack.regs[i].reg = i));
+	 INC(i);
+      END;
+      DEC(set.level);
+      set.stack := set.stack.up;
+   END DoneLevel;
+
+   PROCEDURE GetOwner(set: RegSet) : Owner;
+   BEGIN
+      ASSERT(set.nextowner < MAX(LONGINT));
+      INC(set.nextowner);
+      RETURN set.nextowner
+   END GetOwner;
+
+   PROCEDURE DebugGetOwn(value: Value) : Owner;
+   BEGIN
+      WITH value: TracedValue DO
+         RETURN value.owner
+      END;
+   END DebugGetOwn;
+  
+   PROCEDURE CreateValue(VAR value: Value; set: RegSet;
+                         own: Owner; mode : Mode);
+      (* This function must NOT generate any code, i.e. it is not allowed
+         to call set.read, set.write or set.xchg. This makes it possible
+         to call this function in some places where generated code
+         would not be reached.
+      *)
+      VAR
+	 ret: TracedValue;
+   BEGIN
+      ret := NIL;
+      (* 
+      IF (value # NIL) & (value IS TracedValue) THEN
+         WITH value: TracedValue DO
+	    ASSERT(value.prev = NIL);
+	 END;
+      END;
+      *)
+      IF set.freelist # NIL THEN
+         ret := set.freelist;
+	 set.freelist := ret.next;
+	 ret.next := NIL;
+	 DEC(set.nelem);
+	 ASSERT(ret.owner = 0);
+      ELSE
+	 NEW(ret);
+      END;
+      ret.loc := none;
+      ret.owner := own;
+      ASSERT(own <= set.nextowner);
+      ASSERT(nextid < MAX(INTEGER));
+      INC(nextid);
+      ret.regid := nextid;
+      IF set.prev # NIL THEN
+	 set.prev.next := ret;
+      ELSE
+	 set.next := ret;
+      END;
+      ret.createlevel := set.level;
+      ret.storelevel := -1;
+      ret.next := NIL;
+      ret.prev := set.prev;
+      ret.mode := stdM;
+      ret.constraint := set.defconstraint;
+      ret.set := set;
+      set.prev := ret;
+      IF set.create # NIL THEN
+         set.create(set, ret);
+      END;
+      value := ret;
+   END CreateValue;
+
+   PROCEDURE DestroyValue(value: Value);
+      VAR
+         set: RegSet;
+   BEGIN
+      WITH value: TracedValue DO
+         ASSERT(value.set # NIL);
+         ASSERT(value.set.level = value.createlevel);
+         IF value.prev = NIL THEN
+	    value.set.next := value.set.next.next;
+         ELSE
+	    value.prev.next := value.next;
+         END;
+         IF value.next = NIL THEN
+	    value.set.prev := value.set.prev.prev;
+         ELSE
+	    value.next.prev := value.prev;
+         END;
+         value.owner := 0;
+         IF value.loc = register THEN
+	    ASSERT(value.set.stack.regs[value.reg] = value);
+	    value.set.stack.regs[value.reg] := NIL;
+         END;
+	 IF value.storelevel > 0 THEN
+	    StackAlloc.Free (value.set.alloc, value.offset);
+	    value.storelevel := -1;
+	 END;
+	 set := value.set;
+	 IF (set # NIL) & (value IS TracedValue) &
+	       (set.nelem < maxfreelist) THEN
+	    value.next := set.freelist;
+            set.freelist := value;
+	    INC(set.nelem);
+	 ELSE
+	    value.next := NIL;
+	 END;
+         value.set := NIL;
+	 value.prev := NIL;
+      END;
+   END DestroyValue;
+
+   PROCEDURE DestroyOwnedValue(value: Value; caller: Owner);
+   BEGIN
+      IF (value = NIL) OR ~(value IS TracedValue) THEN
+	 RETURN
+      END;
+      WITH value: TracedValue DO
+	 ASSERT(value.owner = caller);
+	 IF value.owner # caller THEN
+	    RETURN
+	 END;
+	 DestroyValue(value);
+      END;
+   END DestroyOwnedValue;
+
+   PROCEDURE SaveReg(value: Value);
+      (* allocate stack space for the value and write the value to the stack *)
+      VAR
+	 off, base: Types.Size;
+	 set: RegSet;
+	 val: TracedValue;
+   BEGIN
+      set := NIL;
+      WITH value : TracedValue DO
+	 ASSERT(value.set # NIL);
+	 set := value.set;
+	 (* if the value is on the stack there's nothing to do. *)
+	 IF value.loc = stack THEN
+	    RETURN
+	 END;
+	 (* sanity check *)
+	 ASSERT((value.loc = register) & (set.stack.regs[value.reg] = value) OR
+	    (value.loc = none));
+	 (* if anyone has already allocated stack space we use it *)
+	 off := value.offset;
+	 IF value.storelevel < 0 THEN
+	    off := StackAlloc.Allocate(set.alloc, set.regsz, set.regsz, FALSE);
+	    value.storelevel := set.level;
+	 END;
+         value.offset := off;
+	 (* no need to write anything if we just allocate stack space *)
+	 IF value.loc = register THEN
+	    set.write(set, value, value.reg, value.offset);
+            set.stack.regs[value.reg] := NIL;
+         END;
+         value.loc := stack;
+      END;
+   END SaveReg;
+
+   PROCEDURE SaveAll(set: RegSet);
+      VAR
+	 reg: Register;
+   BEGIN
+      reg := 0;
+      WHILE reg < set.nregs DO
+	 IF set.stack.regs[reg] # NIL THEN
+	    ASSERT(set.stack.regs[reg] IS TracedValue);
+	    SaveReg(set.stack.regs[reg]);
+	 END;
+	 INC(reg);
+      END;
+      reg := 0;
+      WHILE reg < set.nregs DO
+	 ASSERT(set.stack.regs[reg] = NIL);
+	 INC(reg);
+      END;
+   END SaveAll;
+
+   PROCEDURE BestReg(set: RegSet; possible: SET) : Register;
+      VAR
+	 i, best: Register;
+	 own: Owner;
+	 first: BOOLEAN;
+   BEGIN
+      ASSERT(set # NIL);
+      i := 0;
+      first := TRUE;
+      WHILE i < set.nregs DO
+	 IF i IN possible THEN
+	    IF set.stack.regs[i] = NIL THEN
+	       RETURN i
+	    END;
+	    IF first OR (set.stack.regs[i].owner < own) THEN
+	       first := FALSE;
+	       own := set.stack.regs[i].owner;
+	       best := i;
+	    END;
+	 END;
+	 INC(i);
+      END;
+      RETURN best
+   END BestReg;
+
+   PROCEDURE LoadReg(value: Value; possible: SET);
+      (* load the value to one of registers in possible *)
+      VAR
+         reg: Register;
+	 tmp: TracedValue;
+   BEGIN
+      tmp := NIL;
+      ASSERT((possible # {}) & (value # NIL));
+      WITH value: TracedValue DO
+	 IF (value.loc = register) & (value.reg IN possible) THEN
+	    RETURN
+	 END;
+	 reg := BestReg(value.set, possible);
+	 (* check if we must save the contents of the target register *)
+	 IF value.set.stack.regs[reg] # NIL THEN
+	    ASSERT(value.set.stack.regs[reg].loc = register);
+	    IF value.loc # register THEN
+	       SaveReg(value.set.stack.regs[reg]);
+	    END;
+	 END;
+	 value.set.markused(value.set, reg);
+	 CASE value.loc OF
+	 | none:
+	    value.loc := register;
+	    value.set.stack.regs[reg] := value;
+	    value.reg := reg;
+	 | register:
+	    value.set.xchg (value.set, value.reg, reg);
+            tmp := value.set.stack.regs[reg];
+	    value.set.stack.regs[reg] := value.set.stack.regs[value.reg];
+	    value.set.stack.regs[value.reg] := tmp;
+	    IF tmp # NIL THEN
+	       ASSERT(value.set.stack.regs[value.reg].reg = reg);
+	       value.set.stack.regs[value.reg].reg := value.reg;
+            END;
+	    ASSERT(value.set.stack.regs[reg].reg = value.reg);
+	    value.set.stack.regs[reg].reg := reg;
+	    ASSERT(value.reg = reg);
+	 | stack:
+	    ASSERT(value.set.stack.regs[reg] = NIL);
+	    value.reg := reg;
+	    value.set.read (value.set, value, value.reg, value.offset);
+	    value.loc := register;
+            value.set.stack.regs[reg] := value;
+	 END;
+      END;
+   END LoadReg;
+
+   PROCEDURE RegCode(value: Value; VAR reg: Register) : BOOLEAN;
+   BEGIN
+      IF value.loc # register THEN
+         reg := -1;
+	 RETURN FALSE
+      END;
+      reg := value.reg;
+      RETURN TRUE
+   END RegCode;
+
+   PROCEDURE SetRegCode(value: Value; reg: Register);
+   BEGIN
+      ASSERT(value.loc = register);
+      value.reg := reg;
+   END SetRegCode;
+
+   PROCEDURE StackOffset(value: Value; VAR offset: Types.Size) : BOOLEAN;
+   BEGIN
+      WITH value: TracedValue DO
+	 IF value.loc # stack THEN
+	    offset := 0FFFFFFFH;
+	    RETURN FALSE
+	 END;
+	 offset := value.offset;
+      END;
+      RETURN TRUE
+   END StackOffset;
+
+   PROCEDURE GetSize(set : RegSet) : Types.Size;
+   BEGIN
+      RETURN set.size
+   END GetSize;
+
+   PROCEDURE Chown(value: Value; newowner: Owner);
+   BEGIN
+      ASSERT(value # NIL);
+      IF ~(value IS TracedValue) THEN
+         RETURN
+      END;
+      WITH value: TracedValue DO
+	 ASSERT(value.loc IN {stack, register});
+	 ASSERT(value.set # NIL);
+	 ASSERT(value.set.nextowner >= newowner);
+	 value.owner := newowner;
+      END;
+   END Chown;
+
+   PROCEDURE SetMode(value: Value; new: Mode);
+   BEGIN
+      ASSERT(value # NIL);
+      IF ~(value IS TracedValue) THEN
+         RETURN
+      END;
+      (* Note: TmpPtrs only sees the Register Mode when saving or loading
+         a register. To make sure that we don't change the register mode
+         in between we only allow mode changes while the Register is loaded.
+      *)
+      WITH value: TracedValue DO
+	 ASSERT(value.loc IN {register});
+	 ASSERT(value.set # NIL);
+	 value.mode := new;
+      END;
+   END SetMode;
+
+   PROCEDURE GetMode(value: Value) : Mode;
+   BEGIN
+      IF ~(value IS TracedValue) THEN
+         RETURN stdM;
+      END;
+      WITH value: TracedValue DO
+         ASSERT(value.mode IN {stdM, addrM, ptrM});
+         RETURN value.mode
+      END;
+   END GetMode;
+
+   PROCEDURE AddConstraint(reg : Value; constraint: SET);
+   BEGIN
+      WITH reg: TracedValue DO
+	 reg.constraint := constraint;
+      END;
+   END AddConstraint;
+
+   PROCEDURE RemoveConstraint(reg: Value);
+   BEGIN
+      WITH reg: TracedValue DO
+	 reg.constraint := reg.set.defconstraint;
+      END;
+   END RemoveConstraint;
+
+   PROCEDURE GetConstraint(reg: Value) : SET;
+   BEGIN
+      IF reg IS TracedValue THEN
+	 RETURN reg(TracedValue).constraint
+      END;
+      ASSERT(reg.loc = register);
+      RETURN {reg.reg};
+   END GetConstraint;
+
+   PROCEDURE PrepareInstruction(nregs : INTEGER; regs: ARRAY OF Value;
+				possible: ARRAY OF SET) : BOOLEAN;
+      VAR
+         free, notneeded, all: SET;
+	 loopcount, i, j, regidx, vidx: INTEGER;
+	 oldown: ARRAY maxregs OF Owner;
+	 from: ARRAY maxregs OF Register;
+	 own: Owner;
+	 ok: BOOLEAN;
+	 reg1, r, r2: Register;
+	 tmp, rset: SET;
+	 set: RegSet;
+	 reg: Value;
+
+      PROCEDURE FindUnpinnedRegs() : SET;
+	 VAR
+	    i: INTEGER;
+	    ret: SET;
+      BEGIN
+	 i := 0;
+	 ret := -{};
+         WHILE i < set.nregs DO
+	    IF (set.stack.regs[i] # NIL) & (set.stack.regs[i].owner = own) THEN
+	       EXCL(ret, i);
+	    END;
+	    INC(i);
+	 END;
+	 WHILE i < MAX(SET) DO
+	    EXCL(ret, i);
+	    INC(i);
+	 END;
+	 RETURN ret
+      END FindUnpinnedRegs;
+
+   BEGIN (* PrepareInstruction *)
+      set := NIL;
+      i := 0; j := 0;
+      WHILE i < nregs DO
+	 IF regs[i] IS TracedValue THEN
+	    regs[j] := regs[i];
+	    possible[j] := possible[i];
+	    INC(j);
+	 END;
+	 INC(i);
+      END;
+      nregs := j;
+      IF nregs = 0 THEN
+	 RETURN TRUE
+      END;
+      set := regs[0](TracedValue).set;
+      ASSERT(set.stack.regs[4] = NIL);
+      ASSERT(set.stack.regs[5] = NIL);
+      own := GetOwner (set);
+      i := 0; all := set.defconstraint;
+      WHILE i < nregs DO
+	 reg := regs[i];
+	 ASSERT(reg IS TracedValue);
+	 ASSERT(reg(TracedValue).set = set);
+	 all := all+possible[i];
+	 oldown[i] := reg(TracedValue).owner;
+	 Chown (reg, own);
+	 INC(i);
+      END;
+      i := 0;
+      WHILE i < nregs DO
+         IF regs[i].loc # register THEN
+	    free := all * FindUnpinnedRegs ();
+	    IF possible[i] * free # {} THEN
+	       LoadReg(regs[i], possible[i] * free);
+	    ELSE
+	       LoadReg(regs[i], free);
+	    END;
+	 END;
+	 INC(i);
+      END;
+      loopcount := 0;
+      LOOP
+         INC(loopcount);
+	 ASSERT(loopcount < 1000);
+         regidx := 0;
+         LOOP
+	    IF regidx >= nregs THEN
+	       EXIT
+	    END;
+	    ASSERT(regs[regidx].loc = register);
+	    ok := RegCode (regs[regidx], reg1); ASSERT(ok);
+	    IF ~(reg1 IN possible[regidx]) THEN
+	       EXIT
+	    END;
+	    INC(regidx);
+	 END;
+	 IF regidx >= nregs THEN
+	    EXIT
+	 END;
+	 i := 0;
+	 WHILE i < set.nregs DO
+	    from[i] := -1;
+	    INC(i);
+	 END;
+	 rset := {reg1};
+	 notneeded := -{};
+	 i := 0;
+	 WHILE i < nregs DO
+	    ok := RegCode(regs[i], r); ASSERT(ok);
+	    EXCL(notneeded, r);
+	    INC(i);
+	 END;
+	 ASSERT(~(reg1 IN notneeded));
+	 INCL(notneeded, reg1);
+	 REPEAT
+	    tmp := rset;
+	    rset := {};
+	    vidx := 0;
+	    WHILE vidx < nregs DO
+	       IF RegCode(regs[vidx], r) & (r IN tmp) THEN
+		  rset := rset + possible[vidx];
+		  i := 0;
+		  WHILE i < set.nregs DO
+		     IF (i IN possible[vidx]) & (from[i] < 0) THEN
+			from[i] := r;
+		     END;
+		     INC(i);
+		  END;
+	       END;
+	       INC(vidx);
+	    END;
+         UNTIL rset * notneeded # {};
+	 r := 0;
+	 WHILE ~(r IN rset * notneeded) DO
+	    INC(r);
+	 END;
+	 IF r = reg1 THEN
+	    (* we have a cycle, i.e. it doesn't matter where we start,
+	       except for the termination condition below.
+	    *)
+	    r := from[r];
+	 END;
+	 REPEAT
+	    vidx := 0;
+	    LOOP
+	       ASSERT(vidx < nregs);
+               ok := RegCode(regs[vidx], r2); ASSERT(ok);
+	       IF r2 = from[r] THEN
+		  EXIT
+	       END;
+               INC(vidx);
+	    END;
+	    LoadReg(regs[vidx], {r});
+	    r := from[r];
+	 UNTIL r = reg1;
+      END;
+      i := nregs;
+      WHILE i > 0 DO
+	 DEC(i);
+	 Chown(regs[i], oldown[i]);
+      END;
+      i := 0;
+      WHILE i < nregs DO
+	 ASSERT(regs[i](TracedValue).owner < own);
+	 INC(i);
+      END;
+      (* ???
+	 ASSERT(set.stack.regs[4] = NIL);
+	 ASSERT(set.stack.regs[5] = NIL);
+      *)
+      RETURN TRUE
+   END PrepareInstruction;
+
+   PROCEDURE DestroyOwnerOnError(set: RegSet; owner: Owner);
+      VAR
+	 val, next: Value;
+   BEGIN
+      val := NIL;
+      ASSERT(set # NIL);
+      val := set.next;
+      WHILE val # NIL DO
+	 next := val(TracedValue).next;
+	 IF val(TracedValue).owner = owner THEN
+	    DestroyOwnedValue (val, owner);
+         ELSE
+	    ASSERT(val(TracedValue).owner < owner);
+	 END;
+	 val := next;
+      END;
+   END DestroyOwnerOnError;
+
+   PROCEDURE Traced(value: Value) : BOOLEAN;
+   BEGIN
+      RETURN value IS TracedValue
+   END Traced;
+
+   (* Allow derived types! *)
+   PROCEDURE UntracedValue(VAR value: Value; reg: Register);
+   BEGIN
+      NEW(value);
+      value.reg := reg;
+      value.loc := register;
+   END UntracedValue;
+
+   PROCEDURE MakeUntraced(VAR value: Value; own: Owner);
+      VAR
+	 new: Value;
+   BEGIN
+      new := NIL;
+      ASSERT(value.loc = register);
+      WITH value : TracedValue DO
+	 ASSERT(own = value.owner);
+         UntracedValue(new, value.reg);
+	 DestroyValue(value);
+      END;
+      value := new;
+   END MakeUntraced;
+
+   PROCEDURE CheckLoc(reg: Value);
+   BEGIN
+      ASSERT(reg.loc IN {register, stack});
+      IF reg IS TracedValue THEN
+	 ASSERT(reg(TracedValue).set # NIL);
+      END;
+   END CheckLoc;
+
+   PROCEDURE Foreach(set: RegSet; proc: ValueProc);
+      VAR
+         val: TracedValue;
+   BEGIN
+      val := set.next;
+      WHILE val # NIL DO
+         proc(set, val);
+         val := val.next;
+      END;
+   END Foreach;
+
+BEGIN
+   nextid := 0;
+END CompilerRegisters.

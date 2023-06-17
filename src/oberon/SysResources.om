@@ -1,0 +1,86 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysResource.om,v 1.1 1994/02/23 08:00:06 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysResource.om,v $
+   Revision 1.1  1994/02/23  08:00:06  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysResources;
+
+   (* control maximum system resource consumption *)
+
+   IMPORT RelatedEvents, Sys, SYS := SYSTEM, SysErrors;
+
+   CONST
+      (* type of resource (constants taken from <sys/resource.h>) *)
+      cpu = 0;     (* maximum amount of cpu time *)
+      fsize = 1;   (* largest size of a single file that may be created*)
+      data = 2;	   (* maximum size of the data segment *)
+      stack = 3;   (* maximum size of the stack segment *)
+      core = 4;    (* maximal core file size *)
+      rss  = 5;    (* maximum resident set size *)
+      nproc = 6;   (* maximum number of processes *)
+      nofile = 7;  (* maximal number of open file descriptors *)
+      memlock = 8; (* maximum amount of locked memory *)
+      vmem = 9;    (* maximum mapped memory *)
+
+      nlimits = 10;
+   TYPE
+      Resource = INTEGER; (* cpu..vmem *)
+
+   TYPE
+      Limit =
+	 RECORD
+	    current: INTEGER; (* current soft limit *)
+	    max: INTEGER;     (* hard limit *)
+	 END;
+   CONST
+      infinity = MAX(INTEGER);
+
+   PROCEDURE GetLimit(resource: Resource; VAR limit: Limit);
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF ~SYS.UNIXCALL(Sys.getrlimit, d0, d1, resource, SYS.ADR(limit)) THEN
+	 SysErrors.Raise(NIL, d0, Sys.getrlimit, "");
+	 limit.current := 0; limit.max := 0;
+      END;
+   END GetLimit;
+
+   PROCEDURE SetLimit(resource: Resource; limit: Limit;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.setrlimit, d0, d1, resource, SYS.ADR(limit)) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.setrlimit, "");
+	 RETURN FALSE
+      END;
+   END SetLimit;
+
+END SysResources.
