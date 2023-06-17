@@ -5,7 +5,8 @@ InstallBinDir :=	$(BinDir)
 Targets :=		start_cdbd
 InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 Parameters :=		BASEDIR=$(DestDir) BINDIR=$(BinDir) \
-			CDBDDIR=$(CDBDDir) ONS_ROOT=$(ONSRoot)
+			CDBDDIR=$(CDBDDir) ONS_ROOT=$(ONSRoot) \
+			INTENSITY=$(IntensityDir)/cdbd
 
 .PHONY:			install
 install:		$(InstalledTargets)

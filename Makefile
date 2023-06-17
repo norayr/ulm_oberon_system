@@ -7,6 +7,8 @@ Root := $(shell pwd)
 DestDir := $(Root)
 InstallDir := $(DestDir)
 BinDir := $(DestDir)/bin
+EtcDir := $(DestDir)/etc
+IntensityDir := $(EtcDir)/intensity
 InstallBinDir := $(InstallDir)/bin
 DBDir := $(DestDir)/var/cdbd
 InstallDBDir := $(InstallDir)/var/cdbd
@@ -21,6 +23,8 @@ InitDir := $(DestDir)/etc/init.d
 InstallPonsDir := $(InstallDir)/var/pons
 InstallManDir := $(InstallDir)/man
 InstallSrcDir := $(InstallDir)/src
+InstallEtcDir := $(InstallDir)/etc
+InstallIntensityDir := $(InstallEtcDir)/intensity
 InstallVarDir := $(InstallDir)/var
 InstallInitDir := $(InstallDir)/etc/init.d
 RcFile := $(InstallDir)/rc
@@ -36,14 +40,15 @@ InstalledInitScripts := $(patsubst %,$(InstallInitDir)/%,$(InitScripts))
 InsertableInitScripts := $(patsubst %,$(InitDir)/%,$(InitScripts))
 MakeParams := DestDir=$(DestDir) BinDir=$(BinDir) DBAuth=$(DBAuth) \
 	ONSRoot=$(ONSRoot) PonsDir=$(PonsDir) CDBDDir=$(CDBDDir) \
-	CDBDir=$(CDBDir) SrcDir=$(SrcDir) \
+	CDBDir=$(CDBDir) SrcDir=$(SrcDir) IntensityDir=$(IntensityDir) \
 	InstallDir=$(InstallDir) InstallBinDir=$(InstallBinDir) \
-	InstallDBDir=$(InstallDBDir) InstallPonsDir=$(InstallPonsDir)
+	InstallDBDir=$(InstallDBDir) InstallPonsDir=$(InstallPonsDir) \
+	InstallIntensityDir=$(InstallIntensityDir)
 Stage1Dir := $(Root)/stage1
 Stage2Dir := $(Root)/stage2
 
 .PHONY:	install
-install: installbin installman installsrc installvar installrc
+install: installbin installman installsrc installvar installetc installrc
 
 .PHONY:	installsuse
 installsuse: install installsuseinit
@@ -82,6 +87,9 @@ srcdir:
 installvar:
 	mkdir -p $(PonsDir)
 	mkdir -p $(CDBDDir)
+
+.PHONY:	installetc
+installetc:	gcintensity
 
 .PHONY:	installutil
 installutil:	bindir
@@ -146,6 +154,11 @@ $(InstallInitDir)/pons:		$(ScriptDir)/obmk_suse_init_pons
 	   $(ScriptDir)/obmk_suse_init_pons \
 	      -d $(PonsDir) >$@
 	chmod 755 $@
+
+.PHONY:	gcintensity
+gcintensity:
+	mkdir -p $(InstallIntensityDir)
+	$(ScriptDir)/obgcdflts $(InstallIntensityDir)
 
 .PHONY:	suseinsserv
 suseinsserv:	$(InsertableInitScripts) 

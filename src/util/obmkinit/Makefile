@@ -8,7 +8,8 @@ Targets :=		obmk_suse_init_cdbd obmk_suse_init_pons
 InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 Parameters :=		BASEDIR=$(DestDir) BINDIR=$(BinDir) \
 			PONSDIR=$(PonsDir) ONS_ROOT=$(ONSRoot) \
-			CDBDDIR=$(CDBDDir) CDBDIR=$(CDBDir)
+			CDBDDIR=$(CDBDDir) CDBDIR=$(CDBDir) \
+			INTENSITY=$(IntensityDir)/cdbd
 
 .PHONY:			install
 install:		$(InstalledTargets)

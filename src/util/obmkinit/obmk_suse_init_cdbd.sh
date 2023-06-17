@@ -4,6 +4,7 @@ BASEDIR=/usr/local/oberon
 BINDIR=$BASEDIR/bin
 CDBDDIR=$BASEDIR/var/cdbd
 CDBDIR=/pub/cdb/oberon
+INTENSITY=$BASEDIR/etc/intensity/cdbd
 ONS_ROOT=127.0.0.1:9880
 
 cmdname=`basename $0`
@@ -13,6 +14,7 @@ cdbdir="$CDBDIR"
 cdbddir="$CDBDDIR"
 uidgidflags=""
 root="$ONS_ROOT"
+intensity="$INTENSITY"
 set -- `getopt c:d:g:u: $*`
 while [ $# -gt 0 ]
 do
@@ -57,8 +59,15 @@ start_service() {
    export ONS_ROOT
    echo -n \"Starting CDBD \"
    $BINDIR/onsmkdir -p \"$cdbdir\"
+   INTENSITY=\"$intensity\"
+   ioptions=
+   if [ -f $INTENSITY ]
+   then
+      ioptions="-i `cat $INTENSITY`"
+   fi
    startproc $uidgidflags -l \"$cdbddir\"/cdbd.LOG \\
       $BINDIR/cdbd \\
+	 $ioptions \\
 	 -b \"$cdbdir\" \\
 	 -w \"$cdbddir\"/write \\
 	 \"$cdbddir\"/oberon.db

@@ -4,9 +4,10 @@ BASEDIR=/usr/local/oberon
 BINDIR=$BASEDIR/bin
 DBAUTH=$BASEDIR/var/cdbd/write
 CDBDIR=/pub/cdb/oberon
+INTENSITY=$BASEDIR/etc/intensity/obload
 
 cmdname=`basename $0`
-usage="Usage: $cmdname [-a auth] {-b basedir} [-l loglevel] [-o output] {module}"
+usage="Usage: $cmdname [-a auth] {-b basedir} [-i intensity] [-l loglevel] [-o output] {module}"
 if [ $# -eq 0 ]
 then
    echo >&2 "$usage"; exit 1
@@ -17,6 +18,12 @@ output=
 auth="$DBAUTH"
 options="-A I386"
 
+intensity=
+if [ -f $INTENSITY ]
+then
+   intensity=`cat $INTENSITY`
+fi
+
 set -- `getopt a:b:l:o: $*`
 while [ $# -gt 0 ]
 do
@@ -25,6 +32,8 @@ do
       auth="$2"; shift 2
    ;; -b)
       basedirs="$basedirs -b $2"; shift 2
+   ;; -i)
+      intensity="$2"; shift 2
    ;; -l)
       options="$options -l $2"; shift 2
    ;; -o)
@@ -48,6 +57,10 @@ then
    fi
 fi
 options="$options $basedirs"
+if [ "$intensity" != "" ]
+then
+   options="$options -i $intensity"
+fi
 if [ "$output" = "" ]
 then
    output="$1"

@@ -4,7 +4,7 @@ InstallBinDir :=	$(BinDir)
 Targets :=		obbuild
 InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 Parameters :=		BASEDIR=$(DestDir) BINDIR=$(BinDir) DBAUTH=$(DBAuth) \
-			CDBDIR=$(CDBDir)
+			CDBDIR=$(CDBDir) INTENSITY=$(IntensityDir)/obload
 
 .PHONY:			install
 install:		$(InstalledTargets)
