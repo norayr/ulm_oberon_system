@@ -1,0 +1,56 @@
+MODULE Daemon;
+   IMPORT Args := UnixArguments, Conclusions, DummyOps, Errors, HostPorts,
+      InetTCP, Iterators, LocalOps, Networks, RelatedEvents, RemoteObjects,
+      RemoteOps, Storage, Streams, UnixFiles;
+
+   VAR
+      hostport: Streams.Stream;
+      address: Networks.Address;
+      port: Networks.Socket;
+      object: DummyOps.Object;
+      errors: RelatedEvents.Object;
+      file: Streams.Stream;
+      intensity: INTEGER;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+BEGIN
+   intensity := Storage.Intensity(8);
+   LocalOps.Create(object);
+
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Args.Init("[hostport]");
+   IF Args.OpenArg(hostport) THEN
+      IF ~HostPorts.ReadAddress(hostport, address) OR
+	    ~Networks.Listen(port, address, errors) OR
+	    ~RemoteObjects.AddPort(port, address, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+   ELSE
+      OpenAllKindsOfPorts;
+   END;
+
+   IF ~UnixFiles.Open(file, "object-address",
+		      UnixFiles.write + UnixFiles.create,
+		      Streams.onebuf, errors) OR
+	 ~RemoteObjects.Export(file, object) OR
+	 ~Streams.Close(file) THEN
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END;
+END Daemon.

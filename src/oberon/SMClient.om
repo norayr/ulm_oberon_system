@@ -1,0 +1,148 @@
+MODULE SMClient;
+
+   IMPORT Clocks, Coroutines, Conclusions, DummyOps, Errors, IPv4TCPSockets,
+      Iterators, Op := Operations, Networks,
+      Print, Read, RelatedEvents, RemoteObjects,
+      Resources, RoundRobin, Schedulers, Storage, Streams, Times,
+      UnixFiles, Write, Tasks, SYS := SYSTEM, SysMonitor,
+      SMStreams, RemoteOps;
+
+   VAR
+      intensity: INTEGER;
+      file: Streams.Stream;
+      errors: RelatedEvents.Object;
+      object: DummyOps.Object;
+      tg: Schedulers.TaskGroup;
+      crs, calls: INTEGER;
+      cr: Coroutines.Coroutine;
+      time1, time2, diff: Times.Time;
+      timeval: Times.TimeValueRec;
+      name: ARRAY 16 OF CHAR;
+      task: Tasks.Task;
+      key: Resources.Key;
+      answer: ARRAY 16 OF CHAR;
+      monitor: BOOLEAN;
+
+      bufsize: LONGINT;
+      buf1: ARRAY 1 OF CHAR;
+      buf32: ARRAY 32 OF CHAR;
+      buf512: ARRAY 512 OF CHAR;
+      buf1024: ARRAY 1024 OF CHAR;
+      buf8192: ARRAY 8192 OF CHAR;
+      buf16384: ARRAY 16384 OF CHAR;
+      info: ARRAY 512 OF CHAR;
+
+   PROCEDURE InitBuf(VAR buf: ARRAY OF CHAR);
+      VAR
+	 index: LONGINT;
+   BEGIN
+      index := 0;
+      WHILE index + 1 < LEN(buf) DO
+	 buf[index] := "x";
+	 INC(index);
+      END;
+      buf[index] := 0X;
+   END InitBuf;
+
+   PROCEDURE Sender(VAR cr: Coroutines.Coroutine;
+		    calls: INTEGER;
+		    data: ARRAY OF CHAR);
+   BEGIN
+      SYS.CRSPAWN(cr);
+      WHILE calls > 0 DO
+	 DummyOps.TransferData(object, data);
+	 DEC(calls);
+      END;
+      Tasks.Terminate;
+   END Sender;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+BEGIN
+   Write.String("Should we profile this run? ");
+   Read.Line(answer);
+   monitor := (answer = "y") OR (answer = "yes");
+   IF monitor THEN
+      SysMonitor.Start;
+   END;
+   intensity := Storage.Intensity(4);
+   Storage.DisableCollection;
+   OpenAllKindsOfPorts;
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+
+   IF ~UnixFiles.Open(file, "sm-object-address",
+		      UnixFiles.read, Streams.onebuf, errors) THEN
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END;
+   RelatedEvents.Forward(file, errors);
+   IF ~RemoteObjects.Import(file, object) OR ~Streams.Close(file) THEN
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END;
+   Resources.Attach(object, key);
+
+   DummyOps.GetInfo(object, info);
+   IF RelatedEvents.EventsPending(object) THEN
+      Conclusions.Conclude(object, Errors.fatal, "DummyOps.GetInfo");
+   END;
+   Write.Line(info);
+
+   Write.String("Is the connection to be measured? ");
+   Read.Line(answer);
+   IF (answer = "y") OR (answer = "yes") THEN
+      Write.String("# of calls:      "); Read.Int(calls); Read.Ln;
+      REPEAT
+	 Write.String("# of coroutines: "); Read.Int(crs); Read.Ln;
+      UNTIL (crs > 0) & (calls MOD crs = 0);
+      REPEAT
+	 Write.Line("1, 32, 512, 1024, 8192 and 16384 are OK:");
+	 Write.String("buffer size: "); Read.LongInt(bufsize); Read.Ln;
+      UNTIL bufsize > 0;
+      RoundRobin.CreateTaskGroup(tg);
+      calls := calls DIV crs;
+      WHILE crs > 0 DO
+	 CASE bufsize OF
+	 |     1: InitBuf(buf1);     Sender(cr, calls, buf1);
+	 |    32: InitBuf(buf32);    Sender(cr, calls, buf32);
+	 |   512: InitBuf(buf512);   Sender(cr, calls, buf512);
+	 |  1024: InitBuf(buf1024);  Sender(cr, calls, buf1024);
+	 |  8192: InitBuf(buf8192);  Sender(cr, calls, buf8192);
+	 | 16384: InitBuf(buf16384); Sender(cr, calls, buf16384);
+	 ELSE     InitBuf(buf32);    Sender(cr, calls, buf32);
+	 END;
+	 Schedulers.AddTask(tg, cr, task); DEC(crs);
+      END;
+      Clocks.GetTime(Clocks.system, time1);
+      Schedulers.StartScheduler(tg);
+      Clocks.GetTime(Clocks.system, time2);
+      Op.Sub3(diff, time2, time1);
+      Times.GetValue(diff, timeval);
+      Print.F2("consumed time: %d.%03d seconds\n", timeval.second,
+	 timeval.usec DIV 1000);
+   END;
+
+   DummyOps.GetInfo(object, info);
+   Write.Line(info);
+
+   Resources.Detach(object, key);
+   RemoteObjects.RemoveAllPorts;
+   RemoteObjects.CloseAllConnections;
+   IF monitor THEN
+      SysMonitor.Stop(Streams.stdout);
+   END;
+END SMClient.

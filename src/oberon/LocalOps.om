@@ -1,0 +1,109 @@
+MODULE LocalOps;
+
+   IMPORT ConstStrings, Clocks, DummyOps, InetResolver, Iterators,
+      Op := Operations, Services, Streams, Strings, Times,
+      UnixFiles, Write;
+
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (DummyOps.ObjectRec)
+	    createdAt: Times.Time;
+	 END;
+   VAR
+      if: DummyOps.Interface;
+      type: Services.Type;
+      hostname: ARRAY 128 OF CHAR;
+
+   PROCEDURE Create(VAR object: DummyOps.Object);
+      VAR
+	 newobject: Object;
+   BEGIN
+      NEW(newobject);
+      Clocks.GetTime(Clocks.system, newobject.createdAt);
+      Services.Init(newobject, type);
+      DummyOps.Init(newobject, if);
+      object := newobject;
+   END Create;
+
+   PROCEDURE NullOp(object: DummyOps.Object);
+   END NullOp;
+
+   PROCEDURE TransferData(object: DummyOps.Object; data: ARRAY OF CHAR);
+   END TransferData;
+
+   PROCEDURE GetInfo(object: DummyOps.Object; VAR info: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+	 time: Times.Time;
+	 diff: Times.Time;
+	 diffval: Times.TimeValueRec;
+   BEGIN
+      WITH object: Object DO
+	 Strings.Open(s, info);
+	 Clocks.GetTime(Clocks.system, time);
+	 Op.Sub3(diff, time, object.createdAt);
+	 Times.GetValue(diff, diffval);
+	 Write.StringS(s, "object alive since ");
+	 Write.IntS(s, diffval.second, 1);
+	 Write.StringS(s, " seconds on ");
+	 Write.StringS(s, hostname);
+	 Streams.Release(s);
+      END;
+   END GetInfo;
+
+   PROCEDURE Iterate(it: Iterators.Iterator; ref: Iterators.Reference;
+		     mode: Iterators.Mode);
+      VAR
+	 text: ARRAY 128 OF CHAR;
+	 index: INTEGER;
+	 string: ConstStrings.String;
+   BEGIN
+      REPEAT
+	 COPY(hostname, text);
+	 index := 0;
+	 WHILE text[index] # 0X DO
+	    ConstStrings.Create(string, text);
+	    Iterators.Yield(it, string);
+	    text[index] := ".";
+	    INC(index);
+	 END;
+	 DEC(mode);
+      UNTIL mode <= 0;
+   END Iterate;
+
+   PROCEDURE GetItems(object: DummyOps.Object; param: INTEGER;
+		      VAR it: Iterators.Iterator);
+      VAR
+	 mode: Iterators.Mode;
+   BEGIN
+      WITH object: Object DO
+	 mode := SHORT(ABS(param) MOD MAX(SHORTINT));
+	 Iterators.Create(it, Iterate, object, SHORT(param));
+	 ASSERT(it # NIL);
+      END;
+   END GetItems;
+
+   PROCEDURE OpenStream(object: DummyOps.Object; name: ARRAY OF CHAR;
+			VAR s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN UnixFiles.Open(s, name, UnixFiles.read, Streams.onebuf, object)
+   END OpenStream;
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(type, "LocalOps.Object", "DummyOps.Object");
+      ASSERT(type # NIL);
+      NEW(if);
+      if.nullOp := NullOp;
+      if.transferData := TransferData;
+      if.getInfo := GetInfo;
+      if.getItems := GetItems;
+      if.openStream := OpenStream;
+      InetResolver.GetHostName(hostname);
+   END Init;
+
+BEGIN
+   Init;
+END LocalOps.

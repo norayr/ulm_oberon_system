@@ -1,0 +1,80 @@
+MODULE DummyOps;
+
+   (* dummy operations for benchmarks *)
+
+   IMPORT Iterators, Objects, Services, Streams;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	 END;
+
+      NullOpProc = PROCEDURE(object: Object);
+      TransferDataProc = PROCEDURE(object: Object; data: ARRAY OF CHAR);
+      GetInfoProc = PROCEDURE(object: Object; VAR info: ARRAY OF CHAR);
+      GetItemsProc = PROCEDURE(object: Object; param: INTEGER;
+			       VAR it: Iterators.Iterator);
+      OpenStreamProc = PROCEDURE(object: Object; name: ARRAY OF CHAR;
+				 VAR s: Streams.Stream) : BOOLEAN;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    nullOp: NullOpProc;
+	    transferData: TransferDataProc;
+	    getInfo: GetInfoProc;
+	    getItems: GetItemsProc;
+	    openStream: OpenStreamProc;
+	 END;
+
+   PROCEDURE Init(object: Object; if: Interface);
+      VAR
+	 type: Services.Type;
+   BEGIN
+      ASSERT((object.if = NIL) & (if # NIL) &
+	     (if.nullOp # NIL) & (if.transferData # NIL) & (if.getInfo # NIL));
+      Services.GetType(object, type);
+      ASSERT(type # NIL);
+      object.if := if;
+   END Init;
+
+   PROCEDURE NullOp(object: Object);
+   BEGIN
+      object.if.nullOp(object);
+   END NullOp;
+
+   PROCEDURE TransferData(object: Object; data: ARRAY OF CHAR);
+   BEGIN
+      object.if.transferData(object, data);
+   END TransferData;
+
+   PROCEDURE GetInfo(object: Object; VAR info: ARRAY OF CHAR);
+   BEGIN
+      object.if.getInfo(object, info);
+   END GetInfo;
+
+   PROCEDURE GetItems(object: Object; param: INTEGER;
+		      VAR it: Iterators.Iterator);
+   BEGIN
+      object.if.getItems(object, param, it);
+   END GetItems;
+
+   PROCEDURE OpenStream(object: Object; name: ARRAY OF CHAR;
+			VAR s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      RETURN object.if.openStream(object, name, s)
+   END OpenStream;
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "DummyOps.Object", "");
+   END InitModule;
+
+BEGIN
+   InitModule;
+END DummyOps.
