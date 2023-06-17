@@ -1,6 +1,6 @@
 .\" ---------------------------------------------------------------------------
 .\" Ulm's Oberon System Documentation
-.\" Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
 .\" ---------------------------------------------------------------------------
 .\"    Permission is granted to make and distribute verbatim copies of this
 .\" manual provided the copyright notice and this permission notice are
@@ -136,7 +136,7 @@ If
 .BI \\$1 " \\$2"
 ..
 '\"----------------------------------------------------------------------------
-.TH UnixPipes 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.TH UnixPipes 3 "Last change: 4 February 2005" "Release 0.5" "Ulm's Oberon System"
 .SH NAME
 UnixPipes \- initiate I/O to/from a process
 .SH SYNOPSIS
@@ -149,12 +149,15 @@ TYPE PipeRec =
    RECORD
       (Streams.StreamRec)
       (* read-only components *)
-      pid: Process.ProcessId; (* process id of shell *)
-      status: Process.Status; (* set after close *)
+      pid: SysProcess.ProcessId; (* process id of shell *)
+      status: SysProcess.Status; (* set after close *)
       interrupted: BOOLEAN; (* EINTR occurred? *)
       (* read/write component *)
       retry: BOOLEAN; (* retry on interrupts? *)
    END;
+.sp 0.7
+TYPE Child = POINTER TO ChildRec;
+TYPE ChildRec = RECORD (Disciplines.DisciplineRec) END;
 .sp 0.7
 PROCEDURE Open(VAR pipe: Streams.Stream;
                command: ARRAY OF CHAR; mode: Mode; bufmode: Streams.BufMode;
@@ -166,6 +169,21 @@ PROCEDURE Spawn(VAR pipe: Streams.Stream;
                 argv: SysArgs.Arguments;
                 mode: Mode; bufmode: Streams.BufMode;
                 errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE Spawn3(command: ARRAY OF CHAR;
+                 bufmode: Streams.BufMode; (* of stdin *)
+                 VAR stdin, stdout, stderr: Streams.Stream;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE CreateChild(VAR child: Child);
+PROCEDURE AddPipeline(child: Child;
+                      readfd, writefd, childfd: SysIO.File;
+                      mode: Mode; bufmode: Streams.BufMode;
+                      VAR pipe: Streams.Stream);
+PROCEDURE SpawnChild(child: Child;
+                     pathname: ARRAY OF CHAR;
+                     argv: SysArgs.Arguments;
+                     errors: RelatedEvents.Object) : BOOLEAN;
 .Pe
 .SH DESCRIPTION
 .I Open
@@ -190,26 +208,44 @@ The command interpreter is the system's default shell,
 which on UNIX systems most likely will be "/bin/sh".
 .PP
 .I Spawn
-offers a more flexible interface that requires the caller
-to setup the pipe (using, for example, \fISysIO.Pipe\fP).
-\fIchildfd\fP will be setup (using \fISysIO.Dup2\fP) by
-the child as the file descriptor that is connected to the pipe.
-This is usually 0 or 1 (depending on \fImode\fP) but
-sometimes other file descriptors are to be used
+offers a more flexible interface that requires the caller to setup the
+pipe (using, for example, \fISysIO.Pipe\fP).  \fIchildfd\fP will be
+setup (using \fISysIO.Dup2\fP) by the child as the file descriptor
+that is connected to the pipe.  This is usually 0 or 1 (depending
+on \fImode\fP) but sometimes other file descriptors are to be used
 (3 for the \fIcheckpassword\fP interface by Dan J. Bernstein,
-for example). \fIpathname\fP and \fIargv\fP will be
-passed to \fISysProcess.Exec\fP. \fIUnixArgs(3)\fP is
-recommended to build an argument list. This allows to
-circumvent the interpretation of a command line by the
-shell and thereby avoiding the security threat of
-malicious shell meta characters.
+for example). \fIpathname\fP and \fIargv\fP will be passed to
+\fISysProcess.Exec\fP. \fIUnixArgs(3)\fP is recommended to build an
+argument list. This allows to circumvent the interpretation of a command
+line by the shell and thereby avoiding the security threat of malicious
+shell meta characters.
+.PP
+An even more general interface is provided by \fICreateChild\fP,
+\fIAddPipeline\fP, and \fISpawnChild\fP as these procedures allow to set up
+an arbitrary number of pipelines between the parent process and
+the to be created child process. \fICreateChild\fP simply creates a
+child reference. \fIAddPipeline\fP adds another pipeline with
+parameters that are similar to those of \fISpawn\fP. \fIAddPipeline\fP
+must be called at least once. \fISpawnChild\fP actually forks off
+the child. All pipelines returned by \fIAddPipeline\fP are of
+type \fIPipe\fP and hence allow to retrieve the termination status
+of the child after the stream is closed.
+.PP
+.I Spawn3
+invokes \fIcommand\fP and sets up three pipelines for standard
+input, standard output, and standard error of the child process.
+Note that just \fIstdin\fP will be of type \fIPipe\fP as
+\fIstdout\fP and \fIstderr\fP come from \fIPipeReaders(3)\fP
+to avoid deadlocks.
 .PP
 Note that \fIUnixPipes\fP defines an empty handler
 for \fISysSignals.PIPE\fP.
 .SH DIAGNOSTICS
-.I Open
+.IR Open ,
+.IR Spawn ,
+.IR Spawn3 ,
 and
-.I Spawn
+.I SpawnChild
 return
 .B FALSE
 and relate their error events to \fIerrors\fP in case of failures.
@@ -228,6 +264,7 @@ In this case interruptions may lead to error events.
 The \fIinterrupt\fP field indicates whether the last
 operation was interrupted or not.
 .SH "SEE ALSO"
+.IR PipeReaders(3) ,
 .IR Process(3) ,
 .IR RelatedEvents(3) ,
 .IR Streams(3) ,
@@ -235,9 +272,15 @@ operation was interrupted or not.
 .IR SysSignals(3) ,
 .IR UnixArgs(3)
 .\" ---------------------------------------------------------------------------
-.\" $Id: UnixPipes.3,v 1.12 2003/07/10 09:28:46 borchert Exp $
+.\" $Id: UnixPipes.3,v 1.14 2005/02/04 21:07:53 borchert Exp $
 .\" ---------------------------------------------------------------------------
 .\" $Log: UnixPipes.3,v $
+.\" Revision 1.14  2005/02/04 21:07:53  borchert
+.\" support of multiple pipelines added
+.\"
+.\" Revision 1.13  2005/02/03 15:16:26  borchert
+.\" Process.{ProcessId,Status} changed to SysProcess.{ProcessId,Status}
+.\"
 .\" Revision 1.12  2003/07/10 09:28:46  borchert
 .\" typos fixed
 .\"

@@ -81,7 +81,7 @@ then
       b=$tmpdir/`basename $f .obj`
       if $BINDIR/obtofgen -o $b.tof $f &&
 	    $BINDIR/tof2elf -o $b.o1 $b.tof &&
-	    ld -r -o $b.o $b.o1
+	    ld -m elf_i386 -r -o $b.o $b.o1
       then
 	 rm -f $b.tof $b.o1
       else
@@ -89,8 +89,8 @@ then
       fi
    done
    if $BINDIR/genobrts -o $tmpdir/_start.s $* &&
-	 as -o $tmpdir/_start.o $tmpdir/_start.s &&
-	 ld -e _entry -o "$output" $tmpdir/*.o
+	 as -32 -o $tmpdir/_start.o $tmpdir/_start.s &&
+	 ld -m elf_i386 -e _entry -o "$output" $tmpdir/*.o
    then
       exit 0
    else

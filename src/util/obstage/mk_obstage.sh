@@ -49,8 +49,8 @@ build() {
    module="$1"
    output="$2"
    $ibindir/genobrts -o start.s $module &&
-   as -o start.o start.s &&
-   ld -e _entry -o $output start.o libo.a &&
+   as -32 -o start.o start.s &&
+   ld -m elf_i386 -e _entry -o $output start.o libo.a &&
    rm -f start.[os]
 }
 

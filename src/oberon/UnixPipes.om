@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixPipes.om,v 1.5 2001/04/30 08:10:45 borchert Exp $
+   $Id: UnixPipes.om,v 1.6 2005/02/04 19:34:01 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: UnixPipes.om,v $
+   Revision 1.6  2005/02/04 19:34:01  borchert
+   support of multiple pipes to the same child added
+
    Revision 1.5  2001/04/30 08:10:45  borchert
    Open and Spawn extended with bufmode parameter
 
@@ -43,16 +46,18 @@
 
 MODULE UnixPipes;
 
-   IMPORT Conditions, Events, Priorities, RelatedEvents, Services,
-      StreamConditions, Streams, SYS := SYSTEM, SysArgs, SysErrors,
-      SysIO, SysProcess, SysSignals, SysTypes, Tasks, Types,
-      UnixArgLists, UnixFileConditions, UnixFiles, UnixWaitConditions,
-      UntaggedStorage, Write;
+   IMPORT Conditions, Disciplines, Events, Jobs, LocalSemaphores,
+      PipeReaders, Priorities, RelatedEvents, Semaphores, Services,
+      StreamConditions, Streams, SYS := SYSTEM, SysArgs, SysErrors, SysIO,
+      SysProcess, SysSignals, SysTypes, Tasks, Types, UnixArgLists,
+      UnixFileConditions, UnixFiles, UnixWaitConditions, UntaggedStorage,
+      Write;
 
    CONST
       read = UnixFiles.read;
       write = UnixFiles.write;
       failure = 127;
+      shell = "/bin/sh";
 
    TYPE
       Stream = Streams.Stream;
@@ -67,18 +72,47 @@ MODULE UnixPipes;
 	    interrupted: BOOLEAN; (* EINTR occured? *)
 	    retry: BOOLEAN;
 	    (* === private components =========================== *)
+	    closed: BOOLEAN;
 	    file: SysIO.File;
 	    mypid: SysProcess.ProcessId;
-	    prev, next: Pipe; (* list of pipes *)
 	    ioCond: Conditions.Condition;
+	    waitCond: Conditions.Condition;
 	    exceptions: RelatedEvents.Object;
+	    prev, next: Pipe; (* list of pipes *)
+	 END;
+   TYPE
+      Pipeline = POINTER TO PipelineRec;
+      PipelineRec =
+	 RECORD
+	    myside, yourside, childfd: SysIO.File;
+	    pipe: Pipe;
+	    next: Pipeline;
+	 END;
+      Child = POINTER TO ChildRec;
+      ChildRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    head, tail: Pipeline;
 	 END;
    VAR
-      pipes: Pipe; (* list of open pipes *)
       if: Streams.Interface;
       caps: Streams.CapabilitySet;
       type: Services.Type; (* UnixPipes.Pipe *)
       error: Events.EventType;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    add: BOOLEAN; (* or remove *)
+	    pipe: Pipe;
+	 END;
+   VAR
+      pipes: Pipe; (* list of open pipes *)
+      mutex: Semaphores.Semaphore; (* for list of pipes *)
+
+   (* === private procedures =========================================== *)
 
    PROCEDURE ForwardErrors(from, to: RelatedEvents.Object);
       VAR
@@ -144,6 +178,75 @@ MODULE UnixPipes;
 	 *)
       END;
    END SetNonBlocking;
+
+   PROCEDURE AddOrRemovePipe(job: Jobs.Job);
+      VAR
+	 pipe: Pipe;
+   BEGIN
+      WITH job: Job DO
+	 Semaphores.P(mutex);
+	 pipe := job.pipe;
+	 IF job.add THEN
+	    pipe.next := pipes; pipe.prev := NIL;
+	    IF pipes # NIL THEN
+	       pipes.prev := pipe;
+	    END;
+	    pipes := pipe;
+	 ELSE (* remove pipe *)
+	    IF pipe.prev = NIL THEN
+	       pipes := pipe.next;
+	    ELSE
+	       pipe.prev.next := pipe.next;
+	    END;
+	    IF pipe.next # NIL THEN
+	       pipe.next.prev := pipe.prev;
+	    END;
+	 END;
+	 Semaphores.V(mutex);
+      END;
+   END AddOrRemovePipe;
+
+   PROCEDURE AddPipe(pipe: Pipe);
+      VAR
+	 job: Job;
+   BEGIN
+      NEW(job); job.add := TRUE; job.pipe := pipe;
+      Jobs.Submit(job, AddOrRemovePipe);
+   END AddPipe;
+
+   PROCEDURE RemovePipe(pipe: Pipe);
+      VAR
+	 job: Job;
+   BEGIN
+      NEW(job); job.add := FALSE; job.pipe := pipe;
+      Jobs.Submit(job, AddOrRemovePipe);
+   END RemovePipe;
+
+   PROCEDURE CreatePipe(VAR pipe: Pipe;
+                        fd: SysIO.File;
+			caps: Streams.CapabilitySet;
+			bufmode: Streams.BufMode;
+			condMode: SHORTINT);
+   BEGIN
+      NEW(pipe);
+      Services.Init(pipe, type);
+      Streams.Init(pipe, if, caps, bufmode);
+      pipe.closed := FALSE;
+      pipe.file := fd;
+      pipe.mypid := SysProcess.Getpid();
+      pipe.pid := 0;
+      pipe.retry := TRUE;
+      pipe.interrupted := FALSE;
+      pipe.waitCond := NIL;
+      NEW(pipe.exceptions);
+      RelatedEvents.QueueEvents(pipe.exceptions);
+      UnixFileConditions.Create(pipe.ioCond, NIL, pipe.file, condMode);
+      SetNonBlocking(pipe.file, RelatedEvents.null);
+      RelatedEvents.QueueEvents(pipe);
+      AddPipe(pipe);
+   END CreatePipe;
+
+   (* === Streams interface ============================================ *)
 
    PROCEDURE ReadBuf(s: Stream;
 		     buf: SysIO.Address; cnt: SysIO.Count) : SysIO.Count;
@@ -224,24 +327,24 @@ MODULE UnixPipes;
 	 ok: BOOLEAN;
 	 stat: SysProcess.Status;
 	 waitfailed: BOOLEAN;
-	 waitCond: Conditions.Condition;
    BEGIN
       WITH s: Pipe DO
+	 IF SYS.TAS(s.closed) THEN
+	    RETURN FALSE (* was already closed *)
+	 END;
          ok := SysIO.Close(s.file, s, s.retry, s.interrupted);
-	 IF s.prev = NIL THEN
-	    pipes := s.next;
-	 ELSE
-	    s.prev.next := s.next;
-	 END;
-	 IF s.next # NIL THEN
-	    s.next.prev := s.prev;
-	 END;
-	 IF s.mypid = SysProcess.Getpid() THEN
-	    UnixWaitConditions.Create(waitCond, s.pid);
-	    Tasks.WaitFor(waitCond);
-	    UnixWaitConditions.FetchStatus(waitCond, stat);
+	 RemovePipe(s);
+	 IF (s.pid # 0) & (s.mypid = SysProcess.Getpid()) THEN
+	    Tasks.WaitFor(s.waitCond);
+	    UnixWaitConditions.FetchStatus(s.waitCond, stat);
 	    waitfailed := FALSE;
 	 ELSE
+	    (* no child has been forked off yet
+		  -- or --
+	       we are apparently a descent of s.mypid and
+	       hence no longer parent of s.pid and
+	       thus not able to wait for s.pid
+	    *)
 	    waitfailed := TRUE;
 	 END;
 	 IF waitfailed THEN
@@ -258,38 +361,83 @@ MODULE UnixPipes;
       RETURN ok
    END Close;
 
-   PROCEDURE Spawn(VAR pipe: Streams.Stream;
-		   readfd, writefd, childfd: SysIO.File;
-		   pathname: ARRAY OF CHAR;
-		   argv: SysArgs.Arguments;
-		   mode: Mode; bufmode: Streams.BufMode;
-		   errors: RelatedEvents.Object) : BOOLEAN;
-      (* like Open but with an already opened pipe *)
+   (* === exported procedures ========================================== *)
+
+   PROCEDURE CreateChild(VAR child: Child);
+   BEGIN
+      NEW(child); child.head := NIL; child.tail := NIL;
+   END CreateChild;
+
+   PROCEDURE AddPipeline(child: Child;
+                         readfd, writefd, childfd: SysIO.File;
+			 mode: Mode; bufmode: Streams.BufMode;
+			 VAR pipe: Streams.Stream);
       VAR
-	 myside, yourside: SysIO.File;	(* ordered in dependance of mode *)
-	 pid: SysProcess.ProcessId;	(* process id of son *)
+	 pipeline: Pipeline;
+	 myside, yourside: SysIO.File;
 	 mycaps: Streams.CapabilitySet;
-	 ptr: Pipe;
-	 newpipe: Pipe;
-	 interrupted: BOOLEAN;
 	 condMode: SHORTINT;
-
-      PROCEDURE Close;
-      BEGIN
-	 IF ~SysIO.Close(readfd, errors, TRUE, interrupted) THEN END;
-	 IF ~SysIO.Close(writefd, errors, TRUE, interrupted) THEN END;
-      END Close;
-
-   BEGIN (* Spawn *)
-      IF (mode # read) & (mode # write) THEN RETURN FALSE END;
-      IF mode = read THEN
-	 myside := readfd; yourside := writefd;
-      ELSE
-	 myside := writefd; yourside := readfd;
+   BEGIN
+      mycaps := caps;
+      CASE mode OF
+      | read:
+	    myside := readfd; yourside := writefd;
+	    INCL(mycaps, Streams.read); condMode := StreamConditions.read;
+      | write:
+	    myside := writefd; yourside := readfd;
+	    INCL(mycaps, Streams.write); condMode := StreamConditions.write;
       END;
-      IF ~SysProcess.Fork(pid, errors) THEN Close; RETURN FALSE END;
+      NEW(pipeline);
+      pipeline.myside := myside;
+      pipeline.yourside := yourside;
+      pipeline.childfd := childfd;
+      CreatePipe(pipeline.pipe, myside, mycaps, bufmode, condMode);
+      pipeline.next := NIL;
+      IF child.head = NIL THEN
+	 child.head := pipeline;
+      ELSE
+	 child.tail.next := pipeline;
+      END;
+      child.tail := pipeline;
+      pipe := pipeline.pipe;
+   END AddPipeline;
+
+   PROCEDURE SpawnChild(child: Child;
+			pathname: ARRAY OF CHAR;
+			argv: SysArgs.Arguments;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 pid: SysProcess.ProcessId;	(* process id of child *)
+	 pipeline: Pipeline;
+	 ptr: Pipe;
+	 ok: BOOLEAN;
+	 interrupted: BOOLEAN;
+	 waitCond: Conditions.Condition;
+
+      PROCEDURE CloseThemAll;
+	 VAR
+	    pipeline: Pipeline;
+	    ign: BOOLEAN;
+	    interrupted: BOOLEAN;
+      BEGIN
+	 pipeline := child.head;
+	 WHILE pipeline # NIL DO
+	    ign := SysIO.Close(pipeline.myside, errors, TRUE, interrupted);
+	    ign := SysIO.Close(pipeline.yourside, errors, TRUE, interrupted);
+	    RemovePipe(pipeline.pipe);
+	    pipeline := pipeline.next;
+	 END;
+      END CloseThemAll;
+
+   BEGIN (* SpawnChild *)
+      IF child.head = NIL THEN
+	 RETURN FALSE
+      END;
+      IF ~SysProcess.Fork(pid, errors) THEN
+	 CloseThemAll; RETURN FALSE
+      END;
       IF pid = 0 THEN
-	 (* close all other pipes to assure receive of SysSignals.PIPE *)
+	 (* close all other pipes to assure that we receive SysSignals.PIPE *)
 	 ptr := pipes; pipes := NIL;
 	 WHILE ptr # NIL DO
 	    IF ~SysIO.Close(ptr.file, NIL, TRUE, interrupted) THEN END;
@@ -297,39 +445,93 @@ MODULE UnixPipes;
 	 END;
 	 Events.RemoveHandlers(SysSignals.PIPE);
 	 (* son: myside and yourside reverse roles *)
-	 IF SysIO.Close(myside, NIL, TRUE, interrupted) &
-	    SysIO.Dup2(yourside, childfd, NIL) &
-	    SysIO.Close(yourside, NIL, TRUE, interrupted) THEN
-	    SysProcess.Exec(pathname, argv, NIL);
-	    UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress, argv));
+	 pipeline := child.head;
+	 WHILE pipeline # NIL DO
+	    IF ~SysIO.Close(pipeline.myside, NIL, TRUE, interrupted) OR
+		  ~SysIO.Dup2(pipeline.yourside, pipeline.childfd, NIL) OR
+		  ~SysIO.Close(pipeline.yourside, NIL, TRUE, interrupted) THEN
+	       SysProcess.Exit(failure);
+	    END;
+	    pipeline := pipeline.next;
 	 END;
+	 SysProcess.Exec(pathname, argv, NIL);
 	 SysProcess.Exit(failure);
       ELSE
-	 IF ~SysIO.Close(yourside, errors, TRUE, interrupted) THEN END;
-	 mycaps := caps;
-	 IF mode = read THEN
-	    INCL(mycaps, Streams.read); condMode := StreamConditions.read;
-	 ELSE
-	    INCL(mycaps, Streams.write); condMode := StreamConditions.write;
+	 UnixWaitConditions.Create(waitCond, pid);
+	 ok := TRUE;
+	 pipeline := child.head;
+	 WHILE pipeline # NIL DO
+	    ok := SysIO.Close(pipeline.yourside, errors, TRUE, interrupted) &
+		  ok;
+	    pipeline.pipe.pid := pid;
+	    pipeline.pipe.waitCond := waitCond;
+	    pipeline := pipeline.next;
 	 END;
-	 NEW(newpipe);
-	 Services.Init(newpipe, type);
-	 Streams.Init(newpipe, if, mycaps, bufmode);
-	 newpipe.pid := pid;
-	 newpipe.file := myside;
-	 newpipe.mypid := SysProcess.Getpid();
-	 newpipe.next := pipes;
-	 newpipe.prev := NIL;
-	 newpipe.retry := TRUE;
-	 newpipe.interrupted := FALSE;
-	 NEW(newpipe.exceptions);
-	 RelatedEvents.QueueEvents(newpipe.exceptions);
-	 UnixFileConditions.Create(newpipe.ioCond, NIL, newpipe.file, condMode);
-	 SetNonBlocking(newpipe.file, errors);
-	 RelatedEvents.QueueEvents(newpipe);
-	 pipes := newpipe;
-	 pipe := newpipe;
+	 RETURN TRUE
       END;
+   END SpawnChild;
+
+   PROCEDURE Spawn3(command: ARRAY OF CHAR;
+		    bufmode: Streams.BufMode; (* of stdin *)
+                    VAR stdin, stdout, stderr: Streams.Stream;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* like Open but with pipes for stdin, stdout, and stderr *)
+      VAR
+	 child: Child;
+	 in, out, err: Streams.Stream;
+	 pipes: ARRAY 3 OF ARRAY 2 OF SysIO.File;
+	 i: INTEGER;
+	 ign, interrupted: BOOLEAN;
+	 args: UnixArgLists.Stream;	(* collect arguments and get... *)
+	 argv: SysArgs.Arguments;	(* ... this argument list *)
+	 ok: BOOLEAN;
+   BEGIN
+      i := 0;
+      WHILE i < LEN(pipes) DO
+	 IF ~SysIO.Pipe(pipes[i][0], pipes[i][1], errors) THEN
+	    WHILE i > 0 DO
+	       DEC(i);
+	       ign := SysIO.Close(pipes[i][0], errors, TRUE, interrupted);
+	    END;
+	    RETURN FALSE
+	 END;
+	 INC(i);
+      END;
+      CreateChild(child);
+      AddPipeline(child, pipes[0][0], pipes[0][1], 0, write, bufmode, in);
+      AddPipeline(child, pipes[1][0], pipes[1][1], 1, read,
+	 Streams.nobuf, out);
+      AddPipeline(child, pipes[2][0], pipes[2][1], 2, read,
+	 Streams.nobuf, err);
+      UnixArgLists.Open(args); Write.StringS(args, shell);
+      UnixArgLists.Next(args); Write.StringS(args, "-c");
+      UnixArgLists.Next(args); Write.StringS(args, command);
+      UnixArgLists.Close(args, argv);
+      ok := SpawnChild(child, shell, argv, errors);
+      UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress, argv));
+      IF ~ok THEN RETURN FALSE END;
+      stdin := in;
+      PipeReaders.Spawn(stdout, out);
+      PipeReaders.Spawn(stderr, err);
+      RETURN TRUE
+   END Spawn3;
+
+   PROCEDURE Spawn(VAR pipe: Streams.Stream;
+		   readfd, writefd, childfd: SysIO.File;
+		   pathname: ARRAY OF CHAR;
+		   argv: SysArgs.Arguments;
+		   mode: Mode; bufmode: Streams.BufMode;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 child: Child;
+	 newpipe: Streams.Stream;
+   BEGIN (* Spawn *)
+      CreateChild(child);
+      AddPipeline(child, readfd, writefd, childfd, mode, bufmode, newpipe);
+      IF ~SpawnChild(child, pathname, argv, errors) THEN
+	 RETURN FALSE
+      END;
+      pipe := newpipe;
       RETURN TRUE
    END Spawn;
 
@@ -343,12 +545,12 @@ MODULE UnixPipes;
       CONST
 	 stdin = 0;
 	 stdout = 1;
-	 shell = "/bin/sh";
       VAR
 	 readfd, writefd: SysIO.File;	(* result of Pipe *)
 	 childfd: SysIO.File;           (* 0 or 1; open fd for son process *)
 	 args: UnixArgLists.Stream;	(* collect arguments and get... *)
 	 argv: SysArgs.Arguments;	(* ... this argument list *)
+	 ok: BOOLEAN;
    BEGIN
       IF ~SysIO.Pipe(readfd, writefd, errors) THEN RETURN FALSE END;
       IF mode = read THEN
@@ -360,12 +562,14 @@ MODULE UnixPipes;
       UnixArgLists.Next(args); Write.StringS(args, "-c");
       UnixArgLists.Next(args); Write.StringS(args, command);
       UnixArgLists.Close(args, argv);
-      RETURN Spawn(pipe, readfd, writefd, childfd, shell, argv,
-	       mode, bufmode, errors)
+      ok := Spawn(pipe, readfd, writefd, childfd, shell, argv,
+	       mode, bufmode, errors);
+      UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress, argv));
+      RETURN ok
    END Open;
 
 BEGIN
-   pipes := NIL;
+   pipes := NIL; LocalSemaphores.Create(mutex);
    NEW(if);
    if.addrread := ReadBuf; if.addrwrite := WriteBuf;
    if.read := ReadByte; if.write := WriteByte;

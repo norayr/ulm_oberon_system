@@ -15,9 +15,9 @@ start=`mktemp /tmp/obstartXXXXXX`
 trap "rm -f $start" 0
 trap "rm -f $start; exit 1" 1 2 15
 
-if $BINDIR/genobrts "$@" | as -o $start
+if $BINDIR/genobrts "$@" | as -32 -o $start
 then
-   ld -o $outfile -e _entry $start $lib || exit 1
+   ld -o $outfile -e _entry -m elf_i386 $start $lib || exit 1
 else
    exit 1
 fi

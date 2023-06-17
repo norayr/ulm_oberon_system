@@ -24,10 +24,10 @@ my %intensity = ();
 if ($physmem >= 1000000) {
    $intensity{cdbd} = 9;
    $intensity{obload} = 8;
-} elsif ($physmem >= 700000) {
+} elsif ($physmem >= 800000) {
    $intensity{cdbd} = 8;
    $intensity{obload} = 8;
-} elsif ($physmem >= 500000) {
+} elsif ($physmem >= 600000) {
    $intensity{cdbd} = 7;
    $intensity{obload} = 7;
 } else {

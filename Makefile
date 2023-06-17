@@ -138,7 +138,9 @@ $(RcFile):
 	echo PATH=$(BinDir):\$$PATH >>$@
 	echo MANPATH=$(ManDir):\$$MANPATH >>$@
 	echo ONS_ROOT=$(ONSRoot) >>$@
-	echo export OBERON PATH MANPATH ONS_ROOT >>$@
+	echo CDB_BASEDIR=$(CDBDir) >>$@
+	echo CDB_AUTH=$(DBAuth) >>$@
+	echo export OBERON PATH MANPATH ONS_ROOT CDB_BASEDIR CDB_AUTH >>$@
 
 .PHONY:	installsuseinit initdir
 installsuseinit:	initdir $(InstalledInitScripts)
@@ -168,6 +170,12 @@ suseinsserv:	$(InsertableInitScripts)
 suserun:	suseinsserv
 	sh $(InitDir)/pons start
 	sh $(InitDir)/cdbd start
+.PHONY:	stdsuserun
+stdsuserun:
+	$(MAKE) $(MakeParams) \
+	   InitDir=/etc/init.d \
+	   InstallInitDir=/etc/init.d \
+	   suserun
 
 .PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest finishstage1
 stage1:

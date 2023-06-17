@@ -1,5 +1,5 @@
 (* Ulm's Oberon Compiler
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    This file is part of Ulm's Oberon Compiler.
 
@@ -20,9 +20,13 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: OberonDepen.om,v 1.1 2004/04/04 07:05:12 borchert Exp borchert $
+   $Id: OberonDepen.om,v 1.2 2005/02/05 18:34:36 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: OberonDepen.om,v $
+   Revision 1.2  2005/02/05 18:34:36  borchert
+   - support of multiple base directories added
+   - language parameter removed
+
    Revision 1.1  2004/04/04 07:05:12  borchert
    Initial revision
 
@@ -39,7 +43,7 @@ MODULE OberonDependencies;
       RelatedEvents, RemoteCDBNames, RemoteIterators, RemoteNames, Services,
       Shards, Sources := CompilerSources, Storage, StreamDisciplines,
       Streams, StringArgs, StrListArgs, TranslucentNames, UniqueNames,
-      UnixFiles, UnixNames, Write;
+      UnixEnvironment, UnixFiles, UnixNames, Write;
 
    VAR
       intensity: INTEGER;
@@ -104,7 +108,10 @@ MODULE OberonDependencies;
 	 firstbd: BOOLEAN;
 	 nextbd: ARRAY 512 OF CHAR;
    BEGIN (* ProcessArguments *)
-      basedir := "/pub/cdb"; firstbd := TRUE;
+      firstbd := TRUE;
+      IF ~UnixEnvironment.String("CDB_BASEDIR", basedir) THEN
+	 basedir := "pub/cdb/oberon";
+      END;
       type := CompilerObjects.public;
       arch := NIL;
       Args.Init("[-a auth] [-A arch] {-b basedir} [-D|-M] modname");
@@ -126,6 +133,9 @@ MODULE OberonDependencies;
 	 ELSE
 	    Args.Usage;
 	 END;
+      END;
+      IF (auth = NIL) & UnixEnvironment.String("CDB_AUTH", filename) THEN
+	 CreateLid(auth, filename);
       END;
       Args.FetchString(filename); Args.AllArgs;
       ConstStrings.Create(modname, filename);

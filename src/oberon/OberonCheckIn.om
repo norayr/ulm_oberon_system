@@ -1,5 +1,5 @@
 (* Ulm's Oberon Compiler
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    This file is part of Ulm's Oberon Compiler.
 
@@ -20,9 +20,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: OberonCheck.om,v 1.1 2004/06/02 16:31:26 borchert Exp borchert $
+   $Id: OberonCheck.om,v 1.2 2005/02/05 17:53:42 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: OberonCheck.om,v $
+   Revision 1.2  2005/02/05 17:53:42  borchert
+   language parameter removed
+
    Revision 1.1  2004/06/02 16:31:26  borchert
    Initial revision
 
@@ -39,9 +42,9 @@ MODULE OberonCheckIn;
       RelatedEvents, RemoteCDBNames, RemoteEvents, RemoteIterators,
       RemoteNames, RemoteObjects, RemoteStreams, Resources, Services,
       Shadows, Shards, Sources := CompilerSources, StdCDBNames, Storage,
-      Streams, StringArgs, Strings, StrListArgs, UnixCommandLine, UnixFiles,
-      UnixMappedFiles, UnixNames, UnixOberonBuiltIns, UnixOberonSources,
-      Write;
+      Streams, StringArgs, Strings, StrListArgs, UnixCommandLine,
+      UnixEnvironment, UnixFiles, UnixMappedFiles, UnixNames,
+      UnixOberonBuiltIns, UnixOberonSources, Write;
 
    VAR
       intensity: INTEGER;
@@ -95,14 +98,16 @@ MODULE OberonCheckIn;
       END;
    END CreateLid;
 
-   PROCEDURE FetchString(name, default: ARRAY OF CHAR;
+   PROCEDURE FetchString(name, default, envparam: ARRAY OF CHAR;
                          VAR string: ARRAY OF CHAR);
       VAR
 	 arg: StringArgs.Value;
    BEGIN
       Args.GetValue(args, name, arg);
       IF arg = NIL THEN
-	 COPY(default, string);
+	 IF ~UnixEnvironment.String(envparam, string) THEN
+	    COPY(default, string);
+	 END;
       ELSE
 	 ConstStrings.Extract(string, arg.string);
       END;
@@ -179,8 +184,8 @@ BEGIN
    Services.SeekType("Shards.Lid", lidType);
 
    ProcessArgs(args);
-   FetchString("basedir", "/pub/cdb", basedir);
-   FetchString("auth", "", authfile);
+   FetchString("basedir", "/pub/cdb/oberon", "CDB_BASEDIR", basedir);
+   FetchString("auth", "", "CDB_AUTH", authfile);
    IF authfile = "" THEN
       auth := NIL;
    ELSE
