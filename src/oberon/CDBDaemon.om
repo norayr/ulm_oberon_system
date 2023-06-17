@@ -1,5 +1,5 @@
 (* Ulm's Compiler Toolkit
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    This file is part of Ulm's Compiler Toolkit.
 
@@ -20,9 +20,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: CDBDaemon.om,v 1.1 2005/02/10 07:32:42 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: CDBDaemon.om,v $
+   Revision 1.1  2005/02/10 07:32:42  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -30,20 +33,29 @@ MODULE CDBDaemon;
 
    IMPORT Args := UnixArguments, BoolArgs, CDBNames, CDBSources,
       CommandNodes, Conclusions, ConstStrings, Containers, ControlNodes,
-      DNSResolvers, Errors, Events, InetTCP, IntArgs, Iterators, Jobs,
-      Loader, Names, Networks, Paths, PersistentEvents, PersistentObjects,
-      PrivateShards, Process, Read, RelatedEvents, RemoteCDBNames,
-      RemoteEvents, RemoteIterators, RemoteNames, RemoteObjects,
-      RemoteStreams, Resources, Services, Shadows, Shards,
-      StandardContainers, StdCDBNames, Storage, Streams, StringArgs,
-      StrListArgs, SysMonitor, SysSignals, TransStreams, UnixFiles,
-      UnixNames, Write;
+      DNSRecords, DNSResolvers, Errors, Events, InetTCP, IntArgs,
+      IPv4Addresses, Iterators, Jobs, Loader, Names, Networks, Paths,
+      PersistentEvents, PersistentObjects, PrivateShards, Process, Read,
+      RelatedEvents, RemoteCDBNames, RemoteEvents, RemoteIterators,
+      RemoteNames, RemoteObjects, RemoteStreams, Resources, Services,
+      Shadows, Shards, StandardContainers, StdCDBNames, Storage, Streams,
+      StringArgs, Strings, StrListArgs, SYS := SYSTEM, SysMonitor,
+      SysSignals, TransStreams, UnixFiles, UnixNames, Write;
+
+   TYPE
+      ListOfAddresses = POINTER TO ListOfAddressesRec;
+      ListOfAddressesRec =
+	 RECORD
+	    address: Networks.Address;
+	    next: ListOfAddresses;
+	 END;
 
    VAR
       errors: RelatedEvents.Object;
       auth: Shards.Lid;
       read, write, shutdown: Shards.Pot;
       lidType, potType: Services.Type;
+      ports: ListOfAddresses;
       root: CDBNames.Node;
       basedir: ARRAY 512 OF CHAR;
       intensity: INTEGER;
@@ -88,6 +100,12 @@ MODULE CDBDaemon;
 	 db, ts: Streams.Stream;
 	 cont: Containers.Container;
 	 as: Streams.Stream;
+	 hostname: DNSRecords.Name;
+	 portnum: IPv4Addresses.PortNumber;
+	 addresses: DNSResolvers.IPv4AddressList;
+	 port: INTEGER;
+	 ipaddr: IPv4Addresses.Address;
+	 s: Streams.Stream;
 
       PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
 	 VAR
@@ -129,6 +147,21 @@ MODULE CDBDaemon;
 	 END;
       END CreatePot;
 
+      PROCEDURE AddIPv4(VAR list: ListOfAddresses;
+                        ipaddr: IPv4Addresses.Address;
+			portnum: IPv4Addresses.PortNumber);
+	 VAR
+	    sockaddr: IPv4Addresses.SocketAddress;
+	    address: Networks.Address;
+	    member: ListOfAddresses;
+      BEGIN
+	 sockaddr.host := ipaddr;
+	 IPv4Addresses.SetPort(sockaddr, portnum);
+	 InetTCP.CreateAddress(address, sockaddr);
+	 NEW(member); member.next := list; member.address := address;
+	 list := member;
+      END AddIPv4;
+
    BEGIN (* ProcessArgs *)
       (* by default, the database may be read by everyone
          but nobody is permitted to change anything
@@ -140,11 +173,32 @@ MODULE CDBDaemon;
       basedir := "/pub/cdb";
       intensity := 9;
       monitor := FALSE;
-      Args.Init("[-a auth] [-b basedir] [-i intensity] [-m] [-r read-auth] [-s shutdodwn-auth] [-w write-auth] dbname");
+      ports := NIL;
+      Args.Init("[-a auth] [-b basedir] {-B bind-address port} [-i intensity] [-m] [-r read-auth] [-s shutdown-auth] [-w write-auth] dbname");
       WHILE Args.GetFlag(flag) DO
 	 CASE flag OF
 	 | "a":   Args.FetchString(filename); CreateLid(auth, filename);
 	 | "b":   Args.FetchString(basedir);
+	 | "B":   Args.FetchString(hostname);
+		  Args.Fetch(as); Read.IntS(as, port);
+		  IF as.count = 0 THEN Args.Usage END;
+		  IF (port >= 0) & (port < 10000H) THEN
+		     portnum := SYS.VAL(IPv4Addresses.PortNumber, port);
+		  ELSE
+		     Args.Usage;
+		  END;
+		  Strings.Open(s, hostname);
+		  IF IPv4Addresses.ReadText(s, ipaddr) THEN
+		     AddIPv4(ports, ipaddr, portnum);
+		  ELSIF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+			   hostname, addresses, errors) THEN
+		     WHILE addresses # NIL DO
+			AddIPv4(ports, addresses.addr, portnum);
+			addresses := addresses.next;
+		     END;
+		  ELSE
+		     Conclusions.Conclude(errors, Errors.fatal, "");
+		  END;
 	 | "i":   Args.Fetch(as); Read.IntS(as, intensity);
 	 | "m":   monitor := TRUE;
 	 | "r":   Args.FetchString(filename); CreatePot(read, filename);
@@ -235,6 +289,21 @@ MODULE CDBDaemon;
       END;
    END OpenAllKindsOfPorts;
 
+   PROCEDURE OpenGivenPorts(list: ListOfAddresses);
+      VAR
+	 errors: RelatedEvents.Object;
+	 port: Networks.Socket;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      WHILE list # NIL DO
+	 IF ~Networks.Listen(port, list.address, errors) OR
+	       ~RemoteObjects.AddPort(port, list.address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 list := list.next;
+      END;
+   END OpenGivenPorts;
+
    PROCEDURE KeepResolverAlive;
       (* otherwise DNSResolvers.std terminates as soon as
 	 all initializations are over
@@ -252,7 +321,11 @@ BEGIN
    Events.Handler(SysSignals.TERM, TerminationHandler);
    ProcessArgs;
    intensity := Storage.Intensity(intensity);
-   OpenAllKindsOfPorts;
+   IF ports = NIL THEN
+      OpenAllKindsOfPorts;
+   ELSE
+      OpenGivenPorts(ports);
+   END;
    InsertNS;
    IF monitor THEN
       SysMonitor.Start;

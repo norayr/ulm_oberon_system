@@ -4,20 +4,26 @@ BASEDIR=/usr/local/oberon
 BINDIR=$BASEDIR/bin
 PONSDIR=$BASEDIR/var/pons
 ONS_ROOT=127.0.0.1:9880
+ONS_PORT=127.0.0.1:9881
 
 cmdname=`basename $0`
-usage="Usage $cmdname {-b bindto} [-d ponsdir] [-g gid] [-u uid]"
+usage="Usage $cmdname {-b bindto} {-B bindto} [-d ponsdir] [-g gid] [-u uid]"
 
 bindto=
+Bindto=
 root="$ONS_ROOT"
 ponsdir="$PONSDIR"
 uidgidflags=""
-set -- `getopt b:d:g:u: $*`
+set -- `getopt b:B:d:g:u: $*`
 while [ $# -gt 0 ]
 do
    case $1
    in -b)
       bindto="$bindto -b `echo $2 | sed 's/:/ /'`"
+      root="$2"
+      shift 2
+   in -B)
+      Bindto="$Bindto -B `echo $2 | sed 's/:/ /'`"
       root="$2"
       shift 2
    ;; -d)
@@ -39,6 +45,10 @@ if [ "" = "$bindto" ]
 then
    bindto="-b `echo $ONS_ROOT | sed 's/:/ /'`"
 fi
+if [ "" = "$Bindto" ]
+then
+   Bindto="-B `echo $ONS_PORT | sed 's/:/ /'`"
+fi
 
 echo "#!/bin/sh
 #------------------------------------------------------------------------------
@@ -57,7 +67,7 @@ echo "#!/bin/sh
 
 start_service() {
    echo -n \"Starting PONS \"
-   startproc $uidgidflags -l pons.LOG $BINDIR/pons $bindto pdb
+   startproc $uidgidflags -l pons.LOG $BINDIR/pons $bindto $Bindto pdb
    rc_status -v
 }
 

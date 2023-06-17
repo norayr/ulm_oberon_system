@@ -9,6 +9,7 @@ InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 Parameters :=		BASEDIR=$(DestDir) BINDIR=$(BinDir) \
 			PONSDIR=$(PonsDir) ONS_ROOT=$(ONSRoot) \
 			CDBDDIR=$(CDBDDir) CDBDIR=$(CDBDir) \
+			ONS_PORT=$(ONSPort) \
 			INTENSITY=$(IntensityDir)/cdbd
 
 .PHONY:			install

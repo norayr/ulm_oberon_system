@@ -29,7 +29,11 @@ InstallVarDir := $(InstallDir)/var
 InstallInitDir := $(InstallDir)/etc/init.d
 RcFile := $(InstallDir)/rc
 ONSRoot := 127.0.0.1:9880
-ONSRootOfStage1 := 127.0.0.1:9881
+ONSPort := 127.0.0.1:9881
+CDBDPort := 127.0.0.1:9882
+ONSRootOfStage1 := 127.0.0.1:9883
+ONSPortOfStage1 := 127.0.0.1:9884
+CDBDPortOfStage1 := 127.0.0.1:9885
 Lib := $(Root)/build/libo.a
 ScriptDir := $(Root)/build/scripts
 Binaries := cdbd nsh obci obco obdeps obload obtofgen obzap pons onsstat \
@@ -43,7 +47,8 @@ MakeParams := DestDir=$(DestDir) BinDir=$(BinDir) DBAuth=$(DBAuth) \
 	CDBDir=$(CDBDir) SrcDir=$(SrcDir) IntensityDir=$(IntensityDir) \
 	InstallDir=$(InstallDir) InstallBinDir=$(InstallBinDir) \
 	InstallDBDir=$(InstallDBDir) InstallPonsDir=$(InstallPonsDir) \
-	InstallIntensityDir=$(InstallIntensityDir)
+	InstallIntensityDir=$(InstallIntensityDir) ONSPort=$(ONSPort) \
+	CDBDPort=$(CDBDPort)
 Stage1Dir := $(Root)/stage1
 Stage2Dir := $(Root)/stage2
 
@@ -97,7 +102,7 @@ installutil:	bindir
 
 .PHONY:	scripts
 scripts:
-	cd src/util && $(MAKE) InstallDir=$(Root) InstallBinDir=$(Root)/build/scripts DestDir=$(Root) BinDir=$(Root)/build/scripts IntensityDir=$(IntensityDir) install
+	cd src/util && $(MAKE) $(MakeParams) InstallDir=$(Root) InstallBinDir=$(Root)/build/scripts DestDir=$(Root) BinDir=$(Root)/build/scripts IntensityDir=$(IntensityDir) install
 
 .PHONY: mkoblib
 mkoblib: scripts $(Lib)
@@ -138,9 +143,12 @@ $(RcFile):
 	echo PATH=$(BinDir):\$$PATH >>$@
 	echo MANPATH=$(ManDir):\$$MANPATH >>$@
 	echo ONS_ROOT=$(ONSRoot) >>$@
+	echo ONS_PORT=$(ONSPort) >>$@
+	echo CDBD_PORT=$(CDBDPort) >>$@
 	echo CDB_BASEDIR=$(CDBDir) >>$@
 	echo CDB_AUTH=$(DBAuth) >>$@
-	echo export OBERON PATH MANPATH ONS_ROOT CDB_BASEDIR CDB_AUTH >>$@
+	echo export OBERON PATH MANPATH ONS_ROOT ONS_PORT \
+	   CDBD_PORT CDB_BASEDIR CDB_AUTH >>$@
 
 .PHONY:	installsuseinit initdir
 installsuseinit:	initdir $(InstalledInitScripts)
@@ -152,7 +160,8 @@ $(InstallInitDir)/cdbd:		scripts
 	      -c $(CDBDir) -d $(CDBDDir) -r $(ONSRoot) >$@
 	chmod 755 $@
 $(InstallInitDir)/pons:		$(ScriptDir)/obmk_suse_init_pons
-	ONS_ROOT=$(ONSRoot) BASEDIR=$(DestDir) BINDIR=$(BinDir) \
+	ONS_ROOT=$(ONSRoot) ONS_PORT=$(ONSPort) \
+	   BASEDIR=$(DestDir) BINDIR=$(BinDir) \
 	   $(ScriptDir)/obmk_suse_init_pons \
 	      -d $(PonsDir) >$@
 	chmod 755 $@
@@ -182,13 +191,15 @@ stage1:
 	time $(BinDir)/mk_obstage \
 	   $(Stage1Dir) $(BinDir) $(BinDir) $(ONSRoot) $(CDBDir) $(DBAuth)
 runstage1:
-	$(BinDir)/run_obstage $(Stage1Dir) $(BinDir) $(ONSRootOfStage1)
+	$(BinDir)/run_obstage $(Stage1Dir) $(BinDir) \
+	   $(ONSRootOfStage1) $(ONSPortOfStage1) $(CDBDPortOfStage1)
 stage2:
 	time $(BinDir)/mk_obstage \
 	   $(Stage2Dir) $(BinDir) $(Stage1Dir) $(ONSRootOfStage1) \
 	   $(CDBDir) $(Stage1Dir)/var/cdbd/write
 finishstage1:
-	-ONS_ROOT=$(ONSRootOfStage1) $(Stage1Dir)/onsshut /pub/pons
+	-ONS_ROOT=$(ONSRootOfStage1) \
+	   $(Stage1Dir)/onsshut -a $(Stage1Dir)/var/pons/shutdown /pub/pons
 stage12cmp:
 	cmp $(Stage1Dir)/cdbd $(Stage2Dir)/cdbd
 	cmp $(Stage1Dir)/nsh $(Stage2Dir)/nsh

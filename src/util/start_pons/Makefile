@@ -5,7 +5,8 @@ InstallBinDir :=	$(BinDir)
 Targets :=		start_pons
 InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 Parameters :=		BASEDIR=$(DestDir) BINDIR=$(BinDir) \
-			PONSDIR=$(PonsDir) ONS_ROOT=$(ONSRoot)
+			PONSDIR=$(PonsDir) ONS_ROOT=$(ONSRoot) \
+			ONS_PORT=$(ONSPort)
 
 .PHONY:			install
 install:		$(InstalledTargets)

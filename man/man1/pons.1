@@ -1,6 +1,6 @@
 .\" ---------------------------------------------------------------------------
 .\" Ulm's Oberon System Documentation
-.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
 .\" ---------------------------------------------------------------------------
 .\"    Permission is granted to make and distribute verbatim copies of this
 .\" manual provided the copyright notice and this permission notice are
@@ -136,7 +136,7 @@ If
 .BI \\$1 " \\$2"
 ..
 '\"----------------------------------------------------------------------------
-.TH pons 1 "Last change: 20 September 2004" "Release 0.5" "Ulm's Oberon System"
+.TH pons 1 "Last change: 10 February 2005" "Release 0.5" "Ulm's Oberon System"
 .SH NAME
 pons \- Persistent Oberon Name Service
 .SH SYNOPSIS
@@ -144,8 +144,17 @@ pons \- Persistent Oberon Name Service
 .RB { \-b
 .I bind-address
 .IR port }
-.RB [ \-p
-.IR pot-file ]
+.RB { \-B
+.I bind-address
+.IR port }
+.RB [ \-i
+.IR intensity ]
+.RB [ \-r
+.IR read-auth ]
+.RB [ \-s
+.IR shutdown-auth ]
+.RB [ \-w
+.IR write-auth ]
 .I dbfile
 .SH DESCRIPTION
 \fIpons(1)\fP provides a persistent hierarchical structure of directories
@@ -166,12 +175,19 @@ upon a safe storage using \fITransStreams(3)\fP on a regular file named
 \fIdbfile\fP.  The database file \fIdbfile\fP will be created if it does
 not exist yet.
 .LP
-Note that database files basing on \fIStandardContainers(3)\fP and
+Note that database files based on \fIStandardContainers(3)\fP and
 \fITransStreams(3)\fP contain holes causing the size returned by
 \fIstat(2)\fP to be much larger than the actual disk usage.
 These files must be copied with care (either compress them first,
 or use options like \fB-sparse\fP of \fIstar(1)\fP). It is not
 safe, however, to copy a database file while \fIpons\fP is running.
+.LP
+\fIpons\fP supports the authorization scheme of \fINames(3)\fP.
+Initial permissions may be given through the options \fI-r\fP,
+\fI-s\fP, and \fI-w\fP when a new database is to be created.
+Afterwards, permissions can only be changed through operations
+of \fINames(3)\fP. Newly created directories inherit the set
+of permissions from their parent directory.
 .LP
 Following options are supported:
 .TP 8
@@ -184,14 +200,55 @@ and \fIIPv4NameSystems(3)\fP. Note that any number of addresses may
 be given. Usually, ``127.0.0.1 9880'' is given.
 .TP 8
 .SM
-.BI \-p " pot-file"
-By default, anyone is permitted to change the directory structure
-including creating new directories, renaming them, deleting them, and
-inserting nodes. If a \fIpot-file\fP is given, it is taken as a file
-containing a persistent object of type \fIShards.Pot\fP.  An authorization
-is then required for each operation that modifies the structure (either
-permanently or temporarily). Note that currently read access is always
-free to anybody.
+.BI \-B " bind-address port"
+add this port to those ports used by \fIRemoteObjects(3)\fP.
+By default an ephemeral port address is taken.
+.TP 8
+.SM
+.BI \-i " intensity"
+allows to set the intensity level for \fIStorage.Intensity\fP
+(see \fIStorage(3)\fP). This allows to fine-tune the balance of
+memory usage vs CPU time by the garbage collection. By default,
+the intensity is 8. Lower intensity values reduce memory usage
+but cause CPU overhead by more frequent garbage collections.
+Higher intensity values cause more memory to be used while saving
+more CPU time. Please note however, that the address space can
+also be a significant limit, i.e. at high intensity values it
+is possible that no more address space is found by \fIMemory(3)\fP.
+.TP 8
+.SM
+.B \-I
+permit insertions even with read-only access authorization.
+Please note that this option is ignored if \fIdbfile\fP exists already.
+.TP 8
+.SM
+.BI \-r " read-auth"
+specifies a file containing a persistent pair of shards (of types
+\fIShards.Lid\fP and \fIShards.Pot\fP). If given, all read-only accesses
+must provide a lid that fits to the pot of \fIread-auth\fP. By default no
+authorization is required for read-only accesses. If this file does not
+exist yet, it is created and initialized with a pair of private shards
+(see \fIPrivateShards(3)\fP).
+Please note that this option is ignored if \fIdbfile\fP exists already.
+.TP 8
+.SM
+.BI \-s " shutdown-auth"
+specifies a file containing a persistent pair of shards (of types
+\fIShards.Lid\fP and \fIShards.Pot\fP). Shutdown operations on the
+\fIpons\fP object in the root directory must provide a lid that
+fits to \fIshutdown-auth\fP. By default, \fIshutdown-auth\fP equals
+\fIwrite-auth\fP.  If this file does not exist yet, it is created and
+initialized with a pair of private shards (see \fIPrivateShards(3)\fP).
+.TP 8
+.SM
+.BI \-w " write-auth"
+specifies a file containing a persistent pair of shards (of types
+\fIShards.Lid\fP and \fIShards.Pot\fP). If given, all write-accesses
+must provide a lid that fits to the pot of \fIwrite-auth\fP. By default,
+write accesses are prohibited to everybody.  If this file does not
+exist yet, it is created and initialized with a pair of private shards
+(see \fIPrivateShards(3)\fP).
+Please note that this option is ignored if \fIdbfile\fP exists already.
 .LP
 \fIpons(1)\fP may be terminated by sending \fBSIGTERM\fP or
 invoking \fIonsshut(1)\fP for the control object named ``pons''
@@ -201,13 +258,23 @@ within the exported root.
 .Tp PersistentNodes(3)
 the implementation of \fIpons(1)\fP is based on this kind
 of persistent nodes
+.Tp PrivateShards(3)
+default type of shards that is used for authorization.
 .Tp Names(3)
 general abstraction for name hierarchies
+.Tp onsshut(1)
+allows to shut down the \fIpons(1)\fP service
 .Te
 .\" ---------------------------------------------------------------------------
-.\" $Id: pons.1,v 1.1 2004/09/20 10:39:00 borchert Exp $
+.\" $Id: pons.1,v 1.3 2005/02/10 13:43:58 borchert Exp borchert $
 .\" ---------------------------------------------------------------------------
 .\" $Log: pons.1,v $
+.\" Revision 1.3  2005/02/10 13:43:58  borchert
+.\" new authorization options
+.\"
+.\" Revision 1.2  2005/02/08 21:40:31  borchert
+.\" options -B and -i added
+.\"
 .\" Revision 1.1  2004/09/20 10:39:00  borchert
 .\" Initial revision
 .\"

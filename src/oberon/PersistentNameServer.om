@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: PersistentNameServer.om,v 1.1 2004/09/16 13:35:34 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: PersistentNameServer.om,v $
+   Revision 1.1  2004/09/16 13:35:34  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -44,10 +47,13 @@ MODULE PersistentNameServer;
 	 END;
    VAR
       bootAddresses: ListOfAddresses;
+      portAddresses: ListOfAddresses;
       dbfile: ARRAY 512 OF CHAR;
       root: Names.Node;
-      potType: Services.Type;
-      pot: Shards.Pot;
+      lidType, potType: Services.Type;
+      read, write, shutdown: Shards.Pot;
+      permitInsertions: BOOLEAN;
+	 (* permit insertions with reading permission? *)
       termination: BOOLEAN;
       verbose: BOOLEAN;
       rootEventType: Events.EventType;
@@ -71,6 +77,21 @@ MODULE PersistentNameServer;
 	 END;
       END;
    END OpenAllKindsOfPorts;
+
+   PROCEDURE OpenGivenPorts(list: ListOfAddresses);
+      VAR
+	 errors: RelatedEvents.Object;
+	 port: Networks.Socket;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      WHILE list # NIL DO
+	 IF ~Networks.Listen(port, list.address, errors) OR
+	       ~RemoteObjects.AddPort(port, list.address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 list := list.next;
+      END;
+   END OpenGivenPorts;
 
    PROCEDURE StartBootServices;
       VAR
@@ -115,10 +136,18 @@ MODULE PersistentNameServer;
 	 Conclusions.Conclude(errors, Errors.fatal, "");
       END;
       IF new THEN
+	 (* by default write permission is required: *)
 	 accessmode := 0;
 	 WHILE accessmode < Names.accessmodes DO
-	    permissions[accessmode] := pot;
+	    permissions[accessmode] := write;
 	    INC(accessmode);
+	 END;
+	 (* now for the exceptions: *)
+	 permissions[Names.examine] := read;
+	 permissions[Names.read] := read;
+	 permissions[Names.search] := read;
+	 IF permitInsertions THEN
+	    permissions[Names.insert] := read;
 	 END;
 	 IF ~PersistentNodes.Init(container, permissions) THEN
 	    Conclusions.Conclude(container, Errors.fatal, "");
@@ -142,6 +171,7 @@ MODULE PersistentNameServer;
 	 s: Streams.Stream;
 	 ipaddr: IPv4Addresses.Address;
 	 filename: ARRAY 512 OF CHAR;
+	 lid: Shards.Lid;
 
       PROCEDURE AddIPv4(VAR list: ListOfAddresses;
                         ipaddr: IPv4Addresses.Address;
@@ -151,33 +181,53 @@ MODULE PersistentNameServer;
 	    address: Networks.Address;
 	    member: ListOfAddresses;
       BEGIN
-	 sockaddr.host := ipaddr; sockaddr.portnum := portnum;
+	 sockaddr.host := ipaddr;
+	 IPv4Addresses.SetPort(sockaddr, portnum);
 	 InetTCP.CreateAddress(address, sockaddr);
 	 NEW(member); member.next := list; member.address := address;
 	 list := member;
       END AddIPv4;
 
-      PROCEDURE ReadPot(VAR pot: Shards.Pot; filename: ARRAY OF CHAR);
+      PROCEDURE CreatePot(VAR pot: Shards.Pot; filename: ARRAY OF CHAR);
 	 VAR
 	    s: Streams.Stream;
+	    lid: Shards.Lid;
       BEGIN
-	 IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
-	       errors) THEN
+	 IF UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+	                   errors) THEN
+	    RelatedEvents.Forward(s, errors);
+	    IF ~PersistentObjects.GuardedRead(s, lidType, lid) OR
+	          ~PersistentObjects.GuardedRead(s, potType, pot) THEN
+	       Conclusions.Conclude(errors, Errors.fatal, filename);
+	    END;
+	    Streams.Release(s);
+	 ELSIF UnixFiles.Open(s, filename, UnixFiles.write + UnixFiles.create,
+	                      Streams.onebuf, errors) THEN
+	    PrivateShards.Create(pot, lid);
+	    IF ~PersistentObjects.Write(s, lid) OR
+		  ~PersistentObjects.Write(s, pot) OR
+		  ~Streams.Close(s) THEN
+	       Conclusions.Conclude(errors, Errors.fatal, filename);
+	    END;
+	 ELSE
 	    Conclusions.Conclude(errors, Errors.fatal, "");
 	 END;
-	 IF ~PersistentObjects.GuardedReadObjectOrNIL(s, potType, pot) THEN
-	    Conclusions.Conclude(s, Errors.fatal, "");
-	 END;
-	 Streams.Release(s);
-      END ReadPot;
+      END CreatePot;
 
    BEGIN (* ProcessArgs *)
       NEW(errors); RelatedEvents.QueueEvents(errors);
-      Args.Init("{-b bind-address port} [-p pot-file] dbfile");
-      bootAddresses := NIL; pot := NIL; verbose := FALSE;
+      Args.Init("{-b bind-address port} {-B bind-address port} [-i] [-I] [-r read-auth] [-s shutdown-auth] [-v] [-w write-auth] dbfile");
+      bootAddresses := NIL; verbose := FALSE; portAddresses := NIL;
+      (* by default, the name structure of PONS may be read by everyone
+	 but external write access is not granted
+      *)
+      Shards.CreateSimplePot(read, (* permissive = *) TRUE);
+      VolatileShards.Create(write, lid);
+      shutdown := NIL;
+      permitInsertions := FALSE;
       WHILE Args.GetFlag(flag) DO
 	 CASE flag OF
-	 | "b":
+	 | "b", "B":
 	       Args.FetchString(hostname);
 	       Args.Fetch(args); Read.IntS(args, port);
 	       IF args.count = 0 THEN Args.Usage END;
@@ -188,27 +238,43 @@ MODULE PersistentNameServer;
 	       END;
 	       Strings.Open(s, hostname);
 	       IF IPv4Addresses.ReadText(s, ipaddr) THEN
-		  AddIPv4(bootAddresses, ipaddr, portnum);
+		  CASE flag OF
+		  | "b":   AddIPv4(bootAddresses, ipaddr, portnum);
+		  | "B":   AddIPv4(portAddresses, ipaddr, portnum);
+		  END;
 	       ELSIF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
 			hostname, addresses, errors) THEN
 		  WHILE addresses # NIL DO
-		     AddIPv4(bootAddresses, addresses.addr, portnum);
+		     CASE flag OF
+		     | "b":   AddIPv4(bootAddresses, addresses.addr, portnum);
+		     | "B":   AddIPv4(portAddresses, addresses.addr, portnum);
+		     END;
 		     addresses := addresses.next;
 		  END;
 	       ELSE
 		  Conclusions.Conclude(errors, Errors.fatal, "");
 	       END;
-	 | "p":
-	       Args.FetchString(filename);
-	       ReadPot(pot, filename);
+	 | "i":
+	       Args.Fetch(args); Read.IntS(args, intensity);
+	 | "I":
+	       permitInsertions := TRUE;
+	 | "r":
+	       Args.FetchString(filename); CreatePot(read, filename);
+	 | "s":
+	       Args.FetchString(filename); CreatePot(shutdown, filename);
 	 | "v":
 	       verbose := TRUE;
+	 | "w":
+	       Args.FetchString(filename); CreatePot(write, filename);
 	 ELSE
 	    Args.Usage;
 	 END;
       END;
       Args.FetchString(dbfile);
       Args.AllArgs;
+      IF shutdown = NIL THEN
+	 shutdown := write;
+      END;
    END ProcessArgs;
 
    PROCEDURE InitiateTermination;
@@ -277,11 +343,11 @@ MODULE PersistentNameServer;
 	 eventType: Events.EventType;
 	 key: Resources.Key;
    BEGIN
-      IF (pot = NIL) OR ~Shards.Supply(pot, auth) THEN
+      IF (write = NIL) OR ~Shards.Supply(write, auth) THEN
 	 auth := NIL;
       END;
       NEW(errors); RelatedEvents.QueueEvents(errors);
-      ControlNodes.Create(node, NIL, pot);
+      ControlNodes.Create(node, NIL, shutdown);
       Resources.Attach(node, key);
       IF ~Paths.Insert("/pub/pons", node, auth, errors) THEN
 	 Conclusions.Conclude(errors, Errors.error, "/pub/pons");
@@ -301,10 +367,16 @@ MODULE PersistentNameServer;
    END KeepResolverAlive;
 
 BEGIN
-   intensity := Storage.Intensity(8);
    Services.SeekType("Shards.Pot", potType); ASSERT(potType # NIL);
+   Services.SeekType("Shards.Lid", lidType); ASSERT(lidType # NIL);
+   intensity := 8;
    ProcessArgs;
-   OpenAllKindsOfPorts;
+   intensity := Storage.Intensity(intensity);
+   IF portAddresses # NIL THEN
+      OpenGivenPorts(portAddresses);
+   ELSE
+      OpenAllKindsOfPorts;
+   END;
    SetupRoot(root, dbfile);
    InsertOwnRoot(root);
    StartBootServices;

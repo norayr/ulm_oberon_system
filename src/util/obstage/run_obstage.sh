@@ -7,8 +7,8 @@
 # - onsroot (to be used for the _new_ name system)
 #------------------------------------------------------------------------------
 cmdname=`basename $0`
-usage="Usage: $cmdname stagedir ibindir onsroot"
-if [ $# -ne 3 ]
+usage="Usage: $cmdname stagedir ibindir onsroot onsport cdbdport"
+if [ $# -ne 5 ]
 then
    echo >&2 "$usage"; exit 1
 fi
@@ -16,9 +16,17 @@ fi
 stagedir="$1"; shift
 ibindir="$1"; shift;
 onsroot="$1"; shift;
+onsport="$1"; shift;
+cdbdport="$1"; shift;
 
 ONS_ROOT="$onsroot"
 export ONS_ROOT
+
+ONS_PORT="$onsport"
+export ONS_PORT
+
+CDBD_PORT="$cdbdport"
+export CDBD_PORT
 
 BINDIR="$stagedir"
 export BINDIR
@@ -26,8 +34,11 @@ export BINDIR
 CDBDIR=/pub/cdb/oberon
 export CDBDIR
 
-mkdir -p "$stagedir"/var/pons
-PONSDIR="$stagedir"/var/pons $ibindir/start_pons
+PONSDIR="$stagedir"/var/pons
+export PONSDIR
+
+mkdir -p "$PONSDIR"
+$ibindir/start_pons
 
 mkdir -p "$stagedir"/var/cdbd
 CDBDDIR="$stagedir"/var/cdbd
