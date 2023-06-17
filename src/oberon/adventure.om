@@ -1,0 +1,360 @@
+(**************************************************************************
+*                                adventure.om                             *
+*                                                                         *
+*                           ------------------                            *
+*   begin               : Fr Jan 28 18:40:01 CET 2005                     *
+*   copyright           : (C) 2005 by Micha                               *
+*   email               : micham @ mathematik . uni - ulm . de            *
+*   more information     : [1]                                            *
+*                                                                         *
+*   [1] www.mathematik.uni-ulm.de/sai/ws04/proc/blatt13/blatt13.htm       *
+*                                                                         *
+**************************************************************************)
+
+(**************************************************************************
+*                                                                         *
+*   This program is free software; you can redistribute it and/or modify  *
+*   it under the terms of the GNU General Public License as published by  *
+*   the Free Software Foundation; either version 2 of the License, or     *
+*   (at your option) any later version.                                   *
+*                                                                         *
+***************************************************************************)
+MODULE adventure;
+	IMPORT Write,Read,Conclusions,Streams,UA:=UnixArguments,Process,Sets,StreamDisciplines,Strings,UF:=UnixFiles;
+
+		CONST
+			MAXIMAL = 1023;
+			TRENNER = ":";
+	
+		TYPE 
+			zeichenkette=ARRAY 80 OF CHAR;
+			strbool=RECORD
+				datei:zeichenkette;
+				id:INTEGER;
+				moegl:BOOLEAN; (*ist TRUE, falls datei nicht leer (!= -1 )*)
+			END;
+			relation=RECORD
+				dateiname:zeichenkette;
+				str:Streams.Stream;
+				strpos:ARRAY MAXIMAL OF Streams.Count;
+			END;	
+			all=RECORD
+				startdatei:zeichenkette;
+				zuord:ARRAY MAXIMAL OF relation;
+				i:INTEGER;
+			END;	
+			zeile=RECORD
+				id:INTEGER;
+				gruppe:zeichenkette;
+				raum:zeichenkette;
+				bewohner:zeichenkette;
+				(*0: vor, 1: rechts, 2: hinten, 3: links, 4: oben, 5: unten*)
+				richtung: ARRAY 6 OF strbool;
+(*ab hier wird es nicht mehr benoetigt*)
+				a:zeichenkette;(*a= vorne*) ab:BOOLEAN;
+				b:zeichenkette;(*b= rechts*) bb:BOOLEAN;
+				c:zeichenkette;(*c= hinter*) cb:BOOLEAN; 
+				d:zeichenkette;(*d= links*) db:BOOLEAN;
+				e:zeichenkette;(*e= ueber*) eb:BOOLEAN;
+				f:zeichenkette;(*f= unter*) fb:BOOLEAN;
+				vor:zeichenkette; bvor:BOOLEAN;
+				rechts:zeichenkette; brechts:BOOLEAN;
+				hinter:zeichenkette; bhinter:BOOLEAN;
+				links:zeichenkette; blinks:BOOLEAN;
+				ueber:zeichenkette; bueber:BOOLEAN;
+				unter:zeichenkette; bunter:BOOLEAN;
+				kommentar:zeichenkette;
+			END;
+		VAR
+			DEBUG:BOOLEAN;
+	
+	PROCEDURE Fail;
+	BEGIN
+		Write.LineS(Streams.stderr,"fehlerhafte Datei");
+		Process.Exit(Process.indicateFailure);
+	END Fail;
+	
+	(*leifert richtungmgl zurueck*)(*wertet die Eintraege 4-9 aus*)
+	PROCEDURE Richtung(s:Streams.Stream; VAR a:strbool):BOOLEAN ;
+		VAR
+			tmp:zeichenkette; (*zwischenspeicher für *)
+			len:INTEGER;
+			c:CHAR;
+			strc:Streams.Count;
+	BEGIN
+		Read.IntS(s,a.id);
+		IF s.count=0 THEN (*Falls es kein Int ist*)
+			Read.StringS(s,tmp);
+			a.moegl:=TRUE;
+		ELSE (*Falls es eine Int ist*)
+			CASE a.id OF
+			| -1:	a.moegl:=FALSE; RETURN FALSE; 
+			| -99:  a.moegl:=TRUE; a.datei:="!§$%&/()=?`*"; RETURN TRUE;
+			ELSE (*alle andern ausser den o.g.*)
+				Fail;
+			END;
+		END;	
+		(*Streams.SetPos(s,0);*)
+		Streams.Seek(s,-1,Streams.fromEnd);
+		REPEAT
+			Streams.ReadByte(s,c);
+			CASE c OF
+			| "0".."9":
+			| "_":
+			ELSE
+				IF DEBUG THEN Write.LineS(Streams.stderr,"Richtung.Repeat.Case.Else"); END;
+				Fail;
+			END;	
+			Streams.Seek(s,-2,Streams.fromPos);(*liest von hinten nach vorn, damit dateinamen auch _ enthalten duefen*)
+		UNTIL c="_";
+		Streams.GetPos(s,strc);
+		(*Streams.Seek(s,1,1);*)
+		Read.IntS(s,a.id);
+		IF s.count = 0 THEN
+			Fail
+		END;	
+		IF (a.id>=MAXIMAL) OR (a.id<0) THEN 
+			IF DEBUG THEN Write.LineS(Streams.stderr,"Richtung.IF(a.id..)"); END;
+			Fail;
+		END;	
+
+		Streams.Trunc(s,strc);(*kuerzt den streams bis zu strc*)
+		Read.LineS(s,a.datei);(*liest den Dateiname vorm !!letzten!!! "_" aus*)
+		RETURN TRUE;
+
+	END Richtung;
+	
+	(*liefert FALSE zurueck, fals die Zeile nicht der Konvention entspricht*)	
+	PROCEDURE Zerleg(VAR line:zeile; s:Streams.Stream):BOOLEAN;
+		VAR
+			lline:zeichenkette;
+			i,j:INTEGER;
+			sep:Sets.CharSet;(*Darin wird der trenner sep(erator) gesp.*)
+			zahl:Streams.Stream;
+	BEGIN
+		i:=0;
+		Sets.InitSet(sep);
+		Sets.InclChar(sep,TRENNER);
+		StreamDisciplines.SetFieldSepSet(s,sep);
+		WHILE Read.FieldS(s,lline) DO
+			CASE i OF
+			| 0: 
+				Strings.Open(zahl,lline); 
+				Read.IntS(zahl,line.id); 
+				IF zahl.count=0 THEN (*falls 1. Eintrag keine Zahl ist*)
+					Fail;
+				END;	
+				Streams.Release(zahl)
+			| 1: line.gruppe:=lline;
+			| 2: line.raum:=lline;
+			| 3: line.bewohner:=lline;
+			| 4..9: Strings.Open(zahl,lline); Richtung(zahl,line.richtung[i-4]); 
+			| 10: line.kommentar:=lline;
+			ELSE
+				Fail;
+			END;
+			INC(i);
+		END;
+		IF (i<10) THEN Fail; END;
+			
+	END Zerleg;
+	
+	(*Sucht, ob die Datei schon indiziert wurde*)
+	PROCEDURE Filein(file:zeichenkette; b:all ):INTEGER;
+		VAR
+			i:INTEGER;
+	BEGIN
+		i:=0;
+		LOOP 
+			IF b.zuord[i].dateiname=file THEN RETURN i; END;
+			INC(i);
+			IF i=b.i THEN EXIT END;
+		END;
+		RETURN -1;
+	END Filein;
+	
+	(*Holt die entsprechende Zeile aus der gewaehlten Datei und gibt den *)
+	(*a,line,filename,id_nr*)
+	PROCEDURE Fetch(a:all;VAR line:zeile;datei:zeichenkette;id:INTEGER);
+		VAR
+			wo,i:INTEGER;
+			strpos:Streams.Count;
+	BEGIN 
+		i:=Filein(datei,a); (*sucht zuerst den Eintrag in dem der stream steckt*)
+		IF DEBUG THEN Write.String("Fetch.i: "); Write.Int(i,0); Write.Ln; END;
+		(*holt die Zeile, von der streampos*)
+		strpos:=a.zuord[i].strpos[id];
+		(*setzt den stream an die stelle, wo die Zeile mit ID beginnt*)
+		Streams.SetPos(a.zuord[i].str,a.zuord[i].strpos[id]);
+		(*Holt die Zeile, aus der Datei , die mit ID beginnt*)
+		IF Zerleg(line,a.zuord[i].str) THEN Write.Line("Fech.Zerleg"); END;
+	END Fetch;
+
+	PROCEDURE CloseStreams(VAR a:all);(*loest alle streams*)
+		VAR 
+			i:INTEGER;
+	BEGIN
+		i:=0;
+		WHILE (i<a.i) DO
+			Streams.Release(a.zuord[i].str);
+		END;	
+	END CloseStreams;
+	
+	(*Komplexe Procedure, die alle verlinkte Dateiene indiziert, 
+	falls sie noch net indiziert wurden*)
+	PROCEDURE Recurs(VAR a:all;datei:zeichenkette );
+		VAR
+			s:Streams.Stream;
+			line:zeile;
+			i,j,k:INTEGER;
+			strpos:Streams.Count;
+	BEGIN
+		IF datei="!§$%&/()=?`*" THEN
+			Write.Line("Auf wiedersehen");
+			CloseStreams(a);
+			HALT(0);
+		END;	
+		IF ~UF.Open(a.zuord[a.i].str,datei,UF.read,Streams.onebuf,NIL) THEN
+			Write.LineS(Streams.stderr,"konnte Datei nicht oeffnen");
+			Process.Exit(Process.indicateFailure);
+		END;
+		k:=0;
+		j:=a.i;
+		a.zuord[a.i].dateiname:=datei;
+		INC(a.i);	
+		IF a.i=MAXIMAL THEN Write.LineS(Streams.stderr,"Zu viele Dateien"); HALT(1); END;	
+		LOOP	(*das hier durchlauft die ganze Datei*)
+			Streams.GetPos(a.zuord[j].str,strpos);
+			IF ~Zerleg(line,a.zuord[j].str) THEN (*wenn Zeile nicht richtig formatiert*)
+				Fail;
+			END;
+			a.zuord[j].strpos[line.id]:=strpos;	
+			i:=0;
+			WHILE (i<6) DO
+				IF line.richtung[i].moegl & (Filein(line.richtung[i].datei,a)>-1) THEN
+					Recurs(a,line.richtung[i].datei);
+				END;
+				INC(i);
+			END;	
+			IF a.zuord[j].str.eof OR a.zuord[j].str.error THEN EXIT END;	
+			Read.LnS(a.zuord[j].str);(*Liest ueber das Zeilenende hinweg*)
+			IF a.zuord[j].str.eof OR a.zuord[j].str.error THEN EXIT END;
+			INC(k);
+			IF k=MAXIMAL THEN 
+				Write.LineS(Streams.stderr,"Zu viele Eintraege");
+				Fail;
+			END;
+		END;	
+	END Recurs;
+		
+	PROCEDURE Arg(VAR datei:zeichenkette);(*Ueberprueft die Shell Optionen/Argumente*)
+		VAR
+			gefunden,end,fert:BOOLEAN;
+			flag:CHAR;
+	BEGIN
+		end:=FALSE;
+		fert:=end;
+		gefunden:=FALSE;
+		UA.Init("{-d} filename");
+		WHILE ~end & UA.GetFlag(flag) DO
+			CASE flag OF
+			| "d": IF ~fert THEN DEBUG:=TRUE; fert:=TRUE; END;
+			| "-": end:=TRUE;
+			ELSE
+				UA.Usage;
+				Process.Exit(Process.indicateFailure);
+			END;
+		END;	
+		WHILE UA.GetArg(datei) DO
+			IF gefunden THEN	(*fals mehr als ein Dateiname angegeben wurde*)
+				UA.Usage;
+				Process.Exit(Process.indicateFailure);
+			ELSE
+				gefunden:=TRUE;
+			END;
+		END;
+		IF ~gefunden THEN (*wenn keine dateiname angeg wurde*) 
+			UA.Usage;
+			 Process.Exit(Process.indicateFailure);
+		END;	 
+	END Arg;	
+
+	PROCEDURE Initvars(VAR a:all); (*Initialisiert alle Variablen*)
+		VAR 
+			i,j:INTEGER;
+	BEGIN
+		a.i:=0;
+		a.startdatei:="";
+		i:=a.i; j:=a.i;
+		WHILE i<MAXIMAL DO
+			a.zuord[i].dateiname:="";
+			WHILE j<MAXIMAL DO
+				a.zuord[i].strpos[j]:=0;
+				INC(j);
+			END;
+			INC(i);
+		END;	
+	END Initvars;
+
+	PROCEDURE Game(a:all);
+		VAR
+			line:zeile;
+			id:INTEGER;
+			datei:zeichenkette;
+			set:Sets.CharSet;
+			ch:CHAR;
+		PROCEDURE Letter(c:CHAR);
+		BEGIN
+			Write.String(" ");
+			Write.Char(c);
+			Sets.InclChar(set,c);
+		END Letter;
+	BEGIN
+		id:=0;
+		datei:=a.startdatei;
+		LOOP (*Endlosspiel*)
+			Sets.InitSet(set);
+			Fetch(a,line,datei,id);
+			Write.String("Du befindest dich im "); Write.String(line.gruppe); 
+			Write.String(" ("); Write.String(line.gruppe); Write.String(")");Write.String("!");
+			LOOP (*richtige Eingaben suchen*)
+				Write.Line("Waehle eine Richtung: ");
+			    IF line.richtung[0].moegl THEN Letter("w"); END;
+			    IF line.richtung[1].moegl THEN Letter("d"); END;
+			    IF line.richtung[2].moegl THEN Letter("s"); END;
+			    IF line.richtung[3].moegl THEN Letter("a"); END;
+			    IF line.richtung[4].moegl THEN Letter("h"); END;
+			    IF line.richtung[5].moegl THEN Letter("r"); END;
+				Read.Char(ch);
+				IF Streams.stdin.eof THEN HALT(0); END;
+				IF Sets.CharIn(set,ch) THEN EXIT END;
+			END;
+			CASE ch OF (*Verarbeitung der Eingabe*)
+			| "w": datei:=line.richtung[0].datei; id:=line.richtung[0].id;
+			| "d": datei:=line.richtung[1].datei; id:=line.richtung[1].id;
+			| "s": datei:=line.richtung[2].datei; id:=line.richtung[2].id;
+			| "a": datei:=line.richtung[3].datei; id:=line.richtung[3].id;
+			| "h": datei:=line.richtung[4].datei; id:=line.richtung[4].id;
+			| "r": datei:=line.richtung[5].datei; id:=line.richtung[5].id;
+			ELSE
+				Write.LineS(Streams.stderr,"FEHLER in Game.Loop.Case.else");
+			END;	
+		END;
+	END Game;
+
+	PROCEDURE Main;(*hierin lauft alles ab*)
+		VAR
+			alles:all;
+			strarr: ARRAY MAXIMAL OF Streams.Stream;
+	BEGIN
+		Arg(alles.startdatei);
+		Initvars(alles);
+		Recurs(alles,alles.startdatei);
+		Game(alles);
+	END Main;
+
+BEGIN
+DEBUG:=FALSE;
+Main;
+
+END adventure.
