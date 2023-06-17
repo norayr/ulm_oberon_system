@@ -26,7 +26,8 @@ ONSRoot := 127.0.0.1:9880
 ONSRootOfStage1 := 127.0.0.1:9881
 Lib := $(Root)/build/libo.a
 ScriptDir := $(Root)/build/scripts
-Binaries := cdbd nsh obci obco obdeps obload obtofgen obzap pons
+Binaries := cdbd nsh obci obco obdeps obload obtofgen obzap pons onsstat \
+	onsshut onsmkdir onswait
 InstalledBinaries := $(patsubst %,$(InstallBinDir)/%,$(Binaries))
 MakeParams := DestDir=$(DestDir) BinDir=$(BinDir) DBAuth=$(DBAuth) \
 	ONSRoot=$(ONSRoot) PonsDir=$(PonsDir) CDBDDir=$(CDBDDir) \
@@ -102,6 +103,14 @@ $(InstallBinDir)/obdeps:	scripts mkoblib
 	$(ScriptDir)/oblink $@ $(Lib) OberonDependencies
 $(InstallBinDir)/nsh:		scripts mkoblib
 	$(ScriptDir)/oblink $@ $(Lib) NamesShell
+$(InstallBinDir)/onsstat:	scripts mkoblib
+	$(ScriptDir)/oblink $@ $(Lib) NodeStatus
+$(InstallBinDir)/onsshut:	scripts mkoblib
+	$(ScriptDir)/oblink $@ $(Lib) ShutdownNode
+$(InstallBinDir)/onsmkdir:	scripts mkoblib
+	$(ScriptDir)/oblink $@ $(Lib) MakeDirectory
+$(InstallBinDir)/onswait:	scripts mkoblib
+	$(ScriptDir)/oblink $@ $(Lib) PathWaiter
 
 .PHONY:	installrc
 installrc:	$(RcFile)
@@ -112,7 +121,7 @@ $(RcFile):
 	echo ONS_ROOT=$(ONSRoot) >>$@
 	echo export OBERON PATH MANPATH ONS_ROOT >>$@
 
-.PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest
+.PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest finishstage1
 stage1:
 	time $(BinDir)/mk_obstage \
 	   $(Stage1Dir) $(BinDir) $(BinDir) $(ONSRoot) $(CDBDir) $(DBAuth)
@@ -122,6 +131,8 @@ stage2:
 	time $(BinDir)/mk_obstage \
 	   $(Stage2Dir) $(BinDir) $(Stage1Dir) $(ONSRootOfStage1) \
 	   $(CDBDir) $(Stage1Dir)/var/cdbd/write
+finishstage1:
+	-ONS_ROOT=$(ONSRootOfStage1) $(Stage1Dir)/onsshut /pub/pons
 stage12cmp:
 	cmp $(Stage1Dir)/cdbd $(Stage2Dir)/cdbd
 	cmp $(Stage1Dir)/nsh $(Stage2Dir)/nsh
@@ -132,4 +143,8 @@ stage12cmp:
 	cmp $(Stage1Dir)/obtofgen $(Stage2Dir)/obtofgen
 	cmp $(Stage1Dir)/obzap $(Stage2Dir)/obzap
 	cmp $(Stage1Dir)/pons $(Stage2Dir)/pons
-steadystatetest:	stage1 runstage1 stage2 stage12cmp
+	cmp $(Stage1Dir)/onsstat $(Stage2Dir)/onsstat
+	cmp $(Stage1Dir)/onsshut $(Stage2Dir)/onsshut
+	cmp $(Stage1Dir)/onsmkdir $(Stage2Dir)/onsmkdir
+	cmp $(Stage1Dir)/onswait $(Stage2Dir)/onswait
+steadystatetest:	stage1 runstage1 stage2 finishstage1 stage12cmp

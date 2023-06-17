@@ -17,9 +17,18 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Storage.om,v 1.4 1995/11/17 13:12:49 naegele Exp $
+   $Id: Storage.om,v 1.6 2004/09/16 13:40:26 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: Storage.om,v $
+   Revision 1.6  2004/09/16 13:40:26  borchert
+   FirstStack & NextStack added
+   (was necessary to support SysStackTraces)
+
+   Revision 1.5  2004/09/16 09:41:31  borchert
+   switched from [next, next+left) to [end-left,end) to make
+   life easier on architectures without atomar instructions
+   that compare and set two values simultaneously
+
    Revision 1.4  1995/11/17  13:12:49  naegele
    interface procedure SetChunkSize (size: Size) : BOOLEAN
    changed to          ChunkSize (size: Size) : Size
@@ -42,8 +51,8 @@ MODULE Storage;
 
    (* storage allocating interface for the compiler *)
 
-   IMPORT Errors, Events, Objects, Priorities, RelatedEvents,
-          Streams, Types, Write;
+   IMPORT Coroutines, Errors, Events, Objects, Priorities, RelatedEvents,
+      Streams, Types, Write;
 
    TYPE
       Address = Types.UntracedAddress;
@@ -88,6 +97,8 @@ MODULE Storage;
       GetStatusProc = PROCEDURE (VAR status: Status);
       IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
       ChunkSizeProc = PROCEDURE (size: Size) : Size;
+      FirstStackProc = PROCEDURE;
+      NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
 
       Interface =
          RECORD
@@ -99,6 +110,8 @@ MODULE Storage;
             intensity: IntensityProc;
             getStatus: GetStatusProc;
             chunkSize: ChunkSizeProc;
+	    firstStack: FirstStackProc;
+	    nextStack: NextStackProc;
          END;
 
    TYPE
@@ -277,6 +290,21 @@ MODULE Storage;
       IF ~sifDefined THEN PanicExit END;
       RETURN sif.chunkSize(size);
    END ChunkSize;
+
+   PROCEDURE FirstStack;
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      sif.firstStack();
+   END FirstStack;
+
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+      (* allow to iterate through all allocated coroutines for
+	 debugging purposes
+      *)
+   BEGIN
+      IF ~sifDefined THEN PanicExit END;
+      RETURN sif.nextStack(cr)
+   END NextStack;
 
    PROCEDURE Init(if: Interface);
       (* may be called only once during startup *)

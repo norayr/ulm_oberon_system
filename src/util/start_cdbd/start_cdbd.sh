@@ -9,8 +9,11 @@ export ONS_ROOT
 
 cd $CDBDDIR || exit 1
 
+$BINDIR/onsmkdir -p $CDBDIR || exit 1
+
 exec >>cdbd.LOG 2>&1
 
 echo
 echo start of cdbd at `date`
 nohup $BINDIR/cdbd -w write -b $CDBDIR oberon.db &
+$BINDIR/onswait $CDBDIR/cdbd

@@ -17,9 +17,18 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Storage.od,v 1.4 1995/11/17 13:11:43 naegele Exp $
+   $Id: Storage.od,v 1.6 2004/09/16 13:39:49 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: Storage.od,v $
+   Revision 1.6  2004/09/16 13:39:49  borchert
+   FirstStack & NextStack added
+   (was necessary to support SysStackTraces)
+
+   Revision 1.5  2004/09/16 09:39:51  borchert
+   switched from [next, next+left) to [end-left,end) to make
+   life easier on architectures without atomar instructions
+   that compare and set two values simultaneously
+
    Revision 1.4  1995/11/17  13:11:43  naegele
    interface procedure SetChunkSize (size : Size) : BOOLEAN
    changed to          ChunkSize (size : Size) : Size
@@ -42,7 +51,7 @@ DEFINITION Storage;
 
    (* storage allocating interface for the compiler *)
 
-   IMPORT Events, Objects, RelatedEvents, Types;
+   IMPORT Coroutines, Events, Objects, RelatedEvents, Types;
 
    TYPE
       Address = Types.UntracedAddress;
@@ -88,6 +97,8 @@ DEFINITION Storage;
       GetStatusProc = PROCEDURE (VAR status: Status);
       IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
       ChunkSizeProc = PROCEDURE (size: Size) : Size;
+      FirstStackProc = PROCEDURE;
+      NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
 
       Interface =
          RECORD
@@ -99,6 +110,8 @@ DEFINITION Storage;
             intensity: IntensityProc;
             getStatus: GetStatusProc;
             chunkSize: ChunkSizeProc;
+	    firstStack: FirstStackProc;
+	    nextStack: NextStackProc;
          END;
    VAR
       lock: BOOLEAN;
@@ -213,6 +226,12 @@ DEFINITION Storage;
          garbage collections depends not only on the current
          collection intensity indicator which can be manipulated by using
          PROC Intensity, it also depends on the chunk size
+      *)
+
+   PROCEDURE FirstStack;
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+      (* allow to iterate through all allocated coroutines for
+	 debugging purposes
       *)
 
    PROCEDURE Init(if: Interface);

@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: SysStorage.om,v 1.19 2004/09/10 15:09:27 borchert Exp $
+   $Id: SysStorage.om,v 1.20 2004/09/16 13:41:28 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: SysStorage.om,v $
+   Revision 1.20  2004/09/16 13:41:28  borchert
+   if procedures FirstStack and NextStack added
+
    Revision 1.19  2004/09/10 15:09:27  borchert
    unified version for SPARC/Solaris and I386/Linux:
     - minAlignment parameter moved to SysMemParams
@@ -591,6 +594,8 @@ MODULE SysStorage;
             1) large objects with have its own mapped fixed region 
             2) coroutine stack regions (mode # 0)
          *)
+      stackIt: Region;
+	 (* iterator for FirstStack / NextStack *)
       fixedTree: Region;
          (* all allocated fixed regions are organized in a binary tree *)
       storage: StorageStatusRec;
@@ -2348,6 +2353,22 @@ MODULE SysStorage;
       RETURN storage.chunksize;
    END ChunkSize;
 
+   PROCEDURE FirstStack;
+   BEGIN
+      stackIt := specialRegions;
+   END FirstStack;
+
+   PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+   BEGIN
+      WHILE (stackIt # NIL) & (stackIt.mode = 0) DO
+	 stackIt := stackIt.next;
+      END;
+      IF stackIt = NIL THEN RETURN FALSE END;
+      cr := SYS.VAL(Coroutines.Coroutine, stackIt.end);
+      stackIt := stackIt.next;
+      RETURN TRUE
+   END NextStack;
+
    (* -------------------------------------------------------------------- *)
 
    PROCEDURE Init;
@@ -2424,6 +2445,7 @@ MODULE SysStorage;
       consumedRegions := NIL; fixedTree := NIL;
       regionInUse := SYS.VAL(Region, New(SYS.SIZE(RegionRec)));
       specialRegions := SYS.VAL(Region, New(SYS.SIZE(RegionRec)));
+      stackIt := NIL;
 
       (* reserve preallocated segments *)
       numberOfSegments := SysSegments.NumberOfSegments();
@@ -2500,6 +2522,8 @@ MODULE SysStorage;
       if.intensity := Intensity;
       if.getStatus := GetStatus;
       if.chunkSize := ChunkSize;
+      if.firstStack := FirstStack;
+      if.nextStack := NextStack;
       Storage.Init(if);
 
       uif.new := New;

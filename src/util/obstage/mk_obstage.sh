@@ -32,13 +32,17 @@ runtime=`$ibindir/genobrts -r`
 core='
 CDBCheckoutSource
 CDBDaemon
+MakeDirectory
 NamesShell
+NodeStatus
 OberonCheckIn
 OberonDependencies
 OberonI386TransportableObjectFormatGenerator
 OberonLoader
 OberonZap
+PathWaiter
 PersistentNameServer
+ShutdownNode
 '
 
 build() {
@@ -74,4 +78,8 @@ build OberonDependencies obdeps &&
 build OberonI386TransportableObjectFormatGenerator obtofgen &&
 build OberonLoader obload &&
 build OberonZap obzap &&
-build PersistentNameServer pons
+build PersistentNameServer pons &&
+build NodeStatus onsstat &&
+build ShutdownNode onsshut &&
+build MakeDirectory onsmkdir &&
+build PathWaiter onswait

@@ -1,0 +1,133 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysStackTra.om,v 1.1 2004/09/16 11:32:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysStackTra.om,v $
+   Revision 1.1  2004/09/16 11:32:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysStackTraces;
+
+   IMPORT Coroutines, Storage, Streams, SYS := SYSTEM, SysModules, SysStacks,
+      SysTypes, Types, Write;
+
+   PROCEDURE PrintBackTrace(s: Streams.Stream;
+                            cr: Coroutines.Coroutine);
+      VAR
+	 stack: SysStacks.Stack;
+	 base, top, pc: SysTypes.UntracedAddress;
+
+      PROCEDURE WriteAddr(addr: SysTypes.UntracedAddress);
+	 (* print a 32-bit address in hex *)
+	 CONST
+	    bits = 32;
+	    hexbase = 16;
+	    hexbits = 4; (* number of bits covered by a hex digit *)
+	    steps = bits DIV hexbits;
+	 VAR
+	    i: INTEGER;
+	    val: LONGINT;
+	    lsh: INTEGER;
+      BEGIN
+	 Write.StringS(s, "[0");
+	 CASE Types.byteorder OF
+	 | Types.bigEndian:
+	       lsh := (steps - 1) * hexbits;
+	 | Types.littleEndian:
+	       lsh := 0;
+	 END;
+	 i := 0;
+	 WHILE i < steps DO
+	    CASE Types.byteorder OF
+	    | Types.bigEndian:
+		  val := SYS.LSH(addr, -lsh) MOD hexbase; DEC(lsh, hexbits);
+	    | Types.littleEndian:
+		  val := SYS.LSH(addr, -lsh) MOD hexbase; INC(lsh, hexbits);
+	    END;
+	    IF val < 10 THEN
+	       Write.CharS(s, CHR(val + ORD("0")));
+	    ELSE
+	       Write.CharS(s, CHR(val - 10  + ORD("A")));
+	    END;
+	    INC(i);
+	 END;
+	 Write.StringS(s, "H]");
+      END WriteAddr;
+
+      PROCEDURE WriteProcedure(addr: SysTypes.UntracedAddress);
+	 VAR
+	    module: SysModules.Module;
+	    block: SysModules.BlockList;
+	    name: ARRAY 1024 OF CHAR;
+      BEGIN
+	 module := SysModules.modules;
+	 WHILE (module # NIL) &
+	       ((addr < module.begin) OR (addr >= module.end)) DO
+	    module := module.next;
+	 END;
+	 IF module = NIL THEN
+	    Write.StringS(s, "UNKNOWN.UNKNOWN");
+	 ELSE
+	    COPY(module.name^, name);
+	    Write.StringS(s, name); Write.CharS(s, ".");
+	    block := module.blocks;
+	    WHILE (block # NIL) &
+		  ((addr < block.begin) OR (addr >= block.end)) DO
+	       block := block.next;
+	    END;
+	    IF block = NIL THEN
+	       Write.StringS(s, "UNKNOWN");
+	    ELSE
+	       COPY(block.name^, name);
+	       Write.StringS(s, name);
+	    END;
+	 END;
+      END WriteProcedure;
+
+   BEGIN (* PrintBackTrace *)
+      SysStacks.Open(stack, cr);
+      WHILE SysStacks.Next(stack, base, top, pc) & (base # 0) DO
+	 WriteAddr(base); Write.CharS(s, " ");
+	 WriteAddr(pc); Write.CharS(s, " ");
+	 WriteProcedure(pc); Write.LnS(s);
+      END;
+   END PrintBackTrace;
+
+   PROCEDURE PrintAllBackTraces(s: Streams.Stream);
+      VAR
+	 cr: Coroutines.Coroutine;
+	 first: BOOLEAN;
+   BEGIN
+      first := TRUE;
+      Storage.FirstStack;
+      WHILE Storage.NextStack(cr) DO
+	 IF first THEN
+	    first := FALSE;
+	 ELSE
+	    Write.LnS(s);
+	 END;
+	 PrintBackTrace(s, cr);
+      END;
+   END PrintAllBackTraces;
+
+END SysStackTraces.
