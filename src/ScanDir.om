@@ -1,0 +1,319 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ScanDir.om,v 1.1 1994/02/23 07:25:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ScanDir.om,v $
+   Revision 1.1  1994/02/23  07:25:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 9/89
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ScanDir;
+
+   (* patterns are identical to those of sh(1):
+
+      ?		matches any character
+      *		matches any (possibly empty) sequence
+      [...]	matches any character inside []
+      [!...]	matches any character but those inside []
+      [a-z]	matches letters "a" to "z"
+      \x	matches x
+      x		matches x
+   *)
+
+   IMPORT Dir := UnixDirectories, Lists, RelatedEvents, Sets, StreamDisciplines,
+      Streams, Strings, SysStat, Texts, Write;
+
+   TYPE
+      (* needed by Open/Scan *)
+      Entry = POINTER TO EntryRec;
+      EntryRec =
+	 RECORD
+	    (Lists.ElementRec)
+	    name: Dir.FileName;
+	 END;
+   VAR
+      metaChars: Sets.CharSet;
+
+   PROCEDURE CompareProc(e1, e2: Lists.Element) : INTEGER;
+      (* needed by Open/Scan *)
+   BEGIN
+      WITH e1: Entry DO
+	 WITH e2: Entry DO
+	    IF e1.name < e2.name THEN
+	       RETURN -1
+	    ELSIF e1.name = e2.name THEN
+	       RETURN 0
+	    ELSE
+	       RETURN 1
+	    END;
+	 END;
+      END;
+   END CompareProc;
+
+   PROCEDURE Match(filename, pattern: ARRAY OF CHAR) : BOOLEAN;
+      CONST
+	 pathdelim = "/";
+      VAR
+	 findex, pindex: LONGINT;	(* current indexes *)
+
+      PROCEDURE PartMatch(fstart, fend, pstart, pend: LONGINT) : BOOLEAN;
+	 (* match filename[fstart..fend] against pattern[pstart..pend] *)
+
+	 VAR
+	    pch: CHAR;
+
+	 PROCEDURE Next() : BOOLEAN;
+	 BEGIN
+	    IF pstart <= pend THEN
+	       pch := pattern[pstart];
+	       INC(pstart);
+	       RETURN TRUE
+	    ELSE
+	       RETURN FALSE
+	    END;
+	 END Next;
+
+	 PROCEDURE Compare() : BOOLEAN;
+	    (* compare filename[fstart] against pattern[pstart] *)
+	    VAR
+	       complement: BOOLEAN;
+	       range: BOOLEAN;
+	       last: CHAR;
+	       inset: BOOLEAN;
+	       ch: CHAR;
+	       first: BOOLEAN;
+	 BEGIN
+	    ch := filename[fstart];
+	    CASE pch OF
+	    | "?":   RETURN TRUE
+	    | "[":   inset := FALSE; range := FALSE; last := 0X; first := TRUE;
+		     complement := FALSE;
+		     WHILE Next() & (pch # "]") DO
+			IF first & (pch = "!") THEN
+			   complement := TRUE;
+			   first := FALSE;
+			ELSIF range THEN
+			   inset := inset OR (ch >= last) & (ch <= pch);
+			   range := FALSE;
+			   last := 0X;
+		        ELSIF (last # 0X) & (pch = "-") THEN
+		 	   range := TRUE;
+			ELSE
+			   inset := inset OR (ch = pch);
+			   first := FALSE;
+			   last := pch;
+			END;
+		    END;
+		    RETURN (pch = "]") & (inset = ~complement)
+	    | "\":  RETURN Next() & (ch = pch)
+	    ELSE
+	       RETURN ch = pch
+	    END;
+	 END Compare;
+
+      BEGIN
+	 WHILE (fstart <= fend) & Next() & (pch # "*") & Compare() DO
+	    INC(fstart);
+	 END;
+	 IF (fstart > fend) & ~Next() THEN
+	    RETURN TRUE
+	 END;
+	 IF (pch # "*") OR (filename[fstart] = pathdelim) THEN
+	    RETURN FALSE
+	 END;
+	 WHILE Next() & (pch = "*") DO
+	 END;
+	 IF (pch = "*") & (pstart > pend) THEN
+	    RETURN TRUE
+	 END;
+	 WHILE fstart <= fend DO
+	    IF PartMatch(fstart, fend, pstart-1, pend) THEN
+	       RETURN TRUE
+	    END;
+	    INC(fstart);
+	 END;
+	 RETURN FALSE
+      END PartMatch;
+
+   BEGIN
+      findex := 0;
+      WHILE (findex < LEN(filename)) & (filename[findex] # 0X) DO
+	 INC(findex);
+      END;
+      pindex := 0;
+      WHILE (pindex < LEN(pattern)) & (pattern[pindex] # 0X) DO
+	 INC(pindex);
+      END;
+      RETURN PartMatch(0, findex-1, 0, pindex-1)
+   END Match;
+
+   PROCEDURE Open(VAR s: Streams.Stream; pattern: ARRAY OF CHAR);
+      (* returns 0X-separated list of alphabetically sorted filenames
+	 matching `pattern'
+      *)
+      VAR
+	 path: ARRAY 512 OF CHAR;		(* initial path name *)
+	 index: LONGINT;		(* index of pattern *)
+
+      PROCEDURE CutFixedPart(VAR path, pattern: ARRAY OF CHAR;
+			     VAR index: LONGINT);
+	 (* cut fixed part of pattern[index...] and append it to path *)
+	 CONST
+	    escape = "\";
+	    pathdelim = "/";
+	 VAR
+	    i: LONGINT; (* current index in pattern *)
+	    ch: CHAR; (* pattern[i] *)
+	    newpath: ARRAY 512 OF CHAR; npi: LONGINT;
+      BEGIN
+	 i := index; npi := 0;
+	 WHILE pattern[i] # 0X DO 
+	    ch := pattern[i];
+	    IF Sets.CharIn(metaChars, ch) THEN
+	       RETURN
+	    ELSIF (ch = escape) THEN
+	       IF (pattern[i+1] # 0X) & (pattern[i+1] # pathdelim) THEN
+		  INC(i); (* go ahead of escaped character *)
+		  newpath[npi] := pattern[i]; INC(npi);
+	       ELSE
+		  newpath[npi] := escape; INC(npi);
+	       END;
+	       INC(i);
+	    ELSIF ch = pathdelim THEN
+	       newpath[npi] := 0X;
+	       IF (path # "") & (path # "/") THEN
+		  Strings.Concatenate(path, "/");
+	       END;
+	       Strings.Concatenate(path, newpath);
+	       WHILE pattern[i] = pathdelim DO
+		  INC(i);
+	       END;
+	       index := i; npi := 0;
+	    ELSE
+	       newpath[npi] := pattern[i]; INC(npi); INC(i);
+	    END;
+	 END;
+      END CutFixedPart;
+
+      PROCEDURE Scan(VAR path, pattern: ARRAY OF CHAR; index: LONGINT);
+	 (* scan directory given by `path' for
+	    files and directories matching pattern[index..]
+	 *)
+	 CONST
+	    patlen = 512;		(* if path names are longer we lose *)
+	 VAR
+	    dirname: ARRAY 512 OF CHAR;		(* name of directory *)
+	    dir: Dir.Stream;			(* directory stream *)
+	    i, end: LONGINT;			(* indexes of pattern and pat *)
+	    pat: ARRAY patlen OF CHAR;		(* part of pattern *)
+	    newpath: ARRAY 512 OF CHAR;		(* construct new path name *)
+	    entry: Dir.Entry;			(* entry of current directory *)
+	    endofpattern: BOOLEAN;		(* end of recursion? *)
+	    stat: SysStat.StatRec;		(* stat(2) result of entry *)
+	    list: Lists.List; element: Entry;	(* sort entries *)
+      BEGIN
+	 CutFixedPart(path, pattern, index);
+	 (* extract subpattern from pattern for current directory *)
+	 end := index; i := 0;
+	 WHILE (end < LEN(pattern)) & (pattern[end] # 0X) &
+	       (pattern[end] # "/") DO
+	    IF i+1 < patlen THEN
+	       pat[i] := pattern[end]; INC(i);
+	    END;
+	    INC(end);
+	 END;
+	 pat[i] := 0X;
+	 WHILE (end < LEN(pattern)) & (pattern[end] = "/") DO
+	    INC(end);
+	 END;
+	 endofpattern := (end >= LEN(pattern)) OR (pattern[end] = 0X);
+
+	 IF path[0] = 0X THEN
+	    dirname := ".";
+	 ELSE
+	    COPY(path, dirname);
+	 END;
+	 IF Dir.Open(dir, dirname, NIL) THEN
+	    RelatedEvents.Reset(dir); RelatedEvents.Forward(dir, s);
+	    Lists.CreateSortedList(list, CompareProc);
+	    WHILE Streams.Read(dir, entry) DO
+	       IF ((entry.name[0] = ".") = (pat[0] = ".")) &
+		     Match(entry.name, pat) THEN
+		  NEW(element); element.name := entry.name;
+		  Lists.Add(list, element);
+	       END;
+	    END;
+	    Streams.Release(dir);
+	    Lists.First(list);
+	    WHILE Lists.Next(list, element) DO
+	       IF endofpattern THEN
+		  IF path # "" THEN
+		     IF path # "/" THEN
+			Write.StringS(s, path);
+		     END;
+		     Write.CharS(s, "/");
+		  END;
+		  Write.StringS(s, element.name); Write.CharS(s, 0X);
+	       ELSE
+		  IF path # "" THEN
+		     COPY(path, newpath);
+		     IF path # "/" THEN
+			Strings.Concatenate(newpath, "/");
+		     END;
+		     Strings.Concatenate(newpath, element.name);
+		  ELSE
+		     COPY(element.name, newpath);
+		  END;
+		  IF SysStat.Stat(newpath, stat, s) &
+			((stat.mode * SysStat.type) = SysStat.dir) THEN
+		     Scan(newpath, pattern, end);
+		  END;
+	       END;
+	    END;
+	 END;
+      END Scan;
+
+   BEGIN (* Open *)
+      Texts.Open(s);
+      index := 0;
+      IF pattern[0] = "/" THEN
+	 path := "/";
+	 WHILE (index < LEN(pattern)) & (pattern[index] = "/") DO
+	    INC(index);
+	 END;
+      ELSE
+	 path := "";
+      END;
+      Scan(path, pattern, index);
+      Streams.SetPos(s, 0);
+      StreamDisciplines.SetLineTerm(s, ""); (* define 0X as line terminator *)
+      RelatedEvents.QueueEvents(s);
+   END Open;
+
+BEGIN
+   Sets.InitSet(metaChars);
+   Sets.InclChar(metaChars, "?");
+   Sets.InclChar(metaChars, "*");
+   Sets.InclChar(metaChars, "[");
+END ScanDir.

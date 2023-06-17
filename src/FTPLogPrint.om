@@ -1,0 +1,125 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPLogPrint.om,v 1.2 2001/05/21 15:50:34 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPLogPrint.om,v $
+   Revision 1.2  2001/05/21 15:50:34  borchert
+   move from Jobs to PriorityJobs
+
+   Revision 1.1  2001/05/08 07:33:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPLogPrinter;
+
+   IMPORT Conclusions, Conditions, ConstStrings, Errors, EventConditions,
+      Events, FTPLoggers, FTPPriorities, FTPRequests, FTPResponses,
+      FTPSessions, PriorityJobs, Read, RelatedEvents, Resources, Streams,
+      Tasks, Write;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (PriorityJobs.JobRec)
+	    session: FTPSessions.Session;
+	    eventCondition: Conditions.Condition;
+	    resourceCondition: Conditions.Condition;
+	    log: Streams.Stream;
+	 END;
+
+   PROCEDURE Logger(job: PriorityJobs.Job);
+      VAR
+	 conditions: Conditions.ConditionSet;
+	 resourceEvent: Resources.Event;
+	 logEvent: FTPLoggers.Event;
+	 s: Streams.Stream;
+	 linebuf, lastline: ARRAY 512 OF CHAR;
+   BEGIN
+      WITH job: Job DO
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, job.eventCondition);
+	 Conditions.Incl(conditions, job.resourceCondition);
+	 LOOP
+	    Tasks.WaitForOneOf(conditions);
+	    WHILE EventConditions.TestAndGet(job.eventCondition,
+		     logEvent) DO
+	       Write.StringS(job.log, "<<< ");
+	       ConstStrings.Write(job.log, logEvent.request.command);
+	       s := logEvent.request.param;
+	       IF s # NIL THEN
+		  Write.CharS(job.log, " ");
+		  Streams.SetPos(s, 0);
+		  IF ~Streams.Copy(s, job.log, -1) THEN EXIT END;
+		  Streams.SetPos(s, 0);
+	       END;
+	       Write.LnS(job.log);
+	       Write.StringS(job.log, ">>> ");
+	       Write.IntS(job.log, logEvent.response.code, 3);
+	       Write.CharS(job.log, " ");
+	       IF logEvent.response.shorttext # "" THEN
+		  Write.LineS(job.log, logEvent.response.shorttext);
+	       ELSE
+		  s := logEvent.response.text;
+		  ASSERT(s # NIL);
+		  Streams.SetPos(s, 0); lastline := "";
+		  LOOP
+		     Read.LineS(s, linebuf);
+		     IF s.count = 0 THEN EXIT END;
+		     lastline := linebuf;
+		  END;
+		  Write.LineS(job.log, lastline);
+	       END;
+	       IF RelatedEvents.EventsPending(logEvent.errors) THEN
+		  Conclusions.ConcludeS(job.log, logEvent.errors,
+		     Errors.message, "");
+	       END;
+	       IF ~Streams.Flush(job.log) THEN EXIT END;
+	    END;
+	    WHILE EventConditions.TestAndGet(job.resourceCondition,
+		     resourceEvent) DO
+	       IF resourceEvent.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    END;
+	 END;
+	 EventConditions.Drop(job.eventCondition);
+	 EventConditions.Drop(job.resourceCondition);
+      END;
+   END Logger;
+
+   (* === exported procedure =========================================== *)
+
+   PROCEDURE Install(session: FTPSessions.Session; log: Streams.Stream);
+      VAR
+	 job: Job;
+	 logEventType, resourceEventType: Events.EventType;
+   BEGIN
+      NEW(job); job.log := log; job.session := session;
+      FTPLoggers.GetEventType(session, logEventType);
+      EventConditions.Create(job.eventCondition, logEventType);
+      Resources.TakeInterest(job.session, resourceEventType);
+      EventConditions.Create(job.resourceCondition, resourceEventType);
+      PriorityJobs.Submit(job, session, FTPPriorities.log, Logger);
+   END Install;
+
+END FTPLogPrinter.

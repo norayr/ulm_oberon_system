@@ -1,0 +1,421 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CrPipes.om,v 1.4 2004/05/20 14:05:23 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CrPipes.om,v $
+   Revision 1.4  2004/05/20 14:05:23  borchert
+   coroutines are now recycled to improve performance
+   (contributed by Christian Ehrhardt)
+
+   Revision 1.3  2004/05/20 13:43:07  borchert
+   bug fix: stricter conditions for the application of SYS.WMOVE needed
+
+   Revision 1.2  1995/01/04  16:48:38  borchert
+   support of Services added
+
+   Revision 1.1  1994/02/23  08:03:29  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 2/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CrPipes;
+
+   IMPORT Coroutines, Events, Objects, Process, Services, Streams,
+      SYS := SYSTEM, SysMain;
+
+   (* design of a pipe:
+
+      +-----------+                      +-----------+
+      |           |                      |           |
+      | producer  |                      | consumer  |
+      |           |                      |           |
+      |           |                      |           |
+  ======> in      |   +--------------+   |     out ======>
+      |           |   |    +----+    |   |           |
+      |     out ==========>|    |==========> in      |
+      |           |   |    +----+    |   |           |
+      |           |   | pipe buffer  |   |           |
+      +-----------+   +--------------+   +-----------+
+
+   *)
+
+   TYPE
+      Filter = PROCEDURE (in, out: Streams.Stream);
+	 (* a filter is a procedure reading from `in'
+	    and writing to `out';
+	    every filter runs as a coroutine;
+	    there are three ways of returning/closing
+	    (1) calling Streams.Close(out)
+		if out is a pipe this is an operation of no return;
+		to be sure about returning use (2) instead
+	    (2) returning; this causes out and in to be closed
+		automatically (only pipes are closed - other streams
+		remain open)
+	    (3) implicitly if the consumer calls Streams.Close(in)
+
+	    it should be sufficient for filters to parameterize
+	    them per streams;
+	    if any extensions are needed extend Stream or CrPipe
+	    and pass this extended pointers to Open and initialize
+	    the additional components before calling Spawn
+
+	    `in' and `out' needn't to be pipes;
+	    i.e. the in-stream of the leftmost filter and the out-stream
+	    of the rightmost filter aren't pipes
+	 *)
+
+   TYPE
+      Mode = SHORTINT;
+   CONST
+      read = 0; write = 1;
+
+   TYPE
+      PipeBuffer = POINTER TO PipeBufferRec;
+      Coroutine = POINTER TO CoroutineRec;
+      CoroutineRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    cr: SYS.COROUTINE; (* this coroutine *)
+	    returncr: SYS.COROUTINE; (* coroutine to be returned to *)
+	    in, out: Streams.Stream; (* connected streams *)
+	    filter: Filter; (* filter procedure to be run *)
+	    next: Coroutine; (* linear list of idle coroutines *)
+	 END;
+      CrPipe = POINTER TO CrPipeRec;
+	 (* valid operations are read xor write;
+	    if CrPipe is unbuffered every read or write operation
+	    causes transfer of execution (if both ends read and write
+	    same amount of bytes);
+	    buffered CrPipes cause output operations to be collected
+	    until the internal buffer is filled
+	 *)
+      PipeBufferRec =
+	 RECORD
+	    ptr: Streams.Address;
+	    cnt: Streams.Count;
+	    connected: ARRAY 2 OF BOOLEAN; (* 0: prod, 1: cons *)
+	    producer, consumer: Coroutine;
+	    (* the consumer does not return in each case to
+	       the producer; in some cases (e.g. Flush for linebufferd streams)
+	       the write operation is called by another coroutine
+	    *)
+	    writer: SYS.COROUTINE; (* may be NIL *)
+	 END;
+      CrPipeRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    mode: Mode; (* read or write *)
+	    buffer: PipeBuffer;
+	 END;
+
+   VAR
+      if: ARRAY 2 OF Streams.Interface; (* init at loading time *)
+      caps: ARRAY 2 OF Streams.CapabilitySet;
+      type: Services.Type; (* CrPipes.CrPipe *)
+
+      (* recycle idle coroutines *)
+      idlecrs: Coroutine; (* linear lists of idle coroutines *)
+      idlelock: BOOLEAN; (* controls access of idlecrs *)
+
+   PROCEDURE ReadBuf(s: Streams.Stream;
+		     ptr: Streams.Address;
+		     cnt: Streams.Count) : Streams.Count;
+      CONST
+	 wordsize = SYS.SIZE(INTEGER);
+      VAR
+	 i: Streams.Count;
+	 byte: BYTE;
+   BEGIN
+      WITH s: CrPipe DO
+	 IF ~s.buffer.connected[1] THEN
+	    NEW(s.buffer.consumer);
+	    s.buffer.consumer.cr := Coroutines.current;
+	    s.buffer.consumer.returncr := NIL;
+	    s.buffer.connected[1] := TRUE;
+	 END;
+	 IF cnt > 0 THEN
+	    IF s.buffer.cnt = 0 THEN
+	       IF ~s.buffer.connected[0] THEN
+		  RETURN 0
+	       END;
+	       IF s.buffer.writer # NIL THEN
+		  SYS.CRSWITCH(s.buffer.writer);
+	       ELSE
+		  SYS.CRSWITCH(s.buffer.producer.cr);
+	       END;
+	    END;
+	    IF cnt > s.buffer.cnt THEN
+	       cnt := s.buffer.cnt;
+	    END;
+	    IF cnt > 0 THEN
+	       IF (cnt MOD wordsize = 0) &
+		     (s.buffer.ptr MOD wordsize = 0) &
+		     (ptr MOD wordsize = 0) THEN
+		  (* WMOVE is not portable but much faster than GET & PUT *)
+		  SYS.WMOVE(s.buffer.ptr, ptr, cnt DIV wordsize);
+	       ELSE
+		  i := 0;
+		  WHILE i < cnt DO
+		     SYS.GET(s.buffer.ptr + i, byte);
+		     SYS.PUT(ptr + i, byte);
+		     INC(i);
+		  END;
+	       END;
+	       DEC(s.buffer.cnt, cnt);
+	       INC(s.buffer.ptr, cnt);
+	    END;
+	 END;
+      END;
+      RETURN cnt
+   END ReadBuf;
+
+   PROCEDURE ReadByte(s: Streams.Stream; VAR byte: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN ReadBuf(s, SYS.ADR(byte), SYS.SIZE(BYTE)) =
+	     SYS.SIZE(BYTE)
+   END ReadByte;
+
+   PROCEDURE ReadClose(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: CrPipe DO
+	 s.buffer.connected[1] := FALSE;
+      END;
+      RETURN TRUE
+   END ReadClose;
+
+   PROCEDURE WriteBuf(s: Streams.Stream;
+		      ptr: Streams.Address;
+		      cnt: Streams.Count) : Streams.Count;
+      CONST
+	 wordsize = SYS.SIZE(INTEGER);
+      VAR
+	 i: Streams.Count;
+	 byte: BYTE;
+
+   BEGIN
+      WITH s: CrPipe DO
+	 IF ~s.buffer.connected[0] THEN
+	    NEW(s.buffer.producer);
+	    s.buffer.producer.cr := Coroutines.current;
+	    s.buffer.producer.returncr := NIL;
+	    s.buffer.connected[0] := TRUE;
+	 END;
+	 IF ~s.buffer.connected[1] THEN
+	    RETURN 0
+	 END;
+	 IF cnt > 0 THEN
+	    IF Coroutines.current = s.buffer.consumer.cr THEN
+	       (* both ends are managed by same coroutine *)
+	       RETURN 0
+	    END;
+	    WHILE s.buffer.cnt > 0 DO
+	       (* this is not the normal case *)
+	       s.buffer.writer := Coroutines.current;
+	       SYS.CRSWITCH(s.buffer.consumer.cr);
+	    END;
+	    s.buffer.ptr := ptr; s.buffer.cnt := cnt;
+	    s.buffer.writer := Coroutines.current;
+	    SYS.CRSWITCH(s.buffer.consumer.cr);
+	 END;
+      END;
+      RETURN cnt
+   END WriteBuf;
+
+   PROCEDURE WriteByte(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+   BEGIN
+      RETURN WriteBuf(s, SYS.ADR(byte), SYS.SIZE(BYTE)) =
+	     SYS.SIZE(BYTE)
+   END WriteByte;
+
+   PROCEDURE WriteClose(s: Streams.Stream) : BOOLEAN;
+   BEGIN
+      WITH s: CrPipe DO
+	 s.buffer.connected[0] := FALSE;
+	 IF s.buffer.connected[1] THEN
+	    SYS.CRSWITCH(s.buffer.consumer.cr);
+	 END;
+      END;
+      (* we are the starting coroutine;
+	 i.e. we are returncr for some other coroutine
+      *)
+      RETURN TRUE
+   END WriteClose;
+
+   PROCEDURE InitInterface;
+   BEGIN
+      NEW(if[read]); NEW(if[write]);
+      if[read].addrread := ReadBuf;
+      if[read].read := ReadByte;
+      if[read].close := ReadClose;
+      caps[read] := {Streams.read, Streams.addrio, Streams.close};
+
+      if[write].addrwrite := WriteBuf;
+      if[write].write := WriteByte;
+      if[write].close := WriteClose;
+      caps[write] := {Streams.write, Streams.addrio, Streams.close};
+
+      Services.CreateType(type, "CrPipes.CrPipe", "Streams.Stream");
+   END InitInterface;
+
+   PROCEDURE Open(VAR out, in: Streams.Stream; bufmode: Streams.BufMode);
+      (* creates a pipe with two ends (out and in) which are
+	 not connected yet;
+	 out: write only
+	 in:  read only;
+	 connections are done by the Spawn-operation;
+	 any i/o operations on CrPipes are illegal
+	 'til time of connection;
+
+	 bufmode:
+            Streams.onebuf    is useful for byte-oriented filters
+			      (else every ReadByte or WriteByte would
+			      cause a transfer-operation)
+            Streams.nobuf     is useful for record-oriented filters
+			      (especially if the calculation of
+			      a record needs a long time and not
+			      all records are needed, e.g. backtracking
+			      algorithms)
+      *)
+      VAR
+	 buffer: PipeBuffer;
+
+      PROCEDURE InitCrPipe(VAR pipe: Streams.Stream; mode: Mode);
+	 VAR
+	    newpipe: CrPipe;
+      BEGIN
+	 IF (mode = read) & (bufmode = Streams.linebuf) THEN
+	    bufmode := Streams.onebuf;
+	 END;
+	 NEW(newpipe); pipe := newpipe;
+	 Services.Init(pipe, type);
+	 Streams.Init(pipe, if[mode], caps[mode], bufmode);
+	 newpipe.mode := mode;
+	 newpipe.buffer := buffer;
+	 pipe := newpipe;
+	 (* pipe.cr remains undefined as long buffer.connected
+	    remains FALSE
+	 *)
+      END InitCrPipe;
+
+   BEGIN (* Open *)
+      NEW(buffer);
+      buffer.cnt := 0; (* buffer.ptr is undefined if buffer.cnt = 0 *)
+      buffer.connected[0] := FALSE; buffer.connected[1] := FALSE;
+      (* buffer.producer/consumer are undefined if
+	 buffer.connected[0]/[1] are false
+      *)
+      InitCrPipe(out, write);
+      InitCrPipe(in, read);
+   END Open;
+
+   PROCEDURE RunFilters(cr: Coroutine);
+      (* spawn a coroutine that runs repeatedly filters
+         until we are idle and the next GC is about to begin
+      *)
+      VAR
+         returncr: Coroutines.Coroutine;
+   BEGIN
+      SYS.CRSPAWN(cr.cr);
+      LOOP
+	 cr.filter(cr.in, cr.out);
+	 IF cr.in IS CrPipe THEN
+	    Streams.Release(cr.in);
+	 END;
+	 IF cr.out IS CrPipe THEN
+	    Streams.Release(cr.out);
+	 END;
+	 IF ~SYS.TAS(idlelock) THEN
+	    returncr := cr.returncr;
+	    cr.next := idlecrs;
+	    idlecrs := cr;
+	    idlelock := FALSE;
+	 END;
+	 SYS.CRSWITCH(cr.returncr);
+      END;
+   END RunFilters;
+
+   PROCEDURE GetAndSpawnCoroutine(VAR cr: Coroutine);
+      (* pick up one of the idle coroutines, or, if this fails,
+	 create a new coroutine and spawn it using RunFilters
+      *)
+   BEGIN
+      cr := NIL;
+      IF ~SYS.TAS(idlelock) THEN
+         IF idlecrs # NIL THEN
+	    cr := idlecrs;
+	    idlecrs := cr.next;
+            cr.next := NIL;
+	 END;
+	 idlelock := FALSE;
+      END;
+      IF cr = NIL THEN
+         NEW(cr); cr.next := NIL;
+         RunFilters(cr);
+      END;
+   END GetAndSpawnCoroutine;
+
+   PROCEDURE Spawn(filter: Filter; in, out: Streams.Stream);
+      (* pass `in' and `out' to filter and start the procedure
+	 as a coroutine;
+	 pipe constructions must be linear:
+	 cycles cause deadlocks
+      *)
+      VAR
+	 cr: Coroutine;
+   BEGIN
+      GetAndSpawnCoroutine(cr);
+      cr.returncr := Coroutines.current;
+      IF in IS CrPipe THEN
+	 WITH in: CrPipe DO
+	    in.buffer.connected[1] := TRUE;
+	    in.buffer.consumer := cr;
+	 END;
+      END;
+      cr.in := in;
+      IF out IS CrPipe THEN
+	 WITH out: CrPipe DO
+	    out.buffer.connected[0] := TRUE;
+	    out.buffer.producer := cr;
+	    out.buffer.writer := NIL;
+	 END;
+      END;
+      cr.out := out;
+      cr.filter := filter;
+   END Spawn;
+
+   PROCEDURE FreeHandler(event: Events.Event);
+   BEGIN
+      (* release all idle coroutines *)
+      IF ~SYS.TAS(idlelock) THEN
+	 idlecrs := NIL; idlelock := FALSE;
+      END;
+   END FreeHandler;
+
+BEGIN
+   InitInterface;
+   idlelock := FALSE; idlecrs := NIL;
+   Events.Handler(Process.startOfGarbageCollection, FreeHandler);
+   Events.Handler(Process.termination, FreeHandler);
+   Events.Handler(Process.softTermination, FreeHandler);
+   Events.Handler(SysMain.mainTaskFinished, FreeHandler);
+END CrPipes.

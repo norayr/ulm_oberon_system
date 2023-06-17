@@ -1,0 +1,171 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersistentO.od,v 1.2 1995/03/16 10:15:47 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PersistentO.od,v $
+   Revision 1.2  1995/03/16  10:15:47  borchert
+   major redesign of PersistentObjects:
+   - new type encoding schemes
+   - size if proc removed
+   - support for NIL and guards added
+
+   Revision 1.1  1994/02/22  20:09:17  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION PersistentObjects;
+
+   (* interface of persistent objects *)
+
+   IMPORT Disciplines, Events, Objects, Services, Streams;
+
+   CONST
+      cannotReadData = 0;
+      cannotWriteData = 1;
+      cannotReadType = 2;
+      cannotWriteType = 3;
+      invalidType = 4;
+      unknownType = 5;
+      otherTypeHier = 6;
+      eofReached = 7;
+      cannotSkip = 8;
+      typeGuardFailure = 9;   (* GuardedRead failed to type guard failure *)
+      errorcodes = 10;        (* number of error codes                      *)
+
+      (* Mode:
+
+	 how are types specified:   fullTypeName, typeCode, incrTypeCode
+	 with or without size info: withSize, withoutSize
+	 with or without type hier: withHier, withoutHier
+
+	 combinations are given as additions,
+	    e.g.   typeCode + withSize + withHier
+      *)
+      fullTypeName = 1; typeCode = 2; incrTypeCode = 3;
+      withSize = 4; withoutSize = 0;
+      withHier = 8; withoutHier = 0;
+
+   TYPE
+      Mode = SHORTINT;	   (* one of the combinations above *)
+
+      Object = POINTER TO ObjectRec;
+      ObjectRec = RECORD (Services.ObjectRec) END;
+
+      ReadProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+      WriteProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+      CreateProc = PROCEDURE (VAR o: Object);
+      CreateAndReadProc = PROCEDURE (s: Streams.Stream;
+				     create: BOOLEAN;
+				     VAR o: Object) : BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    create: CreateProc;         (* create object *)
+	    read: ReadProc;		(* read data from stream *)
+	    write: WriteProc;		(* write data to stream  *)
+	    createAndRead: CreateAndReadProc; (* replaces create & read *)
+	 END;
+
+      (* each error causes an event;
+	 the error number is stored in event.errorcode;
+	 the associated text can be taken from event.message
+      *)
+      ErrorCode = SHORTINT;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+	    errorcode: ErrorCode;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+	 (* readable text for error codes *)
+      error: Events.EventType;
+	 (* raised on failed stream operations; ignored by default *)
+
+   PROCEDURE RegisterType(VAR type: Services.Type;
+			  name, baseName: ARRAY OF CHAR;
+			  if: Interface);
+      (* register data type `name' with create procedure `create' 
+	 and direct base type `baseName'; the data type is
+	 connected with its interface given by `if';
+	 if.createAndRead may be NIL;
+	 if if.createAndRead is non-NIL, if.create and if.read should be NIL;
+	 if.create & if may be NIL for abstract types;
+	 if may be NIL for ``empty'' extensions;
+	 the return value must be given to `Init'
+      *)
+
+   PROCEDURE Init(object: Object; type: Services.Type);
+
+   PROCEDURE SetMode(s: Streams.Stream; mode: Mode);
+      (* set the mode for the given stream and and all following
+	 objects to `mode'
+      *)
+
+   PROCEDURE GetMode(s: Streams.Stream; VAR mode: Mode);
+      (* return the current projection mode for the given stream *)
+
+   PROCEDURE IsProjected(object: Object) : BOOLEAN;
+      (* show whether `object' was a victim of projection or not *)
+
+   (* note that Read and Write operations must match each other:
+
+      - Write matches Read, ReadInto and GuardedRead
+      - WriteObjectOrNIL matches ReadObjectOrNIL and GuardedReadObjectOrNIL
+   *)
+
+   PROCEDURE Read(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+      (* read `object' from `s'; object # NIL on success *)
+
+   PROCEDURE Write(s: Streams.Stream; object: Object) : BOOLEAN;
+      (* write `object' to `s'; `object' must be # NIL *)
+
+   PROCEDURE ReadObjectOrNIL(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+      (* like Read but NIL may be returned *)
+
+   PROCEDURE WriteObjectOrNIL(s: Streams.Stream; object: Object) : BOOLEAN;
+      (* like Write but object may be NIL *)
+
+   PROCEDURE ReadInto(s: Streams.Stream; object: Object) : BOOLEAN;
+      (* read an object from `s' and assign it to `object';
+	 this fails if `object' doesn't has the IDENTICAL type
+	 (thus projections are not supported here);
+	 must not be used for object types where createAndRead has
+	 been defined instead of create & read
+      *)
+
+   PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+			 VAR object: Object) : BOOLEAN;
+      (* read an object from `s' and return it, provided
+	 the type of the read object is an extension of `guard'
+      *)
+
+   PROCEDURE GuardedReadObjectOrNIL(s: Streams.Stream; guard: Services.Type;
+				    VAR object: Object) : BOOLEAN;
+      (* may be used instead of ReadObjectOrNIL *)
+
+END PersistentObjects.

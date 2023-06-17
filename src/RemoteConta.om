@@ -1,0 +1,841 @@
+(* Edit RemoteConta.rm instead of this file which has been generated
+   by genrem at Fri May  7 09:20:09 MET DST 1999
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteConta.rm,v 1.1 1996/11/21 19:06:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteConta.rm,v $
+   Revision 1.1  1996/11/21  19:06:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteContainers;
+
+   IMPORT
+      Containers, Events, Messages, NetIO, PersistentObjects, RelatedEvents,
+      RemoteObjects, Services, Streams, Transactions;
+
+   TYPE
+      Container = POINTER TO ContainerRec;
+      ContainerRec = RECORD (Containers.ContainerRec) END;
+
+   TYPE
+      ProxyParameters = POINTER TO ProxyParametersRec;
+      ProxyParametersRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            caps: Containers.CapabilitySet;
+         END;
+   VAR
+      proxyParamsType: Services.Type;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      CloseMessage = POINTER TO CloseMessageRec;
+      CloseMessageRec =
+         RECORD
+            (MessageRec)
+         END;
+   VAR
+      closeMessageType: Services.Type;
+
+   TYPE
+      InsertMessage = POINTER TO InsertMessageRec;
+      InsertMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* OUT via LongInt *)
+            object: Containers.Object; (* IN via COPY *)
+         END;
+   VAR
+      insertMessageType: Services.Type;
+
+   TYPE
+      DeleteMessage = POINTER TO DeleteMessageRec;
+      DeleteMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* IN via LongInt *)
+         END;
+   VAR
+      deleteMessageType: Services.Type;
+
+   TYPE
+      ReplaceMessage = POINTER TO ReplaceMessageRec;
+      ReplaceMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* IN via LongInt *)
+            object: Containers.Object; (* IN via COPY *)
+         END;
+   VAR
+      replaceMessageType: Services.Type;
+
+   TYPE
+      ObtainMessage = POINTER TO ObtainMessageRec;
+      ObtainMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* IN via LongInt *)
+            object: Containers.Object; (* OUT via COPY *)
+         END;
+   VAR
+      obtainMessageType: Services.Type;
+
+   TYPE
+      ElementsMessage = POINTER TO ElementsMessageRec;
+      ElementsMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            nelems: LONGINT; (* OUT via LongInt *)
+         END;
+   VAR
+      elementsMessageType: Services.Type;
+
+   TYPE
+      FindMessage = POINTER TO FindMessageRec;
+      FindMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            dir: Containers.SearchDir; (* IN via ShortInt *)
+            id: Containers.Ident; (* OUT via LongInt *)
+         END;
+   VAR
+      findMessageType: Services.Type;
+
+   TYPE
+      ReorganizeMessage = POINTER TO ReorganizeMessageRec;
+      ReorganizeMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+         END;
+   VAR
+      reorganizeMessageType: Services.Type;
+
+   TYPE
+      SetAnchorMessage = POINTER TO SetAnchorMessageRec;
+      SetAnchorMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* IN via LongInt *)
+         END;
+   VAR
+      setAnchorMessageType: Services.Type;
+
+   TYPE
+      GetAnchorMessage = POINTER TO GetAnchorMessageRec;
+      GetAnchorMessageRec =
+         RECORD
+            (MessageRec)
+            trans: Transactions.Transaction; (* IN via REF *)
+            id: Containers.Ident; (* OUT via LongInt *)
+         END;
+   VAR
+      getAnchorMessageType: Services.Type;
+
+   VAR
+      if: Containers.Interface; (* of Containers *)
+      type: Services.Type; (* of RemoteContainers.Container *)
+
+   PROCEDURE CreateProxyParams(VAR object: PersistentObjects.Object);
+      VAR proxyParams: ProxyParameters;
+   BEGIN
+      NEW(proxyParams);
+      PersistentObjects.Init(proxyParams, proxyParamsType);
+      object := proxyParams;
+   END CreateProxyParams;
+
+   PROCEDURE WriteProxyParams(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.WriteSet(s, object.caps)
+      END;
+   END WriteProxyParams;
+
+   PROCEDURE ReadProxyParams(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.ReadSet(s, object.caps)
+      END;
+   END ReadProxyParams;
+
+   PROCEDURE CreateCloseMessage(VAR object: PersistentObjects.Object);
+      VAR msg: CloseMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, closeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateCloseMessage;
+
+   PROCEDURE WriteCloseMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END WriteCloseMessage;
+
+   PROCEDURE ReadCloseMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      RETURN TRUE
+   END ReadCloseMessage;
+
+   PROCEDURE CreateInsertMessage(VAR object: PersistentObjects.Object);
+      VAR msg: InsertMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, insertMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateInsertMessage;
+
+   PROCEDURE WriteInsertMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: InsertMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   PersistentObjects.Write(s, msg.object)
+         END;
+      END;
+   END WriteInsertMessage;
+
+   PROCEDURE ReadInsertMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: InsertMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   PersistentObjects.Read(s, msg.object)
+         END;
+      END;
+   END ReadInsertMessage;
+
+   PROCEDURE CreateDeleteMessage(VAR object: PersistentObjects.Object);
+      VAR msg: DeleteMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, deleteMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateDeleteMessage;
+
+   PROCEDURE WriteDeleteMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: DeleteMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   NetIO.WriteLongInt(s, msg.id)
+         END;
+      END;
+   END WriteDeleteMessage;
+
+   PROCEDURE ReadDeleteMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: DeleteMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   NetIO.ReadLongInt(s, msg.id)
+         END;
+      END;
+   END ReadDeleteMessage;
+
+   PROCEDURE CreateReplaceMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ReplaceMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, replaceMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateReplaceMessage;
+
+   PROCEDURE WriteReplaceMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReplaceMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   NetIO.WriteLongInt(s, msg.id) &
+                   PersistentObjects.Write(s, msg.object)
+         END;
+      END;
+   END WriteReplaceMessage;
+
+   PROCEDURE ReadReplaceMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReplaceMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   NetIO.ReadLongInt(s, msg.id) &
+                   PersistentObjects.Read(s, msg.object)
+         END;
+      END;
+   END ReadReplaceMessage;
+
+   PROCEDURE CreateObtainMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ObtainMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, obtainMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateObtainMessage;
+
+   PROCEDURE WriteObtainMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ObtainMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.Write(s, msg.object)
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   NetIO.WriteLongInt(s, msg.id)
+         END;
+      END;
+   END WriteObtainMessage;
+
+   PROCEDURE ReadObtainMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ObtainMessage DO
+         IF msg.processed THEN
+            RETURN PersistentObjects.Read(s, msg.object)
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   NetIO.ReadLongInt(s, msg.id)
+         END;
+      END;
+   END ReadObtainMessage;
+
+   PROCEDURE CreateElementsMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ElementsMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, elementsMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateElementsMessage;
+
+   PROCEDURE WriteElementsMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ElementsMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteLongInt(s, msg.nelems)
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans)
+         END;
+      END;
+   END WriteElementsMessage;
+
+   PROCEDURE ReadElementsMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ElementsMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadLongInt(s, msg.nelems)
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans)
+         END;
+      END;
+   END ReadElementsMessage;
+
+   PROCEDURE CreateFindMessage(VAR object: PersistentObjects.Object);
+      VAR msg: FindMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, findMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateFindMessage;
+
+   PROCEDURE WriteFindMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: FindMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   NetIO.WriteShortInt(s, msg.dir)
+         END;
+      END;
+   END WriteFindMessage;
+
+   PROCEDURE ReadFindMessage(s: Streams.Stream;
+                             msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: FindMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   NetIO.ReadShortInt(s, msg.dir)
+         END;
+      END;
+   END ReadFindMessage;
+
+   PROCEDURE CreateReorganizeMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ReorganizeMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, reorganizeMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateReorganizeMessage;
+
+   PROCEDURE WriteReorganizeMessage(s: Streams.Stream;
+                                    msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReorganizeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans)
+         END;
+      END;
+   END WriteReorganizeMessage;
+
+   PROCEDURE ReadReorganizeMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReorganizeMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans)
+         END;
+      END;
+   END ReadReorganizeMessage;
+
+   PROCEDURE CreateSetAnchorMessage(VAR object: PersistentObjects.Object);
+      VAR msg: SetAnchorMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, setAnchorMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateSetAnchorMessage;
+
+   PROCEDURE WriteSetAnchorMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SetAnchorMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans) &
+                   NetIO.WriteLongInt(s, msg.id)
+         END;
+      END;
+   END WriteSetAnchorMessage;
+
+   PROCEDURE ReadSetAnchorMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SetAnchorMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans) &
+                   NetIO.ReadLongInt(s, msg.id)
+         END;
+      END;
+   END ReadSetAnchorMessage;
+
+   PROCEDURE CreateGetAnchorMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetAnchorMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getAnchorMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetAnchorMessage;
+
+   PROCEDURE WriteGetAnchorMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetAnchorMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.trans)
+         END;
+      END;
+   END WriteGetAnchorMessage;
+
+   PROCEDURE ReadGetAnchorMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetAnchorMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadLongInt(s, msg.id)
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.trans)
+         END;
+      END;
+   END ReadGetAnchorMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Containers.Container DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS CloseMessage THEN
+            WITH msg: CloseMessage DO
+               msg.done := Containers.Close(object);
+            END;
+         ELSIF msg IS InsertMessage THEN
+            WITH msg: InsertMessage DO
+               msg.done := Containers.Insert(object, msg.trans, msg.id, msg.object);
+            END;
+         ELSIF msg IS DeleteMessage THEN
+            WITH msg: DeleteMessage DO
+               msg.done := Containers.Delete(object, msg.trans, msg.id);
+            END;
+         ELSIF msg IS ReplaceMessage THEN
+            WITH msg: ReplaceMessage DO
+               msg.done := Containers.Replace(object, msg.trans, msg.id, msg.object);
+            END;
+         ELSIF msg IS ObtainMessage THEN
+            WITH msg: ObtainMessage DO
+               msg.done := Containers.Obtain(object, msg.trans, msg.id, msg.object);
+            END;
+         ELSIF msg IS ElementsMessage THEN
+            WITH msg: ElementsMessage DO
+               msg.done := Containers.Elements(object, msg.trans, msg.nelems);
+            END;
+         ELSIF msg IS FindMessage THEN
+            WITH msg: FindMessage DO
+               msg.done := Containers.Find(object, msg.trans, msg.dir, msg.id);
+            END;
+         ELSIF msg IS ReorganizeMessage THEN
+            WITH msg: ReorganizeMessage DO
+               msg.done := Containers.Reorganize(object, msg.trans);
+            END;
+         ELSIF msg IS SetAnchorMessage THEN
+            WITH msg: SetAnchorMessage DO
+               msg.done := Containers.SetAnchor(object, msg.trans, msg.id);
+            END;
+         ELSIF msg IS GetAnchorMessage THEN
+            WITH msg: GetAnchorMessage DO
+               msg.done := Containers.GetAnchor(object, msg.trans, msg.id);
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE Close(container: Containers.Container) : BOOLEAN;
+      VAR msg: CloseMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateCloseMessage(msg);
+      Messages.Send(container, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Close;
+
+   PROCEDURE Insert(container: Containers.Container;
+                    trans: Transactions.Transaction;
+                    VAR id: Containers.Ident;
+                    object: Containers.Object) : BOOLEAN;
+      VAR msg: InsertMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateInsertMessage(msg);
+      msg.trans := trans;
+      msg.object := object;
+      Messages.Send(container, msg);
+      id := msg.id;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Insert;
+
+   PROCEDURE Delete(container: Containers.Container;
+                    trans: Transactions.Transaction;
+                    id: Containers.Ident) : BOOLEAN;
+      VAR msg: DeleteMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateDeleteMessage(msg);
+      msg.trans := trans;
+      msg.id := id;
+      Messages.Send(container, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Delete;
+
+   PROCEDURE Replace(container: Containers.Container;
+                     trans: Transactions.Transaction;
+                     id: Containers.Ident;
+                     object: Containers.Object) : BOOLEAN;
+      VAR msg: ReplaceMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateReplaceMessage(msg);
+      msg.trans := trans;
+      msg.id := id;
+      msg.object := object;
+      Messages.Send(container, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Replace;
+
+   PROCEDURE Obtain(container: Containers.Container;
+                    trans: Transactions.Transaction;
+                    id: Containers.Ident;
+                    VAR object: Containers.Object) : BOOLEAN;
+      VAR msg: ObtainMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateObtainMessage(msg);
+      msg.trans := trans;
+      msg.id := id;
+      Messages.Send(container, msg);
+      object := msg.object;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Obtain;
+
+   PROCEDURE Elements(container: Containers.Container;
+                      trans: Transactions.Transaction;
+                      VAR nelems: LONGINT) : BOOLEAN;
+      VAR msg: ElementsMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateElementsMessage(msg);
+      msg.trans := trans;
+      Messages.Send(container, msg);
+      nelems := msg.nelems;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Elements;
+
+   PROCEDURE Find(container: Containers.Container;
+                  trans: Transactions.Transaction;
+                  dir: Containers.SearchDir;
+                  VAR id: Containers.Ident) : BOOLEAN;
+      VAR msg: FindMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateFindMessage(msg);
+      msg.trans := trans;
+      msg.dir := dir;
+      Messages.Send(container, msg);
+      id := msg.id;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Find;
+
+   PROCEDURE Reorganize(container: Containers.Container;
+                        trans: Transactions.Transaction) : BOOLEAN;
+      VAR msg: ReorganizeMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateReorganizeMessage(msg);
+      msg.trans := trans;
+      Messages.Send(container, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END Reorganize;
+
+   PROCEDURE SetAnchor(container: Containers.Container;
+                       trans: Transactions.Transaction;
+                       id: Containers.Ident) : BOOLEAN;
+      VAR msg: SetAnchorMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateSetAnchorMessage(msg);
+      msg.trans := trans;
+      msg.id := id;
+      Messages.Send(container, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END SetAnchor;
+
+   PROCEDURE GetAnchor(container: Containers.Container;
+                       trans: Transactions.Transaction;
+                       VAR id: Containers.Ident) : BOOLEAN;
+      VAR msg: GetAnchorMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetAnchorMessage(msg);
+      msg.trans := trans;
+      Messages.Send(container, msg);
+      id := msg.id;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(container, queue);
+      RETURN msg.done
+   END GetAnchor;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE ^ GetParams(object: Services.Object;
+                         VAR params: PersistentObjects.Object;
+                         VAR mode: RemoteObjects.ExportMode);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.close := Close;
+      if.insert := Insert;
+      if.delete := Delete;
+      if.replace := Replace;
+      if.obtain := Obtain;
+      if.elements := Elements;
+      if.find := Find;
+      if.reorganize := Reorganize;
+      if.setAnchor := SetAnchor;
+      if.getAnchor := GetAnchor;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteContainers.Message", "Messages.Message", NIL);
+      InitPO(closeMessageType, "RemoteContainers.CloseMessage", "RemoteContainers.Message",
+             CreateCloseMessage, ReadCloseMessage, WriteCloseMessage);
+      InitPO(insertMessageType, "RemoteContainers.InsertMessage", "RemoteContainers.Message",
+             CreateInsertMessage, ReadInsertMessage, WriteInsertMessage);
+      InitPO(deleteMessageType, "RemoteContainers.DeleteMessage", "RemoteContainers.Message",
+             CreateDeleteMessage, ReadDeleteMessage, WriteDeleteMessage);
+      InitPO(replaceMessageType, "RemoteContainers.ReplaceMessage", "RemoteContainers.Message",
+             CreateReplaceMessage, ReadReplaceMessage, WriteReplaceMessage);
+      InitPO(obtainMessageType, "RemoteContainers.ObtainMessage", "RemoteContainers.Message",
+             CreateObtainMessage, ReadObtainMessage, WriteObtainMessage);
+      InitPO(elementsMessageType, "RemoteContainers.ElementsMessage", "RemoteContainers.Message",
+             CreateElementsMessage, ReadElementsMessage, WriteElementsMessage);
+      InitPO(findMessageType, "RemoteContainers.FindMessage", "RemoteContainers.Message",
+             CreateFindMessage, ReadFindMessage, WriteFindMessage);
+      InitPO(reorganizeMessageType, "RemoteContainers.ReorganizeMessage", "RemoteContainers.Message",
+             CreateReorganizeMessage, ReadReorganizeMessage, WriteReorganizeMessage);
+      InitPO(setAnchorMessageType, "RemoteContainers.SetAnchorMessage", "RemoteContainers.Message",
+             CreateSetAnchorMessage, ReadSetAnchorMessage, WriteSetAnchorMessage);
+      InitPO(getAnchorMessageType, "RemoteContainers.GetAnchorMessage", "RemoteContainers.Message",
+             CreateGetAnchorMessage, ReadGetAnchorMessage, WriteGetAnchorMessage);
+      Services.CreateType(type,
+         "RemoteContainers.Container", "Containers.Container");
+      InitPO(proxyParamsType, "RemoteContainers.ProxyParameters", "",
+             CreateProxyParams, ReadProxyParams, WriteProxyParams);
+
+      Services.SeekType("Containers.Container", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := GetParams;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+
+   PROCEDURE GetParams(object: Services.Object;
+		       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+   BEGIN
+      WITH object: Containers.Container DO
+	 CreateProxyParams(params);
+	 params(ProxyParameters).caps := Containers.Capabilities(object);
+	 mode := RemoteObjects.linked;
+      END;
+   END GetParams;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+         cont: Container;
+	 newif: Containers.Interface;
+	 caps: Containers.CapabilitySet;
+   BEGIN
+      NEW(cont);
+      Services.Init(cont, type);
+
+      NEW(newif); newif^ := if^;
+      caps := params(ProxyParameters).caps;
+      IF ~(Containers.insert IN caps) THEN newif.insert := NIL END;
+      IF ~(Containers.delete IN caps) THEN newif.delete := NIL END;
+      IF ~(Containers.replace IN caps) THEN newif.replace := NIL END;
+      IF ~(Containers.obtain IN caps) THEN newif.obtain := NIL END;
+      IF ~(Containers.elements IN caps) THEN newif.elements := NIL END;
+      IF ~(Containers.find IN caps) THEN newif.find := NIL END;
+      IF ~(Containers.reorganize IN caps) THEN newif.reorganize := NIL END;
+      IF ~(Containers.setAnchor IN caps) THEN newif.setAnchor := NIL END;
+      IF ~(Containers.getAnchor IN caps) THEN newif.getAnchor := NIL END;
+      IF ~(Containers.close IN caps) THEN newif.close := NIL END;
+      Containers.Init(cont, newif);
+
+      RelatedEvents.QueueEvents(cont);
+      object := cont;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteContainers.

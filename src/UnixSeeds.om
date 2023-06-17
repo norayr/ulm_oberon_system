@@ -1,0 +1,103 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixSeeds.om,v 1.10 2004/05/20 08:12:24 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixSeeds.om,v $
+   Revision 1.10  2004/05/20 08:12:24  borchert
+   prefer /dev/urandom over /dev/random as /dev/random is
+   terribly slow under the default settings of Linux
+
+   Revision 1.9  2004/03/09 21:41:10  borchert
+   the actual seed sequence code has been factorized out to UnixStatusSeeds
+
+   Revision 1.8  2001/04/30 09:34:45  borchert
+   adapted to extended parameter list of UnixPipes.Open
+
+   Revision 1.7  2001/02/06 07:30:12  borchert
+   support of Services added
+
+   Revision 1.6  2000/06/14  13:42:15  borchert
+   command adapted to Solaris 2.x
+
+   Revision 1.5  1998/04/04  18:37:22  martin
+   changes of OneWayHashes propagated
+
+   Revision 1.4  1998/03/24  23:22:08  borchert
+   module name of OneWayHashes has been fixed
+
+   Revision 1.3  1997/10/10  16:36:13  martin
+   security for shell commands improved
+   adapted to new RandomGenerators definition
+
+   Revision 1.2  1997/10/04  15:23:55  borchert
+   mutex added
+   command extended
+   fallback to original seed enabled
+   type conversions polished up
+
+   Revision 1.1  1997/04/02  14:10:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixSeeds;
+
+   IMPORT RandomGenerators, RelatedEvents, SeedStreams, Streams,
+      SurfRandomGenerators, UnixFiles, UnixStatusSeeds;
+
+   PROCEDURE SelectSeed(VAR seed: RandomGenerators.Sequence);
+      VAR
+	 seeds: Streams.Stream;
+	 errors: RelatedEvents.Object;
+	 list: UnixStatusSeeds.StatusCommandList;
+   BEGIN
+      errors := RelatedEvents.null;
+      (* prefer /dev/urandom over /dev/random as /dev/random is
+	 terribly slow under the default settings of Linux which are
+	 quite paranoid
+      *)
+      IF UnixFiles.Open(seeds, "/dev/urandom", UnixFiles.read,
+	       Streams.nobuf, errors) OR
+	    UnixFiles.Open(seeds, "/dev/random", UnixFiles.read,
+	       Streams.nobuf, errors) THEN
+	 SeedStreams.Create(seed, seeds);
+      ELSE
+	 UnixStatusSeeds.CreateList(list);
+	 UnixStatusSeeds.Add(list, "/bin/ps -ef");
+	 UnixStatusSeeds.Add(list, "/bin/netstat -n");
+	 UnixStatusSeeds.Add(list, "/bin/date");
+	 UnixStatusSeeds.Create(seed, list);
+      END;
+   END SelectSeed;
+
+   PROCEDURE Init;
+      VAR
+	 seed, unpredictable: RandomGenerators.Sequence;
+   BEGIN
+      SelectSeed(seed);
+      SurfRandomGenerators.Create(unpredictable, seed);
+      RandomGenerators.seed := seed;
+      RandomGenerators.unpredictable := unpredictable;
+   END Init;
+
+BEGIN
+   Init;
+END UnixSeeds.

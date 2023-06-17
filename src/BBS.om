@@ -1,0 +1,290 @@
+MODULE BBS; (* Frank B.J. Fischer *)
+   (*    Anyone who considers arithmetical
+         methods of producing random digits
+         is, of course, in a state of sin.
+         - John von Neumann (1951)
+   *)
+
+   IMPORT Card1024s, IntOperations, Operations, Random := RandomGenerators,
+      Services, Streams, SYS := SYSTEM, Types;
+
+   (*    Take two log2(n)/2 bit prime numbers p and q, which are congruent
+         3 modulo 4. The product of p and q, n is a Blum integer.
+         Choose an random integer x, which is realtively prime to n.
+         Compute x[0] := x^2 mod n, then x[0] is the seed for the
+         generator. Then start computing bits.
+         Compute x[i] := x[i-1]^2 mod n and take the least (the
+         log2(log2(n)) least) significant bit(s).
+   *)
+
+   CONST
+      len      = 80;
+      blockLen = Card1024s.blockLen;
+
+   TYPE 
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec =
+	 RECORD
+	    (Random.SequenceRec)
+	    value: Card1024s.Card1024; (* value.block[0] = randval *)
+	    bits: INTEGER;             (* nr of bits calculated    *)
+	    xi: Operations.Operand;    (* x[i] *)
+	    seed: Operations.Operand;  (* x[0] *)
+	 END;
+   VAR
+      sequenceType: Services.Type;
+
+   CONST
+      caps = {Random.rewindSequence, Random.int32ValS};
+
+   VAR
+      if          : Random.Interface;
+      blum        : Card1024s.Card1024;   (* Blum integer *)
+      sigBits     : INTEGER;
+      maxOfSigBits: Types.Int32;
+    
+
+   PROCEDURE NextValue(sequence: Random.Sequence);
+      VAR
+         bits  : INTEGER;            (* nr of actually calculated bits *)
+         xi    : Card1024s.Card1024; (* x[i]                           *)
+         nbits : LONGINT;            (* the significant bits of xi     *)
+   BEGIN
+      WITH sequence: Sequence DO
+      
+	 (* init *)
+	 Operations.Assign(xi, sequence.xi);
+	 bits := sequence.bits;
+     
+	 WHILE bits<blockLen DO
+	    IntOperations.MMul2(xi, xi, blum);
+	    IntOperations.Shift2(sequence.value, sigBits);
+	    nbits := SYS.VAL(LONGINT,
+			     SYS.VAL(SET, xi.block[0])*
+			     SYS.VAL(SET, maxOfSigBits));
+	    INC(sequence.value.block[0], nbits);
+	    INC(bits, sigBits);
+	 END;
+	 Operations.Copy(sequence.xi, xi);  (* store last x[i] *)
+	 sequence.bits := bits;
+      END; (* with *)
+   END NextValue;
+
+
+   PROCEDURE Int32ValS(sequence: Random.Sequence): Types.Int32;
+      VAR
+	 value: Types.Int32;
+   BEGIN
+      WITH sequence: Sequence DO
+	 IF sequence.bits < blockLen THEN
+	    NextValue(sequence);
+	 END;
+	 value := Types.ToInt32(sequence.value.block[0]);
+	 (* discard value *)
+	 IntOperations.Shift2(sequence.value, -blockLen);
+	 DEC(sequence.bits, blockLen);
+	 RETURN value
+      END;
+   END Int32ValS;
+
+     
+   PROCEDURE RewindSequence(sequence: Random.Sequence);
+      VAR
+	 bits  : INTEGER;              (* nr of actually calculated bits *)
+	 xi    : Card1024s.Card1024;   (* x[i]                           *)
+	 nbits : LONGINT;              (* the significant bits of xi     *)
+   BEGIN
+      WITH sequence : Sequence DO
+
+	 (* init *)
+	 Operations.Assign(xi, sequence.seed);
+	 Card1024s.Create(sequence.value);
+	 bits := 0;
+
+	 WHILE bits<blockLen DO
+	    IntOperations.MMul2(xi, xi, blum);
+	    IntOperations.Shift2(sequence.value, sigBits);
+	    nbits := SYS.VAL(LONGINT,
+			     SYS.VAL(SET, xi.block[0])*
+			     SYS.VAL(SET, maxOfSigBits));
+	    INC(sequence.value.block[0], nbits);
+	    INC(bits, sigBits);
+	 END;
+	 Operations.Copy(sequence.xi, xi); (* store last x[i] *)
+	 sequence.bits := bits;
+      END; (* with *)
+   END RewindSequence;
+  
+   
+   PROCEDURE DefaultBlumInteger(VAR blum: Operations.Operand);
+      (* creates a default 512 bit blum integer *)
+      VAR
+	 b: Card1024s.Card1024;
+   BEGIN
+      Card1024s.Create(b);
+      b.block[ 0] := -1405471767; b.block[ 1] := -557050202;
+      b.block[ 2] := 1181957221; b.block[ 3] := -755246287;
+      blum := b;
+   END DefaultBlumInteger;
+
+
+   PROCEDURE GCD(x, y: Operations.Operand): Operations.Operand;
+      VAR
+	 xc, yc, g : Operations.Operand;
+	 val0, val1: Operations.Operand;
+	 swap      : Operations.Operand;
+   BEGIN
+      (* init*)
+      Operations.Assign(xc, x);
+      Operations.Assign(yc, y);
+      Operations.Assign(val0, xc);
+      IntOperations.IntToOp(0, val0);
+      IntOperations.Inc3(val1, val0);
+
+      (* assert x<y *)
+      IF Operations.Compare(xc, yc)>0 THEN
+	 Operations.Assign(swap, xc);
+	 Operations.Copy(yc, xc);
+	 Operations.Copy(swap, yc);
+      END;
+      (* compute gcd(x,y) *)
+      Operations.Assign(g, yc);
+      WHILE Operations.Compare(xc, val0)>0 DO
+	 Operations.Copy(xc, g);
+	 xc := IntOperations.Mod(yc, xc);
+	 Operations.Copy(g, yc);
+      END;
+      RETURN g
+   END GCD;
+   
+    
+   PROCEDURE CreateSequence(VAR sequence: Random.Sequence;
+ 			    blumInt: IntOperations.Operand;
+			    seed: IntOperations.Operand);
+      (* initializes the random generator;
+         the sequence of random numbers depends on seed
+         and the Blum integer blumInt
+      *)
+       
+      VAR
+         val0, val1: Operations.Operand;
+         blumBlock : Types.Int32;
+ 	 sgB       : Operations.Operand;
+	 maxSgB    : Operations.Operand;
+	 s         : Sequence;
+	 i         : SHORTINT;
+	 sVal      : Types.Int32;
+	 seedval   : Operations.Operand;
+	 testwert  : Operations.Operand;
+	 bbit, sbit: LONGINT;
+   BEGIN
+      (* part one: create seed value *)
+
+      (* init *)
+      IF seed#NIL THEN
+         Operations.Assign(val0, seed);
+      ELSE
+	 Card1024s.Create(val0);
+      END;
+      IntOperations.IntToOp(0, val0);
+
+      (* check seed *)
+      ASSERT((seed#NIL) & (Operations.Compare(seed, val0)>0)); 
+     
+      (* create it *)
+      Card1024s.Create(seedval);
+      IF Operations.Compatible(seed, seedval) THEN
+	 Operations.Copy(seed, seedval);
+      ELSE
+	 i := 0;
+	 IntOperations.OpToInt(seed, sVal);
+	 WHILE (Operations.Compare(seed, val0)>0) & (i<Card1024s.nrOfBlocks) DO
+	    seedval(Card1024s.Card1024).block[i] := sVal;
+	    IntOperations.Shift2(seed, -blockLen);
+	    IntOperations.OpToInt(seed, sVal);
+	    INC(i);
+	 END;
+      END;
+
+      (* part two: create blum *)
+       
+      (* init *)
+      IF blumInt#NIL THEN
+	 Operations.Assign(val0, blumInt);
+      ELSE
+	 Card1024s.Create(val0);
+      END;
+      IntOperations.IntToOp(0, val0);
+  
+      (* check blumInt *)
+      IF (blumInt=NIL) OR (Operations.Compare(blumInt, val0)=0) THEN
+         DefaultBlumInteger(blumInt);
+      END;
+ 
+      (* create it *)
+      Card1024s.Create(blum);
+      IF Operations.Compatible(blum, blumInt) THEN
+         Operations.Copy(blumInt, blum);
+      ELSE
+	 i := 0;
+	 IntOperations.OpToInt(blumInt, blumBlock);
+	 WHILE (Operations.Compare(blumInt, val0)>0) &
+	       (i<Card1024s.nrOfBlocks) DO
+	    blum.block[i] := blumBlock;
+	    IntOperations.Shift2(blumInt, -blockLen);
+	    IntOperations.OpToInt(blumInt, blumBlock);
+	    INC(i);
+	 END;
+      END;
+   
+      (* part three: create sigBits and maxOfSigBits *)
+
+      sigBits := SHORT(IntOperations.Log2(blum));
+      Card1024s.Create(sgB);
+      IntOperations.IntToOp(sigBits, sgB);
+      sigBits := SHORT(IntOperations.Log2(sgB));
+  
+      Card1024s.Create(maxSgB);
+      IntOperations.IntToOp(1, maxSgB);
+      IntOperations.Shift2(maxSgB, sigBits);
+      IntOperations.Dec2(maxSgB);
+      IntOperations.OpToInt(maxSgB, maxOfSigBits);
+ 
+      (* is seedval relatively prime to blumInt? *)
+      IntOperations.Inc3(val1, val0);
+      testwert := GCD(seedval, blumInt);
+      WHILE Operations.Compare(testwert, val1)#0 DO
+	 IntOperations.Inc2(seedval);
+         testwert := GCD(seedval, blumInt);
+      END;
+    
+      (* enlarge seedval if necessary *)
+      IntOperations.MMul2(seedval, seedval, blum);
+      bbit := IntOperations.Log2(blum) DIV 2;
+      sbit := IntOperations.Log2(seedval);
+      WHILE sbit < bbit DO
+	 IntOperations.MMul2(seedval, seedval, blum);
+	 sbit := IntOperations.Log2(seedval);
+      END;
+    
+      (* create sequence *)
+      NEW(s);
+      Services.Init(s, sequenceType);
+      Card1024s.Create(s.value);
+      s.bits := 0;
+      s.seed := seedval;
+      s.xi   := seedval;
+      Random.Init(s, if, caps);
+      RewindSequence(s);
+    
+      (* finally *)
+      sequence := s;
+   END CreateSequence;
+ 
+BEGIN
+   NEW(if);
+   if.int32ValS := Int32ValS;
+   if.rewindSequence := RewindSequence;
+   Services.CreateType(sequenceType,
+      "BBS.Sequence", "RandomGenerators.Sequence");
+END BBS.

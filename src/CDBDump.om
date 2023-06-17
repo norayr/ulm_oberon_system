@@ -1,0 +1,57 @@
+MODULE CDBDump;
+
+   IMPORT Args := UnixArguments, CDB := ConstantDatabases, Conclusions,
+      Storage, Errors, Iterators, Print, RelatedEvents, Streams,
+      SysMonitor,
+      UnixFiles, Write;
+
+   PROCEDURE Length(s: Streams.Stream) : Streams.Count;
+      VAR
+	 length: Streams.Count;
+	 ok: BOOLEAN;
+   BEGIN
+      ok := Streams.Seek(s, 0, Streams.fromEnd) &
+	    Streams.Tell(s, length) &
+	    Streams.Seek(s, 0, Streams.fromStart);
+      ASSERT(ok);
+      RETURN length
+   END Length;
+
+   PROCEDURE DoIt;
+      VAR
+	 cdb: CDB.ConstantDatabase;
+	 cdbfilename: ARRAY 512 OF CHAR;
+	 cdbin: Streams.Stream;
+	 errors: RelatedEvents.Object;
+	 it: Iterators.Iterator;
+	 pair: CDB.KeyValuePair;
+	 ok: BOOLEAN;
+   BEGIN
+      Args.Init("cdb-file");
+      Args.FetchString(cdbfilename);
+      Args.AllArgs;
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF ~UnixFiles.Open(cdbin, cdbfilename,
+	    UnixFiles.read, Streams.bufpool, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      CDB.Open(cdb, cdbin);
+      RelatedEvents.Forward(cdb, errors);
+      CDB.GetIterator(cdb, it);
+      WHILE Iterators.Get(it, pair) DO
+	 Print.F2("+%d,%d:", Length(pair.key), Length(pair.value));
+	 ok := Streams.Copy(pair.key, Streams.stdout, -1);
+	 Write.String("->");
+	 ok := Streams.Copy(pair.value, Streams.stdout, -1);
+	 Write.Ln;
+	 Streams.Release(pair.key); Streams.Release(pair.value);
+      END;
+      CDB.Close(cdb);
+   END DoIt;
+
+BEGIN
+   Storage.DisableCollection;
+   SysMonitor.Start;
+   DoIt;
+   SysMonitor.Stop(Streams.stderr);
+END CDBDump.

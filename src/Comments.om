@@ -1,0 +1,266 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Comments.om,v 1.2 1995/03/17 16:48:37 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Comments.om,v $
+   Revision 1.2  1995/03/17  16:48:37  borchert
+   support of Forwarders added
+
+   Revision 1.1  1994/02/23  08:03:18  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Comments;
+
+   (* separate comments from ordinary input *)
+
+   IMPORT CrPipes, Disciplines, Forwarders, Objects, RelatedEvents, Streams;
+
+   CONST
+      delimlen = 4;
+   TYPE
+      Delimiter = ARRAY delimlen OF CHAR;
+      Syntax = POINTER TO SyntaxRec;
+      SyntaxRec =
+	 RECORD                   (* comment syntax *)
+	    (Objects.ObjectRec)
+	    start: Delimiter;     (* starts a comment *)
+	    inclStart: BOOLEAN;   (* belongs start to the comment? *)
+	    end: Delimiter;       (* ends a comment *)
+	    inclEnd: BOOLEAN;     (* belongs end to the comment? *)
+	    nested: BOOLEAN;      (* may comments be nested? *)
+	 END;
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    syntax: Syntax;
+	 END;
+   VAR
+      id: Disciplines.Identifier;
+
+   PROCEDURE SimpleComments(in, out: Streams.Stream);
+      VAR
+	 begin, end: CHAR;        (* comment delimiter *)
+	 disc: Discipline;
+	 nested: BOOLEAN; nestlevel: INTEGER;
+	 ch: CHAR;
+	 writeFailure: BOOLEAN;
+
+      PROCEDURE Comment;
+	 VAR
+	    ch: CHAR;
+      BEGIN
+	 WHILE Streams.ReadByte(in, ch) DO
+	    IF ch = end THEN
+	       DEC(nestlevel);
+	       IF nestlevel = 0 THEN
+		  IF ~disc.syntax.inclEnd THEN
+		     IF ~Streams.WriteByte(out, ch) THEN
+			writeFailure := TRUE;
+		     END;
+		  END;
+		  RETURN
+	       END;
+	    ELSIF (ch = begin) & nested THEN
+	       INC(nestlevel);
+	    END;
+	 END;
+      END Comment;
+
+   BEGIN
+      IF ~Disciplines.Seek(in, id, disc) THEN RETURN END;
+      begin := disc.syntax.start[0];
+      end := disc.syntax.end[0];
+      nested := disc.syntax.nested;
+      writeFailure := FALSE;
+      nestlevel := 0;
+      WHILE Streams.ReadByte(in, ch) DO
+	 IF ch = begin THEN
+	    INC(nestlevel);
+	    IF ~disc.syntax.inclStart THEN
+	       IF ~Streams.WriteByte(out, ch) THEN RETURN END;
+	    END;
+	    Comment;
+	    IF in.eof OR writeFailure THEN RETURN END;
+	 ELSIF ~Streams.WriteByte(out, ch) THEN
+	    RETURN
+	 END;
+      END;
+   END SimpleComments;
+
+   PROCEDURE ComplexComments(in, out: Streams.Stream);
+      CONST
+	 ringlen = delimlen + 1;
+      VAR
+	 start, end: Delimiter;          (* comment delimiter *)
+	 startlen, endlen: INTEGER;      (* delimiter lengths *)
+	 disc: Discipline;               (* get parameters from in *)
+	 nested: BOOLEAN; nestlevel: INTEGER;
+	 ch: CHAR;
+	 writeFailure: BOOLEAN;          (* TRUE if Write fails *)
+	 ring: ARRAY ringlen OF CHAR; (* ring buffer *)
+	 ringRead, ringWrite: INTEGER;
+	 eofSeen: BOOLEAN;
+
+      PROCEDURE InitRing;
+      BEGIN
+	 ringRead := 0; ringWrite := 0;
+      END InitRing;
+
+      PROCEDURE Write(ch: CHAR);
+      BEGIN
+	 IF nestlevel = 0 THEN
+	    writeFailure := writeFailure OR ~Streams.WriteByte(out, ch);
+	 END;
+      END Write;
+
+      PROCEDURE Read(VAR ch: CHAR) : BOOLEAN;
+      BEGIN
+	 IF ~eofSeen & Streams.ReadByte(in, ch) THEN
+	    ring[ringWrite] := ch;
+	    ringWrite := (ringWrite + 1) MOD ringlen;
+	    IF ringWrite = ringRead THEN
+	       Write(ring[ringRead]);
+	       ringRead := (ringRead + 1) MOD ringlen;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    eofSeen := TRUE;
+	    RETURN FALSE
+	 END;
+      END Read;
+
+      PROCEDURE Flush;
+      BEGIN
+	 WHILE ringRead # ringWrite DO
+	    Write(ring[ringRead]);
+	    ringRead := (ringRead + 1) MOD ringlen;
+	 END;
+      END Flush;
+
+      PROCEDURE Buffered() : INTEGER;
+	 VAR
+	    buffered: INTEGER;
+      BEGIN
+	 IF ringRead <= ringWrite THEN
+	    buffered := ringWrite - ringRead;
+	 ELSE
+	    buffered := ringlen - ringRead + ringWrite;
+	 END;
+	 RETURN buffered
+      END Buffered;
+
+      PROCEDURE DropDelimiter(len: INTEGER);
+      BEGIN
+	 ringWrite := (ringWrite + ringlen - len) MOD ringlen;
+      END DropDelimiter;
+
+      PROCEDURE Cut(len: INTEGER);
+      BEGIN
+	 ringRead := (ringRead + Buffered() - len) MOD ringlen;
+      END Cut;
+
+      PROCEDURE GetLength(delim: Delimiter; VAR len: INTEGER);
+      BEGIN
+	 len := 1;
+	 WHILE (len < LEN(delim)) &(delim[len] # 0X) DO
+	    INC(len);
+	 END;
+      END GetLength;
+
+      PROCEDURE Match(delimiter: Delimiter; len: INTEGER) : BOOLEAN;
+	 VAR
+	    i, j: INTEGER;
+	    buffered: INTEGER;
+      BEGIN
+	 buffered := Buffered();
+	 IF buffered < len THEN
+	    RETURN FALSE
+	 END;
+	 i := (ringRead + buffered - len) MOD ringlen; j := 0;
+	 LOOP
+	    IF ring[i] # delimiter[j] THEN RETURN FALSE END;
+	    i := (i + 1) MOD ringlen; INC(j);
+	    IF j = len THEN RETURN TRUE END;
+	 END;
+      END Match;
+
+      PROCEDURE ScanComment;
+      BEGIN
+	 nestlevel := 1;
+	 WHILE (nestlevel > 0) & ~writeFailure & Read(ch) DO
+	    IF Match(end, endlen) THEN
+	       DEC(nestlevel);
+	    ELSIF nested & Match(start, startlen) THEN
+	       INC(nestlevel);
+	    END;
+	 END;
+	 IF disc.syntax.inclEnd THEN
+	    Cut(0); (* forget current buffer contents *)
+	 ELSE
+	    Cut(endlen); (* forget anything before the ending delimiter *)
+	 END;
+      END ScanComment;
+
+   BEGIN
+      IF ~Disciplines.Seek(in, id, disc) THEN RETURN END;
+      start := disc.syntax.start; GetLength(start, startlen);
+      end := disc.syntax.end; GetLength(end, endlen);
+      nested := disc.syntax.nested;
+      writeFailure := FALSE; eofSeen := FALSE; InitRing;
+
+      nestlevel := 0;
+      WHILE ~writeFailure & Read(ch) DO
+	 IF Match(start, startlen) THEN
+	    IF disc.syntax.inclStart THEN
+	       DropDelimiter(startlen);
+	    END;
+	    Flush; ScanComment;
+	 END;
+      END;
+      Flush;
+   END ComplexComments;
+
+   PROCEDURE Open(VAR s: Streams.Stream; input: Streams.Stream;
+		  commentSyntax: Syntax);
+      VAR
+	 out: Streams.Stream;
+	 disc: Discipline;
+   BEGIN
+      CrPipes.Open(out, s, Streams.onebuf);
+      RelatedEvents.QueueEvents(s);
+      Forwarders.Forward(s, input);
+      NEW(disc); disc.id := id; disc.syntax := commentSyntax;
+      Disciplines.Add(input, disc);
+      IF (disc.syntax.start[1] = 0X) & (disc.syntax.end[1] = 0X) THEN
+	 CrPipes.Spawn(SimpleComments, input, out);
+      ELSE
+	 CrPipes.Spawn(ComplexComments, input, out);
+      END;
+   END Open;
+
+BEGIN
+   id := Disciplines.Unique();
+END Comments.

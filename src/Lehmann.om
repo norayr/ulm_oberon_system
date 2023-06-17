@@ -1,0 +1,106 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Lehmann.om,v 1.1 1997/04/03 09:38:58 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Lehmann.om,v $
+   Revision 1.1  1997/04/03  09:38:58  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Lehmann; (* Frank B.J. Fischer *)
+    
+   IMPORT IntOperations, Operations, Primes, Random := RandomGenerators;
+
+   CONST 
+      nrOfTests = 50;
+
+   VAR
+      test: Primes.Test;
+      if  : Primes.Interface;
+      val1: Operations.Operand;
+
+
+   PROCEDURE Create(VAR test: Primes.Test);
+   BEGIN
+      NEW(test);
+      Primes.Init(test, if);
+   END Create;
+
+
+   PROCEDURE RandTestVal(max: Operations.Operand): Operations.Operand;
+      VAR
+	 tVal: Operations.Operand;
+   BEGIN
+      Operations.Assign(tVal, max);
+      Random.SetVal(tVal);
+      IntOperations.Mod2(tVal, max);
+      RETURN tVal
+   END RandTestVal;
+
+
+   PROCEDURE PerformTest(test: Primes.Test; n: IntOperations.Operand;
+			 VAR p: REAL): INTEGER;
+      VAR
+         apm    : Operations.Operand;          (* testvalue *)
+         neg1   : Operations.Operand;          (* -1 *)
+	 pos1   : Operations.Operand;          (*  1 *)
+	 x      : Operations.Operand;          (* exponent  *)
+	 i      : SHORTINT;
+   BEGIN
+      (* set p *)
+      p := 0.5;
+
+      (* create global value val1 *)
+      Operations.Assign(val1, n);
+      IntOperations.IntToOp(1, val1);
+
+      (* initialize Lehmann test *)
+      IntOperations.Dec3(neg1, n);
+      Operations.Assign(pos1, val1);
+
+      (* create x = (n-1)/2 *)
+      Operations.Assign(x, neg1);
+      IntOperations.Shift2(x, -1);
+
+      (* calculate a^x mod n *)
+      i := 0;
+      WHILE i<nrOfTests DO
+         apm := RandTestVal(n);
+         IntOperations.MPow2(apm, x, n);
+         IF Operations.Compare(apm, pos1)=0 THEN 
+	    p := p*0.5;
+	    p := 1-p;
+         ELSIF Operations.Compare(apm, neg1)=0 THEN 
+	    RETURN Primes.indefinite
+         ELSE
+	    RETURN Primes.composite
+         END;
+	 INC(i);
+      END;
+      RETURN Primes.composite
+   END PerformTest;
+
+BEGIN
+   NEW(if);
+   if.performTest := PerformTest;
+   Create(test);
+END Lehmann.

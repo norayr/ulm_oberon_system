@@ -1,0 +1,159 @@
+(* Adi's FTP Daemon
+   Copyright (C) 2000-2001 by Andreas Borchert
+   ----------------------------------------------------------------------------
+   Adi's FTP Daemon is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Adi's FTP Daemon is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPSession;
+
+   IMPORT Args := UnixArguments, Conclusions, Env := UnixEnvironment, Errors,
+      FTPDataStreams, FTPEngine, FTPLogPrinter, FTPSessions, FTPTimerEvents,
+      FTPTimers, FTPUnixFileSystems, IPv4Addresses, Print, Process, Read,
+      RelatedEvents, Scan, Storage, Streams, Strings, SysFile, SysLogger,
+      SysProcess, Times, UnixFiles, Write;
+
+   VAR
+      intensity: INTEGER;
+      root: ARRAY 8192 OF CHAR;
+      uploadsPermitted, updatesPermitted: BOOLEAN;
+      suppressEarlyConnects: BOOLEAN;
+      myname: ARRAY 512 OF CHAR;
+      timeout: Times.Time;
+
+   PROCEDURE FetchArguments;
+      VAR
+	 flag: CHAR;
+	 s: Streams.Stream;
+	 cmdname: ARRAY 512 OF CHAR;
+	 umask: SET;
+	 arg: Streams.Stream; seconds: INTEGER;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      Args.GetCommandName(cmdname);
+      myname[0] := 0X; Strings.Open(s, myname);
+      Print.S2(s, "%s[%d]", cmdname, SysProcess.Getpid());
+      uploadsPermitted := FALSE; updatesPermitted := FALSE;
+      suppressEarlyConnects := FALSE;
+      Times.CreateAndSet(timeout, Times.relative, 0, 600, 0);
+      Args.Init("[-c] [-m umask] [-t timeout] [-u|-U] root-directory");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "c":   suppressEarlyConnects := TRUE;
+	 | "m":   Args.Fetch(arg); Scan.S1(arg, "%o", umask);
+		  IF arg.count = 0 THEN Args.Usage END;
+		  IF ~SysFile.SetFileCreationMask(umask, errors) THEN
+		     Conclusions.Conclude(errors, Errors.fatal, "");
+		  END;
+	 | "t":   Args.Fetch(arg); Read.IntS(arg, seconds);
+		  IF seconds > 0 THEN
+		     Times.CreateAndSet(timeout, Times.relative, 0, seconds, 0);
+		  ELSE
+		     timeout := NIL;
+		  END;
+	 | "u":   uploadsPermitted := TRUE;
+	 | "U":   updatesPermitted := TRUE;
+	 ELSE     Args.Usage;
+	 END;
+      END;
+      Args.FetchString(root);
+      Args.AllArgs;
+   END FetchArguments;
+
+   PROCEDURE GetAddress(envparam: ARRAY OF CHAR;
+			VAR addr: IPv4Addresses.Address);
+      VAR
+	 val: ARRAY 32 OF CHAR;
+	 h1, h2, h3, h4: INTEGER;
+	 is: Streams.Stream;
+   BEGIN
+      IF ~Env.String(envparam, val) THEN addr := 0; RETURN END;
+      Strings.Open(is, val);
+      Scan.S4(is, "%d.%d.%d.%d", h1, h2, h3, h4);
+      IF is.count # 4 THEN addr := 0; RETURN END;
+      addr := h1 * 1000000H + h2 * 10000H + h3 * 100H + h4;
+   END GetAddress;
+
+   PROCEDURE DoIt;
+      VAR
+	 session: FTPSessions.Session;
+	 me, peer: IPv4Addresses.Address;
+	 log: Streams.Stream;
+	 errors: RelatedEvents.Object;
+
+      PROCEDURE LogStart;
+	 VAR
+	    string: ARRAY 32 OF CHAR;
+      BEGIN
+	 Print.S4(log, "authorized as uid=%d, gid=%d, euid=%d, egid=%d\n",
+	    SysProcess.Getuid(), SysProcess.Getgid(),
+	    SysProcess.Geteuid(), SysProcess.Getegid());
+	 IF Env.String("TCPLOCALIP", string) THEN
+	    Print.S1(log, "TCPLOCALIP = %s\n", string);
+	 END;
+	 IF Env.String("TCPREMOTEIP", string) THEN
+	    Print.S1(log, "TCPREMOTEIP = %s\n", string);
+	 END;
+	 IF updatesPermitted THEN
+	    Write.LineS(log, "unrestricted write permission granted");
+	 ELSIF uploadsPermitted THEN
+	    Write.LineS(log, "non-destructive write permission granted");
+	 ELSE
+	    Write.LineS(log, "read-only access granted");
+	 END;
+	 Print.S1(log, "root directory = %s\n", root);
+      END LogStart;
+
+   BEGIN (* DoIt *)
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF ~SysLogger.Open(log, myname, 4, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      LogStart;
+      FTPSessions.Create(session); session.authorized := TRUE;
+      GetAddress("TCPLOCALIP", me);
+      GetAddress("TCPREMOTEIP", peer);
+      FTPDataStreams.AddHandler(session, me, peer);
+      FTPUnixFileSystems.AddHandler(session, root);
+      IF uploadsPermitted THEN
+	 FTPUnixFileSystems.PermitUploads(session);
+      ELSIF updatesPermitted THEN
+	 FTPUnixFileSystems.PermitUpdates(session);
+      END;
+      IF suppressEarlyConnects THEN
+	 FTPDataStreams.SuppressEarlyConnects(session);
+      END;
+      FTPLogPrinter.Install(session, log);
+      IF timeout # NIL THEN
+	 FTPTimers.Install(session);
+	 FTPTimerEvents.SetTimeout(session, timeout);
+      END;
+      FTPEngine.Run(0, session, log);
+      Write.LineS(log, "session terminated");
+   END DoIt;
+
+BEGIN
+   intensity := Storage.Intensity(6);
+   FetchArguments;
+   DoIt;
+   Process.Exit(Process.indicateSuccess);
+END FTPSession.

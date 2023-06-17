@@ -1,0 +1,186 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerLog.om,v 1.1 1998/04/15 07:24:32 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerLog.om,v $
+   Revision 1.1  1998/04/15 07:24:32  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerLogs;
+
+   (* provide, if requested, some detailed information about the
+      loading and compilation process
+   *)
+
+   IMPORT ASCII, CrPipes, Disciplines, StreamDisciplines, Streams, Write;
+
+   TYPE
+      Log = POINTER TO LogRec;
+      LogRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    s: Streams.Stream;   (* stream that has been given to Create *)
+	    maxlevel: INTEGER;   (* maximal log level accepted for output *)
+	    nestlevel: INTEGER;  (* current nesting level *)
+	    maxnestlevel: INTEGER; (* maximal nesting level shown *)
+	    flat: BOOLEAN;       (* do we ignore nesting levels entirely? *)
+	 END;
+
+   (* === private procedures =============================================== *)
+
+   PROCEDURE OutFilter(in, out: Streams.Stream);
+      VAR
+	 ch: CHAR;
+	 indent: BOOLEAN;
+	 open: BOOLEAN;   (* line opened but not closed? *)
+   BEGIN
+      indent := TRUE; open := FALSE;
+      WHILE Streams.ReadByte(in, ch) DO
+	 IF ch = ASCII.nl THEN
+	    Write.LnS(out); indent := TRUE; open := FALSE;
+	 ELSE
+	    IF indent THEN
+	       Write.IndentS(out); indent := FALSE;
+	    END;
+	    Write.CharS(out, ch);
+	    open := TRUE;
+	 END;
+      END;
+      IF open THEN
+	 Write.LnS(out);
+      END;
+   END OutFilter;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Create(VAR log: Log; s: Streams.Stream);
+   BEGIN
+      NEW(log); log.s := s;
+      log.maxlevel := 0; log.nestlevel := 0; log.maxnestlevel := -1;
+      log.flat := FALSE;
+   END Create;
+
+   PROCEDURE Open(log: Log; loglevel: INTEGER;
+                  VAR s: Streams.Stream) : BOOLEAN;
+      (* opens a stream for passing log msgs with the given log level;
+	 Open returns FALSE and do not open a stream if the msg
+	 is to be surpressed (see below);
+	 note that multiple open log msgs are not supported
+      *)
+      VAR
+	 out, in: Streams.Stream;
+   BEGIN
+      IF (log = NIL) OR
+            (log.maxlevel >= 0) & (loglevel > log.maxlevel) OR
+	    (log.maxnestlevel >= 0) & (log.nestlevel > log.maxnestlevel) THEN
+	 s := NIL; RETURN FALSE
+      END;
+      CrPipes.Open(out, in, Streams.linebuf);
+      CrPipes.Spawn(OutFilter, in, log.s);
+      s := out;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE SetLogLevel(log: Log; maxlevel: INTEGER);
+      (* suppress all log msgs with a level > maxlevel;
+         default is 0
+      *)
+   BEGIN
+      IF log # NIL THEN
+	 log.maxlevel := maxlevel;
+      END;
+   END SetLogLevel;
+
+   PROCEDURE SetMaximalNestLevel(log: Log; maxnestlevel: INTEGER);
+      (* suppress all log msgs coming from a nesting level > maxnestlevel;
+         -1 means that there are no restrictions regarding the nest level;
+	 default is -1
+      *)
+   BEGIN
+      IF (log # NIL) & ~log.flat THEN
+	 log.maxnestlevel := maxnestlevel;
+      END;
+   END SetMaximalNestLevel;
+
+   PROCEDURE Flatten(log: Log);
+      (* ignore nest levels entirely and do not intend the output
+	 according to them (is useful for very low log levels only)
+      *)
+   BEGIN
+      IF log # NIL THEN
+	 log.flat := TRUE; log.maxnestlevel := -1;
+      END;
+   END Flatten;
+
+   PROCEDURE EnterLevel(log: Log; VAR key: INTEGER);
+      (* increase the current nesting level;
+         the returned key must be given to LeaveLevel later
+	 (CompilerLogs uses key to check proper balancing)
+      *)
+   BEGIN
+      IF log # NIL THEN
+	 INC(log.nestlevel); key := log.nestlevel;
+	 IF ~log.flat THEN
+	    StreamDisciplines.IncrIndentationWidth(log.s, 3);
+	 END;
+      END;
+   END EnterLevel;
+
+   PROCEDURE LeaveLevel(log: Log; key: INTEGER);
+      (* decrease the current nesting level *)
+   BEGIN
+      IF log # NIL THEN
+	 ASSERT(key = log.nestlevel);
+	 DEC(log.nestlevel);
+	 IF ~log.flat THEN
+	    StreamDisciplines.IncrIndentationWidth(log.s, -3);
+	 END;
+      END;
+   END LeaveLevel;
+
+   PROCEDURE LogLevel(log: Log) : INTEGER;
+      (* return the current log level, that is the amount of detail
+	 that is requested; the minimal level is 0 (no log at all
+	 is to be given); the larger the more detailed informations
+	 may be provided; -1 means that all informations are to
+	 be given without restrictions
+      *)
+   BEGIN
+      IF log = NIL THEN
+	 RETURN 0
+      ELSE
+	 RETURN log.maxlevel
+      END;
+   END LogLevel;
+
+   PROCEDURE NestLevel(log: Log) : INTEGER;
+      (* return the current nesting level; 0 means we are the outmost level *)
+   BEGIN
+      IF log = NIL THEN
+	 RETURN 0
+      ELSE
+	 RETURN log.nestlevel
+      END;
+   END NestLevel;
+
+END CompilerLogs.

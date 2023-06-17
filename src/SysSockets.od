@@ -1,0 +1,241 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysSockets.od,v 1.3 1996/09/18 07:51:02 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysSockets.od,v $
+   Revision 1.3  1996/09/18  07:51:02  borchert
+   several options added (optSndBuf..optType)
+
+   Revision 1.2  1994/07/04  07:42:33  borchert
+   GetSockOpt/SetSockOpt & Shutdown & UDP operations added
+
+   Revision 1.1  1994/02/23  08:00:33  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/91
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysSockets;
+
+   IMPORT RelatedEvents, SysTypes;
+
+   TYPE
+      Socket = SysTypes.File;
+
+   CONST
+      (* protocol families *)
+      pfUNSPEC     = 0;
+      afUNSPEC     = pfUNSPEC;
+      pfUNIX       = 1;      (* Unix domain sockets *)
+      afUNIX       = pfUNIX;
+      pfLOCAL      = 1;      (* POSIX name for AF_UNIX *)
+      afLOCAL      = pfLOCAL;
+      pfINET       = 2;      (* Internet IP Protocol *)
+      afINET       = pfINET;
+      pfAX25       = 3;      (* Amateur Radio AX.25 *)
+      afAX25       = pfAX25;      
+      pfIPX        = 4;      (* Novell IPX *)
+      afIPX        = pfIPX;       
+      pfAPPLETALK  = 5;      (* AppleTalk DDP *)
+      afAPPLETALK  = pfAPPLETALK;
+      pfNETROM     = 6;      (* Amateur Radio NET/ROM *)
+      afNETROM     = pfNETROM;
+      pfBRIDGE     = 7;      (* Multiprotocol bridge *)
+      afBRIDGE     = pfBRIDGE;
+      pfATMPVC     = 8;      (* ATM PVCs *)
+      afATMPVC     = pfATMPVC;
+      pfX25        = 9;      (* Reserved for X.25 project *)
+      afX25        = pfX25;
+      pfINET6      = 10;     (* IP version 6 *)
+      afINET6      = pfINET6;
+      pfROSE       = 11;     (* Amateur Radio X.25 PLP *)
+      afROSE       = pfROSE;
+      pfDECnet     = 12;     (* Reserved for DECnet project *)
+      afDECnet     = pfDECnet;
+      pfNETBEUI    = 13;     (* Reserved for 802.2LLC project *)
+      afNETBEUI    = pfNETBEUI;
+      pfSECURITY   = 14;     (* Security callback pseudo AF *)
+      afSECURITY   = pfSECURITY;
+      pfKEY        = 15;     (* PF_KEY key management API *)
+      afKEY        = pfKEY;
+      pfNETLINK    = 16;
+      afNETLINK    = pfNETLINK;
+      pfROUTE      = pfNETLINK; (* Alias to emulate 4.4BSD *)
+      afROUTE      = pfROUTE;
+      pfPACKET     = 17;        (* Packet family *)
+      afPACKET     = pfPACKET;
+      pfASH        = 18;     (* Ash *)
+      afASH        = pfASH;
+      pfECONET     = 19;     (* Acorn Econet *)
+      afECONET     = pfECONET;
+      pfATMSVC     = 20;     (* ATM SVCs *)
+      afATMSVC     = pfATMSVC;
+      pfSNA        = 22;     (* Linux SNA Project (nutters!) *)
+      afSNA        = pfSNA;
+      pfIRDA       = 23;     (* IRDA sockets *)
+      afIRDA       = pfIRDA;
+
+      pfMAX        = 32;     (* For now.. *)
+      afMAX        = pfMAX;
+
+
+   CONST
+      (* socket types *)
+      stream    = 1;     (* stream socket *)
+      dgram     = 2;     (* datagram socket *)
+      raw       = 3;     (* raw-protocol interface *)
+      rdm       = 4;     (* reliably-delivered message *)
+      seqpacket = 5;     (* sequenced packet stream *)
+      (* more linux specific options *)
+
+   CONST
+      (* socket message flags *)
+      msgOutOfBand = 1;  (* process out-of-band data *)
+      msgPeek = 2;       (* peek at incoming message *)
+      msgDontRoute = 4;  (* send without using routing tables *)
+      (* more linux specific options *)
+
+      (* shutdown options *)
+      shutReceive  = 0;
+      shutSend = 1;
+      shutBoth = 2;
+
+   CONST
+      (* socket options at socket level -- see <sys/socket.h> *)
+      socketLevel = 1;    	(* options for socket level *)
+      optDebug = 1;		(* turn on debugging info recording *)
+      optReuseAddr = 2;		(* allow local address reuse *)
+      optType = 3;              (* get socket type *)
+      optError = 4;             (* get error status and clear *)
+      optDontRoute = 5;	        (* just use interface addresses *)
+      optBroadcast = 6;	        (* permit sending of broadcast msgs *)
+      optSndBuf = 7;            (* send buffer size *)
+      optRcvBuf = 8;            (* receive buffer size *)
+      optKeepAlive = 9;		(* keep connections alive *)
+      optOOBinline = 10; 	(* leave received OOB data in line *)
+      optNoCheck = 11;          (* linux specific *)
+      optPriority = 12;         (* linux specific *)
+      optLinger = 13;		(* linger on close if data present *)
+      optBSDCompat = 14;        (* linux specific *)
+      optPasscred = 16;         (* linux specific *)
+      optPeercred = 17;         (* linux specific *)
+      optRcvLoWat = 18;         (* receive low-water mark *)
+      optSndLoWat = 19;         (* send low-water mark *)
+      optRcvTimeO = 20;         (* receive timeout *)
+      optSndTimeO = 21;         (* send timeout *)
+
+      (* optAcceptConn and optUseLoopBack are unsupported on linus *)
+
+   TYPE
+      LingerVal =
+	 RECORD
+	    onoff: INTEGER;
+	    linger: SysTypes.Time;
+	 END;
+      BoolVal = RECORD bool: INTEGER END;
+
+   PROCEDURE Create(VAR socket: Socket;
+		    domain, type, protocol: INTEGER;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* create a new socket;
+	 domain: protocol family (eg pfUNIX or pfINET)
+	 type: socket type (eg stream or dgram)
+	 protocol is one of /etc/protocols (or of the corresponding yp map)
+      *)
+
+   PROCEDURE Bind(s: Socket; name: ARRAY OF BYTE;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* assigns name to an unnamed socket;
+	 name should be of the appropiate address type
+      *)
+
+   PROCEDURE Bind3(s: Socket; name: ARRAY OF BYTE;
+		   namelen: LONGINT;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* like Bind but namelen overrides LEN(name) *)
+
+   PROCEDURE Listen(s: Socket; backlog: INTEGER;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* prepares a socket for the acceptance of connections;
+	 backlog specifies the maximal queue length
+      *)
+
+   PROCEDURE Accept(VAR fd: SysTypes.File;
+		    s: Socket; VAR addr: ARRAY OF BYTE;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* waits for an incoming connection related to s *)
+
+   PROCEDURE Connect(s: Socket; name: ARRAY OF BYTE;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Connect3(s: Socket; name: ARRAY OF BYTE;
+		      namelen: LONGINT;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      (* like Connect but namelen overrides LEN(name) *)
+
+   PROCEDURE GetName(s: Socket; VAR name: ARRAY OF BYTE;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      (* return the current name of the given socket *)
+
+   PROCEDURE GetPeerName(s: Socket; VAR name: ARRAY OF BYTE;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      (* return the name of the peer connected to socket s *)
+
+   PROCEDURE GetSockOpt(s: Socket; level, optname: INTEGER;
+			VAR optval: ARRAY OF BYTE;
+			errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE SetSockOpt(s: Socket; level, optname: INTEGER;
+			optval: ARRAY OF BYTE;
+			errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Shutdown(s: Socket; how: INTEGER;
+		      errors: RelatedEvents.Object) : BOOLEAN;
+      (* how = shutReceive, shutSend or shutBoth *)
+
+   (* message operations for sockets *)
+
+   PROCEDURE Receive(s: Socket;
+		     buf: SysTypes.Address; buflen: SysTypes.Count;
+		     flags: INTEGER;
+		     errors: RelatedEvents.Object;
+		     retry: BOOLEAN; VAR interrupted: BOOLEAN) : SysTypes.Count;
+   PROCEDURE ReceiveFrom(s: Socket;
+		         buf: SysTypes.Address; buflen: SysTypes.Count;
+			 flags: INTEGER;
+			 VAR from: ARRAY OF BYTE;
+			 VAR fromlen: LONGINT;
+		         errors: RelatedEvents.Object;
+			 retry: BOOLEAN; VAR interrupted: BOOLEAN) : LONGINT;
+   PROCEDURE Send(s: Socket;
+		  buf: SysTypes.Address; buflen: SysTypes.Count;
+		  flags: INTEGER;
+		  errors: RelatedEvents.Object;
+		  retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+   PROCEDURE SendTo(s: Socket;
+		    buf: SysTypes.Address; buflen: SysTypes.Count;
+		    flags: INTEGER;
+		    name: ARRAY OF BYTE; namelen: LONGINT;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+
+END SysSockets.

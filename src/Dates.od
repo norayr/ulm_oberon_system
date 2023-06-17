@@ -1,0 +1,156 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Dates.od,v 1.3 1994/05/14 17:00:32 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: Dates.od,v $
+   Revision 1.3  1994/05/14  17:00:32  martin
+   error handling improved
+
+   Revision 1.2  1994/05/03  10:47:52  martin
+   completely replaced by a better version
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Apr 1994
+   (credits to Markus Schauler for an experimental version of this module)
+   ----------------------------------------------------------------------------
+*)
+DEFINITION Dates;
+
+   IMPORT
+      Events, Objects, Scales, Times, Timezones;
+
+   CONST
+      january = 1;   april = 4;     july = 7;      october = 10;
+      february = 2;  may = 5;       august = 8;    november = 11;
+      march = 3;     june = 6;      september = 9; december = 12;
+
+      sunday = 0;    tuesday = 2;   thursday = 4;  saturday = 6;
+      monday = 1;    wednesday = 3; friday = 5;
+
+      absolute = Scales.absolute;   relative = Scales.relative;
+
+   TYPE
+      Date = POINTER TO DateRec;
+      DateRec =
+	 RECORD
+	    (Times.TimeRec)
+	 END;
+
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    days:  Scales.Value;
+	    hours: SHORTINT;		(* 0..23 *)
+	    minutes: SHORTINT;		(* 0..59 *)
+	    seconds: SHORTINT;		(* 0..59 *)
+	    msecs: INTEGER;		(* 0..999 *)
+	 END;
+
+      Info = POINTER TO InfoRec;
+      InfoRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    year: Scales.Value;
+	    month: SHORTINT;		(* january..december *)
+	    day: SHORTINT;		(* 1..31 *)
+	    weekday: SHORTINT;		(* sunday..saturday *)
+	    hour: SHORTINT;		(* 0..23 *)
+	    minute: SHORTINT;		(* 0..59 *)
+	    second: SHORTINT;		(* 0..59 *)
+	    msec: INTEGER;		(* 0..999 *)
+	 END;
+
+      LongInfo = POINTER TO LongInfoRec;
+      LongInfoRec =
+	 RECORD
+	    (InfoRec)
+	    yearday: INTEGER;		(* 1..366 *)
+	    week: SHORTINT;		(* 1..53, week begins on Sunday *)
+	    mweek: SHORTINT;		(* 1..53, week begins on Monday *)
+	    leapyear: BOOLEAN;
+	    daysInMonth: SHORTINT;	(* usu. 28..31, length of month *)
+	    daysInYear: INTEGER;	(* usu. 365..366, length of year *)
+	    tzInfo: Timezones.GlimpseRec;
+	 END;
+
+   VAR
+      scale: Scales.Scale;		(* belonging to Times.family *)
+
+   CONST
+      invalidTime = 0;		(* info represents no valid date and time *)
+      invalidDate = 1;		(* year/month/day represent no valid date *)
+      bogusValue = 2;		(* date value has been corrupted *)
+      timeOutOfRange = 3;	(* time can not be represented as a Date *)
+      errorcodes = 4;
+   TYPE
+      ErrorCode = SHORTINT;	(* 0..errorcodes-1 *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+	 (*
+	  * raised if conversions fail due to illegal values;
+	  * priority: Priorities.liberrors
+	  *)
+
+   PROCEDURE Create(VAR time: Times.Time; type: SHORTINT);
+      (* time IS Date, type is absolute or relative *)
+
+   PROCEDURE CreateYMD(VAR time: Times.Time; year, month, day: Scales.Value);
+      (*
+       * equivalent to Create(time, absolute); Set(time, info); where
+       * info represents year, month, day, 12:00:00 GMT
+       *)
+
+   PROCEDURE SetValue(time: Times.Time; value: ValueRec);
+   PROCEDURE GetValue(time: Times.Time; VAR value: ValueRec);
+      (* value is either relative or relative to Jan 1 1970, 0:00:00 GMT *)
+
+   (*
+    * Following operations apply to absolute times only.
+    * All SetXXX procedures ignore info.weekday .
+    *)
+
+   PROCEDURE Set(time: Times.Time; info: InfoRec);
+   PROCEDURE Get(time: Times.Time; VAR info: InfoRec);
+   PROCEDURE GetLong(time: Times.Time; VAR info: LongInfoRec);
+      (* use Timezones.local to determine offset in respect to GMT *)
+
+   PROCEDURE SetO(time: Times.Time; off: Timezones.Offset; info: InfoRec);
+   PROCEDURE GetO(time: Times.Time; off: Timezones.Offset; VAR info: InfoRec);
+      (* use specified offset *)
+
+   PROCEDURE SetT(time: Times.Time; tz: Timezones.Timezone; info: InfoRec);
+   PROCEDURE GetT(time: Times.Time; tz: Timezones.Timezone; VAR info: InfoRec);
+   PROCEDURE GetLongT(time: Times.Time; tz: Timezones.Timezone;
+			VAR info: LongInfoRec);
+      (* use specified time zone to determine offset *)
+
+   PROCEDURE Valid(year, month, day: Scales.Value) : BOOLEAN;
+
+   PROCEDURE Weekday(year, month, day: Scales.Value) : SHORTINT;
+
+END Dates.

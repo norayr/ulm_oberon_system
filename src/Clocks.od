@@ -1,0 +1,100 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Clocks.od,v 1.3 2004/02/19 15:21:05 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Clocks.od,v $
+   Revision 1.3  2004/02/19 15:21:05  borchert
+   Passed added including passed capability
+
+   Revision 1.2  1996/01/04 16:49:30  borchert
+   clocks are now an extension of Services.Object
+
+   Revision 1.1  1994/02/22  20:06:08  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Clocks;
+
+   IMPORT Disciplines, Events, Objects, Priorities, Services, Times;
+
+   TYPE
+      Clock = POINTER TO ClockRec;
+      ClockRec = RECORD (Services.ObjectRec) END;
+
+   CONST
+      settime = 0; timer = 1; passed = 2;
+   TYPE
+      CapabilitySet = SET; (* OF [settime..passed] *)
+   TYPE
+      GetTimeProc = PROCEDURE (clock: Clock; VAR time: Times.Time);
+      SetTimeProc = PROCEDURE (clock: Clock; time: Times.Time);
+      PassedProc = PROCEDURE (clock: Clock; time: Times.Time) : BOOLEAN;
+      TimerOnProc = PROCEDURE (clock: Clock; time: Times.Time;
+			       event: Events.Event);
+      TimerOffProc = PROCEDURE (clock: Clock);
+      GetPriorityProc = PROCEDURE (clock: Clock;
+				   VAR priority: Priorities.Priority);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    gettime: GetTimeProc;
+	    settime: SetTimeProc;
+	    passed: PassedProc;
+	    timeron: TimerOnProc;
+	    timeroff: TimerOffProc;
+	    getpriority: GetPriorityProc;
+	 END;
+   VAR
+      system: Clock; (* the clock of the operating system *)
+
+   CONST
+      cannotSetTime = 0; (* SetTime not implemented *)
+      cannotSetTimer = 1; (* timer not implemented *)
+      errorcodes = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE Init(clock: Clock; if: Interface; caps: CapabilitySet);
+   PROCEDURE Capabilities(clock: Clock) : CapabilitySet;
+   PROCEDURE CreateStaticClock(VAR clock: Clock);
+
+   PROCEDURE GetTime(clock: Clock; VAR time: Times.Time);
+   PROCEDURE SetTime(clock: Clock; time: Times.Time);
+   PROCEDURE Passed(clock: Clock; time: Times.Time) : BOOLEAN;
+
+   PROCEDURE TimerOn(clock: Clock; time: Times.Time; event: Events.Event);
+   PROCEDURE TimerOff(clock: Clock);
+   PROCEDURE GetPriority(clock: Clock; VAR priority: Priorities.Priority);
+      (* return Priorities.base in case of static clocks *)
+
+END Clocks.

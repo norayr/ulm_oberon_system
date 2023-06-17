@@ -1,0 +1,150 @@
+MODULE Relocations;
+
+(* Support for Relocations and declaration of internal symbols.
+ * Relocations: Once we discover that a reloction record
+ * is needed for an Operand we create a RelocRequest for this Operand.
+ * The creator should fill in the symbol Reference (ref and type).
+ * OpcodeGen will add off and len. label should mark the first byte
+ * of the instruction.
+ * Symbols: Just call NewSymbol.
+ * All Requests are collected by an owner Object. The FragmentedStreams.Stream
+ * or the code Block can be used for this. Once all labels are fixed these
+ * requests are translated into real relocation entries.
+ *)
+
+   IMPORT Conclusions, Disciplines, FragmentedStreams, Streams, ConstStrings;
+
+   TYPE
+      RelocType = INTEGER;
+
+   CONST
+      noReloc = 0;   (* No Relocation needed *)
+      addSym  = 1;   (* Add the symbol value to the target *)
+      setSym  = 2;   (* Set the target to the symbol value *)
+      (* more types will be added *)
+
+   TYPE
+      Instance = POINTER TO InstanceRec;
+      InstanceRec = RECORD
+	 next : Instance;
+	 label : FragmentedStreams.Label;
+	 off, len : LONGINT;
+      END;
+
+      SymRef = POINTER TO  SymRefRec;
+      SymRefRec = RECORD
+         (Disciplines.ObjectRec)
+         modname : ConstStrings.String;
+         symname : ConstStrings.String;
+      END;
+
+      Request = POINTER TO RequestRec;
+      RequestRec = RECORD
+	 (Disciplines.ObjectRec)
+	 next : Request;
+      END;
+
+      RelocRequest = POINTER TO RelocRequestRec;
+      RelocRequestRec = RECORD
+	 (RequestRec)
+	 instances : Instance;
+	 type : RelocType;
+	 ref  : SymRef;
+      END;
+
+      SymRequest = POINTER TO SymRequestRec;
+      SymRequestRec = RECORD
+	 (RequestRec)
+	 name  : ConstStrings.String;
+	 label : FragmentedStreams.Label;
+      END;
+
+      Disc = POINTER TO DiscRec;
+      DiscRec = RECORD
+	 (Disciplines.DisciplineRec)
+	 list : Request;
+	 last : Request; (* End of list *)
+      END;
+
+   VAR
+      relocID : Disciplines.Identifier;
+
+   PROCEDURE GetDisc (obj : Disciplines.Object) : Disc;
+      VAR
+	 disc : Disc;
+   BEGIN
+      disc := NIL;
+      IF ~Disciplines.Seek (obj, relocID, disc) THEN
+	 NEW (disc); disc.id := relocID;
+	 disc.list := NIL;
+	 disc.last := NIL;
+	 Disciplines.Add (obj, disc);
+      END;
+      RETURN disc;
+   END GetDisc;
+
+
+   (* Create a Request and add it to the Request list of owner. *)
+   PROCEDURE Create (VAR ret : Request; owner : Disciplines.Object;
+		     type : RelocType; ref : SymRef);
+      VAR
+	 disc : Disc;
+	 reloc : RelocRequest;
+   BEGIN
+      disc := NIL;
+      ASSERT (owner # NIL);
+      NEW(reloc);
+      reloc.type := type;
+      reloc.ref  := ref;
+      reloc.next := NIL;
+      reloc.instances := NIL;
+      disc := GetDisc (owner); ASSERT (disc # NIL);
+      IF disc.list = NIL THEN
+	 disc.list := reloc;
+      ELSE
+	 disc.last.next := reloc;
+      END;
+      disc.last := reloc;
+      ret := reloc;
+   END Create;
+
+
+   PROCEDURE NewSymbol (owner : Disciplines.Object;
+		        name : ConstStrings.String;
+			lab : FragmentedStreams.Label);
+      VAR
+	 sym : SymRequest;
+	 disc : Disc;
+   BEGIN
+      sym := NIL;
+      NEW (sym);
+      sym.name := name;
+      sym.label := lab;
+      disc := GetDisc (owner); ASSERT (disc # NIL);
+      IF disc.list = NIL THEN
+	 disc.list := sym;
+      ELSE
+	 disc.last.next := sym;
+      END;
+      disc.last := sym;
+   END NewSymbol;
+
+   (* Return a pointer to the list of Requests. This should be more
+    * efficient than an Iterator. We also remove the request list
+    * from obj, they will be freed when the reference that we return
+    * is dropped. *)
+   PROCEDURE GetRequests (obj : Disciplines.Object) : Request;
+      VAR
+         disc : Disc;
+   BEGIN
+      disc := NIL;
+      IF Disciplines.Seek (obj, relocID, disc) THEN
+	 Disciplines.Remove (obj, relocID);
+	 RETURN disc.list;
+      END;
+      RETURN NIL;
+   END GetRequests;
+
+BEGIN
+   relocID := Disciplines.Unique ();
+END Relocations.

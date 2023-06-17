@@ -1,0 +1,240 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PriorityJob.om,v 1.1 2001/05/21 15:30:50 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: PriorityJob.om,v $
+   Revision 1.1  2001/05/21 15:30:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PriorityJobs;
+
+   IMPORT Conditions, Coroutines, Disciplines, Jobs, PrioritySchedulers,
+      RelatedEvents, Schedulers, SYS := SYSTEM, Tasks;
+
+   CONST
+      timerPriority = 0;
+      logPriority = 100;
+      commandPriority = 200;
+      dataPriority = 300;
+      writerPriority = 400;
+      readerPriority = 500;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      Procedure = PROCEDURE (job: Job);
+      Task = POINTER TO TaskRec;
+      JobRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    proc: Procedure;
+	    task: Task;
+	    done: BOOLEAN;
+	 END;
+
+   CONST
+      idle = 0; working = 1; terminating = 2;
+   TYPE
+      State = SHORTINT; (* idle..terminating *)
+      TaskRec =
+	 RECORD
+	    state: State;
+	    job: Job;
+	    next: Task; (* next idle task *)
+	    group: Disciplines.Object;
+	    task: PrioritySchedulers.Task;
+	 END;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    idleTasks: Task;
+	    tg: PrioritySchedulers.TaskGroup;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   TYPE
+      SchedulerJob = POINTER TO SchedulerJobRec;
+      SchedulerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    group: Disciplines.Object;
+	    sdisc: SessionDiscipline;
+	    tg: PrioritySchedulers.TaskGroup;
+	 END;
+
+   TYPE
+      JobCondition = POINTER TO JobConditionRec;
+      JobConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    task: Task;
+	 END;
+   VAR
+      jobDomain: Conditions.Domain;
+
+   TYPE
+      DoneCondition = POINTER TO DoneConditionRec;
+      DoneConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    job: Job;
+	 END;
+   VAR
+      doneDomain: Conditions.Domain;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE Scheduler(job: Jobs.Job);
+   BEGIN
+      WITH job: SchedulerJob DO
+	 Schedulers.StartScheduler(job.tg);
+	 Disciplines.Remove(job.group, sdid);
+	 job.sdisc.idleTasks := NIL;
+      END;
+   END Scheduler;
+
+   PROCEDURE GetDiscipline(group: Disciplines.Object;
+			   VAR sdisc: SessionDiscipline);
+      VAR
+	 job: SchedulerJob;
+   BEGIN
+      IF ~Disciplines.Seek(group, sdid, sdisc) THEN
+	 NEW(sdisc); sdisc.id := sdid; sdisc.idleTasks := NIL;
+	 PrioritySchedulers.CreateTaskGroup(sdisc.tg);
+	 NEW(job); job.tg := sdisc.tg;
+	 job.sdisc := sdisc; job.group := group;
+	 Jobs.Submit(job, Scheduler);
+	 Disciplines.Add(group, sdisc);
+      END;
+   END GetDiscipline;
+
+   PROCEDURE TestJobCondition(domain: Conditions.Domain;
+			      condition: Conditions.Condition;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: JobCondition DO
+	 RETURN (condition.task.state = working) OR
+		(condition.task.state = terminating)
+      END;
+   END TestJobCondition;
+
+   PROCEDURE TestDoneCondition(domain: Conditions.Domain;
+			       condition: Conditions.Condition;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: DoneCondition DO
+	 RETURN condition.job.done
+      END;
+   END TestDoneCondition;
+
+   PROCEDURE JobListener(VAR cr: Coroutines.Coroutine; task: Task);
+      VAR
+	 condition: JobCondition;
+	 sdisc: SessionDiscipline;
+   BEGIN
+      SYS.CRSPAWN(cr);
+      GetDiscipline(task.group, sdisc);
+      NEW(condition); condition.task := task;
+      Conditions.Init(condition, jobDomain);
+      LOOP
+	 ASSERT((task.state = working) & (task.job # NIL));
+	 task.job.proc(task.job); task.job.done := TRUE;
+	 task.state := idle; task.job := NIL;
+	 task.next := sdisc.idleTasks; sdisc.idleTasks := task;
+	 Tasks.WaitFor(condition);
+	 IF task.state = terminating THEN EXIT END;
+      END;
+      Tasks.Terminate;
+   END JobListener;
+
+   PROCEDURE Init;
+
+      PROCEDURE CreateDomain(VAR domain: Conditions.Domain;
+			     test: Conditions.TestProc);
+	 VAR
+	    if: Conditions.Interface;
+	    desc: Conditions.Description;
+      BEGIN
+	 NEW(if); if.test := test;
+	 NEW(desc); desc.internal := TRUE; desc.caps := {};
+	 NEW(domain); Conditions.InitDomain(domain, if, desc);
+      END CreateDomain;
+
+   BEGIN (* Init *)
+      CreateDomain(jobDomain, TestJobCondition);
+      CreateDomain(doneDomain, TestDoneCondition);
+      sdid := Disciplines.Unique();
+   END Init;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Submit(job: Job;
+		    group: Disciplines.Object;
+		    priority: PrioritySchedulers.Priority;
+		    proc: Procedure);
+      (* submit `job' to the task group associated with `group'
+	 with the given priority;
+	 `group' may be anything -- the task group will be created
+	 for the first job associated with it
+      *)
+      VAR
+	 task: Task;
+	 cr: Coroutines.Coroutine;
+	 sdisc: SessionDiscipline;
+   BEGIN
+      GetDiscipline(group, sdisc);
+      job.proc := proc; job.done := FALSE;
+      IF sdisc.idleTasks # NIL THEN
+	 task := sdisc.idleTasks; sdisc.idleTasks := sdisc.idleTasks.next;
+	 ASSERT(task.group = group);
+      ELSE
+	 NEW(task); task.group := group;
+	 JobListener(cr, task); Schedulers.AddTask(sdisc.tg, cr, task.task);
+      END;
+      PrioritySchedulers.SetPriority(task.task, priority);
+      task.state := working; task.job := job; task.next := NIL;
+      job.task := task;
+   END Submit;
+
+   PROCEDURE CreateCondition(VAR condition: Conditions.Condition; job: Job);
+      (* create condition which becomes TRUE when the job is finished;
+	 NIL may be returned if the job is already done
+      *)
+      VAR
+	 cond: DoneCondition;
+   BEGIN
+      IF job.done THEN
+	 condition := NIL;
+      ELSE
+	 NEW(cond); cond.job := job;
+	 Conditions.Init(cond, doneDomain);
+	 condition := cond;
+      END;
+   END CreateCondition;
+
+BEGIN
+   Init;
+END PriorityJobs.

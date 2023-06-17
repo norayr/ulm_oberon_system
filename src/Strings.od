@@ -1,0 +1,118 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Strings.od,v 1.1 1994/02/22 20:10:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Strings.od,v $
+   Revision 1.1  1994/02/22  20:10:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 9/89
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Strings;
+
+   IMPORT Events, Streams;
+
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec = RECORD (Streams.StreamRec) END;
+   CONST
+      (* error codes *)
+      endOfStringReached = 0;	(* write failure: end of string reached *)
+      outOfRange = 1;           (* seek failure: position out of range *)
+      badParameter = 2;		(* illegal parameter value (eg whence) *)
+      posOutside = 3;		(* trunc failure: position beyond trunc pos *)
+      errorcodes = 4;
+   TYPE
+      ErrorCode = SHORTINT;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Streams.Stream;
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+	 (* raised on errorneous stream operations;
+	    ignored by default
+	 *)
+
+   (* 1st parameter: destination
+      2nd parameter: source
+
+      resulting strings are guaranteed to be 0X-terminated
+   *)
+
+   (* ======= string to stream operations =========================== *)
+
+   PROCEDURE Write(stream: Streams.Stream; string: ARRAY OF CHAR);
+      (* seek to position 0 of `stream', truncate stream, and
+	 copy 0X-terminated string to `stream' (with 0X)
+      *)
+
+   PROCEDURE WritePart(stream: Streams.Stream; string: ARRAY OF CHAR;
+		       sourceIndex: LONGINT);
+      (* seek to position 0 of `stream', truncate stream, and
+	 copy string[sourceIndex..] to it;
+	 the file pointer of `stream' is left on position 0
+      *)
+
+   (* ======= stream to string operations =========================== *)
+
+   PROCEDURE Read(VAR string: ARRAY OF CHAR; stream: Streams.Stream);
+      (* copy contents of `stream' from position 0 until end of file;
+	 `string' is guaranteed to be 0X-terminated;
+	 the file pointer of `stream' is left on position 0
+      *)
+
+   PROCEDURE ReadPart(VAR string: ARRAY OF CHAR; destIndex: LONGINT;
+		      stream: Streams.Stream);
+      (* like `Read' but fill string[destIndex..] *)
+
+   (* ======= string as stream ====================================== *)
+
+   PROCEDURE Open(VAR stream: Streams.Stream; VAR string: ARRAY OF CHAR);
+      (* opens string for reading and writing; seek & tell are permitted;
+	 0X-termination of string is guaranteed;
+      *)
+
+   (* ======= string to string operations =========================== *)
+
+   PROCEDURE Copy(VAR destination: ARRAY OF CHAR;
+		  source: ARRAY OF CHAR);
+
+   PROCEDURE PartCopy(VAR destination: ARRAY OF CHAR; destIndex: LONGINT;
+		      source: ARRAY OF CHAR; sourceIndex: LONGINT);
+      (* copy source[sourceIndex..] to destination[destIndex..] *)
+
+   PROCEDURE Len(string: ARRAY OF CHAR) : LONGINT;
+      (* returns the number of characters (without terminating 0X) *)
+
+   PROCEDURE Concatenate(VAR destination: ARRAY OF CHAR;
+			 source: ARRAY OF CHAR);
+      (* append source to destination;
+	 PartCopy(destination, Len(destination), source, 0);
+      *)
+
+END Strings.

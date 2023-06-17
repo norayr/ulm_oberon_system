@@ -1,0 +1,101 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SPARCSolari.om,v 1.1 2001/03/08 07:42:16 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SPARCSolari.om,v $
+   Revision 1.1  2001/03/08 07:42:16  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SPARCSolarisArchitecture;
+
+   IMPORT Architectures, ConstStrings, SYS := SYSTEM, SysUname, SysSolarisInfo;
+
+   PROCEDURE Init;
+      CONST
+	 namelen = 256;
+      TYPE
+	 Name = ARRAY namelen OF CHAR;
+      VAR
+	 osname, archname, osrelease, isalist: Name;
+	 arch: Architectures.Architecture;
+	 addrwidth: INTEGER;
+
+      PROCEDURE Match(arch: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    from, to, index: INTEGER;
+      BEGIN
+	 from := 0; to := from;
+	 LOOP
+	    IF (to >= LEN(isalist)) OR (isalist[to] = 0X) OR
+		  (isalist[to] = " ") THEN
+	       IF to > from THEN
+		  index := 0;
+		  LOOP
+		     IF (index > LEN(arch)) OR (arch[index] = 0X) THEN
+			IF index = to - from THEN RETURN TRUE ELSE EXIT END;
+		     END;
+		     IF index >= to-from THEN EXIT END;
+		     IF arch[index] # isalist[from + index] THEN EXIT END;
+		     INC(index);
+		  END;
+	       END;
+	       IF (to >= LEN(isalist)) OR (isalist[to] = 0X) THEN
+		  RETURN FALSE
+	       END;
+	       INC(to); from := to;
+	    ELSE
+	       INC(to);
+	    END;
+	 END;
+      END Match;
+
+   BEGIN (* Init *)
+      SysUname.GetSysName(osname);
+      IF osname # "SunOS" THEN RETURN END;
+      SysSolarisInfo.GetArchitecture(archname);
+      IF archname # "sparc" THEN RETURN END;
+      (* running SunOS on SPARC *)
+      Architectures.Create(arch, "SPARC");
+      (* setting operating system info *)
+      ConstStrings.Create(arch.os, osname);
+      SysUname.GetRelease(osrelease);
+      ConstStrings.Create(arch.osrelease, osrelease);
+      (* setting variant of SPARC processor *)
+      SysSolarisInfo.GetIsAList(isalist);
+      IF Match("sparcv9") THEN
+	 addrwidth := SYS.SIZE(SYS.ADDRESS) * 8;
+      ELSE
+	 addrwidth := 32;
+      END;
+      CASE addrwidth OF
+      | 32: ConstStrings.Create(arch.variant, "v8");
+	    ConstStrings.Create(arch.model, "32");
+      | 64: ConstStrings.Create(arch.variant, "v9");
+	    ConstStrings.Create(arch.model, "64");
+      END;
+      Architectures.system := arch;
+   END Init;
+
+BEGIN
+   Init;
+END SPARCSolarisArchitecture.

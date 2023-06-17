@@ -1,0 +1,245 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH WebHandlers 3 "Last change: 24 April 1998" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+WebHandlers \- HTTP request processing
+.SH SYNOPSIS
+.Pg
+TYPE Handler = POINTER TO HandlerRec;
+TYPE HandlerRec =
+   RECORD
+   END;
+.sp 0.7
+TYPE Request = POINTER TO RequestRec;
+TYPE RequestRec =
+   RECORD
+      serverAddress: Networks.Address; (* To distinguish clients on 
+         different ports *)
+      clientAddress: Networks.Address; (* address of the client *)
+      method: Streams.Stream; (* requested Method *)
+      url: InetURLs.URL; (* requested resource *)
+      versionMajor: SHORTINT; (* of Client *)
+      versionMinor: SHORTINT; (* of Client *)
+      headers: HTTPHeaders.HeaderSet;
+      body: Streams.Stream; (* NIL, if there is no body *)
+      response: Streams.Stream; (* where to send the response *)
+   END;
+.sp 0.7
+HandleRequestProc = PROCEDURE (handler: Handler; request: Request;
+                               errors: RelatedEvents.Object);
+.sp 0.3
+Interface = POINTER TO InterfaceRec;
+InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      handleRequest: HandleRequestProc;
+   END;
+.sp 0.7
+PROCEDURE Init(handler: Handler; if: Interface);
+.sp 0.3
+PROCEDURE HandleRequest(handler: Handler; request: Request;
+                        errors: RelatedEvents.Object);
+.Pe
+.SH DESCRIPTION
+The module \fIWebHandlers\fP defines an abstraction to processes a HTTP request
+of a client. It searches for the web object identified by the URL and creates a
+response. \fIWebObjects(3)\fP is used to obtain the data, to create the status
+line, the headers of the response and the body.
+.SS Request structure
+The \fIRequest\fP-record provides all necessary information of a client request.
+It contains the message method, the URL to determine the web object, information
+about the client used HTTP version, all request headers and if supplied the body of the
+client request.
+.PP
+In \fIserverAddress\fP you can find the port of the daemon providing the
+request. So you can use one web handler to maintain different ports.
+\fIclientAddress\fP provides the address of the client (not yet implemented;
+\fIclientAddress\fP is always \fBNIL\fP).
+.PP
+The \fIresponse\fP-stream ist the network stream to the client. A web handler
+must send his responses to that stream.
+.SS "Providing Web-handlers"
+Implementations must initialize new instances of web handlers using \fIInit\fP,
+specifying an interface \fIif\fP. \fIif\fP only contains the \fIHandleRequest\fP
+procedure.
+.Is "\fIhandler\fP: \fIHandler\fP; "
+.If handleRequest "\fIrequest\fP: \fIRequest\fP; \fIerrors\fP: \fIRelatedEvents.Object\fP"
+is normally called by a Daemon wenn a request occurs. \fIrequest\fP contains
+all necessary information about the request. This request has to be processed by
+the Handler and the response must be sent to \fIrequest.response\fP.
+\fIrequest.response\fP will remain open if it isn't explicitly closed by
+\fIHandleRequest\fP (so a client can make repeated request on the same
+connection). Because of simultaneous requests, the Implementor must be aware of
+creating a reentrant procedure.
+.Ef
+.SS "Using Web-handlers."
+\fIHandleRequest\fP is normally called by a HTTP daemon. In \fIrequest\fP the caller
+provides the split response of the client. If there is an error during the work 
+it should raised related to \fIerrors\fP.
+.SH DIAGNOSTICS
+\fIWebHandler\fP itself does not generate error events. Only the underlying
+implementations of \fIHandleRequest\fP raise errors as \fIRelatedEvents(3)\fP to
+the given \fIerrors\fP parameter.
+.SH "SEE ALSO"
+.Tb InetHTTPDaemon(3)
+.Tp InetURLs(3)
+addresses for web pages
+.Tp HTTPHeaders(3)
+manage HTTP-header fields
+.Tp HTTPResponse(3)
+write HTTP-structures to client stream
+.Tp InetHTTPDaemon(3)
+receiving a request from a client
+.Tp RelatedEvents(3)
+error handling
+.Tp Streams(3)
+stream operations
+.Tp WebObjects(3)
+abstraction for world wide web objects
+.Te
+.SH AUTHOR
+Manfred Rue\*s, University of Ulm
+.\" ---------------------------------------------------------------------------
+.\" $Id: WebHandlers.3,v 1.1 1998/04/24 17:47:43 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: WebHandlers.3,v $
+.\" Revision 1.1  1998/04/24  17:47:43  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

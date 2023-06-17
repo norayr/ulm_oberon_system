@@ -1,0 +1,257 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysIPC.od,v 1.1 1994/02/23 07:59:22 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysIPC.od,v $
+   Revision 1.1  1994/02/23  07:59:22  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysIPC;
+
+   (* System V interprocess communication:
+      semaphores, messages, and shared memory
+
+      not all commands and permissions are valid for every UNIX version
+   *)
+
+   IMPORT Events, RelatedEvents, SysProcess, SysTypes, SysStat;
+
+   CONST
+      private = 0;		(* private key *)
+
+      (* mode bits *)
+      (* alloc is not supported by linux. *)
+      creat = { 9 };		(* create entry if key doesn't exist *)
+      excl = { 10 };		(* fail if key exists *)
+      nowait = { 11 };		(* error if request must wait *)
+
+      (* control commands *)
+      rmid = 0;			(* remove identifier *)
+      set = 1;			(* set options *)
+      stat = 2;			(* get options *)
+
+      (* permission definitions *)
+      read = { SysStat.uread };		(* read permission for owner *)
+      write = { SysStat.uwrite };	(* write permission for owner *)
+
+      (* shared memory: operation flags *)
+      readwrite = {};		(* attach read/write *)
+      rdonly = { 12 };		(* attach read-only (else read-write) *)
+      rnd = { 13 };		(* round attach address to shmlba *)
+
+      (* messages: operation flags *)
+      noerror = { 11 };		(* no error if big message *)
+
+      (* semaphore operation flags *)
+      undo = { 10 };		(* set up adjust on exit entry *)
+
+   TYPE
+      Key = LONGINT;		(* corresponds to key_t from sys/types.h *)
+      Size = SysTypes.Count;
+      Modes = SET;
+      Identifier = LONGINT;
+      Address = SysTypes.UntracedAddress;
+      ProcessId = SysProcess.ProcessId;
+      Time = SysTypes.Time;
+      MessageType = LONGINT;
+      SemVal = INTEGER;
+
+      (* common IPC access structure *)
+      Access =
+	 RECORD
+	    key: Key;
+	    uid: INTEGER;	(* owner's user id *)
+	    gid: INTEGER;	(* owner's group id *)
+	    cuid: INTEGER;	(* creator's user id *)
+	    cgid: INTEGER;	(* creator's group id *)
+	    mode: Modes;	(* access modes *)
+	    seq: INTEGER;	(* slot usage sequence number *)
+	 END;
+
+      SharedMemRec =		(* struct shmid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    segsz: Size;	(* segment size in bytes *)
+	    atime: Time;	(* last shmat time *)
+	    dtime: Time;	(* last shmdt time *)
+	    ctime: Time;	(* last change time *)
+	    cpid: ProcessId;	(* pid of creator *)
+	    lpid: ProcessId;	(* pid of last shmop *)
+	    nattach: INTEGER;	(* current # attached *)
+	 END;
+
+      QueueRec =		(* struct msqid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    first: Address;	(* ptr to first message on q *)
+	    last: Address;	(* ptr to last message on q *)
+	    stime: Time;	(* last msgsnd time *)
+	    rtime: Time;	(* last msgrcv time *)
+	    ctime: Time;	(* last change time *)
+	    cbytes: INTEGER;	(* current # bytes on q *)
+	    qnum: INTEGER;	(* # of messages on q *)
+	    qbytes: INTEGER;	(* max # of bytes on q *)
+	    lspid: ProcessId;	(* pid of last msgsnd *)
+	    lrpid: ProcessId;	(* pid of last msgrcv *)
+	 END;
+
+      SemaphoreRec =		(* struct semid_ds *)
+	 RECORD
+	    perm: Access;	(* operation permission struct *)
+	    otime: Time;	(* last semop time *)
+	    ctime: Time;	(* last change time *)
+	    base: Address;	(* ptr to first semaphore in set *)
+	    nsems: INTEGER;	(* # of semaphores in set *)
+	 END;
+
+      SemOperation =		(* struct sembuf *)
+	 RECORD
+	    num: INTEGER;	(* semaphore # *)
+	    op: INTEGER;	(* semaphore operation *)
+	    flags: SET;		(* operation flags *)
+	 END;
+
+   VAR
+      conferror: Events.EventType;
+	 (* this event is raised on internal errors during
+	    initialization time;
+	    priority: Priorities.assertions
+	 *)
+
+   CONST
+      noSharedSegment = 0;
+	 (* given address does not belong to a shared memory segment *)
+      errorcodes = 1;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   (* ==== shared memory ================================================== *)
+
+   PROCEDURE ShmGet(VAR shmid: Identifier; key: Key; size: Size; shmflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ShmCtl(shmid: Identifier; cmd: INTEGER; VAR buf: SharedMemRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ShmRemove(shmid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE ShmAttach(shmid: Identifier; VAR shmaddr: Address; shmflg: Modes;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* note that shmaddr is an out-parameter and thus
+	 determined by the implementation
+      *)
+
+   PROCEDURE ShmDetach(shmaddr: Address;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+
+   (* ==== messages ======================================================= *)
+
+   PROCEDURE MsgGet(VAR msqid: Identifier; key: Key; msgflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE MsgCtl(msqid: Identifier;
+		    cmd: INTEGER; VAR buf: QueueRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* valid cmds: stat & set *)
+
+   PROCEDURE MsgRemove(msgqid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE MsgSend(msgqid: Identifier;
+		     msg: ARRAY OF BYTE; msgsz: Size; msgflg: Modes;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      (* msgsz defaults to LEN(msg) - SYS.SIZE(MessageType) *)
+
+   PROCEDURE MsgReceive(msgqid: Identifier;
+			VAR msg: ARRAY OF BYTE; msgtype: MessageType;
+			msgflg: Modes;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* msgsz is set to LEN(msg) - SYSTEM.SIZE(MessageType) *)
+
+   (* ==== semaphores ===================================================== *)
+
+   PROCEDURE SemGet(VAR semid: Identifier; key: Key;
+		    nsems: INTEGER; semflg: Modes;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE SemStat(semid: Identifier; VAR buf: SemaphoreRec;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE SemSet(semid: Identifier; buf: SemaphoreRec;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE SemRemove(semid: Identifier;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE SemGetNCnt(semid: Identifier; semnum: INTEGER;
+			VAR ncnt: INTEGER;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* get # of processes sleeping for greater semval *)
+
+   PROCEDURE SemGetPid(semid: Identifier; semnum: INTEGER;
+		       VAR pid: ProcessId;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get pid of last process to operate on semaphore *)
+
+   PROCEDURE SemGetVal(semid: Identifier; semnum: INTEGER;
+		       VAR semval: SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get semval of one semaphore *)
+
+   PROCEDURE SemGetAll(semid: Identifier;
+		       VAR semvals: ARRAY OF SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* get all semvals in set *)
+
+   PROCEDURE SemGetZCnt(semid: Identifier; semnum: INTEGER;
+			VAR zcnt: INTEGER;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      (* get # of processes sleeping for semval to become zero *)
+
+   PROCEDURE SemSetVal(semid: Identifier; semnum: INTEGER;
+		       semval: SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* set semval of one semaphore *)
+
+   PROCEDURE SemSetAll(semid: Identifier; semvals: ARRAY OF SemVal;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+      (* set semvals of all semaphores in set *)
+
+   PROCEDURE SemOp(semid: Identifier;
+		   sops: ARRAY OF SemOperation; nsops: INTEGER;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* nsops defaults to LEN(sops) *)
+
+END SysIPC.

@@ -1,0 +1,127 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysHost.om,v 1.1 1994/02/23 07:59:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysHost.om,v $
+   Revision 1.1  1994/02/23  07:59:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   cae 02/01
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysHost;
+
+   (* retrieve host and domain name *)
+   (* Note: These calls are implemented by the uname system call
+    * (Sys.newuname). The parameter to this system call is a single
+    * pointer to the following structure:
+    *
+    * struct new_utsname {
+    *       char sysname[65];
+    *       char nodename[65];
+    *       char release[65];
+    *       char version[65];
+    *       char machine[65];
+    *       char domainname[65];
+    * };
+    * 
+    * Such a structure is not really supported by SysConversions.
+    * This is the reason for the following cludge.
+    *)
+
+   IMPORT Read, SYS := SYSTEM, Streams, Strings, Sys, SysErrors;
+
+   TYPE
+      UtsName = POINTER TO ARRAY 65 OF CHAR;
+      UtsnameStruct = ARRAY 6 * 65 OF CHAR;
+
+   CONST
+      sysnameoff = 0;
+      nodenameoff = 041H;
+      releaseoff = 082H;
+      versionoff = 0C3H;
+      machineoff = 0104H;
+      domainnameoff = 0145H;
+
+
+   PROCEDURE GetHostName(VAR hostname: ARRAY OF CHAR);
+      VAR
+	 d0, d1: INTEGER;
+	 uts : UtsnameStruct;
+	 bytes : LONGINT;
+	 i : INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.newuname, d0, d1, SYS.ADR (uts)) THEN
+         bytes := 65;
+	 IF LEN (hostname) < bytes THEN
+	    bytes := LEN (hostname);
+	 END;
+	 i := 0;
+	 WHILE i < bytes DO
+	    hostname[i] := uts[nodenameoff+i];
+	    INC (i);
+	 END;
+	 hostname[LEN(hostname) - 1] := 0X;
+      ELSE
+	 SysErrors.Raise(NIL, d0, Sys.newuname, "GetHostName");
+	 hostname[0] := 0X;
+      END;
+   END GetHostName;
+
+   PROCEDURE GetHostID(VAR hostid: LONGINT);
+      VAR
+	 d0, d1: INTEGER;
+	 buf: ARRAY 258 OF CHAR;
+	 s: Streams.Stream;
+   BEGIN
+      (* We don't support GetHostID on linux. The CPU serial number
+       * is evil (TM) and using the IP Address doesn't look protable.
+       * The linux hostid command reports what ever is in /etc/hostid
+       * and uses the IP Address if the file doesn't exist. *)
+       SysErrors.Raise(NIL, SysErrors.nosys, 0, "GetHostID");
+   END GetHostID;
+
+   PROCEDURE GetDomainName(VAR domain: ARRAY OF CHAR);
+      VAR
+	 d0, d1: INTEGER;
+	 uts : UtsnameStruct;
+	 bytes : LONGINT;
+	 i : INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.newuname, d0, d1, SYS.ADR (uts)) THEN
+         bytes := 65;
+	 IF LEN (domain) < 65 THEN
+	    bytes := LEN (domain);
+	 END;
+	 i := 0;
+	 WHILE i < bytes DO
+	    domain[i] := uts[domainnameoff+i];
+	    INC (i);
+	 END;
+         domain[LEN(domain)-1] := 0X;
+      ELSE
+	 SysErrors.Raise(NIL, d0, Sys.newuname, "GetDomainName");
+	 domain[0] := 0X;
+      END;
+   END GetDomainName;
+
+END SysHost.

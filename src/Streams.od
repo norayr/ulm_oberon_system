@@ -1,0 +1,347 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Streams.od,v 1.6 2004/05/20 09:50:48 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Streams.od,v $
+   Revision 1.6  2004/05/20 09:50:48  borchert
+   WritePart and Write take now the buffer by reference to
+   achieve better performance; WritePartC and WriteC have been
+   added to provide the old signatures to support non-designators
+
+   Revision 1.5  2000/12/13 10:40:34  borchert
+   Streams.Stream changed to Stream at Copy procedure header
+   (that was an invalid self-reference)
+
+   Revision 1.4  1995/10/11  09:51:40  borchert
+   GetCloseEvent re-introduced (because this event gets raised *before*
+   the actual close operation is performed)
+
+   Revision 1.3  1995/04/18  12:15:28  borchert
+   Streams supports now Resources: GetCloseEvent, PreventClose and
+                                   EnableClose are now obsolete
+   Streams.Stream is now an extension of Services.Object
+   badif assertion replaced by calls of ASSERT
+
+   Revision 1.2  1994/07/01  10:59:12  borchert
+   ReadPart added
+
+   Revision 1.1  1994/02/22  20:10:40  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 6/89
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Streams;
+
+   IMPORT Events, Objects, Services, Types;
+
+   CONST
+      (* 3rd parameter of Seek *)
+      (* Whence = (fromStart, fromPos, fromEnd); *)
+      fromStart = 0; fromPos = 1; fromEnd = 2;
+
+      (* capabilities of a stream *)
+      (* Capability = (read, write, addrio, bufio, seek, tell, trunc,
+		       flush, close, holes, handler);
+      *)
+      read = 0; write = 1; addrio = 2; bufio = 3; seek = 4; tell = 5;
+      trunc = 6; flush = 7; close = 8; holes = 9; handler = 10;
+
+      (* BufMode = (nobuf, linebuf, onebuf, bufpool); *)
+      nobuf = 0; linebuf = 1; onebuf = 2; bufpool = 3;
+
+      (* ErrorCode = (NoHandlerDefined, CannotRead, CannotSeek, CloseFailed,
+		      NotLineBuffered, SeekFailed, TellFailed, BadWhence,
+		      CannotTell, WriteFailed, CannotWrite, ReadFailed,
+		      Unbuffered, BadParameters, CannotTrunc, TruncFailed,
+		      NestedCall, FlushFailed);
+      *)
+      NoHandlerDefined = 0;	(* no handler defined *)
+      CannotRead = 1;		(* stream is write only *)
+      CannotSeek = 2;		(* stream is not capable of seeking *)
+      CloseFailed = 3;		(* Flush or Close failed *)
+      NotLineBuffered = 4;	(* LineTerm must not be called *)
+      SeekFailed = 5;		(* seek operation failed *)
+      TellFailed = 6;		(* tell operation failed *)
+      BadWhence = 7;		(* whence value out of [fromStart..fromEnd] *)
+      CannotTell = 8;		(* stream does not have a current position *)
+      WriteFailed = 9;		(* write error *)
+      CannotWrite = 10;		(* stream is read only *)
+      ReadFailed = 11;		(* read error *)
+      Unbuffered = 12;		(* operation isn't valid for unbuff'd streams *)
+      BadParameters = 13;	(* e.g. wrong count or offset values *)
+      CannotTrunc = 14;		(* stream is not capable of truncating *)
+      TruncFailed = 15;		(* trunc operation failed *)
+      NestedCall = 16;		(* nested stream operation *)
+      FlushFailed = 17;         (* flush operation failed *)
+      errorcodes = 18;		(* number of error codes *)
+
+   TYPE
+      Address = Types.Address;
+      Count = Types.Count;
+      Byte = Types.Byte;
+      Whence = SHORTINT; (* Whence = (fromStart, fromPos, fromEnd); *)
+      CapabilitySet = SET; (* OF Capability; *)
+      BufMode = SHORTINT;
+      ErrorCode = SHORTINT;
+      Stream = POINTER TO StreamRec;
+      Message = RECORD (Objects.ObjectRec) END;
+
+      AddrIOProc = PROCEDURE (s: Stream; ptr: Address; cnt: Count) : Count;
+      BufIOProc = PROCEDURE (s: Stream; VAR buf: ARRAY OF Byte;
+			     off, cnt: Count) : Count;
+      SeekProc = PROCEDURE (s: Stream; cnt: Count; whence: Whence) : BOOLEAN;
+      TellProc = PROCEDURE (s: Stream; VAR cnt: Count) : BOOLEAN;
+      ReadProc = PROCEDURE (s: Stream; VAR byte: Byte) : BOOLEAN;
+      WriteProc = PROCEDURE (s: Stream; byte: Byte) : BOOLEAN;
+      TruncProc = PROCEDURE (s: Stream; cnt: Count) : BOOLEAN;
+      FlushProc = PROCEDURE (s: Stream) : BOOLEAN;
+      CloseProc = PROCEDURE (s: Stream) : BOOLEAN;
+      HandlerProc = PROCEDURE (s: Stream; VAR msg: Message);
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addrread: AddrIOProc;	(* read, addrio *)
+	    addrwrite: AddrIOProc;	(* write, addrio *)
+	    bufread: BufIOProc;		(* read, bufio *)
+	    bufwrite: BufIOProc;	(* write, bufio *)
+	    read: ReadProc;		(* read *)
+	    write: WriteProc;		(* write *)
+	    seek: SeekProc;		(* seek *)
+	    tell: TellProc;		(* tell *)
+	    trunc: TruncProc;		(* trunc *)
+	    flush: FlushProc;           (* flush *)
+	    close: CloseProc;		(* close *)
+	    handler: HandlerProc;	(* handler *)
+	 END;
+
+      (* all components are set after i/o-operations *)
+      StreamRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    (* following components are set after i/o-operations *)
+	    count: Count; (* resulting count of last operation *)
+	    errors: INTEGER; (* incremented for each error; may be set to 0 *)
+	    error: BOOLEAN; (* last operation successful? *)
+	    lasterror: ErrorCode; (* error code of last error *)
+	    eof: BOOLEAN; (* last read-operation with count=0 returned *)
+	 END;
+
+      (* each error causes an event;
+	 the error number is stored in event.errorcode;
+	 the associated text can be taken from event.message
+      *)
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    stream: Stream;
+	    errorcode: ErrorCode;
+	 END;
+
+   VAR
+      null: Stream; (* accepts any output; does not return input *)
+      (* these streams are set by other modules;
+	 after initialization of Streams they equal `null';
+	 so, connections with the standard UNIX streams must be
+	 done by other modules
+      *)
+      stdin, stdout, stderr: Stream;
+
+      errormsg: ARRAY errorcodes OF Events.Message;
+      (* readable text for error codes *)
+
+      error: Events.EventType;
+	 (* raised on stream related errors;
+	    serves as event type for RelatedEvents;
+	    ignored by default;
+	    priority: Priorities.liberrors
+	 *)
+
+   (* calling order:
+
+      NEW(s);               (* s is not allocated by Init *)
+      Init(s, if, bufmode);
+      LineTerm(s, termch);  (* if bufmode = linbuf, and termch # nl *)
+      (* i/o operations *)
+      Release(s);
+   *)
+
+   PROCEDURE Init(s: Stream; if: Interface; caps: CapabilitySet;
+		  bufmode: BufMode);
+      (* initializes stream `s' for interface `if'
+	 and buffering mode `bufmode'
+      *)
+
+   PROCEDURE GetBufMode(s: Stream) : BufMode;
+      (* return buffering mode of s *)
+
+   PROCEDURE LineTerm(s: Stream; termch: Byte);
+      (* set line terminator of `s' (linebuf) to `termch' *)
+
+   PROCEDURE Tie(in, out: Stream);
+      (* PRE: `in' is an line buffered input stream,
+	      `out' an output stream,
+	       and `in' # `out';
+	 causes `out' to be flushed before reading from `in';
+	 `out' may be NIL to undo the effect
+      *)
+
+   PROCEDURE SetBufferPoolSize(s: Stream; nbuf: INTEGER);
+      (* set maximal number of buffers for s;
+	 no-operation if bufmode # bufpool or nbuf < 1
+      *)
+
+   PROCEDURE GetBufferPoolSize(s: Stream; VAR nbuf: INTEGER);
+      (* returns number of buffers for s;
+	 valid for all buffering modes
+      *)
+
+   PROCEDURE Capabilities(s: Stream) : CapabilitySet;
+      (* return the capabilities of the given stream *)
+
+   PROCEDURE GetFlushEvent(s: Stream; VAR type: Events.EventType);
+      (* `type' will be raised BEFORE every flush operation *)
+
+   PROCEDURE GetCloseEvent(s: Stream; VAR type: Events.EventType);
+      (* `type' will be raised BEFORE the stream gets closed;
+	 that means write operations etc. are legal
+      *)
+
+   PROCEDURE Close(s: Stream) : BOOLEAN;
+      (* the public components of s remain valid;
+	 Close returns FALSE in case of write errors (Flush!) or
+	 if the close procedure on the implementors side
+	 returns FALSE
+      *)
+
+   PROCEDURE Release(s: Stream);
+      (* like Close but without returning a boolean value *)
+
+   PROCEDURE CloseAll;
+      (* close all open streams *)
+
+   PROCEDURE Send(s: Stream; VAR message: Message);
+      (* send a message (extended operation) to the implementors side *)
+
+
+   (* i/o operations *)
+
+   PROCEDURE ReadByte(s: Stream; VAR byte: Byte) : BOOLEAN;
+      (* read one byte from stream `s'; this procedure is
+	 for single bytes much faster than ReadPart or Read
+      *)
+
+   PROCEDURE ReadPart(s: Stream; VAR buf: ARRAY OF Byte;
+		      off, cnt: Count) : BOOLEAN;
+      (* fill buf[off..off+cnt-1] *)
+
+   PROCEDURE Read(s: Stream; VAR buf: ARRAY OF Byte) : BOOLEAN;
+
+   PROCEDURE ReadPacket(s: Stream; VAR buf: ARRAY OF Byte;
+			off, maxcnt: Count) : Count; 
+      (* fill buf[off..] with next packet *)
+
+   PROCEDURE WriteByte(s: Stream; byte: Byte) : BOOLEAN;
+      (* write one byte to stream `s'; this procedure is
+	 for single bytes much faster than WritePart or Write
+      *)
+
+   PROCEDURE WritePart(s: Stream;
+                       (* read-only *) VAR buf: ARRAY OF Byte;
+		       off, cnt: Count) : BOOLEAN;
+      (* write buf[off..off+cnt-1] to s *)
+
+   PROCEDURE Write(s: Stream;
+		   (* read-only *) VAR buf: ARRAY OF Byte) : BOOLEAN;
+
+   PROCEDURE WritePartC(s: Stream; buf: ARRAY OF Byte;
+		        off, cnt: Count) : BOOLEAN;
+      (* write buf[off..off+cnt-1] to s *)
+
+   PROCEDURE WriteC(s: Stream; buf: ARRAY OF Byte) : BOOLEAN;
+
+   PROCEDURE Seek(s: Stream; offset: Count; whence: Whence) : BOOLEAN;
+      (* seek relative to position defined by whence:
+	    fromStart:    0
+	    fromPos:	current position
+	    fromEnd:	end of file
+	 offset may be negative; seeks to negative positions are illegal;
+	 seeks to positions beyond end of file are permitted
+	 if holes are permitted;
+	 if buffered the seek-operation is possibly delayed 'til next
+	 read or write, so read or write may return seek errors
+      *)
+
+   PROCEDURE Tell(s: Stream; VAR offset: Count) : BOOLEAN;
+      (* return current position in stream;
+	 the position may be different to the real position
+	 for buffered streams
+	 (i.e. Touch is necessary to get the real position)
+      *)
+
+   PROCEDURE GetPos(s: Stream; VAR offset: Count);
+      (* IF ~Tell(s, offset) THEN offset := internal position END; *)
+
+   PROCEDURE SetPos(s: Stream; offset: Count);
+      (* IF ~Seek(s, offset, fromStart) THEN END; *)
+
+   PROCEDURE Trunc(s: Stream; length: Count) : BOOLEAN;
+      (* truncate `s' to a total length of `length';
+	 following holds if holes are permitted:
+	    (1) the current position remains unchanged
+	    (2) the contents between `length' and
+		the current position is undefined
+	 this call fails if holes are not permitted and the
+	 current position is beyond `length'
+      *)
+
+   PROCEDURE Back(s: Stream) : BOOLEAN;
+      (* undo last read operation *)
+
+   PROCEDURE Insert(s: Stream; byte: Byte) : BOOLEAN;
+      (* return `byte' on next read-operation *)
+
+   PROCEDURE Flush(s: Stream) : BOOLEAN;
+      (* flush buffers associated with `s' *)
+
+   PROCEDURE InputInBuffer(s: Stream) : BOOLEAN;
+      (* returns TRUE if the next byte to be read is buffered *)
+
+   PROCEDURE OutputInBuffer(s: Stream) : BOOLEAN;
+      (* returns TRUE if Flush would lead to a write-operation *)
+
+   PROCEDURE OutputWillBeBuffered(s: Stream) : BOOLEAN;
+      (* returns TRUE if the next written byte will be buffered *)
+
+   PROCEDURE Touch(s: Stream);
+      (* forget any buffer contents *)
+
+   PROCEDURE Copy(source, dest: Stream; maxcnt: Count) : BOOLEAN;
+      (* copy from current position of source to
+	 current position of dest until EOF is reached
+	 or maxcnt bytes are copied (if maxcnt >= 0)
+      *)
+
+END Streams.

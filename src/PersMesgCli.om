@@ -1,0 +1,192 @@
+MODULE PersMesgClient;
+
+   IMPORT
+      Conclusions, Errors, Events, Iterators, Names, Networks,
+      PersonalMessages, Process, Read, RelatedEvents, RemoteEvents,
+      RemoteNames, RemoteObjects, UnixNames, Write;
+
+   CONST
+      server = "/etc/msg";
+
+   TYPE
+      ShortString = ARRAY 32 OF CHAR;
+      NormalString = ARRAY 64 OF CHAR;
+      LongString = ARRAY 1024 OF CHAR;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "open ports");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE Terminate;
+   BEGIN
+      RemoteObjects.RemoveAllPorts;
+      RemoteObjects.CloseAllConnections;
+      Process.Exit(0);
+   END Terminate;
+
+   PROCEDURE Handler(event: Events.Event);
+      VAR
+	 header, message: NormalString;
+   BEGIN
+      WITH event: PersonalMessages.MessageEvent DO
+	 PersonalMessages.Extract(event.msg, header, message);
+	 Write.String("*** new *** -> ");
+	 Write.Line(header);
+      END;
+   END Handler;
+
+   PROCEDURE Query(prompt: ARRAY OF CHAR): BOOLEAN;
+      VAR
+	 answer: ARRAY 2 OF CHAR;
+   BEGIN
+      Write.String(prompt); Write.String("? ");
+      Read.Line(answer);
+      RETURN (CAP(answer[0]) = "Y") OR (CAP(answer[0]) = "J")
+   END Query;
+
+   PROCEDURE Session;
+      VAR
+	 name, password: ShortString;
+	 box: PersonalMessages.MessageBox;
+	 header: NormalString;
+	 message: LongString;
+	 msg, rep: PersonalMessages.Message;
+	 etype: Events.EventType;
+
+      PROCEDURE ListUsers;
+	 VAR
+	    count: INTEGER;
+	    list: PersonalMessages.UserList;
+      BEGIN
+	 Write.Line("Current list of users:");
+	 PersonalMessages.Users(list);
+	 count := 0;
+	 WHILE PersonalMessages.GetUser(list, name) DO
+	    INC(count);
+	    Write.Int(count, 3); Write.String("   "); Write.Line(name);
+	 END;
+      END ListUsers;
+
+      PROCEDURE MessageSummary;
+	 VAR
+	    count: INTEGER;
+	    msg: PersonalMessages.Message;
+      BEGIN
+	 count := 0;
+	 WHILE PersonalMessages.Get(box, msg) DO
+	    INC(count);
+	 END;
+	 CASE count OF
+	 | 0:  Write.Line("There are no messages.");
+	 | 1:  Write.Line("There is a message!");
+	 ELSE  Write.String("There are "); Write.Int(count, 0);
+	       Write.Line(" messages!");
+	 END;
+      END MessageSummary;
+
+      PROCEDURE ReadMessage(prompt: ARRAY OF CHAR;
+			   VAR msg: PersonalMessages.Message): BOOLEAN;
+	 VAR
+	    header: NormalString;
+	    message: LongString;
+      BEGIN
+	 Write.String(prompt); Read.Line(message);
+	 PersonalMessages.Create(msg, box, message);
+	 PersonalMessages.Extract(msg, header, message);
+	 Write.String("*> "); Write.Line(header);
+	 Write.String("*> "); Write.Line(message);
+	 RETURN Query("OK")
+      END ReadMessage;
+
+      PROCEDURE WriteMessage(msg: PersonalMessages.Message): BOOLEAN;
+	 VAR
+	    header: NormalString;
+	    message: LongString;
+      BEGIN
+	 PersonalMessages.Extract(msg, header, message);
+	 Write.String("-> "); Write.Line(header);
+	 IF Query("Process this message") THEN
+	    Write.String("-> "); Write.Line(message);
+	    RETURN TRUE
+	 END;
+	 RETURN FALSE
+      END WriteMessage;
+
+   BEGIN
+      Write.Line("Welcome to the Message System!");
+      ListUsers;
+      Write.String("name>     "); Read.Line(name);
+      IF ~PersonalMessages.Known(name) & ~Query("Create new message box") THEN
+	 RETURN
+      END;
+      Write.String("password> "); Read.Line(password);
+      IF ~PersonalMessages.Open(box, name, password) THEN
+	 Write.Line("Sorry.");
+	 RETURN
+      END;
+      PersonalMessages.Watch(box, etype);
+      Events.Handler(etype, Handler);
+      MessageSummary;
+      WHILE Query("Continue") DO
+	 PersonalMessages.Reopen(box);
+	 WHILE PersonalMessages.Get(box, msg) DO
+	    IF WriteMessage(msg) THEN
+	       IF Query("Reply to this message") &
+		     ReadMessage("answer>   ", rep) &
+		     PersonalMessages.Reply(rep, msg) THEN
+		  Write.Line("Answer has been delivered.");
+	       END;
+	       IF ~Query("Keep the message") THEN
+		  PersonalMessages.Remove(box, msg);
+	       END;
+	    END;
+	 END;
+	 ListUsers;
+	 WHILE Query("Write a message") DO
+	    Write.String("recipient>"); Read.Line(name);
+	    IF PersonalMessages.Known(name) THEN
+	       IF ReadMessage("message>  ", msg) &
+		     PersonalMessages.Send(msg, name) THEN
+		  Write.Line("Message has been delivered.");
+	       END;
+	    ELSE
+	       Write.String(name); Write.Line(" is unknown!");
+	    END;
+	 END;
+	 PersonalMessages.Reopen(box);
+	 MessageSummary;
+      END; (*LOOP*)
+      IF Query("Destroy message box") THEN
+	 IF Query("Are you sure") THEN
+	    Write.Line("Destroying...");
+	    PersonalMessages.Kill(box);
+	    RETURN
+	 ELSE
+	    Write.Line("Preserving message box.");
+	 END;
+      END;
+      PersonalMessages.Close(box);
+   END Session;
+
+BEGIN
+   OpenAllKindsOfPorts;
+   PersonalMessages.Default(server);
+   REPEAT
+      Session;
+   UNTIL ~Query("Another session");
+   Terminate;
+END PersMesgClient.

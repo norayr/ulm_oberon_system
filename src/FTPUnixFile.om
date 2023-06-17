@@ -1,0 +1,710 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPUnixFile.om,v 1.1 2001/05/08 07:37:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPUnixFile.om,v $
+   Revision 1.1  2001/05/08 07:37:41  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPUnixFileSystems;
+
+   IMPORT ASCII, Cmds := FTPCommands, ConstStrings, Disciplines, Events,
+      FTPDataStreams, FTPRequests, FTPResponses, FTPSessions, FTPTimerEvents,
+      FTPUnixDirLister, FTPUnixPaths, Messages, Print, Read, RelatedEvents,
+      Services, Streams, Strings, SysFile, SysIO, SysStat, UnixFiles, Write;
+
+   TYPE
+      SessionDiscipline = POINTER TO SessionDisciplineRec;
+      SessionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    root: ARRAY 512 OF CHAR;
+	    path: FTPUnixPaths.Path;
+	    restPosition: Streams.Count;
+	    binary: BOOLEAN;
+	    update, upload: BOOLEAN;
+	    renameSRC: FTPUnixPaths.Path;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   (* === FTPSessions handler ============================================ *)
+
+   PROCEDURE Handler(object: Messages.Object; VAR message: Messages.Message);
+      VAR
+	 session: FTPSessions.Session;
+	 sdisc: SessionDiscipline;
+	 cmd: ConstStrings.String;
+	 param: ARRAY 8192 OF CHAR; paramGiven: BOOLEAN;
+	 response: FTPResponses.Response;
+
+      PROCEDURE Mark(code: INTEGER; msg: ARRAY OF CHAR);
+	 VAR
+	    mark: FTPResponses.Response;
+	    event: FTPResponses.Event;
+      BEGIN
+	 WITH message: FTPSessions.Message DO
+	    IF message.markEventType # NIL THEN
+	       FTPResponses.Create(mark, code, msg);
+	       NEW(event); event.type := message.markEventType;
+	       event.response := mark;
+	       Events.Raise(event);
+	    END;
+	 END;
+      END Mark;
+
+      PROCEDURE DirectoryListing;
+	 VAR
+	    out: Streams.Stream;
+	    path: FTPUnixPaths.Path;
+	    pathname, relpath: ARRAY 8192 OF CHAR;
+	    rpath: FTPUnixPaths.Path;
+	    pattern: BOOLEAN;
+
+	 PROCEDURE RemoveLastComponent(VAR path: ARRAY OF CHAR);
+	    VAR
+	       index, last: INTEGER;
+	 BEGIN
+	    index := 0; last := 0;
+	    WHILE (index < LEN(path)) & (path[index] # 0X) DO
+	       IF path[index] = "/" THEN
+		  last := index;
+	       END;
+	       INC(index);
+	    END;
+	    path[last] := 0X;
+	 END RemoveLastComponent;
+
+	 PROCEDURE RemoveDirComponents(VAR path: ARRAY OF CHAR);
+	    VAR
+	       index, last: INTEGER;
+	 BEGIN
+	    index := 0; last := 0;
+	    WHILE (index < LEN(path)) & (path[index] # 0X) DO
+	       IF path[index] = "/" THEN
+		  last := index + 1;
+	       END;
+	       INC(index);
+	    END;
+	    IF last > 0 THEN
+	       index := 0;
+	       WHILE (last < LEN(path)) & (path[last] # 0X) DO
+		  path[index] := path[last]; INC(index); INC(last);
+	       END;
+	       path[index] := 0X;
+	    END;
+	 END RemoveDirComponents;
+
+      BEGIN (* DirectoryListing *)
+	 Mark(150, "Opening ASCII mode data connection for /bin/ls.");
+	 IF ~FTPDataStreams.Open(out, session) THEN
+	    FTPResponses.Create(response, 425,
+	       "Sorry, I could not setup a connection.");
+	    RETURN
+	 END;
+	 pattern := FALSE;
+	 IF paramGiven THEN
+	    FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	    IF FTPUnixPaths.CheckAndProcessSymLinks(path,
+		  (* newfile = *) FALSE, pathname, session) THEN
+	       COPY(param, relpath);
+	    ELSE
+	       FTPUnixPaths.Upward(path); (* remove last component *)
+	       IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+		     (* newfile = *) FALSE, pathname, session) THEN
+		  Streams.Release(out);
+		  FTPResponses.Create(response, 550,
+		     "No such file or directory.");
+		  RETURN
+	       END;
+	       (* support wildcard patterns *)
+	       pattern := TRUE;
+	       (* set relpath to param minus the last component *)
+	       COPY(param, relpath);
+	       RemoveLastComponent(relpath);
+	       (* just leave the pattern in param without the directories *)
+	       RemoveDirComponents(param);
+	    END;
+	 ELSE
+	    FTPUnixPaths.GetAbsPath(sdisc.path, pathname); relpath := "";
+	 END;
+	 FTPTimerEvents.StartTransfer(session);
+	 IF ~pattern THEN
+	    (* pattern is left in param otherwise *)
+	    param := "";
+	 END;
+	 IF FTPUnixDirLister.List(out,
+	       (* directory / file to open = *) pathname,
+	       (* relative path to be printed = *) relpath,
+	       (* pattern, if needed = *) param,
+	       (* long = *) cmd = Cmds.list, session) THEN
+	    FTPResponses.Create(response, 226, "Transfer complete.");
+	 ELSE
+	    FTPResponses.Create(response, 426, "Transfer failed.");
+	 END;
+	 Streams.Release(out);
+	 FTPTimerEvents.EndOfTransfer(session);
+      END DirectoryListing;
+
+      PROCEDURE TypeSwitch;
+	 VAR
+	    msg: ARRAY 32 OF CHAR;
+      BEGIN
+	 msg := "Type set to "; Strings.Concatenate(msg, param);
+	 IF (param = "A") OR (param = "A N") THEN
+	    IF sdisc.restPosition # 0 THEN
+	       FTPResponses.Create(response, 450,
+		  "Cannot accept ASCII mode as REST position is non-zero.");
+	       RETURN
+	    END;
+	    sdisc.binary := FALSE;
+	    FTPResponses.Create(response, 200, msg);
+	 ELSIF (param = "I") OR (param = "L 8") THEN
+	    sdisc.binary := TRUE;
+	    FTPResponses.Create(response, 200, msg);
+	 ELSE
+	    FTPResponses.Create(response, 504, "Unknown type.");
+	 END;
+      END TypeSwitch;
+
+      PROCEDURE ModeSwitch;
+      BEGIN
+	 IF param = "S" THEN
+	    FTPResponses.Create(response, 200, "Transfer mode set to S.");
+	 ELSE
+	    FTPResponses.Create(response, 504, "Unsupported transfer mode.");
+	 END;
+      END ModeSwitch;
+
+      PROCEDURE FileStructureSwitch;
+      BEGIN
+	 IF param = "F" THEN
+	    FTPResponses.Create(response, 200, "File structure set to F.");
+	 ELSE
+	    FTPResponses.Create(response, 504, "Unsupported file structure.");
+	 END;
+      END FileStructureSwitch;
+
+      PROCEDURE FileAttributes;
+	 VAR
+	    size: LONGINT;
+	    msg: ARRAY 80 OF CHAR; msgs: Streams.Stream;
+	    path: FTPUnixPaths.Path; pathname: ARRAY 8192 OF CHAR;
+      BEGIN
+	 IF paramGiven THEN
+	    FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	    IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+		  (* newfile = *) FALSE, pathname, session) THEN
+	       FTPResponses.Create(response, 550, "No such file."); RETURN
+	    END;
+	    msg := ""; Strings.Open(msgs, msg);
+	    IF cmd = Cmds.size THEN
+	       IF FTPUnixDirLister.GetSize(pathname, size, session) THEN
+		  Write.IntS(msgs, size, 1);
+		  FTPResponses.Create(response, 213, msg);
+	       ELSE
+		  FTPResponses.Create(response, 550, "Not a plain file.");
+	       END;
+	    ELSIF cmd = Cmds.mdtm THEN
+	       IF FTPUnixDirLister.GetTimestamp(pathname, msg, session) THEN
+		  FTPResponses.Create(response, 213, msg);
+	       ELSE
+		  FTPResponses.Create(response, 550, "Not a plain file.");
+	       END;
+	    END;
+	 ELSE
+	    FTPResponses.Create(response, 500, "Syntax error.");
+	 END;
+      END FileAttributes;
+
+      PROCEDURE PrintWorkingDirectory;
+	 VAR
+	    pathname, msg: ARRAY 8192 OF CHAR; msgs: Streams.Stream;
+      BEGIN
+	 FTPUnixPaths.GetRelPath(sdisc.path, pathname);
+	 msg := ""; Strings.Open(msgs, msg);
+	 Print.S1(msgs, "\Q%s\Q is current directory.", pathname);
+	 FTPResponses.Create(response, 257, msg);
+      END PrintWorkingDirectory;
+
+      PROCEDURE ChangeWorkingDirectory;
+	 VAR
+	    path: FTPUnixPaths.Path;
+	    pathname: ARRAY 8192 OF CHAR;
+	    ftype: SHORTINT;
+      BEGIN
+	 IF (cmd = Cmds.cdup) OR (cmd = Cmds.xcup) THEN
+	    FTPUnixPaths.Upward(sdisc.path);
+	    FTPResponses.Create(response, 250, "CWD command successful.");
+	 ELSE
+	    IF ~paramGiven THEN
+	       FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	    END;
+	    FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	    IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+		  (* newfile = *) FALSE, pathname, session) THEN
+	       FTPResponses.Create(response, 550, "No such directory.");
+	       RETURN
+	    END;
+	    IF ~FTPUnixDirLister.GetFileType(pathname, ftype, session) THEN
+	       FTPResponses.Create(response, 550, "No such directory.");
+	       RETURN
+	    END;
+	    IF ftype # FTPUnixDirLister.directory THEN
+	       FTPResponses.Create(response, 550, "Is not a directory.");
+	       RETURN
+	    END;
+	    sdisc.path := path;
+	    FTPResponses.Create(response, 250, "CWD command successful.");
+	 END;
+      END ChangeWorkingDirectory;
+
+      PROCEDURE Download;
+	 VAR
+	    pathname, msg: ARRAY 8192 OF CHAR; msgs: Streams.Stream;
+	    path: FTPUnixPaths.Path;
+	    in, out: Streams.Stream;
+	    ok1, ok2: BOOLEAN;
+	    ch: CHAR;
+	    ftype: SHORTINT;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) FALSE, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "No such file."); RETURN
+	 END;
+	 IF ~FTPUnixDirLister.GetFileType(pathname, ftype, session) THEN
+	    FTPResponses.Create(response, 550, "No such file."); RETURN
+	 END;
+	 IF ftype # FTPUnixDirLister.regular THEN
+	    FTPResponses.Create(response, 550, "Not a plain file."); RETURN
+	 END;
+	 msg := ""; Strings.Open(msgs, msg);
+	 Write.StringS(msgs, "Opening ");
+	 IF sdisc.binary THEN
+	    Write.StringS(msgs, "binary");
+	 ELSE
+	    Write.StringS(msgs, "ASCII");
+	 END;
+	 Write.StringS(msgs, " mode data connection for ");
+	 Write.StringS(msgs, param);
+	 IF sdisc.restPosition # 0 THEN
+	    Write.StringS(msgs, " starting from position ");
+	    Write.IntS(msgs, sdisc.restPosition, 1);
+	 END;
+	 Mark(150, msg);
+	 IF ~FTPDataStreams.Open(out, session) THEN
+	    FTPResponses.Create(response, 425,
+	       "Sorry, I could not setup a connection.");
+	    RETURN
+	 END;
+	 IF ~UnixFiles.Open(in, pathname, UnixFiles.read, Streams.onebuf,
+	       session) THEN
+	    FTPResponses.Create(response, 451, "No such file.");
+	    Streams.Release(out);
+	    RETURN
+	 END;
+	 RelatedEvents.Forward(in, session);
+	 IF (sdisc.restPosition # 0) &
+	       ~Streams.Seek(in, sdisc.restPosition, Streams.fromStart) THEN
+	    FTPResponses.Create(response, 450,
+	       "Unable to advance to the required file position.");
+	    Streams.Release(in); Streams.Release(out);
+	    RETURN
+	 END;
+	 FTPTimerEvents.StartTransfer(session);
+	 IF sdisc.binary THEN
+	    ok1 := Streams.Copy(in, out, -1);
+	 ELSE
+	    ok1 := TRUE;
+	    WHILE ok1 & Streams.ReadByte(in, ch) DO
+	       IF ch = ASCII.nl THEN
+		  Write.LnS(out);
+		  IF out.error THEN ok1 := FALSE END;
+	       ELSE
+		  IF ~Streams.WriteByte(out, ch) THEN
+		     ok1 := FALSE;
+		  END;
+	       END;
+	    END;
+	    ok1 := ok1 & ~in.error;
+	 END;
+	 ok2 := Streams.Close(out);
+	 IF ok1 & ok2 THEN
+	    FTPResponses.Create(response, 226, "Transfer complete.");
+	    sdisc.restPosition := 0;
+	 ELSE
+	    FTPResponses.Create(response, 426, "Transfer failed.");
+	 END;
+	 Streams.Release(in);
+	 FTPTimerEvents.EndOfTransfer(session);
+      END Download;
+
+      PROCEDURE Upload;
+	 VAR
+	    pathname, msg: ARRAY 8192 OF CHAR; msgs: Streams.Stream;
+	    path: FTPUnixPaths.Path;
+	    in, out: Streams.Stream;
+	    ok, ok1, ok2: BOOLEAN;
+	    linebuf: ARRAY 8192 OF CHAR;
+	    ftype: SHORTINT;
+	    outfd: SysIO.File; interrupted: BOOLEAN;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 IF ~sdisc.upload THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 IF (cmd = Cmds.appe) & ~sdisc.update THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) TRUE, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "Invalid path."); RETURN
+	 END;
+	 msg := ""; Strings.Open(msgs, msg);
+	 Write.StringS(msgs, "Opening ");
+	 IF sdisc.binary THEN
+	    Write.StringS(msgs, "binary");
+	 ELSE
+	    Write.StringS(msgs, "ASCII");
+	 END;
+	 Write.StringS(msgs, " mode data connection for ");
+	 Write.StringS(msgs, param);
+	 IF sdisc.restPosition # 0 THEN
+	    Write.StringS(msgs, " starting from position ");
+	    Write.IntS(msgs, sdisc.restPosition, 1);
+	 END;
+	 Mark(150, msg);
+	 IF ~FTPDataStreams.Open(in, session) THEN
+	    FTPResponses.Create(response, 425,
+	       "Sorry, I could not setup a connection.");
+	    RETURN
+	 END;
+	 IF cmd = Cmds.appe THEN
+	    (* append mode *)
+	    ok := UnixFiles.Open(out, pathname,
+		     UnixFiles.write + UnixFiles.condcreate,
+		     Streams.onebuf, session) &
+		  Streams.Seek(out, 0, Streams.fromEnd);
+	 ELSIF sdisc.update THEN
+	    ok := UnixFiles.Open(out, pathname,
+		     UnixFiles.write + UnixFiles.create,
+		     Streams.onebuf, session);
+	 ELSE
+	    ok := SysIO.OpenCreat(outfd, pathname,
+		     SysIO.wronly + SysIO.creat + SysIO.excl,
+		     438, (* 0666 *)
+		     session,
+		     (* retry = *) TRUE, interrupted);
+	    IF ok & ~UnixFiles.OpenFd(out, outfd,
+			UnixFiles.write, Streams.onebuf, session) THEN
+	       IF ~SysIO.Close(outfd,
+		     session, (* retry = *) TRUE, interrupted) THEN
+		  (* ignore it *)
+	       END;
+	       ok := FALSE;
+	    END;
+	 END;
+	 IF ~ok THEN
+	    FTPResponses.Create(response, 451, "Unable to open target file.");
+	    Streams.Release(in);
+	    RETURN
+	 END;
+	 RelatedEvents.Forward(in, session);
+	 RelatedEvents.Forward(out, session);
+	 IF (sdisc.restPosition # 0) &
+	       ~Streams.Seek(out, sdisc.restPosition, Streams.fromStart) THEN
+	    FTPResponses.Create(response, 450,
+	       "Unable to advance to the required file position.");
+	    Streams.Release(in); Streams.Release(out);
+	    RETURN
+	 END;
+	 FTPTimerEvents.StartTransfer(session);
+	 IF sdisc.binary THEN
+	    ok1 := Streams.Copy(in, out, -1);
+	 ELSE
+	    ok1 := TRUE;
+	    LOOP
+	       Read.LineS(in, linebuf);
+	       IF in.error THEN ok1 := FALSE; EXIT END;
+	       IF in.eof THEN EXIT END;
+	       Write.LineS(out, linebuf);
+	       IF out.error THEN ok1 := FALSE; EXIT END;
+	    END;
+	 END;
+	 ok2 := Streams.Close(out);
+	 IF ok1 & ok2 THEN
+	    FTPResponses.Create(response, 226, "Transfer complete.");
+	    sdisc.restPosition := 0;
+	 ELSE
+	    FTPResponses.Create(response, 426, "Transfer failed.");
+	 END;
+	 Streams.Release(in);
+	 FTPTimerEvents.EndOfTransfer(session);
+      END Upload;
+
+      PROCEDURE SetPosition;
+	 VAR
+	    newposition: Streams.Count;
+	    in: Streams.Stream;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Missing file position.");
+	    RETURN
+	 END;
+	 Strings.Open(in, param);
+	 Read.LongIntS(in, newposition);
+	 IF (in.count = 0) OR (newposition < 0) THEN
+	    FTPResponses.Create(response, 500, "Invalid file position.");
+	    RETURN
+	 END;
+	 IF ~sdisc.binary & (newposition # 0) THEN
+	    FTPResponses.Create(response, 450,
+	       "REST is not supported in ASCII mode.");
+	    RETURN
+	 END;
+	 sdisc.restPosition := newposition;
+	 FTPResponses.Create(response, 350, "File position accepted.");
+      END SetPosition;
+
+      PROCEDURE MakeDirectory;
+	 VAR
+	    path: FTPUnixPaths.Path;
+	    msg, pathname: ARRAY 8192 OF CHAR;
+	    msgs: Streams.Stream;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 IF ~sdisc.upload THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) TRUE, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "Invalid path."); RETURN
+	 END;
+	 IF SysFile.MakeDir(pathname, SysStat.rwx, session) THEN
+	    FTPUnixPaths.GetRelPath(path, pathname);
+	    msg := ""; Strings.Open(msgs, msg);
+	    Print.S1(msgs, "\Q%s\Q has been created.", pathname);
+	    FTPResponses.Create(response, 257, msg);
+	 ELSE
+	    FTPResponses.Create(response, 550,
+	       "Unable to create new directory.");
+	 END;
+      END MakeDirectory;
+
+      PROCEDURE RemoveDirectory;
+	 VAR
+	    path: FTPUnixPaths.Path;
+	    msg, pathname: ARRAY 8192 OF CHAR;
+	    msgs: Streams.Stream;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 IF ~sdisc.update THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) FALSE, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "Invalid path."); RETURN
+	 END;
+	 IF SysFile.RemoveDir(pathname, session) THEN
+	    FTPUnixPaths.GetRelPath(path, pathname);
+	    msg := ""; Strings.Open(msgs, msg);
+	    Print.S1(msgs, "\Q%s\Q has been removed.", pathname);
+	    FTPResponses.Create(response, 250, msg);
+	 ELSE
+	    FTPResponses.Create(response, 550,
+	       "Unable to remove this directory.");
+	 END;
+      END RemoveDirectory;
+
+      PROCEDURE Rename;
+	 VAR
+	    path: FTPUnixPaths.Path;
+	    srcname, pathname: ARRAY 8192 OF CHAR;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 IF ~sdisc.update THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) cmd = Cmds.rnto, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "Invalid path."); RETURN
+	 END;
+	 IF cmd = Cmds.rnfr THEN
+	    sdisc.renameSRC := path;
+	    FTPResponses.Create(response, 350, "RNFR accepted.");
+	 ELSIF sdisc.renameSRC # NIL THEN
+	    FTPUnixPaths.GetAbsPath(sdisc.renameSRC, srcname);
+	    IF SysFile.Rename(srcname, pathname, session) THEN
+	       FTPResponses.Create(response, 250, "Rename successful.");
+	    ELSE
+	       FTPResponses.Create(response, 450, "Rename failed.");
+	    END;
+	    sdisc.renameSRC := NIL;
+	 ELSE
+	    FTPResponses.Create(response, 450, "RNFR command missing.");
+	 END;
+      END Rename;
+
+      PROCEDURE Delete;
+	 VAR
+	    path: FTPUnixPaths.Path;
+	    msg, pathname: ARRAY 8192 OF CHAR;
+	    msgs: Streams.Stream;
+	    ftype: SHORTINT;
+      BEGIN
+	 IF ~paramGiven THEN
+	    FTPResponses.Create(response, 500, "Syntax error."); RETURN
+	 END;
+	 IF ~sdisc.update THEN
+	    FTPResponses.Create(response, 550, "Permission denied."); RETURN
+	 END;
+	 FTPUnixPaths.CreateDerivedPath(path, sdisc.path, param);
+	 IF ~FTPUnixPaths.CheckAndProcessSymLinks(path,
+	       (* newfile = *) FALSE, pathname, session) THEN
+	    FTPResponses.Create(response, 550, "Invalid path."); RETURN
+	 END;
+	 IF ~FTPUnixDirLister.GetFileType(pathname, ftype, session) THEN
+	    FTPResponses.Create(response, 550, "No such file."); RETURN
+	 END;
+	 IF ftype # FTPUnixDirLister.regular THEN
+	    FTPResponses.Create(response, 550, "Not a plain file."); RETURN
+	 END;
+	 IF SysFile.Unlink(pathname, session) THEN
+	    FTPUnixPaths.GetRelPath(path, pathname);
+	    msg := ""; Strings.Open(msgs, msg);
+	    Print.S1(msgs, "\Q%s\Q has been removed.", pathname);
+	    FTPResponses.Create(response, 250, msg);
+	 ELSE
+	    FTPResponses.Create(response, 550, "Unable to remove this file.");
+	 END;
+      END Delete;
+
+   BEGIN (* Handler *)
+      IF ~(message IS FTPSessions.Message) THEN RETURN END;
+      session := object(FTPSessions.Session);
+      IF ~Disciplines.Seek(session, sdid, sdisc) THEN RETURN END;
+      response := NIL;
+      WITH message: FTPSessions.Message DO
+	 cmd := message.request.command;
+	 IF message.request.param # NIL THEN
+	    Strings.Read(param, message.request.param);
+	    paramGiven := TRUE;
+	 ELSE
+	    paramGiven := FALSE;
+	 END;
+	 IF cmd = Cmds.syst THEN
+	    FTPResponses.Create(response, 215, "UNIX Type: L8");
+	 ELSIF (cmd = Cmds.list) OR (cmd = Cmds.nlst) THEN
+	    DirectoryListing;
+	 ELSIF cmd = Cmds.retr THEN
+	    Download;
+	 ELSIF cmd = Cmds.type THEN
+	    TypeSwitch;
+	 ELSIF cmd = Cmds.mode THEN
+	    ModeSwitch;
+	 ELSIF cmd = Cmds.stru THEN
+	    FileStructureSwitch;
+	 ELSIF (cmd = Cmds.pwd) OR (cmd = Cmds.xpwd) THEN
+	    PrintWorkingDirectory;
+	 ELSIF (cmd = Cmds.cwd) OR (cmd = Cmds.cdup) OR
+	       (cmd = Cmds.xcwd) OR (cmd = Cmds.xcup) THEN
+	    ChangeWorkingDirectory;
+	 ELSIF (cmd = Cmds.size) OR (cmd = Cmds.mdtm) THEN
+	    FileAttributes;
+	 ELSIF (cmd = Cmds.stor) OR (cmd = Cmds.appe) THEN
+	    Upload;
+	 ELSIF cmd = Cmds.rest THEN
+	    SetPosition;
+	 ELSIF (cmd = Cmds.mkd) OR (cmd = Cmds.xmkd) THEN
+	    MakeDirectory;
+	 ELSIF (cmd = Cmds.rmd) OR (cmd = Cmds.xrmd) THEN
+	    RemoveDirectory;
+	 ELSIF (cmd = Cmds.rnfr) OR (cmd = Cmds.rnto) THEN
+	    Rename;
+	 ELSIF cmd = Cmds.dele THEN
+	    Delete;
+	 ELSIF cmd = Cmds.allo THEN
+	    FTPResponses.Create(response, 202, "ALLO is obsolete.");
+	 END;
+	 IF response # NIL THEN message.response := response END;
+      END;
+   END Handler;
+
+   (* === module initialization ========================================= *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      sdid := Disciplines.Unique();
+   END InitModule;
+
+   (* === exported procedures =========================================== *)
+
+   PROCEDURE AddHandler(session: FTPSessions.Session; root: ARRAY OF CHAR);
+      VAR
+	 sdisc: SessionDiscipline;
+   BEGIN
+      NEW(sdisc); sdisc.id := sdid; sdisc.binary := FALSE;
+      COPY(root, sdisc.root); FTPUnixPaths.CreatePath(sdisc.path, root, "/");
+      sdisc.restPosition := 0; sdisc.renameSRC := NIL;
+      sdisc.update := FALSE; sdisc.upload := FALSE;
+      Disciplines.Add(session, sdisc);
+      Messages.InstallHandler(session, Handler);
+   END AddHandler;
+
+   PROCEDURE PermitUploads(session: FTPSessions.Session);
+      VAR
+	 ok: BOOLEAN;
+	 sdisc: SessionDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(session, sdid, sdisc); ASSERT(ok);
+      sdisc.upload := TRUE;
+   END PermitUploads;
+
+   PROCEDURE PermitUpdates(session: FTPSessions.Session);
+      VAR
+	 ok: BOOLEAN;
+	 sdisc: SessionDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(session, sdid, sdisc); ASSERT(ok);
+      sdisc.update := TRUE; sdisc.upload := TRUE;
+   END PermitUpdates;
+
+BEGIN
+   InitModule;
+END FTPUnixFileSystems.

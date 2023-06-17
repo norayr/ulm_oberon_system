@@ -1,0 +1,119 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SPARCProcedureCalls;
+
+   IMPORT CompilerObjects, Regs := SPARCRegisters, Types;
+
+   (* common procedure call conventions for the SPARCv8 architecture
+
+      stack layout:
+
+                        +------------------+  +
+                        |         .        |  |
+                        |         .        |  |
+                        +------------------+  |
+                        |  1st parameter   |  | parlength
+                        +------------------+  |
+                        |   static link    |  |
+                        +------------------+  | +
+                        | reserverd for    |  | | regwin32 or regwin64
+                        | regwin overflows |  | |
+            base -----> +------------------+  + +
+                        |   local vars     |  | varlength
+                        |                  |  |
+                        +------------------+  +
+                        | statically       |  |
+                        | allocated via    |  | alloclength
+                        | MCP4Stack        |  |
+                        +------------------+  +
+                        | dynamic arrays   |
+                        |                  |
+                        +------------------+  +
+                        | parameters for   |  |
+                        | callee           |  | maxparlength
+                        +------------------+  |
+                        |   static link    |  |
+                        +------------------+  | +
+                        | reserved for     |  | | regwin32 or regwin64
+                        | regwin overflows |  | |
+             top -----> +------------------+  + +
+
+      addressing:
+         incoming parameters, local variables and
+            static allocations:                       by base
+         dynamic arrays:                              by pointers
+         outgoing parameters:                         by top
+
+      note that all areas are aligned on 8-byte boundaries or even
+      on 16-byte boundaries in 64-bit mode
+   *)
+
+   CONST
+      (* size of the register window overflow area depends on
+	 whether we have an 32- oder 64-bit-binary
+      *)
+      regwin32 = 16 * 4;
+      regwin64 = 16 * 8;
+
+      stackalign32 = 8;
+      stackalign64 = 16;
+
+   CONST
+      byValue = 0; (* pass parameter value directly *)
+      byAddress = 1;
+	 (* pass address of parameter; note that this mode
+	    is independent from the passing mode at the language level:
+	    even parameters that are supposed to be call-by-value may be
+	    passed by address -- in this case the copying task is delegated
+	    to the callee
+	 *)
+   TYPE
+      Type = SHORTINT; (* byValue or byAddress *)
+
+   CONST
+      regMode = 0;
+      stackMode = 1;
+   TYPE
+      Mode = SHORTINT; (* regMode or stackMode *)
+
+   TYPE
+      (* the attachment object defined by Parameter specifies how a
+	 parameter of an exported procedure has to be passed by
+	 the caller to the callee
+      *)
+      Parameter = POINTER TO ParameterRec;
+      ParameterRec =
+	 RECORD
+	    (CompilerObjects.AttachmentRec)
+	    type: Type;
+	    mode: Mode;
+	    (* mode = regMode *)
+	    reg: Regs.Reg; (* i0..i5 *)
+	    (* mode = stackMode *)
+	    offset: Types.Int32;
+	 END;
+
+END SPARCProcedureCalls.

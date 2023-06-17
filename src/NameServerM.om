@@ -1,0 +1,237 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: NameServerM.om,v 1.1 1998/04/07 09:35:31 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: NameServerM.om,v $
+   Revision 1.1  1998/04/07  09:35:31  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NameServerMaintenance;
+
+   IMPORT
+      Maintenance, Messages, NamedObjects, Names, NetIO,
+      PersistentDisciplines, PersistentObjects, Process, RelatedEvents,
+      RemoteObjects, Services, Shards, Streams;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	 END;
+
+      CreateNodeMsg = POINTER TO CreateNodeMsgRec;
+      CreateNodeMsgRec =
+	 RECORD
+	    (MessageRec)
+	    auth: Shards.Lid;
+	    caps: Names.CapabilitySet;
+	    (*VAR*)node: Names.Node;
+	 END;
+
+      PingPongMsg = POINTER TO PingPongMsgRec;
+      PingPongMsgRec =
+	 RECORD
+	    (MessageRec)
+	 END;
+
+   VAR
+      accessControl: Shards.Pot;
+      lidType,
+      nodeType,
+      createNodeMsgType,
+      pingpongMsgType,
+      shutdownMsgType: Services.Type;
+
+   PROCEDURE ReadAuth(s: Streams.Stream; VAR auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, lidType, auth)
+   END ReadAuth;
+
+   PROCEDURE WriteAuth(s: Streams.Stream; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.WriteObjectOrNIL(s, auth)
+   END WriteAuth;
+
+   PROCEDURE CreateCreateNodeMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: CreateNodeMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, createNodeMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateCreateNodeMsg;
+
+   PROCEDURE ReadCreateNodeMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: CreateNodeMsg DO
+	 IF ~msg.processed THEN
+	    RETURN ReadAuth(s, msg.auth) & NetIO.ReadSet(s, msg.caps)
+	 END;
+	 RETURN ~msg.done OR RemoteObjects.GuardedImport(s, nodeType, msg.node)
+      END;
+   END ReadCreateNodeMsg;
+
+   PROCEDURE WriteCreateNodeMsg(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: CreateNodeMsg DO
+	 IF ~msg.processed THEN
+	    RETURN WriteAuth(s, msg.auth) & NetIO.WriteSet(s, msg.caps)
+	 END;
+	 RETURN ~msg.done OR RemoteObjects.Export(s, msg.node)
+      END;
+   END WriteCreateNodeMsg;
+
+   PROCEDURE CreatePingPongMsg(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: PingPongMsg;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, pingpongMsgType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreatePingPongMsg;
+
+   PROCEDURE InitDatatypes;
+      VAR
+	 face: PersistentObjects.Interface;
+   BEGIN
+      NEW(face);
+      face.read := ReadCreateNodeMsg;
+      face.write := WriteCreateNodeMsg;
+      face.create := CreateCreateNodeMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(createNodeMsgType,
+	 "NameServerMaintenance.CreateNodeMsg", "Messages.Message", face);
+      NEW(face);
+      face.read := NIL;
+      face.write := NIL;
+      face.create := CreatePingPongMsg;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType(pingpongMsgType,
+	 "NameServerMaintenance.PingPongMsg", "Messages.Message", face);
+      Services.SeekType("Shards.Lid", lidType);
+      Services.SeekType("Names.Node", nodeType);
+      ASSERT( (lidType # NIL) & (nodeType # NIL) );
+   END InitDatatypes;
+
+   PROCEDURE CheckAuth(auth: Shards.Lid;
+			errors: RelatedEvents.Object): BOOLEAN;
+   BEGIN
+      IF ~Shards.Fits(accessControl, auth) THEN
+	 Names.Error(errors, Names.noPermission);
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END CheckAuth;
+
+   PROCEDURE DoShutdown(mob: Maintenance.Object);
+   BEGIN
+      Process.Exit(0);
+   END DoShutdown;
+
+   PROCEDURE DoCreateNode(VAR node: Names.Node;
+			   caps: Names.CapabilitySet): BOOLEAN;
+   BEGIN
+      Names.CreateNode(node, NIL, caps);
+      RETURN TRUE
+   END DoCreateNode;
+
+   PROCEDURE Handler(obj: Messages.Object; VAR msg: Messages.Message);
+   BEGIN
+      IF msg IS Message THEN
+	 IF msg IS CreateNodeMsg THEN
+	    WITH msg: CreateNodeMsg DO
+	       msg.done := CheckAuth(msg.auth, msg.errors) &
+		  DoCreateNode(msg.node, msg.caps);
+	    END;
+	 ELSIF msg IS PingPongMsg THEN
+	    msg.done := TRUE;
+	 ELSE		(* another msg type? -- this should be impossible *)
+	    Names.Error(msg.errors, Names.unknownError);
+	    msg.done := FALSE;
+	 END;
+	 msg.processed := TRUE;
+      END;
+   END Handler;
+
+   PROCEDURE Create(VAR object: Names.Node; control: Shards.Pot);
+      VAR
+	 job: Maintenance.Job;
+	 token: PersistentDisciplines.Object;
+   BEGIN
+      NEW(job);
+      job.proc := DoShutdown;
+      job.control := control;
+      job.delay := NIL;
+
+      NamedObjects.Create(object, NIL);
+
+      Maintenance.Attach(object, job, Maintenance.shutdown);
+      accessControl := control;
+      Messages.InstallHandler(object, Handler);
+   END Create;
+
+   PROCEDURE CreateNode(object: Names.Node; auth: Shards.Lid;
+			caps: Names.CapabilitySet;
+			VAR node: Names.Node): BOOLEAN;
+      VAR
+	 msg: CreateNodeMsg;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      CreateCreateNodeMsg(msg);
+      msg.auth := auth;
+      msg.caps := caps;
+      Messages.Send(object, msg);
+      node := msg.node;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(object, queue);
+      RETURN msg.done
+   END CreateNode;
+
+   PROCEDURE PingPong(object: Names.Node): BOOLEAN;
+      VAR
+	 msg: PingPongMsg;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      CreatePingPongMsg(msg);
+      Messages.Send(object, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(object, queue);
+      RETURN msg.done
+   END PingPong;
+
+   PROCEDURE Shutdown(object: Names.Node; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN Maintenance.Shutdown(object, auth)
+   END Shutdown;
+
+BEGIN
+   Shards.CreateSimplePot(accessControl, FALSE);
+   InitDatatypes;
+END NameServerMaintenance.

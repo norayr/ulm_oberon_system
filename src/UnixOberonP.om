@@ -1,0 +1,215 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixOberonProcedures;
+
+   (* built-in procedures for UNIX system calls *)
+
+   IMPORT BaseTypes := OberonBaseTypes, CompilerErrors, CompilerObjects,
+      ConstantObjects, ConstStrings, NetIO, Services, Streams,
+      Strings, Sym := OberonSymbols, Types := OberonTypes, Write;
+
+   CONST
+      unixcall = 0; unixfork = 1; unixsignal = 2;
+   TYPE
+      StdProc = SHORTINT; (* unixcall .. unixsignal *)
+
+   TYPE
+      StdProcedure = POINTER TO StdProcedureRec;
+      StdProcedureRec =
+	 RECORD
+	    (Sym.BuiltInProcedureRec)
+	    stdproc: StdProc;
+	 END;
+   VAR
+      stdprocType: Services.Type;
+
+   VAR
+      unixcallF: Sym.Ident;
+      unixforkF: Sym.Ident;
+      unixsignalF: Sym.Ident;
+
+   (* === OberonSymbols if for StdProcedure =============================== *)
+
+   PROCEDURE CheckArgs(builtinproc: Sym.BuiltInProcedure;
+                       args: Sym.Attribute;
+		       VAR restype: Sym.Type);
+      CONST
+	 maxargs = 4;
+      VAR
+	 stdproc: StdProc;
+	 arg: Sym.Attribute;
+	 nofargs: INTEGER;
+	 index: INTEGER;
+	 types: ARRAY maxargs OF Sym.Type;
+	 forms: ARRAY maxargs OF Sym.Form;
+	 at: ARRAY maxargs OF Sym.Attribute;
+	 es: Streams.Stream;
+	 error: BOOLEAN;
+
+      PROCEDURE OpenError(at: Sym.Attribute);
+      BEGIN
+	 error := TRUE;
+	 CompilerErrors.Open(es);
+	 CompilerErrors.AtObject1(es, at);
+      END OpenError;
+
+      PROCEDURE CloseError;
+      BEGIN
+	 CompilerErrors.Close(es, at[0].loc.src);
+      END CloseError;
+
+      PROCEDURE Error(at: Sym.Attribute; msg: ARRAY OF CHAR);
+      BEGIN
+	 OpenError(at);
+	 Write.StringS(es, msg);
+	 CloseError;
+      END Error;
+
+      PROCEDURE CheckDesignator(at: Sym.Attribute);
+      BEGIN
+	 IF ~(at.mode IN Sym.designatorModes) THEN
+	    Error(at, "designator expected");
+	 END;
+      END CheckDesignator;
+
+      PROCEDURE CheckInteger(at: Sym.Attribute);
+      BEGIN
+	 Types.CheckAtType(at, {Sym.integer});
+      END CheckInteger;
+
+      PROCEDURE CheckSimpleProcedure(at: Sym.Attribute);
+	 VAR
+	    type: Sym.Type;
+      BEGIN
+	 Types.CheckAtType(at, {Sym.proceduretype});
+	 IF (at.type # NIL) & (at.type.form = Sym.proceduretype) THEN
+	    type := at.type;
+	    IF type.function OR type.builtin OR (type.paramlist # NIL) THEN
+	       Error(at, "parameterless procedure expected");
+	    END;
+	 END;
+      END CheckSimpleProcedure;
+
+   BEGIN (* CheckArgs *)
+      stdproc := builtinproc(StdProcedure).stdproc;
+      restype := BaseTypes.boolean;;
+      error := FALSE;
+      nofargs := 0;
+      arg := args;
+      WHILE arg # NIL DO
+	 IF nofargs < maxargs THEN
+	    at[nofargs] := arg;
+	    types[nofargs] := at[nofargs].type;
+	    IF types[nofargs] = NIL THEN
+	       RETURN (* do not check if there are already errors *)
+	    END;
+	    forms[nofargs] := types[nofargs].form;
+	 END;
+	 IF ~(arg.mode IN Sym.opModes) THEN
+	    Error(arg, "expression expected");
+	 END;
+	 INC(nofargs); arg := arg.next;
+      END;
+      ASSERT(nofargs >= builtinproc.minargs);
+
+      IF error THEN RETURN END;
+
+      CASE stdproc OF
+      | unixcall:    CheckInteger(at[0]);
+		     CheckInteger(at[1]); CheckInteger(at[2]);
+		     CheckDesignator(at[1]); CheckDesignator(at[2]);
+      | unixfork:    CheckInteger(at[0]); CheckDesignator(at[0]);
+      | unixsignal:  CheckInteger(at[0]);
+		     CheckSimpleProcedure(at[1]);
+		     CheckSimpleProcedure(at[2]);
+		     CheckInteger(at[3]);
+		     CheckDesignator(at[2]);
+		     CheckDesignator(at[3]);
+      END;
+      restype := BaseTypes.boolean;
+   END CheckArgs;
+
+   (* === initializations ================================================= *)
+
+   PROCEDURE Init;
+   BEGIN
+      ConstantObjects.RegisterType(stdprocType,
+         "UnixOberonProcedures.StdProcedure", "OberonSymbols.BuiltInProcedure");
+   END Init;
+
+   PROCEDURE InitStd;
+
+      PROCEDURE Create(name: ARRAY OF CHAR;
+                       stdproc: StdProc;
+		       minargs, maxargs: INTEGER;
+		       function: BOOLEAN;
+		       VAR ident: Sym.Ident);
+	 VAR
+	    cstring: ConstStrings.String;
+	    stdprocedure: StdProcedure;
+	    qualifiedName: ARRAY 256 OF CHAR;
+      BEGIN
+	 NEW(stdprocedure);
+	 qualifiedName := "UnixOberonProcedures.";
+	 Strings.Concatenate(qualifiedName, name);
+	 ConstantObjects.Init(stdprocedure, stdprocType, qualifiedName);
+	 Sym.InitBuiltInProcedure(stdprocedure, minargs, maxargs, CheckArgs);
+	 ConstStrings.Create(cstring, name);
+	 IF function THEN
+	    Sym.CreateBuiltInFunction(ident, cstring, stdprocedure);
+	 ELSE
+	    Sym.CreateBuiltInProcedure(ident, cstring, stdprocedure);
+	 END;
+	 CompilerObjects.InitBuiltInObject(ident);
+	 stdprocedure.stdproc := stdproc;
+      END Create;
+
+      PROCEDURE CreateFunc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, TRUE, ident);
+      END CreateFunc;
+
+      PROCEDURE CreateProc(name: ARRAY OF CHAR;
+			   stdproc: StdProc;
+			   minargs, maxargs: INTEGER;
+			   VAR ident: Sym.Ident);
+      BEGIN
+	 Create(name, stdproc, minargs, maxargs, FALSE, ident);
+      END CreateProc;
+
+   BEGIN (* Init *)
+      CreateFunc("UNIXCALL", unixcall, 3, -1, unixcallF);
+      CreateFunc("UNIXFORK", unixfork, 1, 1, unixforkF);
+      CreateFunc("UNIXSIGNAL", unixsignal, 4, 4, unixsignalF);
+   END InitStd;
+
+BEGIN
+   Init;
+   InitStd;
+END UnixOberonProcedures.

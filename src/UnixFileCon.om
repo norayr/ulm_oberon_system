@@ -1,0 +1,248 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixFileCon.om,v 1.4 2001/02/06 08:57:19 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixFileCon.om,v $
+   Revision 1.4  2001/02/06 08:57:19  borchert
+   bug fix: avoid loops caused by ignoring conditions that are true
+            because of remaining input in the stream buffer
+
+   Revision 1.3  1995/04/07  14:09:30  borchert
+   - avoidance of EINVAL of select(2) for invalid time values added
+   - fixes due to changed if of Conditions
+
+   Revision 1.2  1994/07/05  13:07:01  borchert
+   bug fix: Test must not consider Streams.OutputWillBeBuffered
+
+   Revision 1.1  1994/02/23  07:27:37  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixFileConditions;
+
+   (* creation of conditions for UNIX file descriptors *)
+
+   IMPORT Conditions, Clocks, Op := Operations, RelatedEvents,
+      Scales, StreamConditions, Streams, SysSelect, SysStat,
+      SysTime, SysTypes, Times;
+
+   CONST
+      (* operations *)
+      read = StreamConditions.read;
+      write = StreamConditions.write;
+      exception = 2;
+
+   TYPE
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    fd: SysTypes.File; (* UNIX file descriptor *)
+	    valid: BOOLEAN; (* is fd still valid? *)
+	    stream: Streams.Stream; (* stream which represents fd *)
+	    operation: SHORTINT; (* read..exception *)
+	 END;
+   VAR
+      domain: Conditions.Domain;
+
+   PROCEDURE Create(VAR condition: Conditions.Condition;
+		    stream: Streams.Stream;
+		    fd: SysTypes.File; operation: SHORTINT);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, domain);
+      newcond.stream := stream;
+      newcond.fd := fd; newcond.valid := TRUE; newcond.operation := operation;
+      condition := newcond;
+   END Create;
+
+   PROCEDURE Test(stream: Streams.Stream;
+		  fd: SysTypes.File;
+		  operation: SHORTINT;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
+	 ready: INTEGER;
+   BEGIN
+      IF (stream # NIL) &
+	    (operation = read) & Streams.InputInBuffer(stream) THEN
+	 RETURN TRUE
+      END;
+      SysSelect.CreateSet(fdsets[0]);
+      SysSelect.CreateSet(fdsets[1]);
+      SysSelect.CreateSet(fdsets[2]);
+      SysSelect.Incl(fdsets[operation], fd);
+      IF SysSelect.Poll(fdsets[read], fdsets[write], fdsets[exception],
+			ready, errors) THEN
+	 RETURN ready = 1
+      ELSE
+	 RETURN TRUE
+      END;
+   END Test;
+
+   (* ====== interface procedures ==================================== *)
+
+   PROCEDURE InternalTest(domain: Conditions.Domain;
+		          condition: Conditions.Condition;
+			  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
+	 ready: INTEGER;
+   BEGIN
+      WITH condition: Condition DO
+	 IF ~condition.valid THEN RETURN TRUE END;
+	 IF (condition.stream # NIL) &
+	       (condition.operation = read) &
+	       Streams.InputInBuffer(condition.stream) THEN
+	    RETURN TRUE
+	 END;
+	 SysSelect.CreateSet(fdsets[0]);
+	 SysSelect.CreateSet(fdsets[1]);
+	 SysSelect.CreateSet(fdsets[2]);
+	 SysSelect.Incl(fdsets[condition.operation], condition.fd);
+	 IF SysSelect.Poll(fdsets[read], fdsets[write], fdsets[exception],
+			   ready, errors) THEN
+	    RETURN ready = 1
+	 ELSE
+	    condition.valid := FALSE;
+	    RETURN TRUE
+	 END;
+      END;
+   END InternalTest;
+
+   PROCEDURE Select(domain: Conditions.Domain;
+		    conditionSet: Conditions.ConditionSet;
+		    time: Times.Time;
+		    VAR setOfTrueConditions: Conditions.ConditionSet;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN;
+		    VAR interrupted: BOOLEAN) : BOOLEAN;
+      VAR
+	 condition: Condition;
+	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
+	 systime: SysTime.TimeVal; (* relative timeout as needed by select(2) *)
+	 currentTime: Times.Time; (* current time as returned by the system *)
+	 relTime: Times.Time; (* relative time; derived from time *)
+	 timeval: Times.TimeValueRec; (* timevalue of relTime *)
+	 ready: INTEGER; (* number of ready fds *)
+	 selectOK: BOOLEAN;
+	 cardinality: INTEGER; (* of conditionSet *)
+
+      PROCEDURE CheckValidity;
+	 (* SysSelect returned with EBADF -- so let's check all
+	    file descriptors for validity; invalid file descriptors
+	    are added to setOfTrueConditions
+	 *)
+	 VAR
+	    statbuf: SysStat.StatRec;
+	    condition: Condition;
+      BEGIN
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF ~SysStat.Fstat(condition.fd, statbuf, RelatedEvents.null) THEN
+	       condition.valid := FALSE;
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	 END;
+      END CheckValidity;
+
+   BEGIN (* Select *)
+      Conditions.CreateSet(setOfTrueConditions);
+      SysSelect.CreateSet(fdsets[0]);
+      SysSelect.CreateSet(fdsets[1]);
+      SysSelect.CreateSet(fdsets[2]);
+      Conditions.ExamineConditions(conditionSet); cardinality := 0;
+      WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	 IF ~condition.valid OR (condition.stream # NIL) &
+	       (condition.operation = read) &
+	       Streams.InputInBuffer(condition.stream) THEN
+	    Conditions.Incl(setOfTrueConditions, condition);
+	 ELSE
+	    SysSelect.Incl(fdsets[condition.operation], condition.fd);
+	    INC(cardinality);
+	 END;
+      END;
+      IF (cardinality = 0) OR (Conditions.Card(setOfTrueConditions) > 0) THEN
+	 (* avoid system call *)
+	 interrupted := FALSE;
+	 RETURN TRUE
+      END;
+      IF time = NIL THEN
+	 selectOK := SysSelect.Select(fdsets[read], fdsets[write],
+			      fdsets[exception],
+			      ready, errors, retry, interrupted);
+      ELSE
+	 IF Scales.IsRelative(time) THEN
+	    relTime := time;
+	 ELSE
+	    Clocks.GetTime(Clocks.system, currentTime);
+	    Op.Sub3(relTime, time, currentTime);
+	 END;
+	 Times.GetValue(relTime, timeval);
+	 (* bad time values lead to EINVAL (see select(2)) *)
+	 ASSERT((timeval.epoch = 0) & (timeval.second <= 100000000));
+	 ASSERT(timeval.second >= 0);
+	 ASSERT((timeval.usec >= 0) & (timeval.usec < 1000000));
+	 systime.sec := timeval.second; systime.usec := timeval.usec;
+	 selectOK := SysSelect.SelectWithTimeLimit
+	    (fdsets[read], fdsets[write], fdsets[exception],
+	    systime, ready, errors, retry, interrupted);
+      END;
+      IF selectOK THEN
+	 IF ready = 0 THEN
+	    RETURN FALSE (* timelimit exceeded *)
+	 END;
+	 Conditions.ExamineConditions(conditionSet);
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF SysSelect.In(fdsets[condition.operation], condition.fd) THEN
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	 END;
+	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
+	 RETURN TRUE
+      ELSE
+	 IF interrupted THEN RETURN FALSE END;
+	 CheckValidity;
+	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
+	 RETURN TRUE
+      END;
+   END Select;
+
+   PROCEDURE Init;
+      VAR
+	 if: Conditions.Interface;
+	 desc: Conditions.Description;
+   BEGIN
+      NEW(if); if.test := InternalTest; if.select := Select;
+      NEW(desc); desc.caps := {Conditions.select, Conditions.timelimit};
+      desc.internal := FALSE;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+   END Init;
+
+BEGIN
+   Init;
+END UnixFileConditions.

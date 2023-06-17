@@ -1,0 +1,844 @@
+(* Edit RemoteTrans.rm instead of this file which has been generated
+   by genrem at Fri May  7 09:20:12 MET DST 1999
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteTrans.rm,v 1.2 1996/11/28 11:04:08 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteTrans.rm,v $
+   Revision 1.2  1996/11/28  11:04:08  borchert
+   Transactions.Mode was renamed to Transactions.AccessSpecification
+
+   Revision 1.1  1996/11/20  18:19:01  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteTransactions;
+
+   IMPORT
+      ConstStrings, Events, Iterators, Messages, NetIO, PersistentObjects,
+      RelatedEvents, RemoteObjects, Services, Shards, Streams,
+      Transactions;
+
+   TYPE
+      Transaction = POINTER TO TransactionRec;
+      TransactionRec = RECORD (Transactions.TransactionRec) END;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      ReleaseMessage = POINTER TO ReleaseMessageRec;
+      ReleaseMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+         END;
+   VAR
+      releaseMessageType: Services.Type;
+
+   TYPE
+      AttachMessage = POINTER TO AttachMessageRec;
+      AttachMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            obj: Transactions.Object; (* IN via REF *)
+            aspec: Transactions.AccessSpecification; (* IN via COPYORNIL *)
+         END;
+   VAR
+      attachMessageType: Services.Type;
+
+   TYPE
+      AttachedMessage = POINTER TO AttachedMessageRec;
+      AttachedMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            obj: Transactions.Object; (* IN via REF *)
+            attached: BOOLEAN; (* RVAL via Boolean *)
+         END;
+   VAR
+      attachedMessageType: Services.Type;
+
+   TYPE
+      AttachableMessage = POINTER TO AttachableMessageRec;
+      AttachableMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            obj: Transactions.Object; (* IN via REF *)
+            aspec: Transactions.AccessSpecification; (* IN via COPYORNIL *)
+         END;
+   VAR
+      attachableMessageType: Services.Type;
+
+   TYPE
+      GetAttachedMessage = POINTER TO GetAttachedMessageRec;
+      GetAttachedMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            it: Iterators.Iterator; (* OUT via REF *)
+         END;
+   VAR
+      getAttachedMessageType: Services.Type;
+
+   TYPE
+      BeginMessage = POINTER TO BeginMessageRec;
+      BeginMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+         END;
+   VAR
+      beginMessageType: Services.Type;
+
+   TYPE
+      CommitMessage = POINTER TO CommitMessageRec;
+      CommitMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+         END;
+   VAR
+      commitMessageType: Services.Type;
+
+   TYPE
+      AbortMessage = POINTER TO AbortMessageRec;
+      AbortMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+         END;
+   VAR
+      abortMessageType: Services.Type;
+
+   TYPE
+      GetStateMessage = POINTER TO GetStateMessageRec;
+      GetStateMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            state: Transactions.State; (* OUT via ShortInt *)
+         END;
+   VAR
+      getStateMessageType: Services.Type;
+
+   TYPE
+      GetNameMessage = POINTER TO GetNameMessageRec;
+      GetNameMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            name: ConstStrings.String; (* OUT via ConstString *)
+         END;
+   VAR
+      getNameMessageType: Services.Type;
+
+   TYPE
+      TakeInterestMessage = POINTER TO TakeInterestMessageRec;
+      TakeInterestMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPYORNIL *)
+            eventType: Events.EventType; (* OUT via REF *)
+         END;
+   VAR
+      takeInterestMessageType: Services.Type;
+
+   VAR
+      if: Transactions.Interface; (* of Transactions *)
+      type: Services.Type; (* of RemoteTransactions.Transaction *)
+
+   PROCEDURE CreateReleaseMessage(VAR object: PersistentObjects.Object);
+      VAR msg: ReleaseMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, releaseMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateReleaseMessage;
+
+   PROCEDURE WriteReleaseMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReleaseMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteReleaseMessage;
+
+   PROCEDURE ReadReleaseMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: ReleaseMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadReleaseMessage;
+
+   PROCEDURE CreateAttachMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AttachMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, attachMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAttachMessage;
+
+   PROCEDURE WriteAttachMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Export(s, msg.obj) &
+                   PersistentObjects.WriteObjectOrNIL(s, msg.aspec)
+         END;
+      END;
+   END WriteAttachMessage;
+
+   PROCEDURE ReadAttachMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Import(s, msg.obj) &
+                   PersistentObjects.ReadObjectOrNIL(s, msg.aspec)
+         END;
+      END;
+   END ReadAttachMessage;
+
+   PROCEDURE CreateAttachedMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AttachedMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, attachedMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAttachedMessage;
+
+   PROCEDURE WriteAttachedMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachedMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteBoolean(s, msg.attached)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Export(s, msg.obj)
+         END;
+      END;
+   END WriteAttachedMessage;
+
+   PROCEDURE ReadAttachedMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachedMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadBoolean(s, msg.attached)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Import(s, msg.obj)
+         END;
+      END;
+   END ReadAttachedMessage;
+
+   PROCEDURE CreateAttachableMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AttachableMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, attachableMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAttachableMessage;
+
+   PROCEDURE WriteAttachableMessage(s: Streams.Stream;
+                                    msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachableMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Export(s, msg.obj) &
+                   PersistentObjects.WriteObjectOrNIL(s, msg.aspec)
+         END;
+      END;
+   END WriteAttachableMessage;
+
+   PROCEDURE ReadAttachableMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AttachableMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth) &
+                   RemoteObjects.Import(s, msg.obj) &
+                   PersistentObjects.ReadObjectOrNIL(s, msg.aspec)
+         END;
+      END;
+   END ReadAttachableMessage;
+
+   PROCEDURE CreateGetAttachedMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetAttachedMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getAttachedMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetAttachedMessage;
+
+   PROCEDURE WriteGetAttachedMessage(s: Streams.Stream;
+                                     msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetAttachedMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.it)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetAttachedMessage;
+
+   PROCEDURE ReadGetAttachedMessage(s: Streams.Stream;
+                                    msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetAttachedMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.it)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetAttachedMessage;
+
+   PROCEDURE CreateBeginMessage(VAR object: PersistentObjects.Object);
+      VAR msg: BeginMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, beginMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateBeginMessage;
+
+   PROCEDURE WriteBeginMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: BeginMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteBeginMessage;
+
+   PROCEDURE ReadBeginMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: BeginMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadBeginMessage;
+
+   PROCEDURE CreateCommitMessage(VAR object: PersistentObjects.Object);
+      VAR msg: CommitMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, commitMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateCommitMessage;
+
+   PROCEDURE WriteCommitMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: CommitMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteCommitMessage;
+
+   PROCEDURE ReadCommitMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: CommitMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadCommitMessage;
+
+   PROCEDURE CreateAbortMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AbortMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, abortMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAbortMessage;
+
+   PROCEDURE WriteAbortMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AbortMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteAbortMessage;
+
+   PROCEDURE ReadAbortMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AbortMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadAbortMessage;
+
+   PROCEDURE CreateGetStateMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetStateMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getStateMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetStateMessage;
+
+   PROCEDURE WriteGetStateMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetStateMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteShortInt(s, msg.state)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetStateMessage;
+
+   PROCEDURE ReadGetStateMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetStateMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadShortInt(s, msg.state)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetStateMessage;
+
+   PROCEDURE CreateGetNameMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetNameMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getNameMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetNameMessage;
+
+   PROCEDURE WriteGetNameMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetNameMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteConstString(s, msg.name)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteGetNameMessage;
+
+   PROCEDURE ReadGetNameMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetNameMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadConstString(s, msg.name)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadGetNameMessage;
+
+   PROCEDURE CreateTakeInterestMessage(VAR object: PersistentObjects.Object);
+      VAR msg: TakeInterestMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, takeInterestMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateTakeInterestMessage;
+
+   PROCEDURE WriteTakeInterestMessage(s: Streams.Stream;
+                                      msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TakeInterestMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.eventType)
+         ELSE
+            RETURN PersistentObjects.WriteObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END WriteTakeInterestMessage;
+
+   PROCEDURE ReadTakeInterestMessage(s: Streams.Stream;
+                                     msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: TakeInterestMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.eventType)
+         ELSE
+            RETURN PersistentObjects.ReadObjectOrNIL(s, msg.auth)
+         END;
+      END;
+   END ReadTakeInterestMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Transactions.Transaction DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS ReleaseMessage THEN
+            WITH msg: ReleaseMessage DO
+               msg.done := Transactions.Release(object, msg.auth);
+            END;
+         ELSIF msg IS AttachMessage THEN
+            WITH msg: AttachMessage DO
+               msg.done := Transactions.Attach(object, msg.auth, msg.obj, msg.aspec);
+            END;
+         ELSIF msg IS AttachedMessage THEN
+            WITH msg: AttachedMessage DO
+               msg.attached := Transactions.Attached(object, msg.auth, msg.obj);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS AttachableMessage THEN
+            WITH msg: AttachableMessage DO
+               msg.done := Transactions.Attachable(object, msg.auth, msg.obj, msg.aspec);
+            END;
+         ELSIF msg IS GetAttachedMessage THEN
+            WITH msg: GetAttachedMessage DO
+               msg.done := Transactions.GetAttached(object, msg.auth, msg.it);
+            END;
+         ELSIF msg IS BeginMessage THEN
+            WITH msg: BeginMessage DO
+               msg.done := Transactions.Begin(object, msg.auth);
+            END;
+         ELSIF msg IS CommitMessage THEN
+            WITH msg: CommitMessage DO
+               msg.done := Transactions.Commit(object, msg.auth);
+            END;
+         ELSIF msg IS AbortMessage THEN
+            WITH msg: AbortMessage DO
+               msg.done := Transactions.Abort(object, msg.auth);
+            END;
+         ELSIF msg IS GetStateMessage THEN
+            WITH msg: GetStateMessage DO
+               msg.done := Transactions.GetState(object, msg.auth, msg.state);
+            END;
+         ELSIF msg IS GetNameMessage THEN
+            WITH msg: GetNameMessage DO
+               msg.done := Transactions.GetName(object, msg.auth, msg.name);
+            END;
+         ELSIF msg IS TakeInterestMessage THEN
+            WITH msg: TakeInterestMessage DO
+               msg.done := Transactions.TakeInterest(object, msg.auth, msg.eventType);
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE Release(transaction: Transactions.Transaction;
+                     auth: Shards.Lid) : BOOLEAN;
+      VAR msg: ReleaseMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateReleaseMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Release;
+
+   PROCEDURE Attach(transaction: Transactions.Transaction;
+                    auth: Shards.Lid;
+                    obj: Transactions.Object;
+                    aspec: Transactions.AccessSpecification) : BOOLEAN;
+      VAR msg: AttachMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAttachMessage(msg);
+      msg.auth := auth;
+      msg.obj := obj;
+      msg.aspec := aspec;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Attach;
+
+   PROCEDURE Attached(transaction: Transactions.Transaction;
+                      auth: Shards.Lid;
+                      obj: Transactions.Object) : BOOLEAN;
+      VAR msg: AttachedMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAttachedMessage(msg);
+      msg.auth := auth;
+      msg.obj := obj;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.attached
+   END Attached;
+
+   PROCEDURE Attachable(transaction: Transactions.Transaction;
+                        auth: Shards.Lid;
+                        obj: Transactions.Object;
+                        aspec: Transactions.AccessSpecification) : BOOLEAN;
+      VAR msg: AttachableMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAttachableMessage(msg);
+      msg.auth := auth;
+      msg.obj := obj;
+      msg.aspec := aspec;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Attachable;
+
+   PROCEDURE GetAttached(transaction: Transactions.Transaction;
+                         auth: Shards.Lid;
+                         VAR it: Iterators.Iterator) : BOOLEAN;
+      VAR msg: GetAttachedMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetAttachedMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      it := msg.it;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END GetAttached;
+
+   PROCEDURE Begin(transaction: Transactions.Transaction;
+                   auth: Shards.Lid) : BOOLEAN;
+      VAR msg: BeginMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateBeginMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Begin;
+
+   PROCEDURE Commit(transaction: Transactions.Transaction;
+                    auth: Shards.Lid) : BOOLEAN;
+      VAR msg: CommitMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateCommitMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Commit;
+
+   PROCEDURE Abort(transaction: Transactions.Transaction;
+                   auth: Shards.Lid) : BOOLEAN;
+      VAR msg: AbortMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateAbortMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END Abort;
+
+   PROCEDURE GetState(transaction: Transactions.Transaction;
+                      auth: Shards.Lid;
+                      VAR state: Transactions.State) : BOOLEAN;
+      VAR msg: GetStateMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetStateMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      state := msg.state;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END GetState;
+
+   PROCEDURE GetName(transaction: Transactions.Transaction;
+                     auth: Shards.Lid;
+                     VAR name: ConstStrings.String) : BOOLEAN;
+      VAR msg: GetNameMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetNameMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      name := msg.name;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END GetName;
+
+   PROCEDURE TakeInterest(transaction: Transactions.Transaction;
+                          auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+      VAR msg: TakeInterestMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateTakeInterestMessage(msg);
+      msg.auth := auth;
+      Messages.Send(transaction, msg);
+      eventType := msg.eventType;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(transaction, queue);
+      RETURN msg.done
+   END TakeInterest;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.release := Release;
+      if.attach := Attach;
+      if.attached := Attached;
+      if.attachable := Attachable;
+      if.getAttached := GetAttached;
+      if.begin := Begin;
+      if.commit := Commit;
+      if.abort := Abort;
+      if.getState := GetState;
+      if.getName := GetName;
+      if.takeInterest := TakeInterest;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteTransactions.Message", "Messages.Message", NIL);
+      InitPO(releaseMessageType, "RemoteTransactions.ReleaseMessage", "RemoteTransactions.Message",
+             CreateReleaseMessage, ReadReleaseMessage, WriteReleaseMessage);
+      InitPO(attachMessageType, "RemoteTransactions.AttachMessage", "RemoteTransactions.Message",
+             CreateAttachMessage, ReadAttachMessage, WriteAttachMessage);
+      InitPO(attachedMessageType, "RemoteTransactions.AttachedMessage", "RemoteTransactions.Message",
+             CreateAttachedMessage, ReadAttachedMessage, WriteAttachedMessage);
+      InitPO(attachableMessageType, "RemoteTransactions.AttachableMessage", "RemoteTransactions.Message",
+             CreateAttachableMessage, ReadAttachableMessage, WriteAttachableMessage);
+      InitPO(getAttachedMessageType, "RemoteTransactions.GetAttachedMessage", "RemoteTransactions.Message",
+             CreateGetAttachedMessage, ReadGetAttachedMessage, WriteGetAttachedMessage);
+      InitPO(beginMessageType, "RemoteTransactions.BeginMessage", "RemoteTransactions.Message",
+             CreateBeginMessage, ReadBeginMessage, WriteBeginMessage);
+      InitPO(commitMessageType, "RemoteTransactions.CommitMessage", "RemoteTransactions.Message",
+             CreateCommitMessage, ReadCommitMessage, WriteCommitMessage);
+      InitPO(abortMessageType, "RemoteTransactions.AbortMessage", "RemoteTransactions.Message",
+             CreateAbortMessage, ReadAbortMessage, WriteAbortMessage);
+      InitPO(getStateMessageType, "RemoteTransactions.GetStateMessage", "RemoteTransactions.Message",
+             CreateGetStateMessage, ReadGetStateMessage, WriteGetStateMessage);
+      InitPO(getNameMessageType, "RemoteTransactions.GetNameMessage", "RemoteTransactions.Message",
+             CreateGetNameMessage, ReadGetNameMessage, WriteGetNameMessage);
+      InitPO(takeInterestMessageType, "RemoteTransactions.TakeInterestMessage", "RemoteTransactions.Message",
+             CreateTakeInterestMessage, ReadTakeInterestMessage, WriteTakeInterestMessage);
+      Services.CreateType(type,
+         "RemoteTransactions.Transaction", "Transactions.Transaction");
+
+      Services.SeekType("Transactions.Transaction", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := NIL;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+         trans: Transaction;
+   BEGIN
+      NEW(trans);
+      Services.Init(trans, type);
+      Transactions.Init(trans, if);
+      RelatedEvents.QueueEvents(trans);
+      object := trans;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteTransactions.

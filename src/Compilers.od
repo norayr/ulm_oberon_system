@@ -1,0 +1,139 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Compilers.od,v 1.1 2001/02/03 17:35:51 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Compilers.od,v $
+   Revision 1.1  2001/02/03 17:35:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Compilers;
+
+   IMPORT Architectures, Args, CompilerDatabases, CompilerKeys, CompilerLogs,
+      CompilerObjects, Disciplines, Iterators, ModularizedStructures,
+      Objects, RelatedEvents, Services, Sources := CompilerSources;
+
+   TYPE
+      Result = POINTER TO ResultRec;
+      ResultRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    header: CompilerObjects.Header;
+	    object: CompilerObjects.Object;
+	 END;
+
+      Compiler = POINTER TO CompilerRec;
+      CompilerRec = RECORD (Services.ObjectRec) END;
+
+   TYPE
+      Context = POINTER TO ContextRec;
+      ContextRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    keys: CompilerKeys.Set;
+	    mtab: CompilerObjects.ModuleTable;
+	    tab: ModularizedStructures.ObjectTable;
+	    db: CompilerDatabases.Database;
+	    cachemode: CompilerObjects.CacheMode;
+	    log: CompilerLogs.Log;
+	 END;
+
+   TYPE
+      Pass1Proc = PROCEDURE (compiler: Compiler; context: Context;
+                             source: Sources.Source;
+		             VAR definition, module: Result) : BOOLEAN;
+      Pass2Proc = PROCEDURE (compiler: Compiler; context: Context;
+			     definition, module: CompilerObjects.Object;
+			     arch: Architectures.Architecture;
+		             updatesPermitted: BOOLEAN;
+			     VAR archdef, code: Result;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      DefineArgsProc = PROCEDURE (compiler: Compiler; args: Args.Arguments);
+
+      Pass1Interface = POINTER TO Pass1InterfaceRec;
+      Pass1InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    pass1: Pass1Proc;
+	    defineArgs: DefineArgsProc; (* may be NIL *)
+	 END;
+      Pass2Interface = POINTER TO Pass2InterfaceRec;
+      Pass2InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    pass2: Pass2Proc;
+	    defineArgs: DefineArgsProc; (* may be NIL *)
+	 END;
+
+   PROCEDURE Init(compiler: Compiler; if: Pass1Interface);
+   PROCEDURE Register(compiler: Compiler; arch: Architectures.Architecture;
+                      if: Pass2Interface);
+
+   PROCEDURE DefineArgs(compiler: Compiler; args: Args.Arguments);
+      (* defines all arguments of `compiler' including those of all
+	 supported architectures
+      *)
+
+   PROCEDURE CreateCopyOfContext(VAR newcontext: Context; orig: Context);
+   PROCEDURE SynchronizeContext(context, ext: Context);
+
+   PROCEDURE Pass1(compiler: Compiler; context: Context;
+                   source: Sources.Source;
+		   VAR definition, module: Result) : BOOLEAN;
+      (* process independent from any specific hardware or software
+         architecture ``source'' according to ``args'' and return the
+         result in ``definition'' (in case of definitions),
+	 in ``module'' (in case of modules), or in both (ETHZ model);
+	 in case of errors all events should be related to source
+	 (they should be of type CompilerErrors in case of syntax
+	 and semantic errors);
+	 return TRUE if successful
+      *)
+
+   PROCEDURE Pass2(compiler: Compiler; context: Context;
+                   definition, module: CompilerObjects.Object;
+		   arch: Architectures.Architecture;
+		   updatesPermitted: BOOLEAN;
+		   VAR archdef, code: Result;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* generate an architecture-dependent symbol file and/or
+         generate code for the given module;
+	 note that definition may already be architecture-dependent
+	 (in this case updates are permitted if updatesPermitted is TRUE
+	 but definition
+	 *MUST NOT* be member of context.mtab and its key
+	 *MUST NOT* be member of context.keys);
+	 module may be NIL;
+	 if definition is architecture-independent updatesPermitted
+	 has to be set to TRUE;
+	 return FALSE in case of failures and relate all
+	 error events to errors
+      *)
+
+   PROCEDURE Supported(compiler: Compiler;
+                       arch: Architectures.Architecture) : BOOLEAN;
+      (* return TRUE if `compiler' supports `arch' *)
+
+   PROCEDURE GetSupportedArchitectures(compiler: Compiler;
+                                       VAR it: Iterators.Iterator);
+
+END Compilers.

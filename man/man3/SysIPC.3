@@ -1,0 +1,982 @@
+'\" t
+.\" --------------------------------------
+.\" Oberon System Documentation  AFB 12/90
+.\" (c) University of Ulm, SAI, D-7900 Ulm
+.\" --------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH SysIPC 3 "Last change: 13 June 1993" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+SysIPC \- System V interprocess communication
+.SH SYNOPSIS
+.Pg
+CONST private = 0;              (* private key *)
+.sp 0.7
+(* mode bits *)
+CONST alloc = { 16 };           (* entry currently allocated *)
+CONST creat = { 22 };           (* create entry if key doesn't exist *)
+CONST excl = { 21 };            (* fail if key exists *)
+CONST nowait = { 20 };          (* error if request must wait *)
+.sp 0.7
+(* control commands *)
+CONST rmid = 0;                 (* remove identifier *)
+CONST set = 1;                  (* set options *)
+CONST stat = 2;                 (* get options *)
+.sp 0.7
+(* permission definitions *)
+CONST read = { 23 };            (* read permission for owner *)
+CONST write = { 24 };           (* write permission for owner *)
+.sp 0.7
+(* shared memory: operation flags *)
+CONST readwrite = {};           (* attach read/write *)
+CONST rdonly = { 19 };          (* attach read-only (else read-write) *)
+CONST rnd = { 18 };             (* round attach address to shmlba *)
+.sp 0.7
+(* messages: operation flags *)
+CONST noerror = { 19 };         (* no error if big message *)
+.sp 0.7
+(* semaphore operation flags *)
+CONST undo = { 19 };            (* set up adjust on exit entry *)
+.sp 0.7
+TYPE Key = LONGINT;             (* corresponds to key_t from sys/types.h *)
+TYPE Size = SysTypes.Count;
+TYPE Modes = SET;
+TYPE Identifier = LONGINT;
+TYPE Address = SysTypes.Address;
+TYPE ProcessId = SysProcess.ProcessId;
+TYPE Time = SysTypes.Time;
+TYPE MessageType = LONGINT;
+TYPE SemVal = INTEGER;
+.sp 0.7
+(* common IPC access structure *)
+TYPE Access =
+   RECORD
+      uid: INTEGER;     (* owner's user id *)
+      gid: INTEGER;     (* owner's group id *)
+      cuid: INTEGER;    (* creator's user id *)
+      cgid: INTEGER;    (* creator's group id *)
+      mode: Modes;      (* access modes *)
+      seq: INTEGER;     (* slot usage sequence number *)
+      key: Key;
+   END;
+.sp 0.7
+TYPE SharedMemRec =     (* struct shmid_ds *)
+   RECORD
+      perm: Access;     (* operation permission struct *)
+      segsz: Size;      (* segment size in bytes *)
+      lpid: ProcessId;  (* pid of last shmop *)
+      cpid: ProcessId;  (* pid of creator *)
+      nattach: INTEGER; (* current # attached *)
+      atime: Time;      (* last shmat time *)
+      dtime: Time;      (* last shmdt time *)
+      ctime: Time;      (* last change time *)
+   END;
+.sp 0.7
+TYPE QueueRec =         (* struct msqid_ds *)
+   RECORD
+      perm: Access;     (* operation permission struct *)
+      first: Address;   (* ptr to first message on q *)
+      last: Address;    (* ptr to last message on q *)
+      cbytes: INTEGER;  (* current # bytes on q *)
+      qnum: INTEGER;    (* # of messages on q *)
+      qbytes: INTEGER;  (* max # of bytes on q *)
+      lspid: ProcessId; (* pid of last msgsnd *)
+      lrpid: ProcessId; (* pid of last msgrcv *)
+      stime: Time;      (* last msgsnd time *)
+      rtime: Time;      (* last msgrcv time *)
+      ctime: Time;      (* last change time *)
+   END;
+.sp 0.7
+TYPE SemaphoreRec =     (* struct semid_ds *)
+   RECORD
+      perm: Access;     (* operation permission struct *)
+      base: Address;    (* ptr to first semaphore in set *)
+      nsems: INTEGER;   (* # of semaphores in set *)
+      otime: Time;      (* last semop time *)
+      ctime: Time;      (* last change time *)
+   END;
+.sp 0.7
+TYPE SemOperation =     (* struct sembuf *)
+   RECORD
+      num: INTEGER;     (* semaphore # *)
+      op: INTEGER;      (* semaphore operation *)
+      flags: SET;       (* operation flags *)
+   END;
+.sp 0.7
+VAR conferror: Events.EventType;
+.sp 0.7
+CONST noSharedSegment = 0;
+CONST errorcodes = 1;
+.sp 0.2
+TYPE ErrorCode = SHORTINT;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: ErrorCode;
+   END;
+.sp 0.2
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE ShmGet(VAR shmid: Identifier; key: Key; size: Size; shmflg: Modes;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE ShmCtl(shmid: Identifier; cmd: INTEGER; VAR buf: SharedMemRec;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE ShmRemove(shmid: Identifier;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE ShmAttach(shmid: Identifier; VAR shmaddr: Address; shmflg: Modes;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE ShmDetach(shmaddr: Address;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE MsgGet(VAR msqid: Identifier; key: Key; msgflg: Modes;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE MsgCtl(msqid: Identifier;
+                 cmd: INTEGER; VAR buf: QueueRec;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE MsgRemove(msgqid: Identifier;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE MsgSend(msgqid: Identifier;
+                  msg: ARRAY OF BYTE; msgsz: Size; msgflg: Modes;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE MsgReceive(msgqid: Identifier;
+                     VAR msg: ARRAY OF BYTE; msgtype: MessageType;
+                     msgflg: Modes;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE SemGet(VAR semid: Identifier; key: Key;
+                 nsems: INTEGER; semflg: Modes;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemStat(semid: Identifier; VAR buf: SemaphoreRec;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemSet(semid: Identifier; buf: SemaphoreRec;
+                 errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemRemove(semid: Identifier;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemGetNCnt(semid: Identifier; semnum: INTEGER;
+                     VAR ncnt: INTEGER;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemGetPid(semid: Identifier; semnum: INTEGER;
+                    VAR pid: ProcessId;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemGetVal(semid: Identifier; semnum: INTEGER;
+                    VAR semval: SemVal;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemGetAll(semid: Identifier;
+                    VAR semvals: ARRAY OF SemVal;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemGetZCnt(semid: Identifier; semnum: INTEGER;
+                     VAR zcnt: INTEGER;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemSetVal(semid: Identifier; semnum: INTEGER;
+                    semval: SemVal;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemSetAll(semid: Identifier; semvals: ARRAY OF SemVal;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE SemOp(semid: Identifier;
+                sops: ARRAY OF SemOperation; nsops: INTEGER;
+                errors: RelatedEvents.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I SysIPC
+interfaces the System V interprocess communication facilities.
+.PP
+Shared memory segments, message queues, and semaphore arrays are
+identified by a key and an identifier.
+The key depends on the application,
+i.e. if two independent processes wants to share the same
+ipc facility then they use the same key.
+The identifier is determined by the operating system and is only valid
+while the associated facility exists.
+.IR ShmGet ,
+.IR MsgGet ,
+and
+.I SemGet
+convert a key to an identifier.
+.PP
+.I SysIPC.private
+may be used as key to get an identifier which does not depend on a special key.
+This is convenient if the identifier is shared via process inheritence
+or other sorts of communications (e.g. file i/o).
+.ne 10v
+.PP
+Conversion of a key to an identifier either tries to create an ipc
+facility or to get the identifier of an existing ipc facility.
+This is controlled in detail by the
+.I flg
+parameter of type
+.IR Modes.
+Beside usual protection modes (read/write for owner, group, and other)
+following flags are included:
+.PP
+.TS
+box;
+lfI lw(5i).
+creat	T{
+Create new ipc facility if the key does not exist.
+If \fIcreat\fP is not given then the conversion returns
+with \fISysErrors.noent\fP
+if there is no such key.
+T}
+excl	Causes the conversion to fail if the key already exists.
+.TE
+.PP
+Further flags are of internal use or are needed
+for other operations only (e.g. \fInowait\fP for message queue and
+semaphore operations).
+.PP
+Control commands (\fIShmCtl\fP, \fIMsgCtl\fP, and \fISemCtl\fP)
+allow to get or to modify the current status.
+.IR ShmRemove ,
+.IR MsgRemove ,
+and
+.IR SemRemove
+remove ipc facilities.
+Ipc facilities may be modified or removed by the creator or the owner
+of the ipc facility.
+The owner is initially the creator of the ipc facility and may be modified.
+.PP
+Ipc facilities are not released if the number of
+references equals 0.
+They must be removed explicitely.
+.ne 10v
+.PP
+The number of
+ipc facilities is very limited and depends on following
+configuration parameters:
+.PP
+.TS
+box;
+lfB l.
+SHMMNI	maximal number of shared memory segments
+MSGMNI	maximal number of messages queues
+SEMMNI	maximal number of semaphore arrays
+.TE
+.PP
+There are various other limits which apply to the different sorts
+of ipc facilities.
+.SS "Shared Memory"
+A shared memory segments is a
+piece of memory which can be
+shared between several processes.
+A segment is always of the same size but not necessarily at the
+same position in the virtual address space.
+Multiple maps of the same segment into the address space of one
+process are possible.
+Segments are inherited thru \fISysProcess.Fork\fP but not thru
+\fISysProcess.Exec\fP.
+.PP
+.I ShmGet
+creates a segment or converts a given key.
+The size of the segment is given by
+.IR size .
+If
+.I size
+does not match the size of an already existing segment
+(i.e. the given size is greater than the size of the segment)
+\fISysErrors.inval\fP is returned as error.
+The size must range in [\fBSHMMIN\fP..\fBSHMMAX\fP].
+.PP
+.I ShmAttach
+maps a shared memory segment into the virtual address space of the
+calling process and
+.I ShmDetach
+detaches it.
+Shared memory segments must not overlap any valid regions of the
+address space.
+The original system call allows either to give a valid address
+or \fBNIL\fP.
+In the last case the address is chosen by the operating system and
+returned to the calling process.
+In some implementations the operation system choses addresses
+just behind the \fIbreak\fP (see \fIbrk(2)\fP)
+which is a very bad choice because no dynamic storage is
+available afterwards.
+On the other side, giving own addresses is extremely unportable.
+The decision where to attach shared memory segments has been given
+into the responsibility of
+.I ShmAttach
+which relies on \fIMemory(3)\fP to allow portable usage of shared memory.
+Thus,
+.I ShmAttach
+returns
+.I shmaddr
+as an \fIout\fP-parameter.
+.ne 10v
+.PP
+The access protection of the shared memory segment depends
+on the general protection and the modes given to
+.IR ShmAttach .
+Following flags are available:
+.PP
+.TS
+box;
+lfI lw(5i).
+readwrite	attach the segment with read/write permission (default)
+rdonly	attach the segment read-only
+rnd	T{
+round attach address to \fBSHMLBA\fP;
+this flag does not make sense because the attach address is
+determined by \fIShmAttach\fP.
+T}
+.TE
+.PP
+.I ShmDetach
+takes
+.I shmaddr
+as argument.
+The identifier is not sufficient because the same shared memory segment
+may be mapped multiple times into the address space of the same process.
+Shared memory segments are detached automatically on \fISysProcess.Exec\fP and
+\fISysProcess.Exit\fP.
+.PP
+Shared memory segments may be created, attached, and immediately after
+setup removed.
+This does not disturb the segments currently attached but causes
+the segment to vanish automatically if the number of attached
+segments equals 0.
+Valid operations after removal are
+.I ShmDetach
+and
+.I ShmCtl
+with
+.I cmd
+set to
+.IR stat .
+The key is changed to
+.I private
+so the old key can be reused without waiting for the last detach.
+.ne 10v
+.PP
+Configuration parameters related to shared memory:
+.PP
+.TS
+box;
+lfB l.
+SHMMAX	maximal size of a shared memory segment in bytes
+SHMMIN	minimal size of a shared memory segment in bytes
+SHMMNI	maximal number of shared memory identifiers
+SHMSEG	maximal number of attached shared memory segments per process
+SHMALL	maximal total shared memory system wide (in clicks)
+.TE
+.PP
+Some implementations have an additional parameter named
+.B SHMBRK
+which specifies the gap in clicks used between data and
+shared memory if the mapping of shared memory is left up to the
+operating system.
+As mentioned above this implementation does not rely on this parameter.
+.SS "Message Queues"
+A message consists of a type
+(\fIMessageType\fP) and an arbitrary
+number of bytes.
+Records of different types and sizes may be put into one
+message queue.
+.PP
+.I MsgGet
+creates a message queue or converts a given key to an identifier.
+Messages are appended to the queue by call of
+.IR MsgSend .
+The message
+.I msg
+consists of a leading type field (of type \fIMessageType\fP) and
+additional information.
+The size of the information in bytes is given by
+.I msgsz
+and defaults to the size of
+.I msg
+minus the size of the message type.
+The default is taken if
+.I msgsz
+equals 0.
+.PP
+If there is currently not enough space to allocate the message in
+kernel memory the process is either blocked or the system call
+returns with \fISysErrors.again\fP.
+The last case applies if \fInowait\fP is given as flag to
+.IR msgflg .
+.PP
+Messages are retrieved by
+.IR MsgReceive .
+The maximal accepted message size is determined by the size of
+.IR msg .
+The acceptable message types are specified by
+.IR msgtype :
+.ne 10v
+.PP
+.TS
+box;
+l lw(5i).
+\fImsgtype\fP > 0	the given message type must be matched
+\fImsgtype\fP = 0	all message types are accepted
+\fImsgtype\fP < 0	T{
+requests the message with the lowest message type
+which is less than \fBABS\fP(\fImsgtype\fP) to be returned
+T}
+.TE
+.PP
+If there is no appropiate message the process is either blocked
+or the system call returns with \fISysErrors.nomsg\fP
+(if \fInowait\fP is set in \fImsgflg\fP).
+.PP
+In normal case
+.I MsgReceive
+would return with
+.B E2BIG
+if the message does not fit into
+.IR msg .
+Setting
+.I noerror
+in
+.I msgflg
+causes the message to be truncated in this case.
+.PP
+Processes blocked due to
+.I MsgSend
+or
+.I MsgReceive
+may be interrupted.
+In this case \fISysErrors.intr\fP is returned.
+.PP
+If the removal of the message queue identifier causes wakeup
+of blocked processes then \fISysErrors.idrm\fP is returned.
+.PP
+Beside setting owner and protection it is possible to
+change the maximal number of bytes which may be used up by a given queue.
+The field
+.I qbytes
+in
+.I QueueRec
+is initially set to
+.B MSGMNB
+and may be decreased by the owner or creator and
+increased by the super-user.
+.ne 10v
+.PP
+Configuration parameters related to message queues:
+.PP
+.TS
+box;
+lfB lw(5i).
+MSGMAP	T{
+size of the memory control map used to manage
+message segments
+T}
+MSGMAX	T{
+maximum size in bytes of a message
+T}
+MSGMNB	T{
+see above
+T}
+MSGMNI	T{
+maximal number of message queue identifiers
+T}
+MSGSSZ	T{
+size of a message segment:
+messages are stored in kernel memory in a sequence of
+message segments.
+The larger the segments are, the greater the chance of having
+wasted memory at the end of a message.
+T}
+MSGSEG	T{
+number of message segments;
+the maximal size used up by all messages is given by
+\fBMSGSEG\fP * \fBMSGSSZ\fP
+T}
+MSGTQL	T{
+maximal number of messages of all message queues
+systemwide, and thus,
+the number of outstanding messages
+T}
+.TE
+.ne 15v
+.SS Semaphores
+Semaphores are organized in arrays of integer semaphores.
+A set of operations on one semaphore array is executed atomically.
+Semaphores are small integers (a configurable subset of 2-byte-integers
+is taken).
+Semaphore values are set initially to 0.
+Typically, positive semaphore values indicate a free ressource,
+and negative semaphore values indicate a locked ressource.
+Semaphore operations are given as small integers which are to be added to the
+semaphore value:
+.PP
+.TS
+box;
+l | lw(4.5i).
+semaphore operation	effect
+_
+> 0	T{
+releases the ressource: if the semaphore value becomes greater
+than zero then processes waiting for a free ressource are waked up.
+T}
+< 0	T{
+locks the ressource: if the semaphore value gets negative after
+adding the semaphore operation to it
+then the process is blocked until the semaphore value becomes
+positive.
+T}
+= 0	T{
+causes the process to be blocked until the semaphore value becomes zero.
+T}
+.TE
+.PP
+Processes are not blocked if \fInowait\fP is member of the operation flags.
+Blocked processes may be interrupted.
+In this case \fISysErrors.intr\fP is returned.
+.PP
+.I SemGet
+converts a key into a semaphore identifier and potentially creates
+a semaphore array of length \fInsems\fP.
+If the semaphore array already exists then
+\fInsems\fP must be either zero or
+must not exceed the length of the semaphore array.
+.ne 10v
+.PP
+.I SemOp
+tries to execute a list of semaphore operations given by
+.I sops
+atomically.
+The number of semaphore operations equals by default the length
+of the open array parameter (\fInsops\fP = 0) or may be specified
+(\fInsops\fP > 0 & \fInsops\fP <= \fBLEN\fP(\fIsops\fP)).
+Semaphore operations are given as records of type \fISemOperation\fP:
+.PP
+.TS
+box;
+lfI lw(5i).
+num	T{
+is taken as index to the semaphore array; the semaphore array is
+indexed from 0 to \fInsems\fP - 1.
+T}
+op	T{
+semaphore operation:
+a small integer which is to be added to the semaphore value
+T}
+flags	T{
+\fInowait\fP and \fIundo\fP may be given as flags;
+\fInowait\fP requests the process not to be blocked on this operation
+and \fIundo\fP causes the operation to be undone on process exit.
+T}
+.TE
+.PP
+.I SemStat
+returns the current semaphore array status and
+.I SemSet
+allows to change owner and protection.
+.I SemRemove
+removes the given semaphore.
+All processes which are blocked due to semaphore operations
+are awakened.
+Their calls return with \fISysErrors.rmid\fP.
+.PP
+Various procedures allow to examine or to modify semaphores.
+.I SemGetAll
+returns the semaphore values of all semaphores in the array.
+.I SemGetVal
+returns the semaphore value of the semaphore indexed by
+.IR semnum .
+.I SemSetAll
+sets the semaphore values of all semaphores.
+.I SemSetVal
+sets the semaphore value of the semaphore indexed by
+.IR semnum .
+Processes which are blocked due to semaphore operations either awaits
+the semaphore value to become zero or to become greater or equal than the
+absolute value of their semaphore operation.
+.I SemGetZcnt
+returns the number of processes sleeping for the given semaphore
+value to become zero.
+.I SemGetNCnt
+returns the number of processes waiting for the given semaphore value
+to become positive.
+Further,
+.I SemGetPid
+returns the process id of the last process operating on the given
+semaphore.
+.ne 10v
+.PP
+Configuration parameters related to semaphores:
+.PP
+.TS
+box;
+lfB lw(5i).
+SEMMAP	T{
+specifies the size of the memory control map used to manage
+semaphores.
+T}
+SEMMNI	T{
+maximal number of semaphore identifiers
+T}
+SEMMNS	maximal number of semaphores in the system
+SEMMNU	maximal number of undo structures in the system
+SEMMSL	maximal length of a semaphore array
+SEMOPM	maximal number of operations per \fISemOp\fP call
+SEMUME	maximal number of undo structures per process
+SEMUSZ	size in bytes of undo structure
+SEMVMX	maximum value of a semaphore
+SEMAEM	maximul value of exit adjusts
+.TE
+.SH EXAMPLES
+.SS "Shared Memory"
+Following example illustrates sharing of a record between related
+processes:
+.Pg
+TYPE
+   SharedRecPtr = POINTER TO SharedRec;
+   SharedRec =
+      RECORD
+         (* be sure that the size of SharedRec exceeds SHMMIN *)
+      END;
+
+PROCEDURE Setup(VAR sharedp: SharedRecPtr;
+                VAR pid: SysProcess.ProcessId) : BOOLEAN;
+   (* create a shared memory region and fork;
+      if successful then sharedp points to the shared memory region
+      containing a record of type SharedRec and
+      pid contains the result of SysProcess.Fork
+   *)
+
+   VAR
+      shmid: SysIPC.Identifier; (* shared memory identifier *)
+      shmaddr: SysIPC.Address;  (* address of attached segment *)
+      forkok: BOOLEAN;          (* result of SysProcess.Fork *)
+
+BEGIN
+   IF ~SysIPC.ShmGet(shmid, SysIPC.private, SYSTEM.SIZE(SharedRec),
+                     SysIPC.read + SysIPC.write, NIL) THEN
+      RETURN FALSE
+   END;
+   IF ~SysIPC.ShmAttach(shmid, shmaddr, SysIPC.readwrite, NIL) THEN
+      IF ~SysIPC.ShmRemove(shmid, NIL) THEN END;
+      RETURN FALSE
+   END;
+   forkok := SysProcess.Fork(pid, NIL);
+   (* if SysProcess.Fork succeeds then the attached segment
+      is inherited to the child process
+   *)
+   IF ~forkok THEN
+      IF ~SysIPC.ShmDetach(shmdaddr, NIL) THEN END;
+   END;
+   IF ~forkok OR (pid # 0) THEN
+      (* cleanup identifier in each case;
+         if SysProcess.Fork was successful cleanup is done
+         by the parent process
+      *)
+      IF ~SysIPC.ShmRemove(shmid, NIL) THEN END;
+   END;
+   sharedp := SYSTEM.VAL(SharedRecPtr, shmaddr);
+   RETURN forkok
+END Setup;
+.Pe
+.SS "Message Queues"
+The example following illustrates the use of message between
+unrelated processes.
+One process serves as demon which waits for messages sent by clients.
+.PP
+Common definitions:
+.Pg
+CONST
+   messageType = 1;
+   key = "demo";
+      (* keys are per convention short strings (1-4 characters) *)
+TYPE
+   Message =
+      RECORD
+         type: SysIPC.MessageType;
+         (* further components *)
+      END;
+
+PROCEDURE ConvertKey(key: ARRAY OF CHAR) : SysIPC.Key;
+   VAR
+      val: SysIPC.Key;
+      index: INTEGER;
+BEGIN
+   val := 0;
+   index := 0;
+   WHILE (index < SYSTEM.SIZE(SysIPC.Key)) & (index < LEN(key)) &
+         (key[index] # 0X) DO
+      val := val * 100H + ORD(key[index]);
+      INC(index);
+   END;
+   RETURN val
+END ConvertKey;
+.Pe
+.PP
+The demon:
+.Pg
+VAR
+   msqid: SysIPC.Identifier;
+
+PROCEDURE Cleanup(event: Event.Events);
+BEGIN
+   IF ~SysIPC.MsgRemove(msqid, NIL) THEN END;
+END Cleanup;
+
+PROCEDURE IdentifierRemoved(event: Event.Events);
+   (* called if identifier has been removed externally *)
+BEGIN
+   SysProcess.Exit(0);
+END IdentifierRemoved;
+
+PROCEDURE Demon;
+   VAR
+      msg: Message;
+BEGIN
+   IF ~SysIPC.MsgGet(msqid, ConvertKey(key),
+                  (* protection: rw--w--w- *)
+                  SysStat.uread + SysStat.write, NIL) THEN
+      SysProcess.Exit(1);
+   END;
+   Events.Handler(SysEvents.termination, Cleanup);
+   Events.Handler(SysErrors.syserror[SysErrors.idrm], IdentifierRemoved);
+   LOOP
+      IF SysIPC.MsgReceive(msqid, msg, messageType, {}, NIL) THEN
+         (* evaluate the message *)
+      END;
+   END;
+END Demon;
+.Pe
+.PP
+The client:
+.Pg
+PROCEDURE SendMessage(msg: Message) : BOOLEAN;
+   VAR
+      msgqid: SysIPC.Identifier;
+BEGIN
+   RETURN SysIPC.MsgGet(msqid, ConvertKey(key), NIL) &
+          SysIPC.MsgSend(msqid, msg, 0, {}, NIL)
+END SendMessage;
+.Pe
+.SS Semaphores
+Following example shows how to realize Dijkstras \fBP\fP and
+\fBV\fP operations:
+.Pg
+TYPE
+   Semaphore = SysIPC.Identifier;
+
+   (* semaphore value
+
+      > 1  more than one ressource is available; the semaphore value
+           equals the number of free ressources
+      = 1  free ressource
+      = 0  ressource is locked but nobody waits for it
+      < 0  ressource is locked and the absolute value of
+           the semaphore value equals the number of processes
+           waiting for the ressource to become free
+   *)
+
+PROCEDURE Init(VAR s: Semaphore; key: SysIPC.Key) : BOOLEAN;
+BEGIN
+   IF ~SysIPC.SemGet(s, key, 1, SysIPC.read + SysIPC.write, NIL) THEN
+      RETURN FALSE
+   END;
+   IF ~SysIPC.SemSetVal(s, 0, 1, NIL) THEN
+      IF ~SysIPC.SemRemove(s, NIL) THEN END;
+      RETURN FALSE
+   END;
+   RETURN TRUE
+END Init;
+
+PROCEDURE Remove(s: Semaphore) : BOOLEAN;
+BEGIN
+   RETURN SysIPC.SemRemove(s, NIL)
+END Remove;
+
+PROCEDURE P(s: Semaphore) : BOOLEAN;
+   VAR
+      sops: ARRAY 1 OF SysIPC.SemOperation;
+BEGIN
+   sops[0].num := 0;
+   sops[0].op := -1;
+   sops[0].flags := SysIPC.undo;
+   RETURN SysIPC.SemOp(s, sops, 0, NIL)
+END P;
+
+PROCEDURE V(s: Semaphore) : BOOLEAN;
+   VAR
+      sops: ARRAY 1 OF SysIPC.SemOperation;
+BEGIN
+   sops[0].num := 0;
+   sops[0].op := 1;
+   sops[0].flags := {};
+   RETURN SysIPC.SemOp(s, sops, 0, NIL)
+END V;
+.Pe
+.SH DIAGNOSTICS
+System call failures lead to events of \fISysErrors(3)\fP.
+The \fIerrors\fP parameter is passed to \fISysErrors.Raise\fP.
+All routines return
+.B FALSE
+in error case.
+.PP
+Following errors are detected by \fISysIPC\fP itself:
+.Tb noSharedSegment
+.Tp noSharedSegment
+is raised by \fIShmDetach\fP if the given address does not
+belong to a shared memory segment.
+.Te
+.PP
+The event
+.I conferror
+is passed to \fIAssertions.Raise\fP
+during initialisation time in case of configuration errors.
+.ne 15v
+.SH "SEE ALSO"
+.TS
+lfI l.
+ipcs(1)	prints status information of current ipc facilities
+ipcrm(1)	removes ipc facilities
+shmget(2)	\fIShmGet\fP
+shmctl(2)	\fIShmCtl\fP and \fIShmRemove\fP
+shmat(2)	\fIShmAttach\fP and \fIShmDetach\fP
+msgget(2)	\fIMsgGet\fP
+msgctl(2)	\fIMsgCtl\fP and \fIMsgRemove\fP
+msgsend(2)	\fIMsgSend\fP and \fIMsgReceive\fP
+semget(2)	\fISemGet\fP
+semctl(2)	\fISemCtl\fP and \fISemRemove\fP
+semop(2)	\fISemOp\fP and all other semaphore operations
+Assertions(3)	error handling in case of configuration errors
+Memory(3)	address space management
+SysErrors(3)	handling of failed system calls
+SysProcess(3)	system calls related to process management
+SysStat(3)	protection modes
+.TE
+.\" ---------------------------------------------------------------------------
+.\" $Id: SysIPC.3,v 1.6 1993/06/13 09:18:23 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: SysIPC.3,v $
+.\" Revision 1.6  1993/06/13  09:18:23  borchert
+.\" ShmAttach relies now on Memory
+.\"
+.\" Revision 1.5  1992/03/24  09:19:58  borchert
+.\" object-parameters renamed to errors and rearranged
+.\"
+.\" Revision 1.4  1991/11/25  09:15:03  borchert
+.\" conferror is now handled by Assertions
+.\"
+.\" Revision 1.3  1991/11/18  08:03:10  borchert
+.\" EventNumber -> EventType
+.\" object parameters for RelatedEvents
+.\"
+.\" Revision 1.2  91/01/04  08:56:39  borchert
+.\" Message queue example fixed (ConvertKey)
+.\" 
+.\" Revision 1.1  91/01/03  22:09:47  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

@@ -1,0 +1,315 @@
+MODULE WebMRTestObjects;
+
+   IMPORT
+      Clocks, Events, Convert:=HTTPConversions, LocalSemaphores,
+      RelatedEvents, Semaphores, Services, Streams,
+      Strings, Times, WebObjects, Write;
+      
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+         RECORD
+            (WebObjects.ObjectRec)
+            (* private *)
+            counter: LONGINT;
+            mutexCounter: Semaphores.Semaphore;
+         END;
+   
+      Handle = POINTER TO HandleRec;
+      HandleRec =
+         RECORD
+            (WebObjects.HandleRec)
+            (* private *)
+            actCounter: ARRAY 15 OF CHAR;
+            search: Streams.Stream;
+            body: Streams.Stream;
+            authenticated: BOOLEAN;
+            uid: ARRAY 64 OF CHAR;
+         END;
+         
+   CONST
+      authSchemeNotSupported = 0; (* Only Basic supported as auth. scheme *)
+      needAuthenticationFirst  = 1; 
+         (* authenticate before using any further method *)
+      errorcodes = 2;
+      
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec)
+            errorcode: ErrorCode;
+         END;   
+   
+   VAR
+      errorMessages: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+      
+   CONST (* private *)
+      part0 = "<HTML><HEAD><TITLE>MR Test Seite</TITLE></HEAD><BODY><H1>Hallo ";
+      part1 = "</H1> Du bist der ";
+      part2 = " Besucher auf meiner Seite. Mach mal bei <A HREF=stochastik/>Stochastik</A>, bei der <A HREF=stadtulm/>Stadt Ulm</A> oder beim <A HREF=counter.html>Z&auml;hler</A> weiter!</BODY></HTML>";
+
+      caps = {WebObjects.createHandleCap, WebObjects.clientAuthenicateCap,
+         WebObjects.getLanguagesCap, WebObjects.getCharsetCap, 
+         WebObjects.getMediaTypeCap, WebObjects.getLengthCap,
+         WebObjects.getLastModifiedDateCap, WebObjects.getCacheMechanismCap,
+         WebObjects.getEntityTagCap, WebObjects.writeBodyCap};
+      
+      
+   VAR (* private *)
+      if: WebObjects.Interface;
+      serviceType: Services.Type;
+      fixLen: LONGINT;
+      
+   PROCEDURE InitErrorHandling;
+   
+   BEGIN
+      Events.Define(error);
+      errorMessages[authSchemeNotSupported] :=
+         "Only Basic supported as authentication scheme ";
+      errorMessages[needAuthenticationFirst] :=
+         "Caller must successful authenticate before using any further method";
+   END InitErrorHandling;
+   
+   
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      (* raise an error event; to be called in standard situations *)
+      
+      VAR
+         event: ErrorEvent;
+         
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errorMessages[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+   
+   
+   PROCEDURE CreateHandle(VAR handle: WebObjects.Handle;
+                       object: WebObjects.Object;
+                       search, body: Streams.Stream;
+                       errors: RelatedEvents.Object): BOOLEAN;
+      
+      VAR
+         mrTestHandle: Handle;
+         counter: LONGINT;
+         s: Streams.Stream;
+         
+   BEGIN
+      NEW(mrTestHandle);
+      WITH object: Object DO
+         Semaphores.P(object.mutexCounter);
+         INC(object.counter);
+         counter := object.counter;
+         Semaphores.V(object.mutexCounter);
+      END;
+      
+      mrTestHandle.actCounter[0] := 0X;
+      Strings.Open(s, mrTestHandle.actCounter);
+      Write.IntS(s, counter, 1);
+      Streams.Release(s);
+      mrTestHandle.search := search;
+      mrTestHandle.body := body;
+      mrTestHandle.authenticated := FALSE;
+      handle := mrTestHandle;
+      RETURN TRUE;
+   END CreateHandle;
+      
+   
+   PROCEDURE GetChallenge(handle: WebObjects.Handle;
+                          VAR scheme, realm, param: ARRAY OF CHAR);
+      
+   BEGIN
+      handle.error := FALSE;
+      COPY("Basic", scheme);
+      COPY("Manfred Ruess Test Page", realm);
+      param[0] := 0X;
+   END GetChallenge;
+   
+   
+   PROCEDURE Authenticate(handle: WebObjects.Handle;
+                          scheme, param: Streams.Stream): BOOLEAN;
+      
+      VAR
+         decoded: ARRAY 512 OF CHAR;
+         i: LONGINT;
+         ch: CHAR;
+         
+      PROCEDURE CompStreamString(a: Streams.Stream; b: ARRAY OF CHAR): BOOLEAN;
+         (* CompStreamString caseINSENSITIVly compares a stream and a
+            0x-terminated string starting at stream position 0 and returns TRUE
+            if they are equal.
+         *)
+
+         VAR
+            i: LONGINT;
+            aCh: CHAR;
+
+      BEGIN
+         Streams.SetPos(a, 0);
+         i := 0;
+         WHILE Streams.ReadByte(a, aCh) & (b[i] # 0X) & (CAP(aCh) = CAP(b[i])) DO
+            INC(i);
+         END;
+
+         IF a.eof THEN
+            aCh := 0X;
+         END;
+
+         RETURN CAP(aCh) = CAP(b[i]);
+      END CompStreamString;
+   
+   BEGIN
+      IF CompStreamString(scheme, "Basic") THEN
+         handle.error := FALSE;
+         IF Convert.Base64Decode(param, decoded) THEN
+            i := 0;
+            WHILE (decoded[i] # 0X) & (decoded[i] # ":") DO
+               (* hope LEN(handle.uid) is large enough *)
+               handle(Handle).uid[i] := decoded[i];
+               INC(i);
+            END;
+            handle(Handle).uid[i] := 0X;
+            (* password doesn't matter *)
+            handle(Handle).authenticated := TRUE;
+            RETURN TRUE;
+         END;
+      ELSE
+         handle.error := TRUE;
+         Error(handle, authSchemeNotSupported);
+      END;
+      RETURN FALSE;
+   END Authenticate;
+   
+   
+   PROCEDURE GetLanguages(handle: WebObjects.Handle;
+                          VAR languages: ARRAY OF CHAR);
+   
+   BEGIN
+      COPY("de", languages);
+      handle.error := TRUE;
+   END GetLanguages;
+   
+   
+   PROCEDURE GetCharset(handle: WebObjects.Handle; VAR charset: ARRAY OF CHAR);
+   
+   BEGIN
+      COPY("iso-8859-1", charset);
+      handle.error := FALSE;
+   END GetCharset;
+   
+   
+   PROCEDURE GetMediaType(handle: WebObjects.Handle; 
+                          VAR type, subtype, param: ARRAY OF CHAR);
+   
+   BEGIN
+      COPY("text", type);
+      COPY("html", subtype);
+      param[0] := 0X;
+      handle.error := FALSE;
+   END GetMediaType;
+   
+   
+   PROCEDURE GetLength(handle: WebObjects.Handle; VAR length: LONGINT);
+   
+   BEGIN
+      WITH handle: Handle DO
+         IF handle.authenticated THEN
+            length := Strings.Len(handle.uid) + Strings.Len(handle.actCounter)
+                      + fixLen;
+            handle.error := FALSE;
+         ELSE
+            handle.error := TRUE;
+            Error(handle, needAuthenticationFirst);
+         END;
+      END;
+   END GetLength;
+   
+   
+   PROCEDURE GetCacheMechanism(handle: WebObjects.Handle;
+                               VAR mechanism: SET);
+   
+   BEGIN
+      mechanism := {WebObjects.noCache};
+   END GetCacheMechanism;
+   
+   
+   PROCEDURE GetEntityTag(handle: WebObjects.Handle;
+                          VAR eTag: ARRAY OF CHAR; VAR weak: BOOLEAN);
+   
+   BEGIN
+      WITH handle: Handle DO
+         COPY(handle.actCounter, eTag);
+         weak := FALSE;
+      END;
+      handle.error := FALSE;
+   END GetEntityTag;
+   
+   
+   PROCEDURE GetLastModifiedDate(handle: WebObjects.Handle;
+                                 VAR date: Times.Time);
+   
+   BEGIN
+      Clocks.GetTime(Clocks.system, date);
+      handle.error := FALSE;
+   END GetLastModifiedDate;
+   
+   
+   PROCEDURE WriteBody(handle: WebObjects.Handle; body: Streams.Stream);
+   
+   BEGIN
+      WITH handle: Handle DO
+         IF handle.authenticated THEN
+            Write.StringS(body, part0);
+            Write.StringS(body, handle.uid);
+            Write.StringS(body, part1);
+            Write.StringS(body, handle.actCounter);
+            Write.StringS(body, part2);
+            handle.error := FALSE;
+         ELSE
+            handle.error := TRUE;
+            Error(handle, needAuthenticationFirst);
+         END;
+      END;
+   END WriteBody;
+   
+   
+   PROCEDURE Create(VAR object: WebObjects.Object);
+      
+      VAR
+         obj: Object;
+         
+   BEGIN
+      NEW(obj);
+      Services.Init(obj, serviceType);
+      WebObjects.Init(obj, if, caps);
+      obj.counter := 0;
+      LocalSemaphores.Create(obj.mutexCounter);
+      object := obj;
+   END Create;
+   
+BEGIN
+   fixLen := Strings.Len(part0) + Strings.Len(part1) + Strings.Len(part2);
+   NEW(if);
+   if.createHandle := CreateHandle;
+   if.getChallenge := GetChallenge;
+   if.authenticate := Authenticate;
+   if.getLanguages := GetLanguages;
+   if.getCharset := GetCharset;
+   if.getMediaType := GetMediaType;
+   if.getLength := GetLength;
+   if.getCacheMechanism := GetCacheMechanism;
+   if.getEntityTag := GetEntityTag;
+   if.getLastModifiedDate := GetLastModifiedDate;
+   if.writeBody := WriteBody;
+   
+   Services.CreateType(serviceType, "WebMRTestObjects.Object",
+                       "WebObjects.Object");
+   
+   InitErrorHandling;
+END WebMRTestObjects.

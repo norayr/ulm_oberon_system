@@ -1,0 +1,312 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: DNSHeaders.om,v 1.2 2004/04/02 18:38:38 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: DNSHeaders.om,v $
+   Revision 1.2  2004/04/02 18:38:38  borchert
+   - converted VAR parameters into return values
+   - bug fixes in GetFlag and SetFlag
+
+   Revision 1.1  2001/05/01 22:49:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE DNSHeaders;
+
+   IMPORT Types;
+
+   CONST
+      headerlen = 12;
+   TYPE
+      Header = ARRAY headerlen OF CHAR;
+
+   CONST
+      minval = 0; maxval = 65535; (* of header ID and record counts *)
+
+   CONST
+      query = 0;
+      response = 1;
+   TYPE
+      QRValue = SHORTINT; (* query or response *)
+
+   CONST
+      standardQuery = 0;
+      inverseQuery = 1;
+      serverStatusRequest = 2;
+      (* RFC 2136 *)
+      update = 5;
+   TYPE
+      OpCode = SHORTINT; (* standardQuery .. *)
+
+   CONST
+      noError = 0;
+      formatError = 1;
+      serverFailure = 2;
+      nameError = 3;
+      notImplemented = 4;
+      refused = 5;
+      (* RFC 2136 *)
+      yxDomain = 6;
+      yxRrset = 7;
+      notAuth = 8;
+      notZone = 9;
+   TYPE
+      ResponseCode = SHORTINT; (* noError .. *)
+
+   (* === private procedures ============================================== *)
+
+   PROCEDURE SetInt16(VAR header: Header; offset: INTEGER; intval: INTEGER);
+   BEGIN
+      ASSERT((intval >= minval) & (intval <= maxval));
+      header[offset] := CHR(intval DIV 256);
+      header[offset + 1] := CHR(intval MOD 256);
+   END SetInt16;
+
+   PROCEDURE GetInt16(header: Header; offset: INTEGER; VAR intval: INTEGER);
+   BEGIN
+      intval := ORD(header[offset]) * 256 + ORD(header[offset + 1]);
+   END GetInt16;
+
+   PROCEDURE SetFlag(VAR header: Header; offset, bitoffset: INTEGER;
+		     flag: BOOLEAN);
+      VAR
+	 byte: INTEGER;
+	 shift: INTEGER;
+   BEGIN
+      IF bitoffset >= 8 THEN
+	 INC(offset, bitoffset DIV 8);
+	 bitoffset := bitoffset MOD 8;
+      END;
+      shift := 7 - bitoffset;
+      byte := ORD(header[offset]);
+      IF ODD(ASH(byte, -shift) MOD 2) # flag THEN
+	 (* flag needs to be set or to be removed *)
+	 IF flag THEN
+	    INC(byte, ASH(1, shift));
+	 ELSE
+	    DEC(byte, ASH(1, shift));
+	 END;
+	 header[offset] := CHR(byte);
+      END;
+   END SetFlag;
+
+   PROCEDURE GetFlag(header: Header; offset, bitoffset: INTEGER) : BOOLEAN;
+      VAR
+	 byte: INTEGER;
+	 shift: INTEGER;
+   BEGIN
+      IF bitoffset >= 8 THEN
+	 INC(offset, bitoffset DIV 8);
+	 bitoffset := bitoffset MOD 8;
+      END;
+      shift := 7 - bitoffset;
+      byte := ORD(header[offset]);
+      RETURN ODD(ASH(byte, -shift) MOD 2)
+   END GetFlag;
+
+   PROCEDURE SetBitField(VAR header: Header;
+			 offset, bitoffset, len: INTEGER;
+			 intval: INTEGER);
+   BEGIN
+      ASSERT((intval >= 0) & (intval < ASH(1, len)));
+      WHILE len > 0 DO
+	 DEC(len);
+	 SetFlag(header, offset, bitoffset + len, ODD(intval));
+	 intval := intval DIV 2;
+      END;
+   END SetBitField;
+
+   PROCEDURE GetBitField(VAR header: Header;
+			 offset, bitoffset, len: INTEGER;
+			 VAR intval: INTEGER);
+      VAR
+	 index: INTEGER;
+   BEGIN
+      intval := 0; index := 0;
+      WHILE index < len DO
+	 intval := intval * 2;
+	 IF GetFlag(header, offset, bitoffset + index) THEN
+	    INC(intval);
+	 END;
+	 INC(index);
+      END;
+   END GetBitField;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE SetID(VAR header: Header; id: INTEGER);
+   BEGIN
+      SetInt16(header, 0, id);
+   END SetID;
+
+   PROCEDURE GetID(header: Header) : INTEGER;
+      VAR
+	 id: INTEGER;
+   BEGIN
+      GetInt16(header, 0, id);
+      RETURN id
+   END GetID;
+
+   PROCEDURE SetQR(VAR header: Header; qr: QRValue);
+   BEGIN
+      ASSERT((qr = query) OR (qr = response));
+      SetFlag(header, 2, 0, qr # 0);
+   END SetQR;
+
+   PROCEDURE GetQR(header: Header) : QRValue;
+   BEGIN
+      IF GetFlag(header, 2, 0) THEN
+	 RETURN response
+      ELSE
+	 RETURN query
+      END;
+   END GetQR;
+
+   PROCEDURE SetOpCode(VAR header: Header; opcode: OpCode);
+   BEGIN
+      SetBitField(header, 2, 1, 4, opcode);
+   END SetOpCode;
+
+   PROCEDURE GetOpCode(header: Header) : OpCode;
+      VAR
+	 intval: INTEGER;
+   BEGIN
+      GetBitField(header, 2, 1, 4, intval);
+      RETURN SHORT(intval);
+   END GetOpCode;
+
+   PROCEDURE SetAAFlag(VAR header: Header; aa: BOOLEAN);
+   BEGIN
+      SetFlag(header, 2, 5, aa);
+   END SetAAFlag;
+
+   PROCEDURE GetAAFlag(header: Header) : BOOLEAN;
+   BEGIN
+      RETURN GetFlag(header, 2, 5)
+   END GetAAFlag;
+
+   PROCEDURE SetTCFlag(VAR header: Header; tc: BOOLEAN);
+   BEGIN
+      SetFlag(header, 2, 6, tc);
+   END SetTCFlag;
+
+   PROCEDURE GetTCFlag(header: Header) : BOOLEAN;
+   BEGIN
+      RETURN GetFlag(header, 2, 6)
+   END GetTCFlag;
+
+   PROCEDURE SetRDFlag(VAR header: Header; rd: BOOLEAN);
+   BEGIN
+      SetFlag(header, 2, 7, rd);
+   END SetRDFlag;
+
+   PROCEDURE GetRDFlag(header: Header) : BOOLEAN;
+   BEGIN
+      RETURN GetFlag(header, 2, 7)
+   END GetRDFlag;
+
+   PROCEDURE SetRAFlag(VAR header: Header; ra: BOOLEAN);
+   BEGIN
+      SetFlag(header, 3, 0, ra);
+   END SetRAFlag;
+
+   PROCEDURE GetRAFlag(header: Header) : BOOLEAN;
+   BEGIN
+      RETURN GetFlag(header, 3, 0)
+   END GetRAFlag;
+
+   PROCEDURE SetResponseCode(VAR header: Header; rc: ResponseCode);
+   BEGIN
+      SetBitField(header, 3, 4, 4, rc);
+   END SetResponseCode;
+
+   PROCEDURE GetResponseCode(header: Header) : ResponseCode;
+      VAR
+	 intval: INTEGER;
+   BEGIN
+      GetBitField(header, 3, 4, 4, intval);
+      RETURN SHORT(intval)
+   END GetResponseCode;
+
+   PROCEDURE SetQDCount(VAR header: Header; qdcount: INTEGER);
+   BEGIN
+      SetInt16(header, 4, qdcount);
+   END SetQDCount;
+
+   PROCEDURE GetQDCount(header: Header) : INTEGER;
+      VAR
+	 qdcount: INTEGER;
+   BEGIN
+      GetInt16(header, 4, qdcount);
+      RETURN qdcount
+   END GetQDCount;
+
+   PROCEDURE SetANCount(VAR header: Header; ancount: INTEGER);
+   BEGIN
+      SetInt16(header, 6, ancount);
+   END SetANCount;
+
+   PROCEDURE GetANCount(header: Header) : INTEGER;
+      VAR
+	 ancount: INTEGER;
+   BEGIN
+      GetInt16(header, 6, ancount);
+      RETURN ancount
+   END GetANCount;
+
+   PROCEDURE SetNSCount(VAR header: Header; nscount: INTEGER);
+   BEGIN
+      SetInt16(header, 8, nscount);
+   END SetNSCount;
+
+   PROCEDURE GetNSCount(header: Header) : INTEGER;
+      VAR
+	 nscount: INTEGER;
+   BEGIN
+      GetInt16(header, 8, nscount);
+      RETURN nscount
+   END GetNSCount;
+
+   PROCEDURE SetARCount(VAR header: Header; arcount: INTEGER);
+   BEGIN
+      SetInt16(header, 10, arcount);
+   END SetARCount;
+
+   PROCEDURE GetARCount(header: Header) : INTEGER;
+      VAR
+	 arcount: INTEGER;
+   BEGIN
+      GetInt16(header, 10, arcount);
+      RETURN arcount
+   END GetARCount;
+
+   PROCEDURE Init(VAR header: Header);
+      VAR
+	 index: INTEGER;
+   BEGIN
+      index := 0;
+      WHILE index < LEN(header) DO
+	 header[index] := 0X; INC(index);
+      END;
+   END Init;
+
+END DNSHeaders.

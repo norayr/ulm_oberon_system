@@ -1,0 +1,410 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: PersonalMes.om,v 1.1 1998/04/06 21:18:44 martin Exp martin $
+   ----------------------------------------------------------------------------
+   $Log: PersonalMes.om,v $
+   Revision 1.1  1998/04/06 21:18:44  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, 1996
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersonalMessages;
+
+   IMPORT
+      Clocks, Conclusions, ConstStrings, Dates, Disciplines, Errors,
+      Events, Iterators, MD5, Names, OneWayHashes, PasswordShards,
+      Paths, PersMesgMaintenance, Print, RelatedEvents, Resources,
+      Shards, Streams, Strings, Texts, Times;
+
+   CONST
+      headerLen = 35;
+
+   TYPE
+      UserList = Iterators.Iterator;
+      BoxesList = POINTER TO BoxesListRec;
+      Discipline = POINTER TO DisciplineRec;
+
+      MessageBox = POINTER TO MessageBoxRec;
+      MessageBoxRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    node:  Names.Node;
+	    name:  Names.Name;
+	    auth:  Shards.Lid;
+	    msgs:  Iterators.Iterator;
+	    etype: Events.EventType;
+	    disc:  Discipline;
+	    entry: BoxesList;
+	 END;
+
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    from:    Names.Node;
+	    content: Names.Name;
+	 END;
+
+      MessageEvent = POINTER TO MessageEventRec;
+      MessageEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    box: MessageBox;
+	    msg: Message;		(* newly arrived message *)
+	 END;
+
+      BoxesListRec =
+	 RECORD
+	    box: MessageBox;
+	    prev, next: BoxesList;
+	 END;
+
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    boxes: BoxesList;
+	 END;
+
+   VAR
+      default: Names.Node;
+      defaultKey: Resources.Key;
+      discId: Disciplines.Identifier;
+
+   (* ===== event processing ===== *)
+
+   PROCEDURE NamesEventHandler(event: Events.Event);
+      VAR
+	 disc: Discipline;
+	 this: BoxesList;
+	 msg: Message;
+
+      PROCEDURE Notify(box: MessageBox; msg: Message);
+	 VAR
+	    event: MessageEvent;
+      BEGIN
+	 IF ~Resources.Terminated(box) THEN
+	    NEW(event);
+	    event.type := box.etype;
+	    event.message := "new message has arrived";
+	    event.box := box;
+	    event.msg := msg;
+	    Events.Raise(event);
+	 END;
+      END Notify;
+
+   BEGIN
+      IF ~(event IS Names.MemberEvent) THEN RETURN END;
+      WITH event: Names.MemberEvent DO
+	 IF (event.state = Names.inserted) &
+	       Disciplines.Seek(event.type, discId, disc) THEN
+	    NEW(msg);
+	    msg.content := event.name;
+	    msg.from := event.node;
+	    this := disc.boxes;
+	    WHILE this # NIL DO
+	       Notify(this.box, msg);
+	       this := this.next;
+	    END; (*WHILE this*)
+	 END;
+      END;
+   END NamesEventHandler;
+
+   PROCEDURE ResourcesEventHandler(event: Events.Event);
+      VAR
+	 box: MessageBox;
+	 this: BoxesList;
+   BEGIN
+      IF ~(event IS Resources.Event) THEN RETURN END;
+      WITH event: Resources.Event DO
+	 IF event.change = Resources.terminated THEN
+	    IF ~(event.resource IS MessageBox) THEN RETURN END;
+	    box := event.resource(MessageBox);
+	    IF box.entry # NIL THEN
+	       this := box.entry;
+	       box.entry := NIL;
+	       IF this.prev = NIL THEN
+		  box.disc.boxes := this.next;
+	       ELSE
+		  this.prev.next := this.next;
+	       END;
+	       IF this.next # NIL THEN
+		  this.next.prev := this.prev;
+	       END;
+	    END;
+	    box.msgs := NIL;		(* allow for collection *)
+	 END;
+      END;
+   END ResourcesEventHandler;
+
+   (* ===== message boxes ===== *)
+
+   PROCEDURE Open(VAR box: MessageBox;
+		     name, password: ARRAY OF CHAR): BOOLEAN;
+      VAR
+	 pw: Streams.Stream;
+	 pwhash: OneWayHashes.Value;
+	 perm: Shards.Pot;
+	 queue: RelatedEvents.Queue;
+	 etype: Events.EventType;
+   BEGIN
+      NEW(box);
+      ConstStrings.Create(box.name, name);
+      Strings.Open(pw, password);
+      OneWayHashes.Generate(MD5.hash, pw, pwhash);
+      Streams.Release(pw);
+      PasswordShards.CreateLid(box.auth, pwhash);
+      IF ~Names.GetNode(default, box.name, NIL, box.node) THEN	(* new user *)
+	 PasswordShards.CreatePot(perm, pwhash);
+	 IF ~PersMesgMaintenance.SupplyBox(default,
+	       box.name, perm, box.node) THEN
+	    Conclusions.Conclude(default, Errors.error, name);
+	    box := NIL;
+	    RETURN FALSE
+	 END;
+      END;
+      IF ~Names.GetMembers(box.node, box.auth, box.msgs) THEN
+	 RelatedEvents.GetQueue(box.node, queue);	(* ignore *)
+	 box := NIL;
+	 RETURN FALSE
+      END;
+      box.etype := NIL;
+      box.disc := NIL;
+      box.entry := NIL;
+      Resources.DependsOn(box, box.node);
+      Resources.TakeInterest(box, etype);
+      Events.Handler(etype, ResourcesEventHandler);
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE Reopen(box: MessageBox);
+   BEGIN
+      IF ~Names.GetMembers(box.node, box.auth, box.msgs) THEN
+	 Conclusions.Conclude(box.node, Errors.error, "read messages");
+      END;
+   END Reopen;
+
+   PROCEDURE Close(box: MessageBox);
+   BEGIN
+      Resources.Notify(box, Resources.terminated);
+   END Close;
+
+   PROCEDURE Kill(box: MessageBox);
+   BEGIN
+      IF ~Names.Destroy(box.node, box.auth) THEN
+	 Conclusions.Conclude(box.node, Errors.error, "destroy box");
+      END;
+   END Kill;
+
+   (* ===== messages ===== *)
+
+   PROCEDURE Get(box: MessageBox; VAR msg: Message): BOOLEAN;
+      VAR
+	 ref: Names.Name;
+   BEGIN
+      IF (box.msgs = NIL) OR ~Iterators.Get(box.msgs, ref) THEN
+	 RETURN FALSE
+      END;
+      NEW(msg);
+      msg.content := ref;
+      IF ~Names.GetNode(box.node, ref, box.auth, msg.from) THEN
+	 Conclusions.Conclude(box.node, Errors.error, "get sender");
+	 msg.from := box.node;
+      END;
+      RETURN TRUE
+   END Get;
+
+   PROCEDURE Remove(box: MessageBox; msg: Message);
+   BEGIN
+      IF ~Names.Delete(box.node, msg.content, box.auth) THEN
+	 Conclusions.Conclude(box.node, Errors.error, "remove message");
+      END;
+   END Remove;
+
+   PROCEDURE Watch(box: MessageBox; VAR eventType: Events.EventType);
+      VAR
+	 namesEventType: Events.EventType;
+	 this: BoxesList;
+   BEGIN
+      IF box.etype = NIL THEN
+	 Events.Define(box.etype);
+	 IF Names.TakeInterest(box.node, box.auth, namesEventType) THEN
+	    IF ~Disciplines.Seek(namesEventType, discId, box.disc) THEN
+	       NEW(box.disc);
+	       box.disc.id := discId;
+	       box.disc.boxes := NIL;
+	       Disciplines.Add(namesEventType, box.disc);
+	       Events.Handler(namesEventType, NamesEventHandler);
+	    END;
+	 ELSE
+	    Conclusions.Conclude(box.node, Errors.error, "watch");
+	 END;
+      END;
+      IF (box.disc # NIL) & (box.entry = NIL) THEN
+	 NEW(this);
+	 this.box := box;
+	 this.prev := NIL;
+	 this.next := box.disc.boxes;
+	 box.disc.boxes := this;
+	 IF this.next # NIL THEN
+	    this.next.prev := this;
+	 END;
+	 box.entry := this;
+      END;
+      eventType := box.etype;
+   END Watch;
+
+   (* ===== input/output ===== *)
+
+   PROCEDURE Create(VAR msg: Message;
+		     from: MessageBox; text: ARRAY OF CHAR);
+      VAR
+	 now: Times.Time;
+	 d: Dates.InfoRec;
+	 s: Streams.Stream;
+	 buf: ARRAY headerLen-14 OF CHAR;
+   BEGIN
+      NEW(msg);
+      msg.from := from.node;
+      ConstStrings.Extract(buf, from.name);
+      ConstStrings.Init(s);
+      Clocks.GetTime(Clocks.system, now);
+      Dates.Get(now, d);
+      Print.S8(s, "%04d%02d%02d%02d%02d%02d %-*s",
+	 d.year, d.month, d.day, d.hour, d.minute, d.second, headerLen-15, buf);
+      Print.S1(s, "%s", text);
+      ConstStrings.Close(s, msg.content);
+   END Create;
+
+   PROCEDURE Extract(msg: Message;
+		     VAR header, text: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+	 index: Streams.Count;
+   BEGIN
+      IF msg.content.len <= headerLen THEN
+	 ConstStrings.Extract(header, msg.content);
+	 text[0] := 0X;
+      ELSE
+	 Texts.Open(s);
+	 ConstStrings.Write(s, msg.content);
+	 Strings.Read(header, s);
+	 Streams.SetPos(s, headerLen);
+	 index := Streams.ReadPacket(s, text, 0, LEN(text)-1);
+	 text[index] := 0X;
+	 Streams.Release(s);
+      END;
+      index := 0;
+      WHILE (index < headerLen) & (index < LEN(header)-1) &
+	    (header[index] # 0X) DO
+	 INC(index);
+      END;
+      WHILE (index > 0) & (header[index-1] = " ") DO
+	 DEC(index);
+      END;
+      header[index] := 0X;
+   END Extract;
+
+   (* ===== delivery ===== *)
+
+   PROCEDURE Send(msg: Message; to: ARRAY OF CHAR): BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 node: Names.Node;
+   BEGIN
+      ConstStrings.Create(name, to);
+      IF ~Names.GetNode(default, name, NIL, node) THEN
+	 Conclusions.Conclude(default, Errors.error, "recipient");
+	 RETURN FALSE
+      END;
+      IF ~Names.Insert(node, msg.from, msg.content, NIL) THEN
+	 Conclusions.Conclude(node, Errors.error, "send");
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END Send;
+
+   PROCEDURE Reply(msg, ref: Message): BOOLEAN;
+   BEGIN
+      IF ~Names.Insert(ref.from, msg.from, msg.content, NIL) THEN
+	 Conclusions.Conclude(ref.from, Errors.error, "send");
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END Reply;
+
+   (* ===== users ===== *)
+
+   PROCEDURE Users(VAR list: UserList);
+   BEGIN
+      IF ~Names.GetMembers(default, NIL, list) THEN
+	 Conclusions.Conclude(default, Errors.error, "users");
+	 list := NIL;
+      END;
+   END Users;
+
+   PROCEDURE GetUser(list: UserList; VAR user: ARRAY OF CHAR): BOOLEAN;
+      VAR
+	 ref: Iterators.Reference;
+   BEGIN
+      IF (list # NIL) & Iterators.Get(list, ref) & (ref IS Names.Name) THEN
+	 ConstStrings.Extract(user, ref(Names.Name));
+	 RETURN TRUE
+      END;
+      RETURN FALSE;
+   END GetUser;
+
+   PROCEDURE Known(user: ARRAY OF CHAR): BOOLEAN;
+      VAR
+	 name: Names.Name;
+	 node: Names.Node;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      ConstStrings.Create(name, user);
+      IF ~Names.GetNode(default, name, NIL, node) THEN
+	 RelatedEvents.GetQueue(default, queue);		(* ignore *)
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END Known;
+
+   (* ===== general ===== *)
+
+   PROCEDURE Default(server: ARRAY OF CHAR);
+      VAR
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors);
+      RelatedEvents.QueueEvents(errors);
+      IF default # NIL THEN
+	 Resources.Detach(default, defaultKey);
+      END;
+      IF ~Paths.GetNode(server, NIL, errors, default) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, server)
+      END;
+      Resources.Attach(default, defaultKey);
+   END Default;
+
+BEGIN
+   default := NIL;
+   discId := Disciplines.Unique();
+END PersonalMessages.

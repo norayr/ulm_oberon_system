@@ -1,0 +1,256 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPUnixPath.om,v 1.1 2001/04/27 08:10:11 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPUnixPath.om,v $
+   Revision 1.1  2001/04/27 08:10:11  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPUnixPaths;
+
+   IMPORT Disciplines, Strings, RelatedEvents, SysFile, SysStat;
+
+   CONST
+      complen = 512;
+   TYPE
+      Component = POINTER TO ComponentRec;
+      ComponentRec =
+	 RECORD
+	    prev, next: Component;
+	    name: ARRAY complen OF CHAR;
+	 END;
+      Path = POINTER TO PathRec;
+      PathRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    root: ARRAY 8192 OF CHAR;
+	    head, tail: Component;
+	 END;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE ConvertPathToComponents(pathname: ARRAY OF CHAR;
+				     VAR head, tail: Component);
+      VAR
+	 start, index: INTEGER;
+	 ch: CHAR;
+	 dot: BOOLEAN; dotdot: BOOLEAN;
+
+      PROCEDURE AddComponent(start, end: INTEGER);
+	 VAR
+	    component: Component;
+	    index, tindex: INTEGER;
+      BEGIN
+	 NEW(component);
+	 index := start; tindex := 0;
+	 WHILE (index < end) & (tindex + 1 < complen) DO
+	    component.name[tindex] := pathname[index];
+	    INC(tindex); INC(index);
+	 END;
+	 component.name[tindex] := 0X;
+	 component.prev := tail; component.next := NIL;
+	 IF head = NIL THEN
+	    head := component;
+	 ELSE
+	    tail.next := component;
+	 END;
+	 tail := component;
+      END AddComponent;
+
+      PROCEDURE RemoveLastComponent;
+      BEGIN
+	 IF tail # NIL THEN
+	    tail := tail.prev;
+	    IF tail = NIL THEN
+	       head := NIL;
+	    ELSE
+	       tail.next := NIL;
+	    END;
+	 END;
+      END RemoveLastComponent;
+
+      PROCEDURE Slash;
+      BEGIN
+	 IF (start # index) & ~dot THEN
+	    IF dotdot THEN
+	       RemoveLastComponent;
+	    ELSE
+	       AddComponent(start, index);
+	    END;
+	 END;
+	 dot := FALSE; dotdot := FALSE;
+	 start := index + 1;
+      END Slash;
+
+   BEGIN (* ConvertPathToComponents *)
+      dot := FALSE; dotdot := FALSE;
+      start := 0; index := 0;
+      WHILE (index < LEN(pathname)) & (pathname[index] # 0X) DO
+	 ch := pathname[index];
+	 CASE ch OF
+	 | "/":
+	    Slash;
+	 | ".":
+	    IF dot THEN
+	       dot := FALSE; dotdot := TRUE;
+	    ELSIF dotdot THEN
+	       dotdot := FALSE;
+	    ELSIF start = index THEN
+	       dot := TRUE;
+	    END;
+	 ELSE
+	    dot := FALSE; dotdot := FALSE;
+	 END;
+	 INC(index);
+      END;
+      Slash;
+   END ConvertPathToComponents;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE CreatePath(VAR path: Path;
+			root, pathname: ARRAY OF CHAR);
+   BEGIN
+      NEW(path); path.head := NIL; path.tail := NIL; COPY(root, path.root);
+      ConvertPathToComponents(pathname, path.head, path.tail);
+   END CreatePath;
+
+   PROCEDURE CreateDerivedPath(VAR path: Path; oldpath: Path;
+			       pathname: ARRAY OF CHAR);
+      VAR
+	 oldcomp, comp: Component;
+   BEGIN
+      NEW(path); path.head := NIL; path.tail := NIL;
+      COPY(oldpath.root, path.root);
+      IF pathname[0] # "/" THEN
+	 oldcomp := oldpath.head;
+	 WHILE oldcomp # NIL DO
+	    NEW(comp); COPY(oldcomp.name, comp.name);
+	    comp.next := NIL; comp.prev := path.tail;
+	    IF path.head = NIL THEN
+	       path.head := comp;
+	    ELSE
+	       path.tail.next := comp;
+	    END;
+	    path.tail := comp;
+	    oldcomp := oldcomp.next;
+	 END;
+      END;
+      ConvertPathToComponents(pathname, path.head, path.tail);
+   END CreateDerivedPath;
+
+   PROCEDURE GetRelPath(path: Path; VAR pathname: ARRAY OF CHAR);
+      VAR
+	 comp: Component;
+   BEGIN
+      IF path.head = NIL THEN
+	 COPY("/", pathname);
+      ELSE
+	 pathname[0] := 0X; comp := path.head;
+	 WHILE comp # NIL DO
+	    Strings.Concatenate(pathname, "/");
+	    Strings.Concatenate(pathname, comp.name);
+	    comp := comp.next;
+	 END;
+      END;
+   END GetRelPath;
+
+   PROCEDURE GetAbsPath(path: Path; VAR pathname: ARRAY OF CHAR);
+      VAR
+	 dirname: ARRAY 8192 OF CHAR;
+   BEGIN
+      GetRelPath(path, dirname);
+      COPY(path.root, pathname);
+      Strings.Concatenate(pathname, dirname);
+   END GetAbsPath;
+
+   PROCEDURE Upward(path: Path);
+   BEGIN
+      ConvertPathToComponents("..", path.head, path.tail);
+   END Upward;
+
+   PROCEDURE ChangeDir(path: Path; dirname: ARRAY OF CHAR);
+   BEGIN
+      ConvertPathToComponents(dirname, path.head, path.tail);
+   END ChangeDir;
+
+   PROCEDURE CheckAndProcessSymLinks(path: Path;
+				     newfile: BOOLEAN;
+				     VAR expandedPath: ARRAY OF CHAR;
+				     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 pathname, testpath, symlink: ARRAY 8192 OF CHAR;
+	 statbuf: SysStat.StatRec;
+	 trailer, oldtail: Component;
+	 symlinkcnt: INTEGER;
+	 comp, ptr: Component;
+   BEGIN
+      symlinkcnt := 0;
+      COPY(path.root, pathname);
+      comp := path.head;
+      WHILE comp # NIL DO
+	 COPY(pathname, testpath);
+	 Strings.Concatenate(testpath, "/");
+	 Strings.Concatenate(testpath, comp.name);
+	 IF ~SysStat.Lstat(testpath, statbuf, errors) THEN
+	    COPY(testpath, expandedPath);
+	    RETURN newfile & (comp.next = NIL)
+	 END;
+	 IF statbuf.mode * SysStat.type = SysStat.symlink THEN
+	    IF ~SysFile.ReadLink(testpath, symlink, errors) THEN
+	       RETURN FALSE
+	    END;
+	    INC(symlinkcnt); IF symlinkcnt > 32 THEN RETURN FALSE END;
+	    trailer := comp.next; oldtail := path.tail;
+	    IF path.head = comp THEN
+	       path.head := NIL; path.tail := NIL;
+	    ELSE
+	       ASSERT(comp.prev # NIL);
+	       path.tail := comp.prev;
+	       path.tail.next := NIL;
+	    END;
+	    ConvertPathToComponents(symlink, path.head, path.tail);
+	    IF trailer # NIL THEN
+	       IF path.tail # NIL THEN
+		  path.tail.next := trailer;
+	       ELSE
+		  path.head := trailer;
+	       END;
+	       trailer.prev := path.tail;
+	       path.tail := oldtail;
+	    END;
+	    (* start loop all over again as we do not know where
+	       to continue
+	    *)
+	    comp := path.head;
+	    COPY(path.root, pathname);
+	 ELSE
+	    COPY(testpath, pathname);
+	    comp := comp.next;
+	 END;
+      END;
+      COPY(pathname, expandedPath);
+      RETURN TRUE
+   END CheckAndProcessSymLinks;
+
+END FTPUnixPaths.

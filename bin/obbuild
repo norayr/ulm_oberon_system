@@ -1,0 +1,38 @@
+#!/bin/sh
+
+BASEDIR=/usr/local/oberon
+BINDIR=$BASEDIR/bin
+WRITE=$BASEDIR/var/cdbd/write
+TMPDIR=/tmp/obbuild.$$/
+STARTUP=$BASEDIR/csrc/startup.s
+
+cmdname=`basename $0`
+
+umask 077
+
+trap "rm -fr $TMPDIR" 0 2 15
+
+mkdir $TMPDIR || exit 1
+
+if [ $# -ne 1 ]
+then
+	echo >&2 "Usage: $cmdname mainmod"
+	exit 99
+fi
+MODULE="$1"
+
+$BINDIR/OberonLoader -a $WRITE -A I386 -R -O $TMPDIR/out.% -M $MODULE \
+   3>/dev/null || exit 1
+
+for f in $TMPDIR/out.*
+do
+	g=`echo $f | sed 's/^.*\/out.//'`
+	$BINDIR/ToLink <$TMPDIR/out.$g >$TMPDIR/data.$g
+	$BINDIR/write_elf <$TMPDIR/data.$g $TMPDIR/$g.o.1
+	/usr/bin/ld -r -o $TMPDIR/$g.o $TMPDIR/$g.o.1
+done
+
+sed "s/__MODULE/$MODULE/" <$STARTUP >$TMPDIR/startup.s &&
+as -o $TMPDIR/startup.o $TMPDIR/startup.s &&
+ld -e _entry -o $TMPDIR/$MODULE $TMPDIR/*.o &&
+mv $TMPDIR/$MODULE ./$MODULE

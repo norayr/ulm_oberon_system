@@ -1,0 +1,84 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: AsymmetricC.od,v 1.1 1997/04/02 11:52:04 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: AsymmetricC.od,v $
+   Revision 1.1  1997/04/02  11:52:04  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION AsymmetricCiphers; (* Michael Szczuka *)
+
+   (* abstraction for the use of public key ciphers *)
+
+   IMPORT BlockCiphers, Ciphers, PersistentObjects, Streams;
+
+   CONST
+      (* supported capabilities of an asymmetric cipher *)
+      composed = 0; isPrivateKey = 1;
+
+   TYPE
+      CapabilitySet = SET;
+
+   TYPE 
+      Cipher = POINTER TO CipherRec;
+      CipherRec = RECORD (BlockCiphers.CipherRec) END;
+      SplitProc = PROCEDURE (VAR public: Cipher; key: Cipher);
+      RandomStreamProc = PROCEDURE (s: Streams.Stream);
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec = RECORD
+	 (Ciphers.InterfaceRec)
+	 compencrypt: Ciphers.CryptProc;
+	 split: SplitProc;
+	 randomStream: RandomStreamProc;
+      END;
+
+   PROCEDURE Init (key: Cipher; if: Interface;
+		   cap: CapabilitySet; inLength, outLength: INTEGER);
+      (* inits an asymmetric cipher with its interface *)
+
+   PROCEDURE Capabilities (key: Cipher) : CapabilitySet;
+      (* returns the capabilities of the key *)
+
+   PROCEDURE IsPublicKey (key: Cipher) : BOOLEAN;
+      (* checks if key is a public key *)
+
+   PROCEDURE Split (VAR public: Cipher; key: Cipher);
+      (* extracts the public part from the asymmetric cipher key *)
+
+   PROCEDURE ComposedEncrypt (in: Streams.Stream; key: Cipher; 
+			      out: Streams.Stream) : BOOLEAN;
+   PROCEDURE ComposedEncryptPart (in: Streams.Stream; key: Cipher; 
+				  length: INTEGER;
+				  out: Streams.Stream) : BOOLEAN;
+   PROCEDURE ComposedEncryptBlock (in: Streams.Stream; key: Cipher; 
+				   out: Streams.Stream) : BOOLEAN;
+      (* encrypts a given stream msg with the composed map of the key (if the
+	 key supports a composed encryption; otherwise the identity is used 
+	 instead) *)
+
+   PROCEDURE RandomStream (s: Streams.Stream; key: Cipher);
+      (* put some random bytes onto the stream s which can be used as starting
+	 values for an encryption with the asymmetric cipher key *)
+
+END AsymmetricCiphers.

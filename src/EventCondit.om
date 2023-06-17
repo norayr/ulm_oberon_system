@@ -1,0 +1,199 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: EventCondit.om,v 1.2 1996/01/04 17:06:07 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: EventCondit.om,v $
+   Revision 1.2  1996/01/04  17:06:07  borchert
+   bug fix: SendEvent if procedure for Conditions returns now
+            FALSE if events are already pending
+
+   Revision 1.1  1994/02/22  20:07:29  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE EventConditions;
+
+   IMPORT Conditions, Disciplines, Events, RelatedEvents;
+
+   TYPE
+      Discipline = POINTER TO DisciplineRec;
+      Condition = POINTER TO ConditionRec;
+      ConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    dropped: BOOLEAN;
+	    signalingEvent: Events.Event;
+	    events: RelatedEvents.Object;
+	    disc: Discipline; (* backward reference to the discipline *)
+	    prev, next: Condition; (* list of conditions waiting for the same *)
+	 END;
+   VAR
+      domain: Conditions.Domain;
+
+   TYPE
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    list: Condition; (* list of conditions waiting for this event *)
+	 END;
+   VAR
+      discID: Disciplines.Identifier;
+
+   PROCEDURE Handler(event: Events.Event);
+      VAR
+	 disc: Disciplines.Discipline;
+	 condition: Condition;
+   BEGIN
+      IF Disciplines.Seek(event.type, discID, disc) THEN
+	 WITH disc: Discipline DO
+	    condition := disc.list;
+	    WHILE condition # NIL DO
+	       RelatedEvents.Raise(condition.events, event);
+	       IF condition.signalingEvent # NIL THEN
+		  Events.Raise(condition.signalingEvent);
+		  condition.signalingEvent := NIL;
+	       END;
+	       condition := condition.next;
+	    END;
+	 END;
+      END;
+   END Handler;
+
+   PROCEDURE Create(VAR condition: Conditions.Condition;
+		    eventType: Events.EventType);
+      VAR
+	 newcond: Condition;
+	 disc: Disciplines.Discipline;
+	 ecDisc: Discipline;
+   BEGIN
+      NEW(newcond);
+      newcond.dropped := FALSE;
+      newcond.signalingEvent := NIL;
+      IF Disciplines.Seek(eventType, discID, disc) THEN
+	 ecDisc := disc(Discipline);
+      ELSE
+	 NEW(ecDisc);
+	 ecDisc.id := discID;
+	 ecDisc.list := NIL;
+	 Events.Handler(eventType, Handler);
+      END;
+
+      (* add newcond to the list of conditions which check for eventType *)
+      newcond.disc := ecDisc;
+      newcond.prev := NIL;
+      newcond.next := ecDisc.list;
+      IF newcond.next # NIL THEN
+         newcond.next.prev := newcond;
+      END;
+      ecDisc.list := newcond;
+
+      Disciplines.Add(eventType, ecDisc);
+      NEW(newcond.events); RelatedEvents.QueueEvents(newcond.events);
+      Conditions.Init(newcond, domain);
+      condition := newcond;
+   END Create;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+      (* remove `condition' from the list of conditions of the
+	 associated event type
+      *)
+   BEGIN
+      IF condition IS Condition THEN
+	 WITH condition: Condition DO
+	    IF condition.prev # NIL THEN
+	       condition.prev.next := condition.next;
+	    ELSE
+	       condition.disc.list := condition.next;
+	    END;
+	    IF condition.next # NIL THEN
+	       condition.next.prev := condition.prev;
+	    END;
+	    condition.dropped := TRUE;
+	 END;
+      END;
+   END Drop;
+
+   PROCEDURE TestAndGet(condition: Conditions.Condition;
+			VAR event: Events.Event) : BOOLEAN;
+      VAR
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      IF (condition IS Condition) & ~condition(Condition).dropped THEN
+	 WITH condition: Condition DO
+	    RelatedEvents.GetQueue(condition.events, queue);
+	    IF queue = NIL THEN
+	       RETURN FALSE
+	    ELSE
+	       event := queue.event;
+	       queue := queue.next;
+	       RelatedEvents.AppendQueue(condition.events, queue);
+	       RETURN TRUE
+	    END;
+	 END;
+      ELSE
+	 RETURN FALSE
+      END;
+   END TestAndGet;
+
+   (* ======== interface procedures ==================================== *)
+
+   PROCEDURE Test(domain: Conditions.Domain;
+		  condition: Conditions.Condition;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 RETURN RelatedEvents.EventsPending(condition.events)
+      END;
+   END Test;
+
+   PROCEDURE SendEvent(domain: Conditions.Domain;
+		       condition: Conditions.Condition;
+		       event: Events.Event;
+		       errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: Condition DO
+	 IF RelatedEvents.EventsPending(condition.events) THEN
+	    RETURN FALSE
+	 ELSE
+	    condition.signalingEvent := event;
+	    RETURN TRUE
+	 END;
+      END;
+   END SendEvent;
+
+   PROCEDURE InitDomain;
+      VAR
+	 if: Conditions.Interface;
+	 desc: Conditions.Description;
+   BEGIN
+      NEW(if); if.test := Test; if.sendevent := SendEvent;
+      NEW(desc); desc.caps := {Conditions.async}; desc.internal := TRUE;
+      NEW(domain);
+      Conditions.InitDomain(domain, if, desc);
+   END InitDomain;
+
+BEGIN
+   discID := Disciplines.Unique();
+   InitDomain;
+END EventConditions.

@@ -1,0 +1,235 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysMemory.om,v 1.1 1994/02/23 07:59:44 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysMemory.om,v $
+   Revision 1.1  1994/02/23  07:59:44  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/92
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysMemory;
+
+   (* interfaces all mmap(2) related system calls *)
+
+   IMPORT RelatedEvents, Sys, SYS := SYSTEM, SysErrors, SysTypes;
+
+   CONST
+      (* I386 supports only 4k or 4m pages and we don't want to use
+       * 4m pages with mmap. *)
+      pagesize = 4096;
+
+      (* prot parameter of Map and Protect *)
+      read = { 0 };	     (* page can be read *)
+      write = { 1 };	     (* page can be written *)
+      exec = { 2 };	     (* page can be executed *)
+      none = {};	     (* page cannot be accessed *)
+
+      (* flags parameter of Map *)
+      shared = { 0 };	     (* share changes *)
+      private = { 1 };	     (* changes are private *)
+      typeMask = { 0..3 };   (* allows comparisons against shared or private *)
+      fixed = { 4 };	     (* interpret address exactly *)
+      (* linux specific flags: *)
+      anon  = { 5 };         (* Don't use a file. only valid with private *)
+      growsdown = { 8 };     (* Stack like area. *)
+      denywrite = { 11 };    (* Don't allow writes to file while mapped. *)
+      executable = { 12 };   (* mark it as an executable *)
+      locked = { 13 };       (* mapped pages are locked in memory *)
+      noreserve = { 14 };    (* don't check for reservations *)
+
+      (* flags parameter of Sync *)
+      async = { 0 };	     (* return immediately *)
+      invalidate = { 1 };   (* invalidate mappings *)
+      (* linux specific *)
+      sync = { 2 };
+
+      (* advise parameter of Advise *)
+      (* madvise isn't supported by kernel 2.2
+      normal = 0;	     (* no further special treatment *)
+      random = 1;	     (* expect random page references *)
+      sequential = 2;	     (* expect sequential page references *)
+      willneed = 3;	     (* will need these pages *)
+      dontneed = 4;	     (* don't need these pages *)
+      *)
+
+      (* mode of LockAll *)
+      current = 1;           (* lock all current mappings *)
+      future = 2;	     (* lock all future mappings *)
+
+   TYPE
+      Address = SysTypes.UntracedAddress;
+
+   PROCEDURE GetPageSize() : SysTypes.Size;
+      (* return the system page size which is the granularity of many of
+	 the memory management calls
+      *)
+   BEGIN
+      RETURN pagesize;
+   END GetPageSize;
+
+   PROCEDURE Map(address: Address; len: SysTypes.Size;
+		 prot: SET; flags: SET;
+		 fd: SysTypes.File; off: SysTypes.Offset;
+		 VAR mapaddress: Address;
+		 VAR errors: RelatedEvents.Object) : BOOLEAN;
+      (* map fd: [off, off+len)
+	 to the virtual memory at [address, address+len)
+      *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      (* We use the new mmap2 system call. This system call expects
+       * offset in units of pagesize. This allows larger file offsets. *)
+      IF SYS.UNIXCALL(Sys.mmap2, d0, d1, address, len,
+		      prot, flags, fd, off DIV pagesize) THEN
+	 mapaddress := d0;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.mmap2, "");
+	 mapaddress := 0;
+	 RETURN FALSE
+      END;
+   END Map;
+
+   PROCEDURE Unmap(address: Address; len: SysTypes.Size;
+		   errors: RelatedEvents.Object) : BOOLEAN;
+      (* remove the mappings in the given range *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.munmap, d0, d1, address, len) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.munmap, "");
+	 RETURN FALSE
+      END;
+   END Unmap;
+
+   PROCEDURE Protect(addr: Address; len: SysTypes.Size; prot: SET;
+		     VAR errors: RelatedEvents.Object) : BOOLEAN;
+      (* change protection of the mappings specified by [addr, addr+len) *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.mprotect, d0, d1, addr, len, prot) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.mprotect, "");
+	 RETURN FALSE
+      END;
+   END Protect;
+
+   PROCEDURE Sync(addr: Address; len: SysTypes.Size;
+		  flags: SET;
+		  VAR errors: RelatedEvents.Object) : BOOLEAN;
+      (* write dirty pages of the given range to their permanent
+	 storage locations;
+	 invalidate causes all cached copies of the mapped range
+	 to be re-obtained upon the next reference
+      *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.msync, d0, d1, addr, len, flags) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.msync, "");
+	 RETURN FALSE
+      END;
+   END Sync;
+
+   PROCEDURE Advise(addr: Address; len: SysTypes.Size;
+		    advise: INTEGER;
+		    VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      SysErrors.Raise(errors, SysErrors.nosys, -1, "Advise");
+      RETURN FALSE
+   END Advise;
+
+   PROCEDURE Lock(addr: Address; len: SysTypes.Size;
+		  VAR errors: RelatedEvents.Object) : BOOLEAN;
+      (* lock given memory range into physical memory *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.mlock, d0, d1, addr, len) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.mlock, "");
+	 RETURN FALSE
+      END;
+   END Lock;
+
+   PROCEDURE Unlock(addr: Address; len: SysTypes.Size;
+		    VAR errors: RelatedEvents.Object) : BOOLEAN;
+      (* undoes the effect of Lock for the given memory range *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.munlock, d0, d1, addr, len) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.munlock, "");
+	 RETURN FALSE
+      END;
+   END Unlock;
+
+   PROCEDURE Lockall(mode: INTEGER;
+		     VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.mlockall, d0, d1, mode) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.mlockall, "");
+	 RETURN FALSE
+      END;
+   END Lockall;
+
+   PROCEDURE UnlockAll(VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.munlockall, d0, d1) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.munlockall, "");
+	 RETURN FALSE
+      END;
+   END UnlockAll;
+
+   PROCEDURE InCore(addr: Address; len: SysTypes.Size;
+		    VAR vector: Address;
+		    VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      SysErrors.Raise(errors, SysErrors.nosys, -1, "InCore");
+      RETURN FALSE
+   END InCore;
+
+END SysMemory.

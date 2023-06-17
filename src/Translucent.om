@@ -1,0 +1,623 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE TranslucentNames;
+
+   IMPORT ConstStrings, Disciplines, Events, Forwarders, Iterators, Names,
+      NetIO, NodeFactories, Objects, Paths, PersistentObjects, RelatedEvents,
+      Resources, Services, Shards, Streams, SYS := SYSTEM;
+
+   CONST
+      requiredCaps = {Names.domainCap};
+      caps = requiredCaps +
+	       {Names.accessCap, Names.statusCap, Names.makeSubnodeCap};
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec =
+	 RECORD
+	    (Names.NodeRec)
+	    alive: BOOLEAN;
+	    readonly, writable: Names.Node;
+	    rauth, wauth: Shards.Lid;
+	    status: Names.Status;
+	    mksubnodes: BOOLEAN;
+	    eventType: Events.EventType;
+	 END;
+   VAR
+      nodeType: Services.Type;
+      if: Names.Interface;
+
+   TYPE
+      NodeList = POINTER TO NodeListRec;
+      NodeListRec =
+	 RECORD
+	    node: Node;
+	    next: NodeList;
+	 END;
+      NodeDiscipline = POINTER TO NodeDisciplineRec;
+      NodeDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    handler: BOOLEAN; (* handler already defined? *)
+	    nodes: NodeList;
+	 END;
+   VAR
+      ndid: Disciplines.Identifier;
+
+   TYPE
+      IteratorReference = POINTER TO IteratorReferenceRec;
+      IteratorReferenceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    it1, it2: Iterators.Iterator;
+	 END;
+
+   TYPE
+      Factory = POINTER TO FactoryRec;
+      FactoryRec =
+	 RECORD
+	    (NodeFactories.FactoryRec)
+	    readonly, writable: ConstStrings.String;
+	    rauth, wauth: Shards.Lid;
+	    status: Names.Status;
+	 END;
+   VAR
+      factoryType: Services.Type;
+      factoryInterface: NodeFactories.Interface;
+      lidType, potType: Services.Type;
+
+   (* === private procedures ======================================== *)
+
+   PROCEDURE CreateNewNode(VAR node: Names.Node;
+                           readonly, writable: Names.Node;
+			   rauth, wauth: Shards.Lid;
+			   status: Names.Status);
+      VAR
+	 newnode: Node;
+	 caps1, caps2: Names.CapabilitySet;
+
+      PROCEDURE AddNode(at: Names.Node; node: Node);
+	 VAR
+	    nd: NodeDiscipline;
+	    member: NodeList;
+      BEGIN
+	 IF ~Disciplines.Seek(at, ndid, nd) THEN
+	    NEW(nd); nd.id := ndid; nd.nodes := NIL; nd.handler := FALSE;
+	    Disciplines.Add(at, nd);
+	 END;
+	 NEW(member); member.node := node;
+	 member.next := nd.nodes; nd.nodes := member;
+      END AddNode;
+
+   BEGIN (* CreateNewNode *)
+      caps1 := Names.Capabilities(readonly);
+      caps2 := Names.Capabilities(writable);
+      NEW(newnode); Services.Init(newnode, nodeType);
+      Names.InitNode(newnode, if, caps2 * caps);
+      newnode.alive := TRUE;
+      newnode.readonly := readonly;
+      newnode.writable := writable;
+      newnode.rauth := rauth;
+      newnode.wauth := wauth;
+      newnode.status := status;
+      newnode.eventType := NIL;
+      newnode.mksubnodes := Names.makeSubnodeCap IN caps2;
+      AddNode(readonly, newnode);
+      AddNode(writable, newnode);
+      Forwarders.Forward(newnode, writable);
+      node := newnode;
+   END CreateNewNode;
+
+   PROCEDURE IterateMembers(it: Iterators.Iterator;
+                            ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 name1, name2: ConstStrings.String;
+	 ok1, ok2: BOOLEAN;
+	 cmp: INTEGER;
+   BEGIN
+      WITH ref: IteratorReference DO
+	 ok1 := Iterators.Get(ref.it1, name1);
+	 ok2 := Iterators.Get(ref.it2, name2);
+	 WHILE ok1 & ok2 DO
+	    cmp := ConstStrings.Compare(name1, name2);
+	    IF cmp < 0 THEN
+	       Iterators.Yield(it, name1);
+	       ok1 := Iterators.Get(ref.it1, name1);
+	    ELSIF cmp > 0 THEN
+	       Iterators.Yield(it, name2);
+	       ok2 := Iterators.Get(ref.it2, name2);
+	    ELSE
+	       Iterators.Yield(it, name1);
+	       ok1 := Iterators.Get(ref.it1, name1);
+	       ok2 := Iterators.Get(ref.it2, name2);
+	    END;
+	 END;
+	 WHILE ok1 DO
+	    Iterators.Yield(it, name1);
+	    ok1 := Iterators.Get(ref.it1, name1);
+	 END;
+	 WHILE ok2 DO
+	    Iterators.Yield(it, name2);
+	    ok2 := Iterators.Get(ref.it2, name2);
+	 END;
+      END;
+   END IterateMembers;
+
+   PROCEDURE MemberEventHandler(event: Events.Event);
+      VAR
+	 nd: NodeDiscipline;
+	 member: NodeList;
+	 subnode: Names.Node;
+	 caps: Names.CapabilitySet;
+
+      PROCEDURE SendMemberEvent(state: Names.State);
+	 VAR
+	    memberEvent: Names.MemberEvent;
+      BEGIN
+	 NEW(memberEvent);
+	 memberEvent.type := member.node.eventType;
+	 memberEvent.message := "TranslucentNames member event";
+	 memberEvent.state := state;
+	 memberEvent.name := event(Names.MemberEvent).name;
+	 memberEvent.node := member.node;
+	 Events.Raise(memberEvent);
+      END SendMemberEvent;
+
+      PROCEDURE Existant(parent: Names.Node; auth: Shards.Lid) : BOOLEAN;
+	 VAR
+	    subnode: Names.Node;
+      BEGIN
+	 RETURN Names.GetNode(parent, event(Names.MemberEvent).name,
+		  auth, subnode)
+      END Existant;
+
+   BEGIN (* MemberEventHandler *)
+      WITH event: Names.MemberEvent DO
+	 IF Disciplines.Seek(event.node, ndid, nd) THEN
+	    member := nd.nodes;
+	    WHILE member # NIL DO
+	       IF member.node.alive & (member.node.eventType # NIL) THEN
+		  caps := Names.Capabilities(event.node);
+		  CASE event.state OF
+		  | Names.inserted:
+			IF member.node.writable = event.node THEN
+			   IF Existant(member.node.readonly,
+			               member.node.rauth) THEN
+			      SendMemberEvent(Names.deleted);
+			   END;
+			   SendMemberEvent(Names.inserted);
+			ELSIF ~Existant(member.node.writable,
+			                member.node.wauth) THEN
+			   SendMemberEvent(Names.inserted);
+			END;
+		  | Names.deleted:
+			IF member.node.writable = event.node THEN
+			   SendMemberEvent(Names.deleted);
+			   IF Existant(member.node.readonly,
+			               member.node.rauth) THEN
+			      SendMemberEvent(Names.inserted);
+			   END;
+			ELSIF ~Existant(member.node.writable,
+			                member.node.wauth) THEN
+			   SendMemberEvent(Names.deleted);
+			END;
+		  END;
+	       END;
+	       member := member.next;
+	    END;
+	 END;
+      END;
+   END MemberEventHandler;
+
+   (* === interface procedures for Names ============================ *)
+
+   PROCEDURE Access(node: Names.Node; mode: Names.AccessMode;
+                    auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~node.alive THEN
+	    Names.Error(node, Names.nodeDestroyed);
+	    RETURN FALSE
+	 END;
+	 IF (node.status # NIL) & (node.status.perm[mode] # NIL) &
+	       ~Shards.Fits(node.status.perm[mode], auth) THEN
+	    Names.Error(node, Names.noPermission);
+	    RETURN FALSE
+	 END;
+	 RETURN Names.Access(node.writable, mode, node.wauth)
+      END;
+   END Access;
+
+   PROCEDURE GetStatus(node: Names.Node; auth: Shards.Lid;
+                       VAR status: Names.StatusRec) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.examine, auth) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN Names.GetStatus(node.writable, node.wauth, status)
+      END;
+   END GetStatus;
+
+   PROCEDURE SetStatus(node: Names.Node; status: Names.Status;
+		       auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.change, auth) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN Names.SetStatus(node.writable, status, node.wauth)
+      END;
+   END SetStatus;
+
+   PROCEDURE GetMembers(node: Names.Node; auth: Shards.Lid;
+                        VAR members: Names.Lister) : BOOLEAN;
+      VAR
+	 ref: IteratorReference;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.read, auth) THEN
+	    RETURN FALSE
+	 END;
+	 NEW(ref);
+	 IF ~Names.GetMembers(node.writable, node.wauth, ref.it1) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~Names.GetMembers(node.readonly, node.rauth, ref.it2) THEN
+	    RETURN FALSE
+	 END;
+	 Iterators.Create(members, IterateMembers, ref, 0);
+	 RETURN TRUE
+      END;
+   END GetMembers;
+
+   PROCEDURE TakeInterest(node: Names.Node; auth: Shards.Lid;
+                          VAR eventType: Events.EventType) : BOOLEAN;
+
+      PROCEDURE SetupHandler(anode: Names.Node; auth: Shards.Lid) : BOOLEAN;
+	 VAR
+	    nd: NodeDiscipline;
+	    ok: BOOLEAN;
+	    eventType: Events.EventType;
+      BEGIN
+	 ok := Disciplines.Seek(anode, ndid, nd); ASSERT(ok);
+	 IF ~SYS.TAS(nd.handler) THEN
+	    RelatedEvents.Save(anode);
+	    RelatedEvents.Forward(anode, node);
+	    ok := Names.TakeInterest(anode, auth, eventType);
+	    RelatedEvents.Restore(anode);
+	    IF ~ok THEN RETURN FALSE END;
+	    Events.Handler(eventType, MemberEventHandler);
+	 END;
+	 RETURN TRUE
+      END SetupHandler;
+
+   BEGIN (* TakeInterest *)
+      WITH node: Node DO
+	 IF ~Access(node, Names.read, auth) THEN
+	    RETURN FALSE
+	 END;
+	 IF node.eventType = NIL THEN
+	    Events.Define(node.eventType);
+	    Names.InitMemberEventType(node.eventType);
+	    IF ~SetupHandler(node.writable, node.wauth) OR
+		  ~SetupHandler(node.readonly, node.rauth) THEN
+	       RETURN FALSE
+	    END;
+	 END;
+	 eventType := node.eventType;
+	 RETURN TRUE
+      END;
+   END TakeInterest;
+
+   PROCEDURE GetNode(node: Names.Node; name: Names.Name;
+                     auth: Shards.Lid; VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 rnode, wnode: Names.Node;
+	 snode: Node;
+
+      PROCEDURE IsDir(node: Names.Node) : BOOLEAN;
+      BEGIN
+	 RETURN requiredCaps * Names.Capabilities(node) = requiredCaps
+      END IsDir;
+
+      PROCEDURE SeekNode(VAR node: Node) : BOOLEAN;
+	 VAR
+	    nd: NodeDiscipline;
+	    list1, list2: NodeList;
+	    member: NodeList;
+      BEGIN
+	 IF ~Disciplines.Seek(rnode, ndid, nd) THEN RETURN FALSE END;
+	 list1 := nd.nodes;
+	 IF ~Disciplines.Seek(wnode, ndid, nd) THEN RETURN FALSE END;
+	 list2 := nd.nodes;
+	 WHILE list1 # NIL DO
+	    IF list1.node.alive THEN
+	       member := list2;
+	       WHILE member # NIL DO
+		  IF member.node = list1.node THEN
+		     node := member.node; RETURN TRUE
+		  END;
+		  member := member.next;
+	       END;
+	    END;
+	    list1 := list1.next;
+	 END;
+	 RETURN FALSE
+      END SeekNode;
+
+   BEGIN (* GetNode *)
+      WITH node: Node DO
+	 IF ~Access(node, Names.search, auth) THEN
+	    RETURN FALSE
+	 END;
+	 IF Names.GetNode(node.writable, name, node.wauth, wnode) THEN
+	    IF IsDir(wnode) &
+		  Names.GetNode(node.readonly, name, node.rauth, rnode) &
+		  IsDir(rnode) THEN
+	       IF SeekNode(snode) THEN
+		  subnode := snode;
+	       ELSE
+		  CreateNewNode(subnode, rnode, wnode,
+		                node.rauth, node.wauth, node.status);
+	       END;
+	    ELSE
+	       subnode := wnode;
+	    END;
+	 ELSIF Names.GetNode(node.readonly, name, node.rauth, rnode) THEN
+	    IF node.mksubnodes & IsDir(rnode) &
+		  Names.MakeSubnode(node.writable, name, NIL, Names.allCaps,
+		     node.wauth, wnode) THEN
+	       CreateNewNode(subnode, rnode, wnode,
+	                     node.rauth, node.wauth, node.status);
+	    ELSE
+	       subnode := rnode;
+	    END;
+	 ELSE
+	    Names.Error(node, Names.nodeNotFound);
+	    RETURN FALSE
+	 END;
+      END;
+      RETURN TRUE
+   END GetNode;
+
+   PROCEDURE Insert(node, subnode: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.insert, auth) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN Names.Insert(node.writable, subnode, name, node.wauth)
+      END;
+   END Insert;
+
+   PROCEDURE MakeSubnode(node: Names.Node; name: Names.Name;
+                         status: Names.Status; caps: Names.CapabilitySet;
+			 auth: Shards.Lid;
+			 VAR subnode: Names.Node) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.insert, auth) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN Names.MakeSubnode(node.writable, name, status, caps,
+	                          node.wauth, subnode)
+      END;
+   END MakeSubnode;
+
+   PROCEDURE Delete(node: Names.Node; name: Names.Name;
+                    auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH node: Node DO
+	 IF ~Access(node, Names.delete, auth) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN Names.Delete(node.writable, name, node.wauth)
+      END;
+   END Delete;
+
+   (* === interface procedures for PersistentObjects ================ *)
+
+   PROCEDURE InternalCreateFactory(VAR object: PersistentObjects.Object);
+      VAR
+	 factory: Factory;
+   BEGIN
+      NEW(factory);
+      PersistentObjects.Init(factory, factoryType);
+      NodeFactories.Init(factory, factoryInterface);
+      object := factory;
+   END InternalCreateFactory;
+
+   PROCEDURE ReadAuth(s: Streams.Stream; VAR auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, lidType, auth)
+   END ReadAuth;
+
+   PROCEDURE ReadPot(s: Streams.Stream; VAR pot: Shards.Pot): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, potType, pot)
+   END ReadPot;
+
+   PROCEDURE ReadStatus(s: Streams.Stream; VAR status: Names.Status): BOOLEAN;
+      VAR
+	 amode: Names.AccessMode;
+	 nil: BOOLEAN;
+   BEGIN
+      IF ~NetIO.ReadBoolean(s, nil) THEN
+	 RETURN FALSE
+      END;
+      IF nil THEN
+	 status := NIL;
+      ELSE
+	 NEW(status);
+	 amode := 0;
+	 WHILE amode < Names.accessmodes DO
+	    IF ~ReadPot(s, status.perm[amode]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(amode);
+	 END;
+      END;
+      RETURN TRUE
+   END ReadStatus;
+
+   PROCEDURE WriteStatus(s: Streams.Stream; status: Names.Status): BOOLEAN;
+      VAR
+	 amode: Names.AccessMode;
+   BEGIN
+      IF ~NetIO.WriteBoolean(s, status = NIL) THEN
+	 RETURN FALSE
+      END;
+      IF status # NIL THEN
+	 amode := 0;
+	 WHILE amode < Names.accessmodes DO
+	    IF ~PersistentObjects.WriteObjectOrNIL(s, status.perm[amode]) THEN
+	       RETURN FALSE
+	    END;
+	    INC(amode);
+	 END;
+      END;
+      RETURN TRUE
+   END WriteStatus;
+
+   PROCEDURE ReadFactory(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Factory DO
+	 RETURN NetIO.ReadConstString(s, object.readonly) &
+	        NetIO.ReadConstString(s, object.writable) &
+		ReadAuth(s, object.rauth) & ReadAuth(s, object.wauth) &
+		ReadStatus(s, object.status)
+      END;
+   END ReadFactory;
+
+   PROCEDURE WriteFactory(s: Streams.Stream;
+                          object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Factory DO
+	 RETURN NetIO.WriteConstString(s, object.readonly) &
+	        NetIO.WriteConstString(s, object.writable) &
+		PersistentObjects.WriteObjectOrNIL(s, object.rauth) &
+		PersistentObjects.WriteObjectOrNIL(s, object.wauth) &
+		WriteStatus(s, object.status)
+      END;
+   END WriteFactory;
+
+   (* === interface procedure for NodeFactories ===================== *)
+
+   PROCEDURE ^ Create(VAR node: Names.Node;
+                      readonly, writable: Names.Node;
+		      rauth, wauth: Shards.Lid;
+		      status: Names.Status);
+
+   PROCEDURE ConstructNode(factory: NodeFactories.Factory;
+                           VAR node: Names.Node) : BOOLEAN;
+      VAR
+	 readonly, writable: Names.Node;
+	 rpath, wpath: ARRAY 1024 OF CHAR;
+   BEGIN
+      WITH factory: Factory DO
+	 ConstStrings.Extract(rpath, factory.readonly);
+	 IF ~Paths.GetNode(rpath, factory.rauth, factory, readonly) THEN
+	    RETURN FALSE
+	 END;
+	 ConstStrings.Extract(wpath, factory.writable);
+	 IF ~Paths.GetNode(wpath, factory.wauth, factory, writable) THEN
+	    RETURN FALSE
+	 END;
+	 Create(node, readonly, writable,
+	    factory.rauth, factory.wauth, factory.status);
+	 RETURN TRUE
+      END;
+   END ConstructNode;
+
+   (* === module initialization ===================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      ndid := Disciplines.Unique();
+      Services.CreateType(nodeType, "TranslucentNames.Node", "Names.Node");
+      NEW(if);
+      if.access := Access;
+      if.getStatus := GetStatus;
+      if.setStatus := SetStatus;
+      if.getMembers := GetMembers;
+      if.takeInterest := TakeInterest;
+      if.getNode := GetNode;
+      if.insert := Insert;
+      if.makeSubnode := MakeSubnode;
+      if.delete := Delete;
+      Services.SeekType("Shards.Lid", lidType);
+      Services.SeekType("Shards.Pot", potType);
+      NEW(persif);
+      persif.create := InternalCreateFactory;
+      persif.read := ReadFactory;
+      persif.write := WriteFactory;
+      PersistentObjects.RegisterType(factoryType,
+	 "TranslucentNames.Factory", "NodeFactories.Factory", persif);
+      NEW(factoryInterface);
+      factoryInterface.constructNode := ConstructNode;
+   END Init;
+
+   (* === exported constructors ===================================== *)
+
+   PROCEDURE Create(VAR node: Names.Node;
+                    readonly, writable: Names.Node;
+		    rauth, wauth: Shards.Lid;
+		    status: Names.Status);
+      VAR
+	 caps1, caps2: Names.CapabilitySet;
+   BEGIN (* Create *)
+      ASSERT((readonly # NIL) & (writable # NIL));
+      caps1 := Names.Capabilities(readonly);
+      caps2 := Names.Capabilities(writable);
+      ASSERT(requiredCaps * caps1 = requiredCaps);
+      ASSERT(requiredCaps * caps2 = requiredCaps);
+      CreateNewNode(node, readonly, writable, rauth, wauth, status);
+   END Create;
+
+   PROCEDURE CreateFactory(VAR factory: NodeFactories.Factory;
+                           readonly, writable: ARRAY OF CHAR;
+		           rauth, wauth: Shards.Lid;
+		           status: Names.Status);
+      VAR
+	 f: Factory;
+   BEGIN
+      InternalCreateFactory(f);
+      ConstStrings.Create(f.readonly, readonly);
+      ConstStrings.Create(f.writable, writable);
+      f.rauth := rauth; f.wauth := wauth;
+      f.status := status;
+      factory := f;
+   END CreateFactory;
+
+BEGIN
+   Init;
+END TranslucentNames.

@@ -1,0 +1,190 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SurfRandomG.om,v 1.1 2004/03/08 13:59:53 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SurfRandomG.om,v $
+   Revision 1.1  2004/03/08 13:59:53  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SurfRandomGenerators;
+
+   IMPORT RandomGenerators, Services, SYS := SYSTEM, Types;
+
+   (* taken from
+
+      Daniel J. Bernstein, ``Surf: Simple Unpredictable Random Function'',
+      http://cr.yp.to/papers/surf.pdf, 1997
+   *)
+
+   TYPE
+      Sequence = POINTER TO SequenceRec;
+      SequenceRec =
+	 RECORD
+	    (RandomGenerators.SequenceRec)
+	    out: ARRAY 8 OF Types.Int32;
+	    in, start: ARRAY 12 OF Types.Int32;
+	    seed: ARRAY 32 OF Types.Int32;
+	    outleft: INTEGER;
+	 END;
+   VAR
+      sequenceType: Services.Type;
+   CONST
+      caps = {RandomGenerators.int32ValS,
+	 RandomGenerators.rewindSequence,
+	 RandomGenerators.restartSequence};
+   VAR
+      if: RandomGenerators.Interface;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE Surf(sequence: Sequence);
+      VAR
+	 t: ARRAY 12 OF Types.Int32;
+	 x: Types.Int32;
+	 sum: Types.Int32;
+	 i, r, loop: INTEGER;
+
+      PROCEDURE Mush(i, b: INTEGER);
+      BEGIN
+	 INC(t[i],
+	    SYS.VAL(Types.Int32,
+	       SYS.VAL(SET, (SYS.VAL(Types.Int32, SYS.VAL(SET, x) /
+		  SYS.VAL(SET, sequence.seed[i])) + sum)) /
+	       SYS.VAL(SET, SYS.ROT(x, b))));
+	 x := t[i];
+      END Mush;
+
+   BEGIN (* Surf *)
+      sum := 0;
+      i := 0;
+      WHILE i < 12 DO
+	 t[i] := SYS.VAL(Types.Int32,
+	    SYS.VAL(SET, sequence.in[i]) / SYS.VAL(SET, sequence.seed[12 + i]));
+	 INC(i);
+      END;
+      i := 0;
+      WHILE i < 8 DO
+	 sequence.out[i] := sequence.seed[24 + i];
+	 INC(i);
+      END;
+      x := t[11];
+      loop := 0;
+      WHILE loop < 2 DO
+	 r := 0;
+	 WHILE r < 16 DO
+	    INC(sum, 9E3779B9H);
+	    Mush(0, 5); Mush(1, 7); Mush(2, 9); Mush(3, 13);
+	    Mush(4, 5); Mush(5, 7); Mush(6, 9); Mush(7, 13);
+	    Mush(8, 5); Mush(9, 7); Mush(10, 9); Mush(11, 13);
+	    INC(r);
+	 END;
+	 i := 0;
+	 WHILE i < 8 DO
+	    sequence.out[i] := SYS.VAL(Types.Int32,
+	       SYS.VAL(SET, sequence.out[i]) /
+	       SYS.VAL(SET, t[i + 4]));
+	    INC(i);
+	 END;
+	 INC(loop);
+      END;
+   END Surf;
+
+   PROCEDURE StartSequence(sequence: Sequence;
+                           seed: RandomGenerators.Sequence);
+      VAR
+	 i: INTEGER;
+   BEGIN
+      sequence.outleft := 0;
+      i := 0;
+      WHILE i < 32 DO
+	 sequence.seed[i] := RandomGenerators.Int32ValS(seed);
+	 INC(i);
+      END;
+      i := 0;
+      WHILE i < 12 DO
+	 sequence.start[i] := RandomGenerators.Int32ValS(seed);
+	 INC(i);
+      END;
+      sequence.in := sequence.start;
+   END StartSequence;
+
+   (* === interface procedures =========================================== *)
+
+   PROCEDURE Int32ValS(sequence: RandomGenerators.Sequence): Types.Int32;
+   BEGIN
+      WITH sequence: Sequence DO
+	 IF sequence.outleft = 0 THEN
+	    INC(sequence.in[0]);
+	    IF sequence.in[0] = 0 THEN
+	       INC(sequence.in[1]);
+	       IF sequence.in[1] = 0 THEN
+		  INC(sequence.in[2]);
+		  IF sequence.in[2] = 0 THEN
+		     INC(sequence.in[3]);
+		  END;
+	       END;
+	    END;
+	    Surf(sequence);
+	    sequence.outleft := 8;
+	 END;
+	 DEC(sequence.outleft);
+	 RETURN sequence.out[sequence.outleft]
+      END;
+   END Int32ValS;
+
+   PROCEDURE RewindSequence(sequence: RandomGenerators.Sequence);
+   BEGIN
+      WITH sequence: Sequence DO
+	 sequence.in := sequence.start;
+	 sequence.outleft := 0;
+      END;
+   END RewindSequence;
+
+   PROCEDURE RestartSequence(sequence: RandomGenerators.Sequence;
+                             seed: RandomGenerators.Sequence);
+   BEGIN
+      StartSequence(sequence(Sequence), seed);
+   END RestartSequence;
+
+   (* === exported constructor =========================================== *)
+
+   PROCEDURE Create(VAR sequence: RandomGenerators.Sequence;
+                    seed: RandomGenerators.Sequence);
+      VAR
+	 seq: Sequence;
+   BEGIN
+      NEW(seq); StartSequence(seq, seed);
+      Services.Init(seq, sequenceType);
+      RandomGenerators.Init(seq, if, caps);
+      sequence := seq;
+   END Create;
+
+BEGIN
+   ASSERT(MAX(SET) = 31); (* SET must match Types.Int32 *)
+   NEW(if);
+   if.int32ValS := Int32ValS;
+   if.rewindSequence := RewindSequence;
+   if.restartSequence := RestartSequence;
+   Services.CreateType(sequenceType,
+      "SurfRandomGenerators.Sequence", "RandomGenerators.Sequence");
+END SurfRandomGenerators.

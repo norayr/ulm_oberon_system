@@ -1,0 +1,176 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPSessions.om,v 1.1 2001/05/08 07:19:52 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPSessions.om,v $
+   Revision 1.1  2001/05/08 07:19:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPSessions;
+
+   IMPORT Events, FTPCommands, FTPRequests, FTPResponses, Messages,
+      PersistentObjects, RelatedEvents, RemoteEvents, RemoteObjects,
+      Services, Streams;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    request: FTPRequests.Request;
+	    response: FTPResponses.Response;
+	    markEventType: Events.EventType;
+	 END;
+   VAR
+      msgType: Services.Type;
+      reqType, resType, eventTypeType: Services.Type;
+
+   TYPE
+      Session = POINTER TO SessionRec;
+      SessionRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    authorized: BOOLEAN;
+	    finished: BOOLEAN;
+	 END;
+   VAR
+      sessionType: Services.Type;
+
+   (* === PersistentObjects if for Message ================================ *)
+
+   PROCEDURE CreateMessage(VAR object: PersistentObjects.Object);
+      VAR
+	 msg: Message;
+   BEGIN
+      NEW(msg); PersistentObjects.Init(msg, msgType);
+      msg.request := NIL; msg.response := NIL; msg.markEventType := NIL;
+      object := msg;
+   END CreateMessage;
+
+   PROCEDURE ReadMessage(s: Streams.Stream;
+			 object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 IF object.done THEN
+	    RETURN PersistentObjects.GuardedRead(s, resType, object.response)
+	 ELSE
+	    RETURN PersistentObjects.GuardedRead(s, reqType, object.request) &
+		   RemoteObjects.GuardedImport(s, eventTypeType,
+		      object.markEventType)
+	 END;
+      END;
+   END ReadMessage;
+
+   PROCEDURE WriteMessage(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Message DO
+	 IF object.done THEN
+	    RETURN PersistentObjects.Write(s, object.response)
+	 ELSE
+	    RETURN PersistentObjects.Write(s, object.request) &
+		   RemoteObjects.Export(s, object.markEventType)
+	 END;
+      END;
+   END WriteMessage;
+
+   (* === module initialization =========================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(persif); persif.create := CreateMessage;
+      persif.read := ReadMessage; persif.write := WriteMessage;
+      PersistentObjects.RegisterType(msgType, "FTPSessions.Message",
+	 "Messages.Message", persif);
+      Services.SeekType("FTPRequests.Request", reqType);
+      ASSERT(reqType # NIL);
+      Services.SeekType("FTPResponses.Response", resType);
+      ASSERT(resType # NIL);
+      Services.SeekType("Events.EventType", eventTypeType);
+      ASSERT(eventTypeType # NIL);
+      Services.CreateType(sessionType, "FTPSessions.Session", "");
+   END Init;
+
+   (* === exported procedures ============================================= *)
+
+   PROCEDURE Create(VAR session: Session);
+      VAR
+	 s: Session;
+   BEGIN
+      NEW(s); Services.Init(s, sessionType);
+      s.authorized := FALSE; s.finished := FALSE;
+      session := s;
+   END Create;
+
+   PROCEDURE ProcessRequest(session: Session;
+			    request: FTPRequests.Request;
+			    markEventType: Events.EventType;
+			    VAR response: FTPResponses.Response);
+      VAR
+	 msg: Message;
+	 queue: RelatedEvents.Queue;
+	 authcmd: BOOLEAN;
+   BEGIN
+      authcmd := (request.command = FTPCommands.user) OR
+	 (request.command = FTPCommands.pass) OR
+	 (request.command = FTPCommands.acct);
+      IF request.command = FTPCommands.quit THEN
+	 FTPResponses.Create(response, 221, "Bye!");
+	 session.finished := TRUE;
+      ELSIF ~session.authorized & ~authcmd THEN
+	 FTPResponses.Create(response, 530,
+	    "Permission denied. Please login.");
+      ELSIF session.authorized & authcmd THEN
+	 FTPResponses.Create(response, 230,
+	    "Hi. No need to log in; you have already access privileges.");
+      ELSIF request.command = FTPCommands.noop THEN
+	 FTPResponses.Create(response, 200, "Go ahead.");
+      ELSE
+	 CreateMessage(msg);
+	 Messages.Init(msg);
+	 msg.request := request; msg.response := NIL;
+	 msg.markEventType := markEventType;
+	 Messages.Send(session, msg);
+	 RelatedEvents.GetQueue(msg.errors, queue);
+	 RelatedEvents.AppendQueue(session, queue);
+	 IF msg.response = NIL THEN
+	    IF request.command = FTPCommands.abor THEN
+	       FTPResponses.Create(msg.response, 226,
+		  "Sorry. There is nothing to be closed or aborted.");
+	    ELSIF queue # NIL THEN
+	       FTPResponses.Create(msg.response, 450,
+		  "Sorry. Temporary failure.");
+	    ELSE
+	       FTPResponses.Create(msg.response, 502,
+		  "Sorry. I do not understand that command.");
+	    END;
+	 END;
+	 response := msg.response;
+      END;
+   END ProcessRequest;
+
+BEGIN
+   Init;
+END FTPSessions.

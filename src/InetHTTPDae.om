@@ -1,0 +1,787 @@
+MODULE InetHTTPDaemon;
+
+   IMPORT 
+      ASCII, Clocks, Conditions, Coroutines, Dates, EventConditions, Events,
+      Disciplines, Response:=HTTPResponse, Headers:=HTTPHeaders, InetHTTPURLs,
+      InetURLs, Maps, Networks, RelatedEvents, Read, Resources, SYS:=SYSTEM,
+      Scan, Streams, StreamConditions, SubStreams, Tasks, Texts, TimeConditions,
+      Times, WebHandlers, Write;
+
+   TYPE
+      HTTPD = POINTER TO HTTPDRec;
+      HTTPDRec =
+         RECORD
+            (Disciplines.ObjectRec)
+            (* private *)
+            port: Networks.Address;
+            handler: WebHandlers.Handler;
+            terminate: Events.EventType;
+         END;
+         
+   CONST
+      cantWriteTexts = 0; (* Can't write to a Texts memory-object *)
+      cantTruncTexts = 1; (* Can't trunc a Texts-stream *)
+      cantSeekOnTexts = 2; (* Can't seek on Texts-stream *)
+      errorcodes = 3;
+         
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec)
+            errorcode: ErrorCode;
+         END;   
+   
+   VAR
+      errorMessages: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+      
+   PROCEDURE InitErrorHandling;
+   
+   BEGIN
+      Events.Define(error);
+      errorMessages[cantWriteTexts] := "Can't write to Texts-stream";
+      errorMessages[cantTruncTexts] := "Can't trunc a Texts-stream";
+      errorMessages[cantSeekOnTexts] := "Can't seek on Texts-stream";
+   END InitErrorHandling;
+   
+   
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      (* raise an error event; to be called in standard situations *)
+      
+      VAR
+         event: ErrorEvent;
+         
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errorMessages[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+   
+   
+   PROCEDURE HandleRequest(VAR cr: Coroutines.Coroutine; client: Streams.Stream; 
+                           httpD: HTTPD);
+      (* Handles a request from a client. 'HandleRequest' reads the entire
+         header and then creates a 'WebHandlers.request'-Object which is
+         processed by 'httpD.handler'.
+         
+         if a 'httpD.terminate'-event was risen 'HandleRequest' would terminate.
+         'HandleRequest' will also terminate if in case of persistent
+         connections no further request is made within a fixed period of time .
+      *)
+      
+      CONST
+         bufSize = 100;
+         timeoutForRead = 400; (* one character to the other *)
+         PGetRequestLine = 0;
+         PGetHeaders = 1;
+         PGetChunkedHeaders = 2;
+         PGetNormalData = 3;
+         PGetChunkedData = 4;
+         
+      VAR
+         request: WebHandlers.Request;
+         toTerminate: Conditions.Condition;
+         readable: Conditions.Condition;
+         isTimeout: Conditions.Condition;
+         conditions: Conditions.ConditionSet;
+         timeout: Times.Time;
+         ch: CHAR;
+         buf: ARRAY bufSize OF CHAR;
+         bytesRead: Streams.Count;
+         phase: INTEGER;
+         i: INTEGER;
+         message: Texts.Text;
+         event: Events.Event;
+         state: INTEGER;
+         start: Streams.Count; (* current part begins at 'start' of 'message' *)
+         aktPos: Streams.Count; (* aktual pos of message *)
+         expect: ARRAY 5 OF CHAR;
+         name: Streams.Stream;
+         dataBytesLeft: LONGINT;
+         chunkSize: Streams.Stream;
+         
+      PROCEDURE MkSubStream(VAR s: Streams. Stream; base: Streams.Stream; 
+                            start, length: Streams.Count; 
+                            errors: RelatedEvents.Object);
+         
+      BEGIN
+         IF ~SubStreams.Open(s, base, start, length, errors) THEN 
+         END;
+      END MkSubStream;
+      
+      
+      PROCEDURE FinishConnection;
+         (* We have finished with this client. Close Stream and terminate Task *)
+      
+      BEGIN
+         EventConditions.Drop(toTerminate);
+         Streams.Release(client);
+         Tasks.Terminate;
+      END FinishConnection;
+      
+      
+      PROCEDURE CallHandler;
+      
+      BEGIN
+         WebHandlers.HandleRequest(httpD.handler, request, httpD);
+
+         IF Resources.Terminated(request.response) THEN
+            (* handler closed connection - so nothing more to do *)
+            FinishConnection;
+         END;
+         phase := PGetRequestLine;
+         state := 1;
+         start := 0;
+         Streams.SetPos(message, 0);
+         IF ~Streams.Trunc(message, 0) THEN
+            Error(httpD, cantTruncTexts);
+         END;
+      END CallHandler;
+      
+      
+      PROCEDURE DoGetRequestLinePhase;
+         (* Proceeds with another character of the request-line. All variables 
+            used must be defined in HandleRequest because local variables are
+            not stable.
+         *)
+         
+         PROCEDURE SetNextPhase;
+            (* End of get-request-line-phase was reached; switch to
+               get-headers-phase now.
+            *)
+
+         BEGIN
+            phase := PGetHeaders; 
+            state := 1;
+            Headers.CreateSet(request.headers);
+         END SetNextPhase;
+         
+      BEGIN
+         IF buf[i] # ASCII.cr THEN
+            IF ~Streams.WriteByte(message, buf[i]) THEN
+               Error(httpD, cantWriteTexts);
+            END;
+
+            CASE state OF
+            | 1: 
+               CASE buf[i] OF
+               | (* token *) "!", "#".."'", "*", "+", "-", ".", "0".."9", 
+                 "A".."Z", "^".."z", "|", "~", CHR(128)..CHR(255):
+               | ASCII.sp, ASCII.ht:
+                  state := 2;
+                  Streams.GetPos(message, aktPos);
+                  request.method := NIL;
+                  MkSubStream(request.method, message, start, aktPos-start-1,
+                              httpD);
+               ELSE
+                  Response.StatusLine(client, 400, 1, 1);
+                  Response.ActualDate(client);
+                  Response.Error(client, 400, "Illegal character in method");
+                  FinishConnection;
+               END;
+            | 2:
+               CASE buf[i] OF
+               | ASCII.sp, ASCII.ht:
+               | ASCII.nl:
+                  Response.StatusLine(client, 400, 1, 1);
+                  Response.ActualDate(client);
+                  Response.Error(client, 400, "No URI given");
+                  FinishConnection;
+               ELSE
+                  state := 3;
+                  Streams.GetPos(message, start);
+               END;
+            | 3:
+               CASE buf[i] OF
+               | ASCII.sp, ASCII.ht:
+                  (* Now read the URL *)
+                  Streams.SetPos(message, start-1);
+                  InetHTTPURLs.Create(request.url);
+                  RelatedEvents.Forward(request.url, httpD);
+                  IF ~InetURLs.Assign(request.url, message) THEN
+                     (* URL is not ok *)
+                     Response.StatusLine(client, 400, 1, 1);
+                     Response.ActualDate(client);
+                     Response.Error(client, 400, "URI-syntax not correct");
+                     FinishConnection;
+                  END;
+                  state := 4;
+               | ASCII.nl:
+                  Response.StatusLine(client, 400, 1, 1);
+                  Response.ActualDate(client);
+                  Response.Error(client, 400, "No HTTP-version given");
+                  FinishConnection;
+               ELSE
+               END;
+            | 4:
+               CASE buf[i] OF
+               | ASCII.sp, ASCII.ht:
+               | ASCII.nl:
+                  (* version not completed. Assume version as 1.0 *)
+                  request.versionMajor := 1;
+                  request.versionMinor := 0;
+                  SetNextPhase;
+               | "H":
+                  state := 5;
+               ELSE
+                  state := -1;
+               END;
+            | 5..8:
+               IF buf[i] = expect[state-5] THEN
+                  INC(state);
+               ELSIF buf[i] = ASCII.nl THEN
+                  (* version not completed. Assume version as 1.0 *)
+                  request.versionMajor := 1;
+                  request.versionMinor := 0;
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+               END;
+            | 9, 11:
+               IF (buf[i] >= "0") & (buf[i] <= "9") THEN
+                  Streams.GetPos(message, start);
+                  INC(state);
+               ELSIF buf[i] = ASCII.nl THEN
+                  (* version not completed. Assume version as 1.0 *)
+                  request.versionMajor := 1;
+                  request.versionMinor := 0;
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+               END;
+            | 10:
+               CASE buf[i] OF
+               | "0".."9":
+               | ".":
+                  state := 11;
+                  Streams.GetPos(message, aktPos);
+                  Streams.SetPos(message, start-1);
+                  Read.ShortIntS(message, request.versionMajor);
+                  Streams.SetPos(message, aktPos);
+                  start := aktPos;
+               | ASCII.nl:
+                  (* version not completed. Assume version as 1.0 *)
+                  request.versionMajor := 1;
+                  request.versionMinor := 0;
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+               END;
+            | 12: 
+               CASE buf[i] OF
+               | "0".."9":
+               | ASCII.nl, ASCII.ht, ASCII.sp:
+                  Streams.GetPos(message, aktPos);
+                  Streams.SetPos(message, start-1);
+                  Read.ShortIntS(message, request.versionMinor);
+                  Streams.SetPos(message, aktPos);
+                  IF buf[i] = ASCII.nl THEN
+                     SetNextPhase;
+                  ELSE
+                     state := 13;
+                  END;
+               ELSE
+                  state := -1;
+               END;
+            | 13:
+               IF buf[i] = ASCII.nl THEN
+                  SetNextPhase;
+               END;
+            | -1: (* Error state *)
+               IF buf[i] = ASCII.nl THEN
+                  (* version is not correct. Assume version as 1.0 *)
+                  request.versionMajor := 1;
+                  request.versionMinor := 0;
+                  SetNextPhase;
+               END;
+            END;
+         END;
+      END DoGetRequestLinePhase;
+      
+      PROCEDURE DoGetHeadersPhase;
+         (* Proceeds with another character of either a message-header or
+            the footer of a chunk encoded body. All variables used must be
+            defined in HandleRequest because local variables are not stable. 
+         *)
+      
+         PROCEDURE SetNextPhase;
+            (* End of get-headers-phase was reached; check which phase has 
+               to be selected now.
+            *)
+            
+            VAR
+               name, value: Streams.Stream;
+               string: ARRAY 20 OF CHAR;
+               ch: CHAR;
+               
+            PROCEDURE CompChunked(a: Streams.Stream): BOOLEAN;
+               (* CompChunked caseinsensitivly compares a stream and the
+                  string "chunked" starting with aktual stream
+                  position and returns TRUE if they are equal.
+               *)
+
+               VAR
+                  i: LONGINT;
+                  aCh: CHAR;
+                  chunked: ARRAY 9 OF CHAR;
+                  
+            BEGIN
+               chunked := "chunked";
+               i := 0;
+               WHILE Streams.ReadByte(a, aCh) & (chunked[i] # 0X) &
+                     (CAP(aCh) = CAP(chunked[i])) DO
+                  INC(i);
+               END;
+
+               IF a.eof THEN
+                  aCh := 0X;
+               END;
+
+               RETURN CAP(aCh) = CAP(chunked[i]);
+            END CompChunked;
+   
+         BEGIN
+            IF phase = PGetChunkedHeaders THEN
+               CallHandler;
+               RETURN;
+            END;
+            
+            (* 'SubStream'-processing in 'Headers' destroys the current
+               position of 'message', so don't forget to fix this here.
+            *)
+            Streams.GetPos(message, aktPos);
+            start := aktPos;
+            Headers.Get(request.headers, "Transfer-Encoding", value);
+            
+            IF value = NIL THEN
+               Headers.Get(request.headers, "Content-Length", value);
+               IF value # NIL THEN
+                  Streams.SetPos(value, 0);
+                  Read.LongIntS(value, dataBytesLeft);
+                  IF dataBytesLeft > 0 THEN
+                     phase := PGetNormalData;
+                     Streams.SetPos(message, aktPos);
+                     start := aktPos;
+                     RETURN;
+                  END;
+               END;
+               
+               (* No body available *)
+               request.body := NIL;
+               CallHandler;
+               RETURN;
+            END;
+            
+            (* analyse chunked *)
+            Streams.SetPos(value, 0);
+            WHILE Streams.ReadByte(value, ch) & (ch = " ") DO
+               (* ignore spaces *)
+            END;
+            IF ~Streams.Back(value) THEN END;
+            
+            (* compare for chunked *)
+            IF CompChunked(value) THEN
+               phase := PGetChunkedData;
+               state := 1;
+               Maps.Open(request.body);
+               Streams.SetPos(message, aktPos);
+               RETURN;
+            ELSE
+               (* Don't know about than transfer-encoding *)
+               Response.Error(client, 501, "Can't handle given Transfer-Encoding ");
+               FinishConnection;
+            END;
+         END SetNextPhase;
+         
+      BEGIN
+         IF buf[i] # ASCII.cr THEN
+            IF ~Streams.WriteByte(message, buf[i]) THEN
+               Error(httpD, cantWriteTexts);
+            END;
+
+            CASE state OF
+            | 1:
+               CASE buf[i] OF
+               | (* token *) "!", "#".."'", "*", "+", "-", ".", "0".."9", 
+                 "A".."Z", "^".."z", "|", "~", CHR(128)..CHR(255):
+                  Streams.GetPos(message, start);
+                  state := 2;
+               | ASCII.nl:
+                  (* no headers given *)
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+               END;
+            | 2:
+               CASE buf[i] OF
+               | (* token *) "!", "#".."'", "*", "+", "-", ".", "0".."9", 
+                 "A".."Z", "^".."z", "|", "~", CHR(128)..CHR(255):
+               | ":":
+                  state := 3;
+                  Streams.GetPos(message, aktPos);
+                  MkSubStream(name, message, start-1, aktPos-start, httpD);
+                  start := aktPos;
+               | ASCII.nl:
+                  state := -2;
+               ELSE
+                  state := -1;
+               END;
+            | 3:
+               CASE buf[i] OF
+               | " "..CHR(255):
+               | ASCII.nl:
+                  state := 4;
+               ELSE
+                  state := -1;
+               END;
+            | 4:
+               CASE buf[i] OF
+               | (* token *) "!", "#".."'", "*", "+", "-", ".", "0".."9", 
+                 "A".."Z", "^".."z", "|", "~", CHR(128)..CHR(255):
+                  state := 2;
+                  Streams.GetPos(message, aktPos);
+                  Headers.Add(request.headers, name, message, start, aktPos-2);
+                  (* 'SubStream'-processing in 'Headers.Add' destroys the current
+                     position of 'message', so fix this here.
+                  *)
+                  Streams.SetPos(message, aktPos);
+                  start := aktPos;
+               | ASCII.sp, ASCII.ht:
+                  (* Linear White Space: delete ASCII.nl *)
+                  IF ~Streams.Seek(message, -2, Streams.fromPos) OR 
+                        ~Streams.WriteByte(message, buf[i]) THEN
+                     Error(httpD, cantSeekOnTexts);
+                  END;
+                  state := 3;
+               | ASCII.nl:
+                  Streams.GetPos(message, aktPos);
+                  Headers.Add(request.headers, name, message, start, aktPos-2);
+                  (* 'SubStream'-processing in 'Headers.Add' destroys the current
+                     position of 'message', so fix this here.
+                  *)
+                  Streams.SetPos(message, aktPos);
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+                  Streams.GetPos(message, aktPos);
+                  Headers.Add(request.headers, name, message, start, aktPos-2);
+                  (* 'SubStream'-processing in 'Headers.Add' destroys the current
+                     position of 'message', so fix this here.
+                  *)
+                  Streams.SetPos(message, aktPos);
+               END;
+            | -1:
+               IF buf[i] = ASCII.nl THEN
+                  state := -2;
+               END;
+            | -2:
+               CASE buf[i] OF
+               | (* token *) "!", "#".."'", "*", "+", "-", ".", "0".."9", 
+                 "A".."Z", "^".."z", "|", "~", CHR(128)..CHR(255):
+                  state := 1;
+                  Streams.GetPos(message, start);
+               | ASCII.nl:
+                  SetNextPhase;
+               ELSE
+                  state := -1;
+               END;
+            END;
+         END;
+      END DoGetHeadersPhase;
+      
+      PROCEDURE DoGetChunkedDataPhase;
+         (* Reads chunks and combines them to the body. All variables used must 
+            be defined in HandleRequest because local variables are not stable.
+         *)
+         
+         VAR
+            bodyPos: Streams.Count; (* only needed for temporary calcs *)
+            
+         PROCEDURE SyntaxError;
+            (* Syntax error reading then chunk-body. Send error and close
+               connection.
+            *)
+         
+         BEGIN
+            Response.Error(client, 400, "Syntax Error in chunked-body");
+            FinishConnection;
+         END SyntaxError;
+         
+      BEGIN
+         IF ~Streams.WriteByte(message, buf[i]) THEN
+            Error(httpD, cantWriteTexts);
+         END;
+
+         CASE state OF
+         | 1:
+            CASE buf[i] OF
+            | "0":
+               state := 6;
+            | "1".."9", "A".."Z", "a".."z":
+               state := 2;
+               Streams.GetPos(message, start);
+            | ASCII.cr:
+               IF ~Streams.Seek(message, -1, Streams.fromPos) THEN
+                  Error(httpD, cantSeekOnTexts);
+               END;
+            ELSE
+               SyntaxError
+            END;
+         | 2:
+            CASE buf[i] OF
+            | "0".."9", "A".."Z", "a".."z":
+            | ASCII.nl:
+               state := 5;
+               Streams.SetPos(message, start-1);
+               Scan.S1(message, "%x", dataBytesLeft);
+            | ASCII.sp, ASCII.ht:
+               state := 3;
+               Streams.SetPos(message, start-1);
+               Scan.S1(message, "%x", dataBytesLeft);
+            | ASCII.cr:
+               IF ~Streams.Seek(message, -1, Streams.fromPos) THEN
+                  Error(httpD, cantSeekOnTexts);
+               END;
+            ELSE
+               SyntaxError;
+            END;
+         | 3:
+            CASE buf[i] OF
+            | ASCII.cr:
+               IF ~Streams.Seek(message, -1, Streams.fromPos) THEN
+                  Error(httpD, cantSeekOnTexts);
+               END;
+            | ASCII.nl: 
+               state := 5;
+            | ASCII.sp, ASCII.ht:
+            | CHR(33)..CHR(255):
+               state := 4;
+            ELSE
+               SyntaxError;
+            END;
+         | 4:
+            CASE buf[i] OF
+            | CHR(33)..CHR(255):
+            | ASCII.cr:
+               IF ~Streams.Seek(message, -1, Streams.fromPos) THEN
+                  Error(httpD, cantSeekOnTexts);
+               END;
+            | ASCII.nl:
+               state := 5;
+               Streams.GetPos(message, start);
+            ELSE
+               SyntaxError;
+            END;
+         | 5:
+            IF dataBytesLeft > 0 THEN
+               INC(dataBytesLeft, -1);
+               (* Could be improved by consuming all read bytes and setting
+                  'i' to 'bytesRead'.
+               *)
+            ELSIF buf[i] = ASCII.nl THEN
+               state := 1;
+               Streams.GetPos(message, aktPos);
+               IF Streams.Seek(request.body, 0, Streams.fromEnd) THEN END;
+               Streams.GetPos(request.body, bodyPos);
+               Maps.AddMap(request.body, bodyPos, bodyPos+aktPos-start-1,
+                              start, message);
+            ELSE
+               SyntaxError;
+            END;
+         | 6:
+            IF buf[i] = ASCII.nl THEN
+               IF ~Maps.Valid(request.body, 0) THEN
+                  (* No chunks were added. Set 'request.body' to NIL. *)
+                  Streams.Release(request.body);
+                  request.body := NIL;
+               END;
+               phase := PGetChunkedHeaders;
+               state := 1;
+            ELSIF buf[i] # ASCII.cr THEN
+               SyntaxError;
+            END;
+         END;
+      END DoGetChunkedDataPhase;
+      
+   BEGIN
+      SYS.CRSPAWN(cr);
+      
+      NEW(request);
+      NEW(request.url);
+      request.serverAddress := httpD.port;
+      request.clientAddress := NIL;
+      request.response := client;
+      
+      EventConditions.Create(toTerminate, httpD.terminate);
+      StreamConditions.Create(readable, client, StreamConditions.read);
+      Times.CreateAndSet(timeout, Times.relative, 0, timeoutForRead, 0);
+      TimeConditions.Create(isTimeout, Clocks.system, timeout);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, isTimeout);
+      Conditions.Incl(conditions, readable);
+      Conditions.Incl(conditions, toTerminate);
+      
+      Texts.Open(message);
+      start := 0;
+      phase := PGetRequestLine;
+      state := 1;
+      COPY("TTP/", expect); (* simples later used automat *)
+
+      LOOP
+         (* Lese Message des Klienten *)
+         Tasks.WaitForOneOf(conditions);
+         IF EventConditions.TestAndGet(toTerminate, event) THEN
+            FinishConnection;
+         END;
+         IF Conditions.Test(readable, httpD) THEN
+            bytesRead := Streams.ReadPacket(client, buf, 0, bufSize);
+            IF client.eof THEN
+               (* client closed connection *)
+               FinishConnection;
+            END;
+            
+            i := 0;
+            WHILE i < bytesRead DO
+               CASE phase OF
+               | PGetRequestLine: DoGetRequestLinePhase;
+               | PGetHeaders, PGetChunkedHeaders: DoGetHeadersPhase;
+               | PGetNormalData:
+                  IF ~Streams.WriteByte(message, buf[i]) THEN
+                     Error(httpD, cantWriteTexts);
+                  END;
+                  INC(dataBytesLeft, -1);
+                  IF dataBytesLeft = 0 THEN
+                     Streams.GetPos(message,aktPos);
+                     MkSubStream(request.body, message, start, aktPos-start+1,
+                                 httpD);
+                     CallHandler;
+                  END;
+               | PGetChunkedData: DoGetChunkedDataPhase;
+               END;
+               
+               INC(i);
+            END;
+            (* re-set timeout *)
+            Conditions.Excl(conditions, isTimeout);
+            Times.CreateAndSet(timeout, Times.relative, 0, timeoutForRead, 0);
+            TimeConditions.Create(isTimeout, Clocks.system, timeout);
+            Conditions.Incl(conditions, isTimeout);
+         ELSE
+            (* Timeout reached *)
+            FinishConnection;
+         END;
+      END;
+   END HandleRequest;
+   
+
+   PROCEDURE Dispatch(VAR cr: Coroutines.Coroutine; httpD: HTTPD; 
+                      VAR status: BOOLEAN);
+      (* Tries to listen on 'httpD.port'. If this port is already used 'status'
+         will be set to FALSE else a new corotine will be spawned. With this
+         coroutine a task is created that creates another task for each request
+         calling 'HandleRequest.'
+      *)
+      
+      VAR
+	 newcr: Coroutines.Coroutine;
+         socket: Networks.Socket;
+         toTerminate: Conditions.Condition;
+         connectable: Conditions.Condition;
+         conditions: Conditions.ConditionSet;
+         event: Events.Event;
+         client: Streams.Stream;
+         handleRequestor: Tasks.Task;
+         
+   BEGIN
+      status := Networks.Listen(socket, httpD.port, httpD);
+      IF ~status THEN
+         RETURN;
+      END;
+      
+      EventConditions.Create(toTerminate, httpD.terminate);
+         (* before spawning to react if Terminate ist called before it is the
+            turn of the dispatcher.
+         *)
+      SYS.CRSPAWN(cr);
+      
+      Networks.CreateAcceptCondition(connectable, socket);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, toTerminate);
+      Conditions.Incl(conditions, connectable);
+      
+      LOOP
+         Tasks.WaitForOneOf(conditions);
+         
+         IF EventConditions.TestAndGet(toTerminate, event) THEN
+            EXIT;
+         END;
+         
+         IF Conditions.Test(connectable, httpD) & 
+               Networks.Accept(socket, client, Streams.onebuf) THEN
+            HandleRequest(newcr, client, httpD);
+            Tasks.Create(handleRequestor, newcr);
+         END;
+      END;
+      
+      EventConditions.Drop(toTerminate);
+      Networks.Release(socket);
+      Tasks.Terminate;
+   END Dispatch;
+   
+   
+   PROCEDURE Start(httpD: HTTPD): BOOLEAN;
+      (* Starts a new Daemon waiting for Requests on 'httpD.port'. Each Request
+         is processed by 'httpD.handler'. 'Start' will return FALSE if
+         'httpD.port' is already in use.
+      *)
+   
+      VAR
+         status: BOOLEAN;
+         cr: Coroutines.Coroutine;
+         dispatcher: Tasks.Task;
+         
+   BEGIN
+      Dispatch(cr, httpD, status);
+      IF status THEN
+         Tasks.Create(dispatcher, cr);
+      END;
+      RETURN status;
+   END Start;
+   
+   
+   PROCEDURE Terminate(httpD: HTTPD);
+      (* Terminates a running daemon *)
+      
+      VAR
+         event: Events.Event;
+         
+   BEGIN
+      NEW(event);
+      event.type := httpD.terminate;
+      Events.Raise(event);
+   END Terminate;
+   
+   
+   PROCEDURE Create(VAR httpD: HTTPD; port: Networks.Address; 
+                    handler: WebHandlers.Handler);
+      (* Creates an new Daemon. If the daemon is started it is waiting for
+         Requests on 'port'. Incomming requests are handled by 'handler'.
+      *)
+   
+   BEGIN
+      NEW(httpD);
+      httpD.port := port;
+      httpD.handler := handler;
+      Events.Define(httpD.terminate);
+      Events.Ignore(httpD.terminate);
+      RelatedEvents.QueueEvents(httpD)
+   END Create;
+   
+   
+BEGIN
+END InetHTTPDaemon.

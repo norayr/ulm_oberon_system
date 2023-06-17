@@ -1,0 +1,87 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysStacks.om,v 1.2 2004/04/29 08:06:31 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysStacks.om,v $
+   Revision 1.2  2004/04/29 08:06:31  borchert
+   Stack is now a record instead of a pointer to a record
+   to avoid storage allocation during the garbage collection
+
+   Revision 1.1  1999/04/16 17:05:51  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysStacks;
+
+   (* system-dependent stack examination of coroutines *)
+
+   IMPORT Coroutines, Disciplines, SysTypes, SYS := SYSTEM;
+
+   CONST
+      oneword = 4; (* number of bytes per register *)
+
+      (* following offset is to be taken relative to the CR pointer *)
+      ucontextOffset = 2 * oneword;
+
+      (* following offsets are to be taken relative to ucontext *)
+      crbaseOff = 0;
+      crtopOff = oneword;
+      crpcOff = 2 * oneword;
+
+      (* following offsets are to be taken relative to the new top/old base *)
+      oldbaseOff = 0;
+      returnOff = 4;
+      
+   TYPE
+      Stack =
+	 RECORD
+	    base, top, pc: SysTypes.UntracedAddress; (* to be returned next *)
+	 END;
+
+   PROCEDURE Open(VAR stack: Stack; cr: Coroutines.Coroutine);
+      VAR
+	 ucontext: SysTypes.UntracedAddress;
+   BEGIN
+      ucontext := SYS.VAL(SysTypes.UntracedAddress, cr) + ucontextOffset;
+      SYS.GET(ucontext + crtopOff, stack.top);
+      SYS.GET(ucontext + crpcOff, stack.pc);
+      SYS.GET(ucontext + crbaseOff, stack.base);
+   END Open;
+
+   PROCEDURE Next(VAR stack: Stack;
+                  VAR base, top, pc: SysTypes.UntracedAddress) : BOOLEAN;
+   BEGIN
+      (* ODD stack.top and stack.top = 0 shouldn't happen unless the initial
+       * coroutine is invalid. *)
+      IF (stack.base = 0) OR (stack.top = 0) OR ODD(SYS.VAL (INTEGER, stack.top)) THEN
+         RETURN FALSE
+      END;
+      base := stack.base; top := stack.top; pc := stack.pc;
+      stack.top := stack.base;    (* New top is old base *)
+      IF stack.top # 0 THEN
+         SYS.GET (stack.top+oldbaseOff, stack.base);
+	 SYS.GET (stack.top+returnOff, stack.pc);
+      END;
+      RETURN TRUE
+   END Next;
+
+END SysStacks.

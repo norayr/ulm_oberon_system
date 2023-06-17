@@ -1,0 +1,322 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: StandardChe.om,v 1.1 2004/04/23 06:10:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: StandardChe.om,v $
+   Revision 1.1  2004/04/23 06:10:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE StandardChessClocks;
+
+   IMPORT ChessClocks, Clocks, Events, Op := Operations, Priorities, Scales,
+      Services, Shards, Timers, Times;
+
+   TYPE
+      Clock = POINTER TO ClockRec;
+      ClockRec =
+	 RECORD
+	    (Clocks.ClockRec)
+	    running: BOOLEAN;
+	    time: Times.Time;
+	       (* relative, current time if clock is not running and
+	          time elapsed before last restart if running
+	       *)
+	    start: Times.Time;
+	       (* absolute, valid only if running:
+	          time of system clock at time of restart
+	       *)
+	    timer: Timers.Timer; (* if running only *)
+	    timeOfTimer: Times.Time; (* absolute *)
+	    event: Events.Event; (* event passed to TimerOn *)
+	 END;
+   VAR
+      ctype: Services.Type;
+      cif: Clocks.Interface;
+   CONST
+      ccaps = {Clocks.timer};
+
+   TYPE
+      ChessClock = POINTER TO ChessClockRec;
+      ChessClockRec =
+	 RECORD
+	    (ChessClocks.ChessClockRec)
+	    pot: Shards.Pot;
+	    clock: ARRAY MAX(SHORTINT) OF Clock;
+	    nofplayers: SHORTINT;
+	    timelimit: Times.Time;
+	    current: SHORTINT;
+	    running: BOOLEAN;
+	 END;
+
+   VAR
+      cctype: Services.Type;
+      ccif: ChessClocks.Interface;
+
+   (* === utilities ====================================================== *)
+
+   PROCEDURE MakeAbsolute(time: Times.Time; VAR abstime: Times.Time);
+      VAR
+	 timeval: Times.TimeValueRec;
+   BEGIN
+      Times.GetValue(time, timeval);
+      Times.CreateAndSet(abstime, Scales.absolute,
+                         timeval.epoch, timeval.second, timeval.usec);
+   END MakeAbsolute;
+
+   PROCEDURE MakeRelative(time: Times.Time; VAR reltime: Times.Time);
+      VAR
+	 timeval: Times.TimeValueRec;
+   BEGIN
+      Times.GetValue(time, timeval);
+      Times.CreateAndSet(reltime, Scales.relative,
+                         timeval.epoch, timeval.second, timeval.usec);
+   END MakeRelative;
+
+   PROCEDURE StartClock(clock: Clock);
+      VAR
+	 reltime: Times.Time;
+   BEGIN
+      ASSERT(~clock.running);
+      Clocks.GetTime(Clocks.system, clock.start);
+      IF clock.timeOfTimer # NIL THEN
+	 IF Op.Compare(clock.timeOfTimer, clock.time) > 0 THEN
+	    Op.Sub3(reltime, clock.timeOfTimer, clock.time);
+	    Timers.Add(Clocks.system, reltime, clock.event, clock.timer);
+	 ELSE
+	    clock.timeOfTimer := NIL; clock.event := NIL;
+	    clock.timer := NIL;
+	 END;
+      END;
+      clock.running := TRUE;
+   END StartClock;
+
+   PROCEDURE ^ GetTime(clock: Clocks.Clock; VAR time: Times.Time);
+
+   PROCEDURE StopClock(clock: Clock);
+   BEGIN
+      ASSERT(clock.running);
+      GetTime(clock, clock.time);
+      IF clock.timer # NIL THEN
+	 Timers.Remove(clock.timer); clock.timer := NIL;
+      END;
+      IF clock.timeOfTimer # NIL THEN
+	 IF Op.Compare(clock.timeOfTimer, clock.time) < 0 THEN
+	    clock.timeOfTimer := NIL; clock.event := NIL;
+	 END;
+      END;
+      clock.running := FALSE;
+   END StopClock;
+
+   (* === interface procedures for Clocks ================================ *)
+
+   PROCEDURE GetTime(clock: Clocks.Clock; VAR time: Times.Time);
+      VAR
+	 currentTime: Times.Time;
+	 reltime: Times.Time;
+   BEGIN
+      WITH clock: Clock DO
+	 IF clock.running THEN
+	    Clocks.GetTime(Clocks.system, currentTime);
+	    Op.Sub3(reltime, currentTime, clock.start);
+	    Op.Add2(reltime, clock.time);
+	 ELSE
+	    reltime := clock.time;
+	 END;
+	 MakeAbsolute(reltime, time);
+      END;
+   END GetTime;
+
+   PROCEDURE TimerOn(clock: Clocks.Clock; time: Times.Time;
+                     event: Events.Event);
+      VAR
+	 currentTime: Times.Time; (* of our clock *)
+	 reltime: Times.Time;
+   BEGIN
+      WITH clock: Clock DO
+	 GetTime(clock, currentTime);
+	 IF Scales.IsRelative(time) THEN
+	    Op.Add3(clock.timeOfTimer, currentTime, time);
+	    reltime := time;
+	 ELSE
+	    Op.Assign(clock.timeOfTimer, time);
+	    Op.Sub3(reltime, time, currentTime);
+	 END;
+	 IF clock.running THEN
+	    IF clock.timer # NIL THEN
+	       Timers.Remove(clock.timer);
+	    END;
+	    Timers.Add(Clocks.system, reltime, event, clock.timer);
+	 END;
+	 clock.event := event;
+      END;
+   END TimerOn;
+
+   PROCEDURE TimerOff(clock: Clocks.Clock);
+   BEGIN
+      WITH clock: Clock DO
+	 IF clock.running & (clock.timer # NIL) THEN
+	    Timers.Remove(clock.timer);
+	 END;
+      END;
+   END TimerOff;
+
+   PROCEDURE GetPriority(clock: Clocks.Clock;
+                         VAR priority: Priorities.Priority);
+   BEGIN
+      Clocks.GetPriority(Clocks.system, priority);
+   END GetPriority;
+
+   (* === interface procedures for ChessClocks =========================== *)
+
+   PROCEDURE Start(chessclock: ChessClocks.ChessClock;
+                   auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 IF ~Shards.Fits(chessclock.pot, auth) THEN RETURN FALSE END;
+	 IF chessclock.running THEN RETURN FALSE END;
+	 IF chessclock.current < 0 THEN
+	    chessclock.current := 0;
+	 END;
+	 StartClock(chessclock.clock[chessclock.current]);
+	 chessclock.running := TRUE;
+      END;
+      RETURN TRUE
+   END Start;
+
+   PROCEDURE Stop(chessclock: ChessClocks.ChessClock;
+                  auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 IF ~Shards.Fits(chessclock.pot, auth) THEN RETURN FALSE END;
+	 IF ~chessclock.running THEN RETURN FALSE END;
+	 StopClock(chessclock.clock[chessclock.current]);
+	 chessclock.running := FALSE;
+      END;
+      RETURN TRUE
+   END Stop;
+
+   PROCEDURE Switch(chessclock: ChessClocks.ChessClock;
+                    auth: Shards.Lid; player: ChessClocks.Player) : BOOLEAN;
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 IF ~Shards.Fits(chessclock.pot, auth) THEN RETURN FALSE END;
+	 IF ~chessclock.running THEN RETURN FALSE END;
+	 IF (player < 0) OR (player > chessclock.nofplayers) THEN
+	    RETURN FALSE
+	 END;
+	 IF chessclock.current = player THEN RETURN TRUE END;
+	 StopClock(chessclock.clock[chessclock.current]);
+	 StartClock(chessclock.clock[player]);
+	 chessclock.current := player;
+      END;
+      RETURN TRUE
+   END Switch;
+
+   PROCEDURE Running(chessclock: ChessClocks.ChessClock) : BOOLEAN;
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 RETURN chessclock.running
+      END;
+   END Running;
+
+   PROCEDURE CurrentPlayer
+	       (chessclock: ChessClocks.ChessClock) : ChessClocks.Player;
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 IF chessclock.running THEN
+	    RETURN chessclock.current
+	 ELSE
+	    RETURN -1
+	 END;
+      END;
+   END CurrentPlayer;
+
+   PROCEDURE GetClock(chessclock: ChessClocks.ChessClock;
+                      player: ChessClocks.Player;
+		      VAR clock: Clocks.Clock);
+   BEGIN
+      WITH chessclock: ChessClock DO
+	 IF (player >= 0) & (player < chessclock.nofplayers) THEN
+	    clock := chessclock.clock[player];
+	 ELSE
+	    clock := NIL;
+	 END;
+      END;
+   END GetClock;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(ctype, "StandardChessClocks.Clock",
+	 "Clocks.Clock");
+      ASSERT(ctype # NIL);
+      Services.CreateType(cctype, "StandardChessClocks.ChessClock",
+	 "ChessClocks.ChessClock");
+      ASSERT(cctype # NIL);
+      NEW(cif);
+      cif.gettime := GetTime; cif.settime := NIL;
+      cif.timeron := TimerOn; cif.timeroff := TimerOff;
+      cif.getpriority := GetPriority;
+      NEW(ccif);
+      ccif.start := Start; ccif.stop := Stop; ccif.switch := Switch;
+      ccif.running := Running; ccif.currentPlayer := CurrentPlayer;
+      ccif.getClock := GetClock;
+   END Init;
+
+   (* === exported constructor =========================================== *)
+
+   PROCEDURE Create(VAR chessclock: ChessClocks.ChessClock;
+		    pot: Shards.Pot;
+                    nofplayers: SHORTINT;
+		    timelimit: Times.Time);
+      VAR
+	 cc: ChessClock;
+	 ci: SHORTINT;
+
+      PROCEDURE CreateClock(VAR clock: Clock);
+      BEGIN
+	 NEW(clock); Services.Init(clock, ctype);
+	 Clocks.Init(clock, cif, ccaps);
+	 clock.running := FALSE;
+	 Times.CreateAndSet(clock.time, Scales.relative, 0, 0, 0);
+	 clock.start := NIL; clock.timer := NIL; clock.timeOfTimer := NIL;
+      END CreateClock;
+
+   BEGIN (* Create *)
+      ASSERT(nofplayers > 0);
+      ASSERT(Scales.IsRelative(timelimit));
+      NEW(cc); Services.Init(cc, cctype);
+      ChessClocks.Init(cc, ccif, nofplayers, timelimit);
+      cc.pot := pot; cc.nofplayers := nofplayers; cc.timelimit := timelimit;
+      cc.current := -1; cc.running := FALSE;
+      ci := 0;
+      WHILE ci < nofplayers DO
+	 CreateClock(cc.clock[ci]); INC(ci);
+      END;
+      chessclock := cc;
+   END Create;
+
+BEGIN
+   Init;
+END StandardChessClocks.

@@ -1,0 +1,355 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysSelect.om,v 1.2 1995/01/15 14:57:38 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysSelect.om,v $
+   Revision 1.2  1995/01/15  14:57:38  borchert
+   BOOLEAN return value added for SelectWithTimeLimit, Select and Poll
+
+   Revision 1.1  1994/02/23  08:00:16  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 11/91
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysSelect;
+
+   IMPORT Objects, RelatedEvents, Sys, SYS := SYSTEM, SysErrors,
+      SysResources, SysTime, SysTypes;
+
+   CONST
+      setsize = MAX(SET) + 1; (* in bits *)
+      maxsetlen = MAX(INTEGER) DIV setsize;
+	 (* maximal length of an ARRAY OF SET *)
+   TYPE
+      SetRec = ARRAY maxsetlen OF SET;
+	 (* looks very large to avoid any range check faults;
+	    the set length is determined dynamically in
+	    dependence of the maximal number of open files;
+	    we take SET for convenience but the information is
+	    translated into pollfd arrays. Thus we don't
+	    have to care about the set representations used by the
+	    kernel. 
+	 *)
+      Set = POINTER TO SetRec;
+      FileDescriptorSet =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* private components *)
+	    set: Set;
+	    maxfd: SysTypes.File;
+	 END;
+   VAR
+      emptyset: FileDescriptorSet;
+      (* privat variables *)
+      maximalNumberOfOpenFiles: INTEGER;
+      fdsetLength: LONGINT; (* size of Set in bytes *)
+
+   TYPE
+      (* struct pollfd of Solaris 2, see <sys/poll.h> *)
+      (* NOTE: OberonI386Analyzer will reorder the two INT16s and put
+       * them bevor the fd field, i.e. we have to play our own tricks. *)
+      PollFlags = SYS.INT16;
+      PollFdRec =
+	 RECORD
+	    fd: SysTypes.File;
+	    eventio : LONGINT;
+	    (*
+	    events: PollFlags;
+	    revents: PollFlags;
+	    *)
+	 END;
+   CONST
+      pollfdrecsize = SYS.SIZE(PollFdRec);
+      maxpollfdsetlen = MAX(INTEGER) DIV pollfdrecsize;
+   TYPE
+      PollFdSet = POINTER TO ARRAY maxpollfdsetlen OF PollFdRec;
+	 (* as above, we use a large index only to avoid range check faults *)
+   CONST
+      (* bits for events and revents *)
+      pollIn =       1H; (* fd is readable *)
+      pollPri =      2H; (* high priority info at fd *)
+      pollOut =      4H; (* fd is writable (won't block) *)
+      pollRdNorm =  40H; (* normal data is readable *)
+      pollWrNorm = 0100H;
+      pollRdBand =  80H; (* out-of-band data is readable *)
+      pollWrBand = 200H; (* out-of-band data is writable *)
+      pollNorm = pollRdNorm;
+      pollErr =      8H; (* fd has error condition *)
+      pollHup =     10H; (* fd has been hung up on *)
+      pollNval =    20H; (* invalid pollfd entry *)
+      pollMsg =    400H;
+
+      (* for select emulation. See /usr/src/linux/fs/select.c *)
+      pollinset  = pollRdNorm + pollRdBand + pollIn + pollHup + pollErr;
+      polloutset = pollWrBand + pollWrNorm + pollOut + pollErr;
+      pollexset  = pollPri;
+
+      (* common pargs of pollinset and polloutset *)
+      pollinoutcommon = pollErr;
+
+   PROCEDURE REvents (eventio : LONGINT) : LONGINT;
+   BEGIN
+      RETURN ASH (eventio, -16);
+   END REvents;
+
+   PROCEDURE ClearSet(VAR fdset: FileDescriptorSet);
+   BEGIN
+      SYS.WCLEAR(SYS.VAL(LONGINT, fdset.set),
+		 fdsetLength DIV SYS.SIZE(INTEGER));
+      fdset.maxfd := -1;
+   END ClearSet;
+
+   PROCEDURE CreateSet(VAR fdset: FileDescriptorSet);
+   BEGIN
+      SYS.NEW(fdset.set, fdsetLength);
+      ClearSet(fdset);
+   END CreateSet;
+
+   PROCEDURE Incl(VAR fdset: FileDescriptorSet; fd: SysTypes.File);
+   BEGIN
+      IF (fd >= 0) & (fd < maximalNumberOfOpenFiles) THEN
+	 INCL(fdset.set[fd DIV setsize], fd MOD setsize);
+	 IF fd > fdset.maxfd THEN
+	    fdset.maxfd := fd;
+	 END;
+      END;
+   END Incl;
+
+   PROCEDURE Excl(VAR fdset: FileDescriptorSet; fd: SysTypes.File);
+   BEGIN
+      IF (fd >= 0) & (fd < maximalNumberOfOpenFiles) THEN
+	 EXCL(fdset.set[fd DIV setsize], fd MOD setsize);
+      END;
+   END Excl;
+
+   PROCEDURE In(fdset: FileDescriptorSet; fd: SysTypes.File) : BOOLEAN;
+   BEGIN
+      IF (fd >= 0) & (fd < maximalNumberOfOpenFiles) THEN
+	 RETURN (fd MOD setsize) IN fdset.set[fd DIV setsize]
+      ELSE
+	 RETURN FALSE
+      END;
+   END In;
+
+   PROCEDURE ConvertSetsToPollFdSet(
+	 readfds, writefds, exceptfds: FileDescriptorSet;
+	 VAR pollfdset: PollFdSet;
+	 VAR pollfds: INTEGER);
+
+      VAR
+         flags : PollFlags;
+	 max : INTEGER;
+
+   BEGIN (* ConvertSetsToPollFdSet *)
+      pollfds := 0;
+      max := readfds.maxfd;
+      IF writefds.maxfd > max THEN
+         max := writefds.maxfd;
+      END;
+      IF exceptfds.maxfd > max THEN
+         max := exceptfds.maxfd;
+      END;
+      INC (max);
+      SYS.NEW(pollfdset, max * pollfdrecsize);
+      WHILE max > 0 DO
+         DEC (max);
+	 flags := 0;
+         IF In (readfds, max) THEN
+	    flags := pollinset;
+	 END;
+         IF In (writefds, max) THEN
+	    IF flags # 0 THEN
+	       DEC (flags, pollinoutcommon);
+	    END;
+	    INC (flags, polloutset);
+	 END;
+         IF In (exceptfds, max) THEN
+	    INC (flags, pollexset);
+	 END;
+	 IF flags # 0 THEN
+	    pollfdset[pollfds].fd := max;
+	    pollfdset[pollfds].eventio :=  flags;
+	    INC (pollfds);
+	 END;
+      END;
+   END ConvertSetsToPollFdSet;
+
+
+   PROCEDURE PollFdsetToSets(
+	 pollfdset: PollFdSet; pollfds: INTEGER;
+	 VAR readfds, writefds, exceptfds: FileDescriptorSet;
+	 VAR ready: INTEGER);
+      VAR
+	 i : INTEGER;
+
+      PROCEDURE Check(VAR fds: FileDescriptorSet; flags: PollFlags);
+      BEGIN
+         IF In (fds, pollfdset[i].fd) THEN
+	    Excl (fds, pollfdset[i].fd);
+	    IF SYS.VAL(SET, LONG(flags)) *
+		  SYS.VAL(SET, REvents (pollfdset[i].eventio)) # {} THEN
+	       Incl(fds, pollfdset[i].fd);
+	       INC(ready);
+	    END;
+	 END;
+      END Check;
+
+   BEGIN (* PollFdsetToSets *)
+      i := 0; ready := 0;
+      WHILE i < pollfds DO
+	 ASSERT (pollfdset[i].fd >= 0);
+	 Check(readfds, pollinset);
+	 Check(writefds, polloutset);
+	 Check(exceptfds, pollexset);
+	 INC(i);
+      END;
+   END PollFdsetToSets;
+
+   PROCEDURE ConvertTimeOut(timeout: SysTime.TimeVal) : LONGINT;
+      (* convert seconds & microseconds into milliseconds *)
+      VAR
+	 roundup: INTEGER;
+   BEGIN
+      IF timeout.sec >= MAX(INTEGER) DIV 1000 THEN
+	 RETURN MAX(INTEGER)
+      ELSE
+	 IF timeout.usec MOD 1000 # 0 THEN
+	    roundup := 1;
+	 ELSE
+	    roundup := 0;
+	 END;
+	 RETURN timeout.sec * 1000 + timeout.usec DIV 1000 + roundup
+      END;
+   END ConvertTimeOut;
+
+   PROCEDURE SelectWithTimeLimit(
+		VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		timeout: SysTime.TimeVal; VAR ready: INTEGER;
+		errors: RelatedEvents.Object;
+		retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+	 pollfdset: PollFdSet; pollfds: INTEGER;
+   BEGIN
+      interrupted := FALSE;
+      ConvertSetsToPollFdSet(readfds, writefds, exceptfds, pollfdset, pollfds);
+      IF pollfds = 0 THEN
+	 ready := 0;
+	 RETURN TRUE
+      END;
+      LOOP
+	 IF SYS.UNIXCALL(Sys.poll, d0, d1,
+			 pollfdset, pollfds,
+			 ConvertTimeOut(timeout)) THEN
+	    IF d0 > 0 THEN
+	       PollFdsetToSets(pollfdset, pollfds,
+		  readfds, writefds, exceptfds, ready);
+	    ELSE
+	       ready := 0;
+	    END;
+	    RETURN TRUE
+	 ELSE
+	    IF d0 = SysErrors.intr THEN
+	       interrupted := TRUE;
+	    END;
+	    IF (d0 # SysErrors.intr) OR ~retry THEN
+	       SysErrors.Raise(errors, d0, Sys.poll, "");
+	       ready := 0; RETURN FALSE
+	    END;
+	 END;
+      END;
+   END SelectWithTimeLimit;
+
+   PROCEDURE ^ Poll(VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		  VAR ready: INTEGER;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Select(VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		    VAR ready: INTEGER;
+		    errors: RelatedEvents.Object;
+		    retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+	 pollfdset: PollFdSet; pollfds: INTEGER;
+   BEGIN
+      interrupted := FALSE;
+      ConvertSetsToPollFdSet(readfds, writefds, exceptfds, pollfdset, pollfds);
+      IF pollfds = 0 THEN
+	 ready := 0;
+	 RETURN TRUE
+      END;
+      LOOP
+	 IF SYS.UNIXCALL(Sys.poll, d0, d1,
+			 pollfdset, pollfds, -1) THEN
+	    ASSERT(d0 > 0);  (* Return value = 0 would mean timeout *)
+	    PollFdsetToSets(pollfdset, pollfds,
+		  readfds, writefds, exceptfds, ready);
+	    ASSERT(ready > 0);
+	    RETURN TRUE
+	 ELSE
+	    IF d0 = SysErrors.intr THEN
+	       interrupted := TRUE;
+	    END;
+	    IF (d0 # SysErrors.intr) OR ~retry THEN
+	       SysErrors.Raise(errors, d0, Sys.poll, "");
+	       ready := 0; RETURN FALSE
+	    END;
+	 END;
+      END;
+   END Select;
+
+   PROCEDURE Poll(VAR readfds, writefds, exceptfds: FileDescriptorSet;
+		  VAR ready: INTEGER;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 d0, d1: INTEGER;
+	 timeout: SysTime.TimeVal;
+	 retry, interrupted: BOOLEAN;
+   BEGIN
+      retry := FALSE; timeout.sec := 0; timeout.usec := 0;
+      RETURN SelectWithTimeLimit(readfds, writefds, exceptfds,
+                                 timeout, ready, errors,
+				 retry, interrupted)
+   END Poll;
+
+   PROCEDURE Init;
+      VAR
+	 limit: SysResources.Limit;
+   BEGIN
+      SysResources.GetLimit(SysResources.nofile, limit);
+      maximalNumberOfOpenFiles := limit.max;
+      IF maximalNumberOfOpenFiles > 1024 THEN
+         maximalNumberOfOpenFiles := 1024;
+      END;
+      IF maximalNumberOfOpenFiles = 0 THEN
+	 (* happens on older releases of SunOS *)
+	 maximalNumberOfOpenFiles := 60;
+      END;
+      fdsetLength := (maximalNumberOfOpenFiles + setsize - 1) DIV
+		     setsize * SYS.SIZE(SET);
+      CreateSet(emptyset);
+   END Init;
+
+BEGIN
+   Init;
+END SysSelect.

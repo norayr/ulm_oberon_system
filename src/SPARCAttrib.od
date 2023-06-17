@@ -1,0 +1,79 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SPARCAttributes;
+
+   IMPORT Arithmetics := SPARCArithmetics, Disciplines,
+      Regs := SPARCRegisters, Types;
+
+   (* immediate constants that are embedded into instructions have a
+      maximum of 13 bits, allowing for the range minsimm13..maxsimm13
+   *)
+   CONST
+      minsimm13 = -4096; maxsimm13 = 4095;
+   TYPE
+      Simm13 = Types.Int16;
+
+   (* attributes specify the location of an operand, variable or
+      parameter during the code generation; if mode belongs to
+      genmodes the location is addressable by the target machine
+      within at most one instruction
+   *)
+   CONST
+      regMode = 0; fpregMode = 1;
+      addrMode = 2; indexMode = 3; floatRegMode = 4;
+      simm13Mode = 5; condMode = 6; cmpMode = 7;
+      genModes = {regMode..cmpMode};
+   TYPE
+      Mode = SHORTINT; (* regMode..cmpMode and extensions *)
+      ModeSet = SET (* OF Mode *);
+   TYPE
+      Attribute = POINTER TO AttributeRec;
+      AttributeRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    mode: Mode;
+	    (* mode IN {regMode, addrMode, indexMode} *)
+	    reg: Regs.Reg;
+	    (* mode = fpregMode *)
+	    freg: Regs.FPReg;
+	    (* mode = indexMode *)
+	    addr: Simm13;
+	    xreg: Regs.Reg; (* may be Regs.noReg *)
+	    (* mode = simm13Mode *)
+	    simm13val: Simm13;
+	    (* mode IN {condMode, cmpMode} *)
+	    test: Arithmetics.TestType;
+	    atype: Arithmetics.Type;
+	    (* mode = cmpMode *)
+	    (* reg2 & cmpval must not be used simultaneously *)
+	    reg1, reg2: Regs.Reg;
+	    cmpval: Simm13;
+	    (* mode = condMode *)
+	    tdest: Destination; (* branch on TRUE *)
+	    fdest: Destination; (* branch on FALSE *)
+	 END;
+
+END SPARCAttributes.

@@ -1,0 +1,89 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Schedulers.od,v 1.2 1994/07/04 07:49:33 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Schedulers.od,v $
+   Revision 1.2  1994/07/04  07:49:33  borchert
+   out-parameter task added to AddTask
+
+   Revision 1.1  1994/02/23  08:04:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 1/92
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Schedulers;
+
+   (* interface for standard schedulers;
+      standard schedulers are able to process conditions
+      and give control to their own scheduler if
+      all tasks are waiting or terminated;
+      standard schedulers require the NIL-scheduler or
+      another standard scheduler as their own scheduler;
+      the remaining open question is the choice of one
+      of the tasks which are ready to continue
+   *)
+
+   IMPORT Coroutines, Disciplines, Events, Tasks;
+
+   TYPE
+      TaskGroup = POINTER TO TaskGroupRec;
+      TaskGroupRec = RECORD (Tasks.TaskGroupRec) END;
+      Task = POINTER TO TaskRec;
+      TaskRec = RECORD (Tasks.TaskRec) END;
+
+   TYPE
+      DispatchProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+      CreateProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+      RemoveProc = PROCEDURE (tg: TaskGroup; task: Task);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    dispatch: DispatchProc;
+	    create: CreateProc;
+	    remove: RemoveProc;
+	 END;
+
+   CONST
+      badTask = 0; (* returned task of Dispatch is not ready or valid *)
+      failureOfWaitFor = 1; (* unexpected return of Tasks.WaitFor *)
+      errorcodes = 2;
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitGroup(tg: TaskGroup; if: Interface);
+   PROCEDURE StartScheduler(tg: TaskGroup);
+
+   PROCEDURE AddTask(tg: TaskGroup; cr: Coroutines.Coroutine;
+		     VAR task: Tasks.Task);
+
+   PROCEDURE Ready(task: Task) : BOOLEAN;
+
+END Schedulers.

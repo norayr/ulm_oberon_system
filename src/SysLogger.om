@@ -1,0 +1,70 @@
+(* Adi's FTP Daemon
+   Copyright (C) 2000-2001 by Andreas Borchert
+   ----------------------------------------------------------------------------
+   Adi's FTP Daemon is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Adi's FTP Daemon is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysLogger;
+
+   IMPORT ASCII, CrPipes, Print, RelatedEvents, Streams, Strings,
+      UnixPipes, Write;
+
+   CONST
+      splogger = "/var/qmail/bin/splogger";
+
+   PROCEDURE AsciiFilter(in, out: Streams.Stream);
+      VAR
+	 ch: CHAR;
+   BEGIN
+      WHILE Streams.ReadByte(in, ch) & (out.errors = 0) DO
+	 IF (ch = "\") OR (ch = "^") THEN
+	    Write.CharS(out, "\"); Write.CharS(out, ch);
+	 ELSIF (ch = ASCII.nl) OR (ch >= " ") & (ch <= "~") THEN
+	    Write.CharS(out, ch);
+	 ELSE
+	    Print.S1(out, "\\%03o", ORD(ch));
+	 END;
+      END;
+   END AsciiFilter;
+
+   PROCEDURE Open(VAR log: Streams.Stream;
+		  tag: ARRAY OF CHAR; fac: INTEGER;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 command: ARRAY 128 OF CHAR;
+	 cmds: Streams.Stream;
+	 out, in: Streams.Stream;
+	 pipe: Streams.Stream;
+   BEGIN
+      command[0] := 0X; Strings.Open(cmds, command);
+      Print.S3(cmds, "%s %s %d", splogger, tag, fac);
+      IF ~UnixPipes.Open(pipe, command, UnixPipes.write,
+	    Streams.linebuf, errors) THEN
+	 RETURN FALSE
+      END;
+      CrPipes.Open(out, in, Streams.linebuf);
+      CrPipes.Spawn(AsciiFilter, in, pipe);
+      log := out;
+      RETURN TRUE
+   END Open;
+
+END SysLogger.

@@ -1,0 +1,282 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Schedulers 3 "Last change: 17 May 2001" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Schedulers \- general scheduler interface
+.SH SYNOPSIS
+.Pg
+TYPE TaskGroup = POINTER TO TaskGroupRec;
+TYPE TaskGroupRec = RECORD (Tasks.TaskGroupRec) END;
+TYPE Task = POINTER TO TaskRec;
+TYPE TaskRec = RECORD (Tasks.TaskRec) END;
+.sp 0.7
+TYPE DispatchProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+TYPE CreateProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+TYPE RemoveProc = PROCEDURE (tg: TaskGroup; task: Task);
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      dispatch: DispatchProc;
+      create: CreateProc;
+      remove: RemoveProc;
+   END;
+.sp 0.7
+CONST badTask = 0;
+CONST failureOfWaitFor = 1;
+CONST errorcodes = 2;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      errorcode: SHORTINT;
+   END;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE InitGroup(tg: TaskGroup; if: Interface);
+PROCEDURE StartScheduler(tg: TaskGroup);
+.sp 0.3
+PROCEDURE AddTask(tg: TaskGroup; cr: Coroutines.Coroutine;
+                  VAR task: Tasks.Task);
+.sp 0.3
+PROCEDURE Ready(task: Task) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I Schedulers
+realizes an interface for schedulers.
+The main work (condition processing and error handling)
+of schedulers is already done by \fISchedulers\fP \(em
+the only task which is left open to an implementor is
+the selection of one of the ready tasks.
+.LP
+.I InitGroup
+initializes a new task group and associates it with the given
+interface \fIif\fP.
+The interface procedures are expected to meet following
+specifications:
+.Is "\fItg\fP: \fITaskGroup\fP"
+.If dispatch "; \fBVAR\fP \fItask\fP: \fITask\fP"
+select one of the ready tasks of \fItg\fP and return it in \fItask\fP.
+\fISchedulers\fP guarantees that at least one task is ready for
+execution.
+.If create "; \fBVAR\fP \fItask\fP: \fITask\fP"
+create and initialize \fItask\fP and
+add \fItask\fP to the list of tasks which belong to \fItg\fP.
+This interface procedure allows to get track of the current list
+of tasks.
+.If remove "; \fItask\fP: \fITask\fP"
+remove \fItask\fP from the list of tasks.
+.Ef
+.LP
+.I StartScheduler
+starts the scheduling algorithm and returns in case of fatal errors
+or if all tasks which belong to \fItg\fP are terminated.
+.I StartScheduler
+calls \fITasks.WaitFor\fP with the union of all waiting conditions
+if all tasks are waiting.
+This causes the current process to be blocked
+if \fIStartScheduler\fP has been called by the main task.
+Note that \fIStartScheduler\fP may be called even if the
+initial task group is empty.
+In this case, \fIStartScheduler\fP waits for the first
+task being added by \fIAddTask\fP and starts afterwards
+the scheduling algorithm.
+.LP
+.I AddTask
+creates a new task which represents \fIcr\fP and includes
+it in the set of tasks which belong to \fItg\fP.
+Further, every task is free to call \fIAddTask\fP while
+\fIStartScheduler\fP is running.
+.LP
+.I Ready
+returns \fBTRUE\fP if \fItask\fP is currently not waiting.
+.SH DIAGNOSTICS
+Following errors lead to events which are related to the task group
+and passed to \fIRelatedEvents\fP.
+Further, \fIStartScheduler\fP returns immediately
+in case of such errors.
+.Tb failureOfWaitFor
+.Tp badTask
+The task which has been selected by \fIdispatch\fP
+is not ready or does not belong to the task group.
+.Tp failureOfWaitFor
+Indicates that \fITasks.WaitFor\fP returned too early,
+i.e. none of the conditions evaluates to \fBTRUE\fP or
+causes a failure.
+.Te
+Errors which result from failures to evaluate a condition
+are forwarded to the \fIerrors\fP components of
+all tasks which waits for the given condition.
+.SH "SEE ALSO"
+.Tb RelatedEvents(3)
+.Tp Conditions(3)
+interface for conditions
+.Tp RelatedEvents(3)
+error handling
+.Tp SysMain(3)
+creates the main task group
+.Tp RoundRobin(3)
+popular scheduler on top of this module
+.Tp Tasks(3)
+general task management
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: Schedulers.3,v 1.6 2001/05/17 05:46:20 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Schedulers.3,v $
+.\" Revision 1.6  2001/05/17 05:46:20  borchert
+.\" spelling error corrected
+.\"
+.\" Revision 1.5  1995/12/18 14:20:02  borchert
+.\" an initial task group may be empty now without causing StartScheduler
+.\" to return immediately
+.\"
+.\" Revision 1.4  1995/12/18  14:10:32  borchert
+.\" macros changed so that they are compatible with man3tohtml
+.\"
+.\" Revision 1.3  1994/07/04  07:49:05  borchert
+.\" out-parameter task added to AddTask
+.\"
+.\" Revision 1.2  1992/01/13  08:09:27  borchert
+.\" AddProc -> CreateProc
+.\"
+.\" Revision 1.1  1992/01/08  13:55:49  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

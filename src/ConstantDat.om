@@ -1,0 +1,264 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2003 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ConstantDatabases;
+
+   IMPORT Disciplines, Iterators, RelatedEvents, Resources, Services,
+      Streams, SubStreams, SYS := SYSTEM, Types;
+
+   TYPE
+      ConstantDatabase = POINTER TO ConstantDatabaseRec;
+      ConstantDatabaseRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    dbin: Streams.Stream;
+	 END;
+      Word32 = ARRAY 4 OF BYTE;
+   VAR
+      constantDatabaseType: Services.Type;
+
+   TYPE
+      (* returned by the iterator: *)
+      KeyValuePair = POINTER TO KeyValuePairRec;
+      KeyValuePairRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    key, value: Streams.Stream;
+	 END;
+
+   (* === private procedures ========================================= *)
+
+   PROCEDURE HashString(key: ARRAY OF CHAR) : Types.Int32;
+      VAR
+	 hashval: Types.Int32;
+	 index: INTEGER;
+   BEGIN
+      hashval := 5381;
+      index := 0;
+      WHILE (index < LEN(key)) & (key[index] # 0X) DO
+	 hashval :=
+	    SYS.VAL(Types.Int32,
+	       SYS.VAL(SET, (SYS.LSH(hashval, 5) + hashval)) /
+	       SYS.VAL(SET, key[index]));
+	 INC(index);
+      END;
+      RETURN hashval
+   END HashString;
+
+   PROCEDURE ReverseEndianness(VAR word: Word32);
+      VAR
+	 reversed: Word32;
+   BEGIN
+      reversed[0] := word[3];
+      reversed[1] := word[2];
+      reversed[2] := word[1];
+      reversed[3] := word[0];
+      word := reversed;
+   END ReverseEndianness;
+
+   PROCEDURE ReadLittleEndianValue(s: Streams.Stream;
+				   VAR val: Types.Int32) : BOOLEAN;
+      VAR
+	 word: Word32;
+   BEGIN
+      IF ~Streams.Read(s, word) THEN RETURN FALSE END;
+      IF Types.byteorder = Types.bigEndian THEN
+	 ReverseEndianness(word);
+      END;
+      val := SYS.VAL(Types.Int32, word);
+      RETURN TRUE
+   END ReadLittleEndianValue;
+
+   PROCEDURE GetHashTab(cdb: ConstantDatabase;
+			hashval: Types.Int32;
+			VAR position, length: Types.Int32) : BOOLEAN;
+   BEGIN
+      RETURN
+	 Streams.Seek(cdb.dbin, hashval MOD 256 * 8, Streams.fromStart) &
+	 ReadLittleEndianValue(cdb.dbin, position) &
+	 ReadLittleEndianValue(cdb.dbin, length)
+   END GetHashTab;
+
+   PROCEDURE LookupInHashTab(cdb: ConstantDatabase;
+			     hashval: Types.Int32;
+			     position, length: Types.Int32;
+			     VAR lastslot: Types.Int32;
+			     VAR recordpos: Types.Int32) : BOOLEAN;
+      VAR
+	 slot: Types.Int32;
+	 hashvalOfSlot: Types.Int32;
+	 recpos: Types.Int32;
+   BEGIN
+      IF lastslot = 0 THEN
+	 slot := hashval DIV 256 MOD length;
+      ELSE
+	 slot := lastslot + 1;
+      END;
+      WHILE slot < length DO
+	 IF ~Streams.Seek(cdb.dbin, position + slot * 8, Streams.fromStart) OR
+	       ~ReadLittleEndianValue(cdb.dbin, hashvalOfSlot) OR
+	       ~ReadLittleEndianValue(cdb.dbin, recpos) THEN
+	    RETURN FALSE
+	 END;
+	 IF recpos = 0 THEN
+	    lastslot := length;
+	    RETURN FALSE
+	 END;
+	 IF hashvalOfSlot = hashval THEN
+	    recordpos := recpos;
+	    lastslot := slot;
+	    RETURN TRUE
+	 END;
+	 INC(slot);
+      END;
+      RETURN FALSE
+   END LookupInHashTab;
+
+   PROCEDURE OpenRecord(cdb: ConstantDatabase; recpos: Types.Int32;
+			VAR key, value: Streams.Stream) : BOOLEAN;
+      VAR
+	 VAR keylen, reclen: Types.Int32;
+   BEGIN
+      RETURN
+	 Streams.Seek(cdb.dbin, recpos, Streams.fromStart) &
+	 ReadLittleEndianValue(cdb.dbin, keylen) &
+	 ReadLittleEndianValue(cdb.dbin, reclen) &
+	 SubStreams.Open(key, cdb.dbin, recpos + 8, keylen, cdb) &
+	 SubStreams.Open(value, cdb.dbin, recpos + 8 + keylen, reclen, cdb)
+   END OpenRecord;
+
+   PROCEDURE EqualKeys(key1: Streams.Stream; key2: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 index: INTEGER;
+	 ch1, ch2: CHAR;
+	 eof1, eof2: BOOLEAN;
+   BEGIN
+      index := 0;
+      LOOP
+	 eof1 := ~Streams.ReadByte(key1, ch1);
+	 eof2 := index >= LEN(key2);
+	 IF ~eof2 THEN
+	    ch2 := key2[index]; INC(index);
+	    eof2 := ch2 = 0X;
+	 END;
+	 IF eof1 & eof2 THEN RETURN TRUE END;
+	 IF eof1 # eof2 THEN RETURN FALSE END;
+	 IF ch1 # ch2 THEN RETURN FALSE END;
+      END;
+   END EqualKeys;
+
+   PROCEDURE IterateRecords(it: Iterators.Iterator;
+			    ref: Iterators.Reference;
+			    mode: Iterators.Mode);
+      VAR
+	 cdb: ConstantDatabase;
+	 pair: KeyValuePair;
+	 tabindex: INTEGER;
+	 position, length: Types.Int32;
+	 slot: INTEGER;
+	 hashvalOfSlot, recpos: Types.Int32;
+	 key, value: Streams.Stream;
+   BEGIN
+      cdb := ref(ConstantDatabase);
+      tabindex := 0;
+      WHILE tabindex < 256 DO
+	 IF GetHashTab(cdb, tabindex, position, length) THEN
+	    slot := 0;
+	    WHILE slot < length DO
+	       IF Streams.Seek(cdb.dbin,
+		     position + slot * 8, Streams.fromStart) &
+		     ReadLittleEndianValue(cdb.dbin, hashvalOfSlot) &
+		     ReadLittleEndianValue(cdb.dbin, recpos) &
+		     (recpos # 0) &
+		     OpenRecord(cdb, recpos, key, value) THEN
+		  NEW(pair); pair.key := key; pair.value := value;
+		  Iterators.Yield(it, pair);
+	       END;
+	       INC(slot);
+	    END;
+	 END;
+	 INC(tabindex);
+      END;
+   END IterateRecords;
+
+   (* === public procedures ========================================== *)
+
+   PROCEDURE Open(VAR cdb: ConstantDatabase; dbin: Streams.Stream);
+      VAR
+	 newcdb: ConstantDatabase;
+   BEGIN
+      NEW(newcdb);
+      newcdb.dbin := dbin;
+      Services.Init(newcdb, constantDatabaseType);
+      RelatedEvents.QueueEvents(newcdb);
+      Resources.DependsOn(newcdb, dbin);
+      cdb := newcdb;
+   END Open;
+
+   PROCEDURE Lookup(cdb: ConstantDatabase; key: ARRAY OF CHAR;
+		    VAR value: Streams.Stream) : BOOLEAN;
+      VAR
+	 hashval: Types.Int32;
+	 position, length: Types.Int32;
+	 lastslot: Types.Int32;
+	 recordpos: Types.Int32;
+	 keyStream, valueStream: Streams.Stream;
+   BEGIN
+      hashval := HashString(key);
+      IF ~GetHashTab(cdb, hashval, position, length) THEN
+	 RETURN FALSE
+      END;
+      lastslot := 0;
+      WHILE LookupInHashTab(cdb, hashval, position, length,
+			    lastslot, recordpos) DO
+	 IF ~OpenRecord(cdb, recordpos, keyStream, valueStream) THEN
+	    RETURN FALSE
+	 END;
+	 IF EqualKeys(keyStream, key) THEN
+	    Streams.Release(keyStream);
+	    value := valueStream;
+	    RETURN TRUE
+	 END;
+	 Streams.Release(keyStream); Streams.Release(valueStream);
+      END;
+      RETURN FALSE
+   END Lookup;
+
+   PROCEDURE GetIterator(cdb: ConstantDatabase;
+			 VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(it, IterateRecords, cdb, 0);
+   END GetIterator;
+
+   PROCEDURE Close(cdb: ConstantDatabase);
+   BEGIN
+      Streams.Release(cdb.dbin);
+      Resources.Notify(cdb, Resources.terminated);
+   END Close;
+
+BEGIN
+   Services.CreateType(constantDatabaseType,
+      "ConstantDatabases.ConstantDatabase", "");
+END ConstantDatabases.

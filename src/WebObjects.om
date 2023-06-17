@@ -1,0 +1,488 @@
+MODULE WebObjects;
+
+   IMPORT
+Write,
+      Disciplines, InetURLs, Objects, OneWayHashes, RelatedEvents, Services,
+      Streams, Times;
+      
+   CONST
+      (* cache mechanisms *)
+      doCache = 0;      (* the response may be cached even if it normally 
+         wouldn't be cached *)
+      privatCache = 1;  (* the response mustn't be cached in shared caches *)
+      noCache = 2;      (* the response mustn't be cached. *)
+      noStore = 3;      (* Caches should not store the data in non-volatile
+         storage *)
+      noTransform = 4;  (* Caches are not allowed to transform the message *)
+      mustRevalidate = 5; (* Caches must revalidate stale cache entries *)
+      proxyRevalidate = 6; (*Shared Caches, like Proxies must revalidate
+         stale cache entries *)
+      cacheMechanisms = 7;
+      
+   TYPE
+      Object = POINTER TO ObjectRec;
+      
+      Handle = POINTER TO HandleRec;
+      HandleRec =
+         RECORD
+            (Disciplines.ObjectRec)
+            object: Object; (* associated Object *)
+            error: BOOLEAN; (* last operation successful? *)
+         END;
+      
+      (* Interface-procedure-types *)
+      CreateHandleProc = PROCEDURE (VAR handle: Handle; object: Object; 
+                                    search, body: Streams.Stream;
+                                    errors: RelatedEvents.Object): BOOLEAN;
+      GetChallengeProc = PROCEDURE (handle: Handle;
+                                    VAR scheme, realm, param: ARRAY OF CHAR);
+      AuthenticateProc = PROCEDURE (handle: Handle;
+                                    scheme, param: Streams.Stream): BOOLEAN;
+      GetMD5HashValueProc = PROCEDURE (handle: Handle;
+                                       VAR value: OneWayHashes.Value);
+      GetLanguagesProc = PROCEDURE (handle: Handle;
+                                    VAR languages: ARRAY OF CHAR);
+      GetEncodingProc = PROCEDURE (handle: Handle; VAR encoding: ARRAY OF CHAR);
+      GetCharsetProc = PROCEDURE (handle: Handle; VAR charset: ARRAY OF CHAR);
+      GetMediaTypeProc = PROCEDURE (handle: Handle; 
+                                    VAR type, subtype, param: ARRAY OF CHAR);
+      GetUserAgentProc = PROCEDURE (handle: Handle;
+                                    VAR userAgent: ARRAY OF CHAR);
+      GetLengthProc = PROCEDURE (handle: Handle; VAR length: LONGINT);
+      GetBaseProc = PROCEDURE (handle: Handle; VAR base: InetURLs.URL);
+      GetLocationProc = PROCEDURE (handle: Handle; VAR location: InetURLs.URL);
+      GetCacheMechanismProc = PROCEDURE (handle: Handle; VAR mechanism: SET);
+      GetEntityTagProc = PROCEDURE (handle: Handle;
+                                    VAR eTag: ARRAY OF CHAR; VAR weak: BOOLEAN);
+      GetExpireDateProc = PROCEDURE (handle: Handle; VAR date: Times.Time);
+      GetLastModifiedDateProc = PROCEDURE (handle: Handle; VAR date: Times.Time);
+      SetRangeProc = PROCEDURE (handle: Handle; begin, end: LONGINT): BOOLEAN;
+      WriteBodyProc = PROCEDURE (handle: Handle; body: Streams.Stream);
+      
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec = 
+         RECORD
+            (Objects.ObjectRec)
+            createHandle: CreateHandleProc;
+            getChallenge: GetChallengeProc;
+            authenticate: AuthenticateProc;
+            getMD5HashValue: GetMD5HashValueProc;
+            getLanguages: GetLanguagesProc;
+            getEncoding: GetEncodingProc;
+            getCharset: GetCharsetProc;
+            getMediaType: GetMediaTypeProc;
+            getUserAgent: GetUserAgentProc;
+            getLength: GetLengthProc;
+            getBase: GetBaseProc;
+            getLocation: GetLocationProc;
+            getCacheMechanism: GetCacheMechanismProc;
+            getEntityTag: GetEntityTagProc;
+            getExpireDate: GetExpireDateProc;
+            getLastModifiedDate: GetLastModifiedDateProc;
+            setRange: SetRangeProc;
+            writeBody: WriteBodyProc;
+         END;
+
+   CONST
+      (* possible Capabilities *)
+      createHandleCap = 0;
+      clientAuthenicateCap = 1;
+      getMD5HashValueCap = 2;
+      getLanguagesCap = 3;
+      getEncodingCap = 4;
+      getCharsetCap = 5;
+      getMediaTypeCap = 6;
+      getUserAgentCap = 7;
+      getLengthCap = 8;
+      getBaseCap =9;
+      getLocationCap = 10;
+      getCacheMechanismCap = 11;
+      getEntityTagCap = 12;
+      getExpireDateCap = 13;
+      getLastModifiedDateCap = 14;
+      setRangeCap = 15;
+      writeBodyCap = 16;
+      allCaps = {createHandleCap .. writeBodyCap};
+      strictCaps = {createHandleCap, writeBodyCap};
+      
+   TYPE
+      Capability = SHORTINT; (* 'allCaps' *)
+      CapabilitySet = SET; (* of Capability *)
+      
+      (* Object = POINTER TO ObjectRec; *)
+      ObjectRec =
+         RECORD
+            (Services.ObjectRec)
+            (* private *)
+            if: Interface;
+            caps: CapabilitySet;
+         END;
+
+   VAR (* private *)
+      serviceType: Services.Type;
+      
+      
+   PROCEDURE Init(object: Object; if: Interface; caps: CapabilitySet);
+      (* Must be called after NEW. *)
+      
+      VAR
+         webServiceType: Services.Type;
+         
+   BEGIN
+      ASSERT((if # NIL)
+         & (caps * strictCaps = strictCaps)
+         & (((getCharsetCap IN caps) & (getMediaTypeCap IN caps)) 
+            OR ~(getCharsetCap IN caps))
+      );
+      object.if := if;
+      object.caps := caps;
+      Services.GetType(object, webServiceType);
+      ASSERT((webServiceType # NIL)
+         & Services.IsExtensionOf(webServiceType, serviceType)
+      );
+   END Init;
+   
+   
+   PROCEDURE Capabilities(object: Object): CapabilitySet;
+      (* returns capabilities of 'object' *)
+      
+   BEGIN
+      RETURN object.caps;
+   END Capabilities;
+   
+   
+   PROCEDURE CreateHandle(VAR handle: Handle; object: Object; 
+                          search, body: Streams.Stream;
+                          errors: RelatedEvents.Object): BOOLEAN;
+      (* Creates an new handle. With that handle an object can associate
+         and syncronize further operations. Don't forget synchronization!
+         'search' (search-string of the URL, or NIL) and 'body' (body of a POST,
+         OR NIL) are parameters by which the content of the  response-body is
+         influenced. All errors in combination with the handle are related to
+         'errors'. 'NewHandle' will return FALSE if an there is an error.
+      *)
+      
+   BEGIN
+      (* No check needed. This Method must be implemented. *)
+      IF object.if.createHandle(handle, object, search, body, errors) THEN
+         handle.object := object;
+         handle.error := FALSE;
+         RETURN TRUE;
+      ELSE
+         RETURN FALSE;
+      END;
+   END CreateHandle;
+   
+   
+   PROCEDURE GetChallenge(handle: Handle;
+                          VAR scheme, realm, param: ARRAY OF CHAR);
+      (* Returns the 'scheme' 'realm' (without quotes) and further
+         'param'eters to build the challenge of the object. The 
+         standard-implementation returns "" in 'scheme'. 'realm' and 'param' are
+         undefined. This must be also returned if no authentication is needed.
+         If there are errors 'handle.error' is TRUE and 'handle.errors' contains
+         more information about them. If this method is implemented the
+         'Authenticate'-method will have to be implemented, too.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF clientAuthenicateCap IN handle.object.caps THEN
+         handle.object.if.getChallenge(handle, scheme, realm, param);
+      ELSE
+         scheme[0] := 0X;
+      END;
+   END GetChallenge;
+   
+   
+   PROCEDURE Authenticate(handle: Handle;
+                          scheme, param: Streams.Stream): BOOLEAN;
+      (* Checks Authentication for 'scheme' amd 'param' and returns TRUE if
+         they fit (both are read from position 0). The standard-implementation
+         for this procedure is to return  TRUE for every given value. If there
+         are errors 'handle.error' is TRUE and 'handle.errors' contains more
+         information about them. If this method is implemented the
+         'GetChallenge'-method will have to be implemented, too.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF clientAuthenicateCap IN handle.object.caps THEN
+         RETURN handle.object.if.authenticate(handle, scheme, param);
+      ELSE
+         RETURN TRUE;
+      END;
+   END Authenticate;
+   
+   
+   PROCEDURE GetMD5HashValue(handle: Handle; VAR value: OneWayHashes.Value);
+      (* returns a MD5-hash-'value' of the content. IF there is no value
+         available 'value' will be NIL (also standardimplementation). If there
+         are errors 'handle.error' is TRUE and 'handle.errors' contains more
+         information about them.
+      *)
+   
+   BEGIN
+      handle.error := FALSE;
+      IF getMD5HashValueCap IN handle.object.caps THEN
+         handle.object.if.getMD5HashValue(handle, value);
+      ELSE
+         value := NIL;
+      END;
+   END GetMD5HashValue;
+   
+      
+   PROCEDURE GetLanguages(handle: Handle; VAR languages: ARRAY OF CHAR);
+      (* In 'languages' the language of the intended audience is returned. A
+         value of "" (standardimplementation) means the content of the object
+         is  intended to every audience. If there are errors 'handle.error' is
+         TRUE and 'handle.errors' contains more information about them.
+      *)
+   
+   BEGIN
+      handle.error := FALSE;
+      IF getLanguagesCap IN handle.object.caps THEN
+         handle.object.if.getLanguages(handle, languages);
+      ELSE
+         languages[0] := 0X;
+      END;
+   END GetLanguages;
+   
+   
+   PROCEDURE GetEncoding(handle: Handle; VAR encoding: ARRAY OF CHAR);
+      (* Returns the 'encoding' (e.g. gzip, compress) of the object. ""
+         (standardimplementation) means there is no encoding. If there are errors
+         'handle.error' is TRUE and 'handle.errors' contains more information
+         about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getEncodingCap IN handle.object.caps THEN
+         handle.object.if.getEncoding(handle, encoding);
+      ELSE
+         encoding[0] := 0X;
+      END;
+   END GetEncoding;
+   
+         
+   PROCEDURE GetCharset(handle: Handle; VAR charset: ARRAY OF CHAR);
+      (* Returns the 'charset' of the object. "" (standardimplementation) means
+         that the standard-charset ISO 8859-1 is used. If there are errors
+         'handle.error' is TRUE and 'handle.errors' contains more information
+         about them. Attention: do not report a characterset in 'params' of the
+         method 'GetMediaType'. Only report it here. If this method is
+         implemented, 'GetMediaType' must be implemented as well.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF (getCharsetCap IN handle.object.caps)
+            & (getMediaTypeCap IN handle.object.caps) THEN
+         handle.object.if.getCharset(handle, charset);
+      ELSE
+         charset[0] := 0X;
+      END;
+   END GetCharset;
+   
+   
+   PROCEDURE GetMediaType(handle: Handle; 
+                          VAR type, subtype, param: ARRAY OF CHAR);
+      (* Returns the media-type of the object. If type is "" (also returned by
+         the standardimplementation) the client should guess type and subtype
+         from the data of the body. 'param' will be optional and is "" if not
+         needed. Form of 'param': attribute "=" value. The attribute charset
+         must not returned in 'param'. A charset which differs from ISO 8859-1
+         should be only indicated by 'GetCharset' instead. If there are errors
+         'handle.error' is TRUE and 'handle.errors' contains more information
+         about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getMediaTypeCap IN handle.object.caps THEN
+         handle.object.if.getMediaType(handle, type, subtype, param);
+      ELSE
+         type[0] := 0X;
+      END;
+   END GetMediaType;
+   
+   
+   PROCEDURE GetUserAgent(handle: Handle; VAR userAgent: ARRAY OF CHAR);
+      (* If 'userAgent' is not "" the object is a special version only for the 
+         specific user-agent. If 'useragent'  is "" (also returned by the
+         standardimplementation) the content can be handled by every user-agent.
+         If there are errors 'handle.error' is TRUE and 'handle.errors' contains
+         more information about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getUserAgentCap IN handle.object.caps THEN
+         handle.object.if.getUserAgent(handle, userAgent);
+      ELSE
+         userAgent[0] := 0X;
+      END;
+   END GetUserAgent;
+   
+   
+   PROCEDURE GetLength(handle: Handle; VAR length: LONGINT);
+      (* In 'length' the length of the body is returned. A negative value means
+         that the length of the object can not be determined and so the server
+         has to indicate the end by closing the connection. The
+         standardimplementation always returns -1. If there are errors
+         'handle.error' is TRUE and 'handle.errors' contains more information
+         about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getLengthCap IN handle.object.caps THEN
+         handle.object.if.getLength(handle, length);
+      ELSE
+         length := -1;
+      END;
+   END GetLength;
+   
+   
+   PROCEDURE GetBase(handle: Handle; VAR base: InetURLs.URL);
+      (* returns the 'base' (absolute URL) for relative URLs in the body. If
+         there is no base for the object NIL will be returned in 'base' (also
+         standardimplementation). If there are errors 'handle.error' is TRUE
+         and 'handle.errors' contains more information about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getBaseCap IN handle.object.caps THEN
+         handle.object.if.getBase(handle, base);
+      ELSE
+         base := NIL;
+      END;
+   END GetBase;
+   
+   
+   PROCEDURE GetLocation(handle: Handle; VAR location: InetURLs.URL);
+      (* Returns the 'location' of the resource. Attention: This is not for
+         redirection. If there is no location for the object NIL will be
+         returned in 'location' (also standardimplementation). If there are
+         errors 'handle.error' is TRUE and 'handle.errors' contains more
+         information about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getLocationCap IN handle.object.caps THEN
+         handle.object.if.getLocation(handle, location);
+      ELSE
+         location := NIL;
+      END;
+   END GetLocation;
+   
+   
+   PROCEDURE GetCacheMechanism(handle: Handle; VAR mechanism: SET);
+      (* Gives a recommendation how a cache should treat a response. Mechanism
+         is a mix of 'doCache', 'privatCache', 'noCache', 'noStore',
+         'noTransform', 'mustRevalidate' and 'proxyRevalidate'. The
+         standard-implementation returns an empty set which means a cache should
+         use the default cache algorithm. If there are errors 'handle.error' is
+         TRUE and 'handle.errors' contains more information about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getCacheMechanismCap IN handle.object.caps THEN
+         handle.object.if.getCacheMechanism(handle, mechanism);
+      ELSE
+         mechanism := {};
+      END;
+   END GetCacheMechanism;
+   
+   
+   PROCEDURE GetEntityTag(handle: Handle;
+                          VAR eTag: ARRAY OF CHAR; VAR weak: BOOLEAN);
+      (* Provides an entity-tag. If it is a weak tag 'weak' will be TRUE. If
+         there is no entity-tag for the object "" will be returned in 'eTag'
+         (also standardimplementation). If there are errors 'handle.error' is
+         TRUE and 'handle.errors' contains more information about them.
+      *)
+      
+   BEGIN
+      handle.error := FALSE;
+      IF getEntityTagCap IN handle.object.caps THEN
+         handle.object.if.getEntityTag(handle, eTag, weak);
+      ELSE
+         eTag[0] := 0X;
+      END;
+   END GetEntityTag;
+   
+   
+   PROCEDURE GetExpireDate(handle: Handle; VAR date: Times.Time);
+      (* returns a date after which a response should be considered as stale. If
+         there is no date for the object NIL will be returned in 'date' (also
+         standardimplementation). If there are errors 'handle.error' is TRUE
+         and 'handle.errors' contains more information about them.
+      *)
+   
+   BEGIN
+      handle.error := FALSE;
+      IF getExpireDateCap IN handle.object.caps THEN
+         handle.object.if.getExpireDate(handle, date);
+      ELSE
+         date := NIL;
+      END;
+   END GetExpireDate;
+   
+   
+   PROCEDURE GetLastModifiedDate(handle: Handle; VAR date: Times.Time);
+      (* returns the date the resource was last modified. IF there is no date
+         for the object NIL will be returned in 'date' (also
+         standardimplementation). If there are errors 'handle.error' is TRUE
+         and 'handle.errors' contains more information about them.
+      *)
+   
+   BEGIN
+      handle.error := FALSE;
+      IF getLastModifiedDateCap IN handle.object.caps THEN
+         handle.object.if.getLastModifiedDate(handle, date);
+      ELSE
+         date := NIL;
+      END;
+   END GetLastModifiedDate;
+   
+   
+   PROCEDURE SetRange(handle: Handle; begin, end: LONGINT): BOOLEAN;
+      (* limits the result of -> 'WriteBody' to an interval starting at position
+         'begin' (including) and ending with 'end' (excluding). 'SetRange' will
+         return FALSE (default) if it is not possible to handle ranges with that
+         object. If there are errors 'handle.error' is TRUE and 'handle.errors'
+         contains more information about them.
+      *)
+   
+   BEGIN
+      handle.error := FALSE;
+      IF setRangeCap IN handle.object.caps THEN
+         RETURN handle.object.if.setRange(handle, begin, end);
+      ELSE
+         RETURN FALSE;
+      END;
+   END SetRange;
+   
+   
+   PROCEDURE WriteBody(handle: Handle; body: Streams.Stream);
+      (* Writes the object-body to stream 'body'. If a range successfully was
+         specified (-> 'SetRange') then only the specified range would be
+         returned. If there are errors 'handle.error' is TRUE and
+         'handle.errors' contains more information about them.
+      *)
+      
+   BEGIN
+      (* No check needed. This Method must be implemented. *)
+      handle.error := FALSE;
+      handle.object.if.writeBody(handle, body);
+   END WriteBody;
+   
+   
+BEGIN
+   Services.CreateType(serviceType, "WebObjects.Object", "");
+END WebObjects.

@@ -1,0 +1,421 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Transactions 3 "Last change: 28 November 1996" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Transactions \- an abstraction for transactions in distributed systems
+.SH SYNOPSIS
+.Pg
+TYPE Transaction = POINTER TO TransactionRec;
+TYPE TransactionRec = RECORD (Services.ObjectRec) END;
+TYPE Object = Services.Object;
+.sp 0.7
+TYPE AccessSpecification = PersistentDisciplines.Object;
+.sp 0.7
+CONST defined = 0; begun = 1; committed = 2; aborted = 3;
+TYPE State = SHORTINT; (* defined..aborted *)
+.sp 0.7
+TYPE AttachProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                             obj: Object; aspec: AccessSpecification) : BOOLEAN;
+TYPE AttachedProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                               obj: Object) : BOOLEAN;
+TYPE GetAttachedProc = PROCEDURE (trans: Transaction;
+                                  auth: Shards.Lid;
+                                  VAR it: Iterators.Iterator) : BOOLEAN;
+TYPE TransProc = PROCEDURE (trans: Transaction;
+                            auth: Shards.Lid) : BOOLEAN;
+TYPE GetStateProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                                VAR state: State) : BOOLEAN;
+TYPE GetNameProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                              VAR name: ConstStrings.String) : BOOLEAN;
+TYPE TakeInterestProc =
+         PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                    VAR eventType: Events.EventType) : BOOLEAN;
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec);
+      attach: AttachProc;
+      attachable: AttachProc;
+      attached: AttachedProc;
+      getAttached: GetAttachedProc;
+      begin: TransProc;
+      commit: TransProc;
+      abort: TransProc;
+      release: TransProc;
+      getState: GetStateProc;
+      getName: GetNameProc;
+      takeInterest: TakeInterestProc;
+   END;
+.sp 0.7
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec)
+      state: State; (* begun, committed, or aborted *)
+      trans: Transaction;
+   END;
+.sp 0.7
+CONST beginFailed = 0; commitFailed = 1; abortFailed = 2;
+CONST attachFailed = 4; releaseFailed = 5;
+TYPE ErrorCode = SHORTINT; (* beginFailed..releaseFailed *)
+.sp 0.3
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec);
+      errcode: ErrorCode;
+      trans: Transaction;
+   END;
+.sp 0.3
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE Init(trans: Transaction; if: Interface);
+PROCEDURE Release(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+.sp 0.7
+(* defining and examining the set of attached objects *)
+PROCEDURE Attach(trans: Transaction; auth: Shards.Lid;
+                 obj: Object; aspec: AccessSpecification) : BOOLEAN;
+PROCEDURE Attached(trans: Transaction; auth: Shards.Lid;
+                   obj: Object) : BOOLEAN;
+PROCEDURE Attachable(trans: Transaction; auth: Shards.Lid;
+                     obj: Object; aspec: AccessSpecification) : BOOLEAN;
+PROCEDURE GetAttached(trans: Transaction; auth: Shards.Lid;
+                      VAR it: Iterators.Iterator) : BOOLEAN;
+.sp 0.7
+(* transaction primitives *)
+PROCEDURE Begin(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+PROCEDURE Commit(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+PROCEDURE Abort(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+.sp 0.7
+(* further requests *)
+PROCEDURE GetName(trans: Transaction; auth: Shards.Lid;
+                  VAR name: ConstStrings.String) : BOOLEAN;
+PROCEDURE GetState(trans: Transaction; auth: Shards.Lid;
+                    VAR state: State) : BOOLEAN;
+PROCEDURE TakeInterest(trans: Transaction;
+                       auth: Shards.Lid;
+                       VAR eventType: Events.EventType) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I Transactions
+defines an extensible abstraction for the execution of
+transactions in a distributed system.
+This module represents the application's view of a transaction
+which regards a transaction as a frame for the execution of
+an arbitrary number of operations on various objects attached to it.
+From this point of view, a transaction fulfills the following properties:
+.Tb Consistency
+.Tp Atomicity
+Either all operations and state changes executed on the
+objects within the scope of a transaction
+become valid permanently or none of them.
+.Tp Durability
+If once successfully ended, all state changes and operations
+on the attached objects remain valid regardless of subsequent
+hard- or software failures.
+.Tp Isolation
+Parallel executed transactions run independently from each other,
+meaning that
+none of the operations executed within the scope of one of them
+may be visible outside before the transaction successfully ended.
+.Tp Consistency
+Transactions guarantee a consistent state for all attached objects even
+in cases of unpredictable termination of programs or tasks. This includes
+that
+all constraints defined for the objects hold true when a transaction has
+finished,
+regardless of its particular result.
+.Te
+.LP
+Implementors of transactions must guarantee these properties and
+provide a set of interface procedures to control the execution of
+a transaction. The interface procedures passed to
+.I Init
+are expected to meet the following specifications:
+.Is "\fItrans\fP: \fITransaction\fP; \fIauth\fP: \fIShards.Lid\fP"
+.If attach "; \fIobj\fP: \fIObject\fP; \fIaspec\fP: \fIAccessSpecification\fP" "\fBBOOLEAN\fP"
+Attach object
+.I obj
+to transaction
+.IR trans .
+The parameter
+.I aspec
+allows to specify how an object is intended to be accessed
+within the context of this transaction.
+Unlimited access is indicated by \fBNIL\fP,
+other object-specific variants may include the specification
+of object parts (e.g. a subset of a container) to permit
+parallel transactions, or read-only access.
+This parameter should be passed to the given object
+by the implementation of
+.IR trans .
+.If attached "; \fIobj\fP: \fIObject\fP" "\fBBOOLEAN\fP
+Indicate if
+.I obj
+is attached to
+.I trans .
+.If attachable "; \fIobj\fP: \fIObject\fP; \fIaspec\fP: \fIAccessSpecification\fP" "\fBBOOLEAN\fP"
+Indicate if an object can be attached to the transaction
+with respect to
+.IR aspec .
+.If getAttached "; \fBVAR\fP \fIit\fP: \fIIterators.Iterator\fP" "\fBBOOLEAN\fP"
+Return the
+objects currently attached to
+.IR trans .
+.If trans "" "\fBBOOLEAN\fP"
+Mark the beginning of a transaction.
+Any following update operation within the scope of
+.I trans
+must not alter
+the behaviour of the attached objects permanently despite a successful ending
+of the transaction.
+This procedure must not block the calling task.
+.If commit "" "\fBBOOLEAN\fP"
+Mark the end of a transaction. Any update operation or state change
+executed since the transaction began has to become permanently.
+This procedure should block the calling task until all attached objects
+are in a consistent state.
+.If abort "" "\fBBOOLEAN\fP"
+Abort the transaction and reset the objects to a state valid before the
+transaction began.
+.If release "" "\fBBOOLEAN\fP"
+Release all resources associated with
+.IR trans .
+This includes an implicit abortion if the transaction was active
+(state \fIbegun\fP).
+.If getState "; \fBVAR\fP \fIstate\fP: \fIState\fP" "\fBBOOLEAN\fP"
+Return the current state of
+.I trans 
+where
+.I state 
+should be one of:
+.Tb committed
+.Tp defined
+The transaction is defined but has not been executed yet.
+.Tp begun
+The transaction has been begun and is still in progress.
+.Tp aborted
+The transaction was aborted (no matter for what reason).
+.Tp committed
+The transaction was committed successfully (i.e. all
+attached objects reported success for their commit operation).
+.Te
+.If getName "; \fBVAR\fP \fIname\fP: \fIConstStrings.String\fP" "\fBBOOLEAN\fP"
+Return a name for the transaction. The interpretation of names
+is implementation-dependent.
+This interface procedure may be omitted \(em
+\fIGetName\fP returns \fBNIL\fP then.
+.If takeInterest "; \fBVAR\fP \fIeventType\fP: \fIEvents.EventType\fP" "\fBBOOLEAN\fP"
+Return the event type which is used to propagate the state changes
+\fIbegun\fP, \fIcommitted\fP, and \fIaborted\fP (as events
+of type \fIEvent\fP).
+These events are to be raised after the state changes became effective.
+.Ef
+.LP
+Applications can control the transactions and obtain state information
+about them by means of the exported
+procedures which in general follow the specifications of
+the corresponding interface procedures.
+The transactions are free to reject the requested operation for reasons of
+insufficient authorization provided as parameter
+.IR auth .
+.LP
+While transactions guarantee the basic properties described above, 
+their behaviour in detail is implementation-dependent. This affects
+the following aspects:
+.IP \(bu
+The interpretation of the parameter
+.IR aspec .
+.IP \(bu
+The ability to attach objects of a certain type to a transaction.
+.IP \(bu
+The authorization scheme.
+.IP \(bu
+Multiple attachments of the same object with different
+transaction parameters
+.IR aspec .
+.SH DIAGNOSTICS
+All procedures return
+.B FALSE
+if the associated operation of the underlying implementation fails.
+If a major operation fails
+(\fIAbort\fP, \fIAttach\fP, \fIBegin\fP, \fICommit\fP, and \fIRelease\fP),
+an event of
+type
+.I error
+indicating the failed operation
+(\fIabortFailed\fP, ...)
+is raised and related to the concerned transaction.
+Furthermore, the underlying implementation is expected
+to generate more elaborate error events.
+.SH "SEE ALSO"
+.Tb RemoteTransactions(3)
+.Tp ObjectTransactions(3)
+trivial case of transactions with one object only
+.Tp RelatedEvents(3)
+error handling
+.Tp RemoteTransactions(3)
+associated provider for the \fIRemoteObjects(3)\fP service
+.Tp Services(3)
+type-independent definition of extensions
+.Tp Shards(3)
+authorization protocol
+.Te
+.SH AUTHORS
+Werner Stanglow (stanglow@mathematik.uni-ulm.de),
+.br
+revisions due to Andreas Borchert
+.\" ---------------------------------------------------------------------------
+.\" $Id: Transactions.3,v 1.3 1996/11/28 10:54:05 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Transactions.3,v $
+.\" Revision 1.3  1996/11/28  10:54:05  borchert
+.\" signatures added to if descriptions
+.\"
+.\" Revision 1.2  1996/11/20  19:00:17  borchert
+.\" - event handling added
+.\" - formatting and naming adapted to the conventions of the library
+.\" - references to not yet existing modules removed
+.\" - diagnostics section extended
+.\" - some typos fixed
+.\"
+.\" Revision 1.1  1996/11/20  10:21:18  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

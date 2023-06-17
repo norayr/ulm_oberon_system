@@ -1,0 +1,377 @@
+MODULE CLists;
+
+   IMPORT Collections, Disciplines, Events, Iterators, LinearizedStructures,
+      NetIO, Objects, PersistentObjects, PrintableObjects, Services,
+      Resources, Streams, Write;
+
+   TYPE
+      List = POINTER TO ListRec;
+
+      Linkable = POINTER TO LinkableRec; (* member of a list *)
+      LinkableRec =
+         RECORD
+	    (Disciplines.ObjectRec)
+	    list: List;                  (* belongs to this list *)
+            prev, next: Linkable;        (* predecessor & successor *)
+            object: Collections.Object;  (* referenced member *)
+	    key: Resources.Key;          (* attach/detach key *)
+         END;
+
+   TYPE
+      ListRec =
+         RECORD
+            (Collections.CollectionRec)
+            (* private components *)
+            head, tail: Linkable;
+	    length: INTEGER;             (* number of elements *)
+	    persLength: INTEGER;         (* number of persistent objects *)
+         END;
+   VAR
+      listType: Services.Type;
+
+   TYPE
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    memberships: List; (* list of lists this object belongs to *)
+	 END;
+   VAR
+      objectDiscID: Disciplines.Identifier;
+
+   CONST
+      caps = {Collections.orderedCollection, Collections.remove};
+   VAR
+      if: Collections.Interface;
+
+   (* basic operations for appending & removing *)
+
+   PROCEDURE Append(list: List; object: Collections.Object);
+      VAR
+         linkable: Linkable;
+   BEGIN
+      NEW(linkable);
+      linkable.list := list;
+      linkable.object := object;
+      linkable.next := NIL;
+      IF list.head = NIL THEN
+	 list.head := linkable;
+      ELSE
+	 list.tail.next := linkable;
+      END;
+      linkable.prev := list.tail;
+      list.tail := linkable;
+      INC(list.length);
+      IF object IS PersistentObjects.Object THEN
+	 INC(list.persLength);
+      END;
+   END Append;
+
+   PROCEDURE Delete(linkable: Linkable);
+   BEGIN
+      IF linkable.prev = NIL THEN
+	 linkable.list.head := linkable.next;
+      ELSE
+	 linkable.prev.next := linkable.next;
+      END;
+      IF linkable.next = NIL THEN
+	 linkable.list.tail := linkable.prev;
+      ELSE
+	 linkable.next.prev := linkable.prev;
+      END;
+      DEC(linkable.list.length);
+      IF linkable.object IS PersistentObjects.Object THEN
+	 DEC(linkable.list.persLength);
+      END;
+   END Delete;
+
+   (* maintenance of per-object lists of memberships *)
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+      (* remove event.resource out of all lists if event is
+	 a termination event;
+	 note that this handler gets called once per
+	 terminated object only and not once per membership in a list
+      *)
+      VAR
+	 disc: ObjectDiscipline;
+	 membership: Linkable;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change # Resources.terminated THEN RETURN END;
+	 IF ~Disciplines.Seek(event.resource, objectDiscID, disc) THEN
+	    RETURN
+	 END;
+	 membership := disc.memberships.head;
+	 WHILE membership # NIL DO
+	    Delete(membership.object(Linkable));
+	    membership := membership.next;
+	 END;
+	 Disciplines.Remove(event.resource, objectDiscID);
+      END;
+   END TerminationHandler;
+
+   PROCEDURE ^ Create(VAR collection: Collections.Collection);
+
+   PROCEDURE AddReference(object: Collections.Object; linkable: Linkable);
+      VAR
+	 disc: ObjectDiscipline;
+	 eventType: Events.EventType;
+   BEGIN
+      IF ~Disciplines.Seek(object, objectDiscID, disc) THEN
+	 NEW(disc); disc.id := objectDiscID;
+	 Create(disc.memberships);
+	 Disciplines.Add(object, disc);
+	 Resources.TakeInterest(object, eventType);
+	 Events.Handler(eventType, TerminationHandler);
+      END;
+      Append(disc.memberships, linkable);
+   END AddReference;
+
+   (* interface to PersistentObjects *)
+
+   PROCEDURE ^ Print(s: Streams.Stream; list: Disciplines.Object);
+
+   PROCEDURE CreateList(VAR object: PersistentObjects.Object);
+      VAR
+	 list: List;
+   BEGIN
+      NEW(list);
+      PersistentObjects.Init(list, listType);
+      Collections.Init(list, if, caps);
+      PrintableObjects.Init(list, Print);
+      object := list;
+   END CreateList;
+
+   PROCEDURE ReadList(s: Streams.Stream;
+		      object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 length: INTEGER;
+	 member: PersistentObjects.Object;
+   BEGIN
+      WITH object: List DO
+	 IF ~NetIO.ReadInteger(s, length) THEN RETURN FALSE END;
+	 WHILE length > 0 DO
+	    IF ~LinearizedStructures.Read(s, member) THEN
+	       RETURN FALSE
+	    END;
+	    Append(object, member);
+	    AddReference(member, object.tail);
+	    Resources.Attach(object.tail.object, object.tail.key);
+	    DEC(length);
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadList;
+
+   PROCEDURE WriteList(s: Streams.Stream;
+		       object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 linkable: Linkable;
+   BEGIN
+      WITH object: List DO
+	 IF ~NetIO.WriteInteger(s, object.persLength) THEN RETURN FALSE END;
+	 linkable := object.head;
+	 WHILE linkable # NIL DO
+	    IF linkable.object IS PersistentObjects.Object THEN
+	       IF ~LinearizedStructures.Write(s,
+		     linkable.object(PersistentObjects.Object)) THEN
+		  RETURN FALSE
+	       END;
+	    END;
+	    linkable := linkable.next;
+	 END;
+	 RETURN TRUE
+      END;
+   END WriteList;
+
+   (* iterator *)
+
+   PROCEDURE IterateList(it: Iterators.Iterator;
+			 list: Objects.Object;
+			 order: SHORTINT);
+      VAR
+	 linkable: Linkable;
+   BEGIN
+      WITH list: List DO
+	 IF (order = Collections.forward) OR
+	       (order = Collections.undefined) THEN
+	    linkable := list.head;
+	    WHILE linkable # NIL DO
+	       Iterators.Yield(it, linkable.object);
+	       linkable := linkable.next;
+	    END;
+	 ELSE (* order = backward *)
+	    linkable := list.tail;
+	    WHILE linkable # NIL DO
+	       Iterators.Yield(it, linkable.object);
+	       linkable := linkable.prev;
+	    END;
+	 END;
+      END;
+   END IterateList;
+
+   (* interface procedures for Collections *)
+
+   PROCEDURE Add(list: Collections.Collection; object: Collections.Object);
+   BEGIN
+      WITH list: List DO
+	 Append(list, object);
+	 AddReference(object, list.tail);
+	 Resources.Attach(list.tail.object, list.tail.key);
+      END;
+   END Add;
+
+   PROCEDURE GetIterator(collection: Collections.Collection;
+			 order: Collections.Order;
+		         VAR it: Iterators.Iterator);
+   BEGIN
+      Iterators.Create(it, IterateList, collection, order);
+   END GetIterator;
+
+   PROCEDURE Length(list: Collections.Collection) : INTEGER;
+   BEGIN
+      RETURN list(List).length
+   END Length;
+
+   PROCEDURE Remove(list: Collections.Collection;
+		    object: Collections.Object) : BOOLEAN;
+      VAR
+	 disc: ObjectDiscipline;
+	 membership: Linkable;
+   BEGIN
+      IF ~Disciplines.Seek(object, objectDiscID, disc) THEN
+	 RETURN FALSE (* object is not member of any lists *)
+      END;
+      WITH list: List DO
+	 membership := disc.memberships.head;
+	 WHILE (membership # NIL) &
+	       (membership.object(Linkable).list # list) DO
+	    membership := membership.next;
+	 END;
+	 IF membership = NIL THEN
+	    RETURN FALSE (* object is not member of given list *)
+	 END;
+	 (* remove object from the per-list list of memberships *)
+	 Delete(membership.object(Linkable));
+	 Resources.Detach(object, membership.object(Linkable).key);
+	 (* remove list from the per-object list of memberships *)
+	 Delete(membership);
+      END;
+      RETURN TRUE
+   END Remove;
+
+   PROCEDURE Get(list: Collections.Collection;
+		 index: INTEGER; VAR object: Collections.Object);
+      VAR
+	 element: Linkable;
+   BEGIN
+      WITH list: List DO
+	 element := list.head;
+	 WHILE (index > 0) & (element # NIL) DO
+	    element := element.next;
+	    DEC(index);
+	 END;
+	 IF element = NIL THEN
+	    object := NIL;
+	 ELSE
+	    object := element.object;
+	 END;
+      END;
+   END Get;
+
+   PROCEDURE GetFirst(list: Collections.Collection;
+		      VAR object: Collections.Object);
+   BEGIN
+      WITH list: List DO
+	 ASSERT(list.head # NIL);
+	 object := list.head.object;
+      END;
+   END GetFirst;
+
+   PROCEDURE GetLast(list: Collections.Collection;
+		     VAR object: Collections.Object);
+   BEGIN
+      WITH list: List DO
+	 ASSERT(list.tail # NIL);
+	 object := list.tail.object;
+      END;
+   END GetLast;
+
+   PROCEDURE RemoveFirst(list: Collections.Collection);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH list: List DO
+	 ASSERT(list.head # NIL);
+	 ok := Remove(list, list.head.object);
+	 ASSERT(ok);
+      END;
+   END RemoveFirst;
+
+   PROCEDURE RemoveLast(list: Collections.Collection);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      WITH list: List DO
+	 ASSERT(list.tail # NIL);
+	 ok := Remove(list, list.tail.object);
+	 ASSERT(ok);
+      END;
+   END RemoveLast;
+
+   (* interface procedure for PrintableObjects *)
+
+   PROCEDURE Print(s: Streams.Stream; list: Disciplines.Object);
+      VAR
+	 member: Linkable;
+   BEGIN
+      WITH list: List DO
+	 Write.CharS(s, "(");
+	 member := list.head;
+	 WHILE member # NIL DO
+	    IF member # list.head THEN
+	       Write.StringS(s, ", ");
+	    END;
+	    PrintableObjects.Print(s, member.object);
+	    member := member.next;
+	 END;
+	 Write.CharS(s, ")");
+      END;
+   END Print;
+
+   (* exported constructor *)
+
+   PROCEDURE Create(VAR collection: Collections.Collection);
+      VAR
+	 list: List;
+   BEGIN
+      CreateList(list);
+      list.head := NIL; list.tail := NIL;
+      list.length := 0; list.persLength := 0;
+      collection := list;
+   END Create;
+
+   PROCEDURE InitPO(VAR type: Services.Type; name, baseName: ARRAY OF CHAR;
+		    create: PersistentObjects.CreateProc;
+		    read: PersistentObjects.ReadProc;
+		    write: PersistentObjects.WriteProc);
+      VAR
+	 if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+BEGIN
+   NEW(if);
+   if.add := Add; if.getIterator := GetIterator; if.length := Length;
+   if.remove := Remove;
+   if.get := Get; if.getFirst := GetFirst; if.getLast := GetLast;
+   if.removeFirst := RemoveFirst; if.removeLast := RemoveLast;
+   InitPO(listType, "CLists.List", "Collections.Collection",
+	  CreateList, ReadList, WriteList);
+   objectDiscID := Disciplines.Unique();
+END CLists.

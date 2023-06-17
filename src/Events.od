@@ -1,0 +1,253 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Events.od,v 1.3 2004/03/30 17:47:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Events.od,v $
+   Revision 1.3  2004/03/30 17:47:56  borchert
+   QueueHandler added
+
+   Revision 1.2  1996/01/04 17:07:01  borchert
+   event types are now an extension of Services.Object
+
+   Revision 1.1  1994/02/22  20:07:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/89
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Events;
+
+   IMPORT Objects, Services;
+
+   TYPE
+      EventType = POINTER TO EventTypeRec;
+      EventTypeRec = RECORD (Services.ObjectRec) END;
+
+   CONST
+      (* possibilities on receipt of an event: *)
+      default = 0;		(* causes abortion *)
+      ignore = 1;		(* ignore event *)
+      funcs = 2;		(* call associated event handlers *)
+   TYPE
+      Reaction = INTEGER;	(* one of default, ignore, or funcs *)
+      Message = ARRAY 80 OF CHAR;
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    type: EventType;
+	    message: Message;
+	 END;
+      EventHandler = PROCEDURE (event: Event);
+
+      (* event managers are needed if there is any action necessary
+	 on changing the kind of reaction
+      *)
+      EventManager = PROCEDURE (type: EventType; reaction: Reaction);
+
+      (* software priority system:
+	 each event has a priority (default Priorities.default);
+	 the current priority is defined as following
+	 (1) Priorities.base at beginning of execution
+	 (2) during the call of an event handler
+	     the current priority is defined to be the
+	     priority of the event
+	 (3) the priority can be raised by calling
+	     EnterPriority and restored by ExitPriority
+
+	 events with priority less than or equal to the current
+	 priority are queued until the current priority
+	 is diminished to a value less than the priority of the event
+
+	 events with priority less than or equal to Priorities.base
+	 are ignored (independent from reaction)
+
+	 system events with default reaction may cause abortion
+	 even if their priority is less than or equal to the
+	 current priority
+      *)
+      Priority = INTEGER; (* must be non-negative *)
+
+      (* every event with reaction `funcs' has a handler list;
+	 the list is in calling order which is reverse to
+	 the order of `Handler'-calls
+      *)
+      HandlerList = POINTER TO HandlerRec;
+      HandlerRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    handler: EventHandler;
+	    next: HandlerList;
+	 END;
+
+      (* in some cases coroutines uses local priority systems *)
+      PrioritySystem = POINTER TO PrioritySystemRec;
+      PrioritySystemRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	 END;
+
+   CONST
+      priorityViolation = 0; (* priority violation (EnterPriority *)
+      unbalancedExitPriority = 1; (* unbalanced call of ExitPriority *)
+      unbalancedRestoreReaction = 2; (* unbalanced call of RestoreReaction *)
+      negPriority = 3; (* negative priority given to SetPriority *)
+      errorcodes = 4;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (EventRec)
+	    errorcode: SHORTINT;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Message;
+      error: EventType;
+
+   PROCEDURE Define(VAR type: EventType);
+      (* definition of a new event type;
+	 type should not be an extension of EventType:
+	    use Init in such cases
+	 the reaction on receipt of `type' is defined to be `default'
+      *)
+
+   PROCEDURE Init(type: EventType);
+      (* Init works like Define but requires type to be
+	 allocated in advance; typical calling order:
+
+	 VAR type: OwnExtensionOfEventType;
+
+	 NEW(type); Events.Init(type); (* own initialisations *)
+      *)
+
+   PROCEDURE GetReaction(type: EventType) : Reaction;
+      (* returns either `default', `ignore', or `funcs' *)
+
+   PROCEDURE SetPriority(type: EventType; priority: Priority);
+      (* (re-)defines the priority of an event;
+	 it is allowed to change the priority of system events
+      *)
+
+   PROCEDURE GetEventPriority(type: EventType) : Priority;
+      (* return the priority of the given event *)
+
+   PROCEDURE Manager(type: EventType; manager: EventManager);
+      (* defines a manager for the given event type;
+	 each reaction change is passed to the manager
+      *)
+
+   PROCEDURE Handler(type: EventType; handler: EventHandler);
+      (* add `handler' to the list of handlers for event `type' *)
+
+   PROCEDURE RemoveHandlers(type: EventType);
+      (* remove list of handlers for event `type';
+	 implies default reaction (abortion) on
+	 receipt of `type'
+      *)
+
+   PROCEDURE Ignore(type: EventType);
+      (* implies RemoveHandlers(type) and causes receipt
+	 of `type' to be ignored
+      *)
+
+   PROCEDURE GetHandlers(type: EventType; handlers: HandlerList);
+      (* returns the list of handlers in `handlers';
+	 the reaction of `type' must be `funcs'
+      *)
+
+   PROCEDURE Log(loghandler: EventHandler);
+      (* call `loghandler' for every event;
+	 subsequent calls of `Log' replace the loghandler;
+	 the loghandler is not called on default and ignore
+      *)
+
+   PROCEDURE GetLog(VAR loghandler: EventHandler);
+      (* returns the loghandler set by `Log' *)
+
+   PROCEDURE QueueHandler(handler: EventHandler);
+      (* setup an alternative handler of events
+	 that cannot be processed now because
+	 of their unsufficient priority
+      *)
+
+   PROCEDURE AbortHandler(handler: EventHandler);
+      (* defines the handler to be called on abortion *)
+
+   PROCEDURE GetAbortHandler(VAR handler: EventHandler);
+      (* returns the handler set by `AbortHandler' *)
+
+   PROCEDURE Raise(event: Event);
+      (* call all event handlers (in reverse order)
+	    associated with event.type;
+	 abort if there are none;
+	 some system events may abort in another way
+	    (i.e. they do not cause the abortion handler to be called)
+      *)
+
+   PROCEDURE CreatePrioritySystem(VAR prioritySystem: PrioritySystem);
+      (* create and initialize a new priority system *)
+
+   PROCEDURE CurrentPrioritySystem() : PrioritySystem;
+      (* return the priority system currently active *)
+
+   PROCEDURE SwitchPrioritySystem(prioritySystem: PrioritySystem);
+      (* switch to another priority system; this is typically
+	 done in case of task switches
+      *)
+
+   PROCEDURE EnterPriority(priority: Priority);
+      (* sets the current priority to `priority';
+	 it is an error to give a priority less than
+	 the current priority (event `badpriority')
+      *)
+
+   PROCEDURE AssertPriority(priority: Priority);
+      (* current priority
+	     <  priority:  set the current priority to `priority'
+	     >= priority:  the current priority remains unchanged
+      *)
+
+   PROCEDURE ExitPriority;
+      (* causes the priority before the last effective call
+	 of SetPriority or AssertPriority to be restored
+      *)
+
+   PROCEDURE GetPriority() : Priority;
+      (* returns the current priority *)
+
+   PROCEDURE NilHandler(event: Event);
+      (* an empty event handler *)
+
+   PROCEDURE SaveReaction(type: EventType);
+      (* saves current reaction until call of RestoreReaction;
+	 the new reaction of `type' is defined to be `ignore'
+	 but can be changed by Events.Handler or Events.RemoveHandlers
+      *)
+
+   PROCEDURE RestoreReaction(type: EventType);
+      (* restores old reaction;
+	 must be properly nested
+      *)
+
+END Events.

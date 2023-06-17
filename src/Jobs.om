@@ -1,0 +1,202 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Jobs.om,v 1.3 2004/05/21 08:02:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Jobs.om,v $
+   Revision 1.3  2004/05/21 08:02:56  borchert
+   idle coroutines are now freed immediately in case of a garbage collection
+   (idea and some code contributed by Christian Ehrhardt)
+
+   Revision 1.2  2004/04/02 17:59:19  borchert
+   support of SysMain.mainTaskFinished and Process.softTermination added
+
+   Revision 1.1  1995/12/30 17:14:44  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Jobs;
+
+   IMPORT Conditions, Coroutines, Disciplines, Events, Process,
+      RelatedEvents, SYS := SYSTEM, SysMain, Tasks;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      Procedure = PROCEDURE (job: Job);
+      Task = POINTER TO TaskRec;
+      JobRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    proc: Procedure; (* job procedure to be run *)
+	    task: Task; (* designated task *)
+	    done: BOOLEAN; (* finished? *)
+	 END;
+   
+   TYPE
+      State = SHORTINT; (* idle..terminating *)
+      TaskRec =
+	 RECORD
+	    job: Job; (* current job, if any *)
+	    cr: Coroutines.Coroutine; (* coroutine representing this task *)
+	    next: Task; (* next idle task *)
+	 END;
+   VAR
+      idleTasks: Task;
+	 (* linear list of idle tasks; note that these tasks are
+	    now longer registered with Tasks -- hence they can be
+	    passed on to Tasks.Create
+	 *)
+      idleTasksLock: BOOLEAN;
+
+   TYPE
+      DoneCondition = POINTER TO DoneConditionRec;
+      DoneConditionRec =
+	 RECORD
+	    (Conditions.ConditionRec)
+	    job: Job;
+	 END;
+   VAR
+      doneDomain: Conditions.Domain;
+
+   VAR
+      mainFinished: BOOLEAN;
+      softTermination: BOOLEAN;
+
+   PROCEDURE TestDoneCondition(domain: Conditions.Domain;
+			       condition: Conditions.Condition;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH condition: DoneCondition DO
+	 RETURN condition.job.done
+      END;
+   END TestDoneCondition;
+
+   PROCEDURE JobListener(task: Task);
+      VAR
+	 mainWasAlreadyFinished: BOOLEAN;
+   BEGIN
+      mainWasAlreadyFinished := mainFinished;
+      SYS.CRSPAWN(task.cr);
+      LOOP
+         ASSERT(task.cr = Coroutines.current);
+	 ASSERT(task.job # NIL);
+	 task.job.proc(task.job); task.job.done := TRUE; task.job := NIL;
+	 IF ~mainWasAlreadyFinished & mainFinished OR softTermination THEN
+	    Tasks.Terminate;
+	 END;
+	 IF ~SYS.TAS(idleTasksLock) THEN
+	    task.next := idleTasks; idleTasks := task;
+	    idleTasksLock := FALSE;
+	 END;
+	 Tasks.Disconnect;
+      END;
+   END JobListener;
+
+   PROCEDURE TerminateIdleTasks;
+      VAR
+	 task: Task;
+   BEGIN
+      IF ~SYS.TAS(idleTasksLock) THEN
+	 task := idleTasks; idleTasks := NIL;
+	 idleTasksLock := FALSE;
+      END;
+   END TerminateIdleTasks;
+
+   PROCEDURE FreeHandler(event: Events.Event);
+      (* set all free lists to NIL to return the associated storage
+	 to the garbage collector
+      *)
+   BEGIN
+      IF event.type = SysMain.mainTaskFinished THEN
+	 mainFinished := TRUE;
+      ELSIF event.type = Process.softTermination THEN
+	 softTermination := TRUE;
+      END;
+      TerminateIdleTasks;
+   END FreeHandler;
+
+   PROCEDURE AddTask(cr: Coroutines.Coroutine);
+      VAR
+	 task: Tasks.Task;
+   BEGIN
+      Tasks.Create(task, cr);
+   END AddTask;
+
+   PROCEDURE Init;
+
+      PROCEDURE CreateDomain(VAR domain: Conditions.Domain;
+			     test: Conditions.TestProc);
+	 VAR
+	    if: Conditions.Interface;
+	    desc: Conditions.Description;
+      BEGIN
+	 NEW(if); if.test := test;
+	 NEW(desc); desc.internal := TRUE; desc.caps := {};
+	 NEW(domain); Conditions.InitDomain(domain, if, desc);
+      END CreateDomain;
+
+   BEGIN (* Init *)
+      idleTasksLock := FALSE;
+      idleTasks := NIL; mainFinished := FALSE; softTermination := FALSE;
+      CreateDomain(doneDomain, TestDoneCondition);
+      Events.Handler(Process.startOfGarbageCollection, FreeHandler);
+      Events.Handler(Process.termination, FreeHandler);
+      Events.Handler(SysMain.mainTaskFinished, FreeHandler);
+      Events.Handler(Process.softTermination, FreeHandler);
+   END Init;
+
+   PROCEDURE Submit(job: Job; proc: Procedure);
+      (* submit the given job for being done by the given procedure;
+	 note that ``job'' must not be given twice to Submit
+      *)
+      VAR
+	 task: Task;
+   BEGIN
+      ASSERT(proc # NIL);
+      job.proc := proc; job.done := FALSE;
+      IF (idleTasks # NIL) & ~SYS.TAS(idleTasksLock) THEN
+	 task := idleTasks; idleTasks := idleTasks.next;
+	 idleTasksLock := FALSE;
+      ELSE
+	 NEW(task); JobListener(task);
+      END;
+      AddTask(task.cr);
+      task.job := job; task.next := NIL;
+      job.task := task;
+   END Submit;
+
+   PROCEDURE CreateCondition(VAR condition: Conditions.Condition; job: Job);
+      (* create condition which becomes TRUE when the job is finished *)
+      VAR
+	 cond: DoneCondition;
+   BEGIN
+      IF job.done THEN
+	 condition := NIL;
+      ELSE
+	 NEW(cond); cond.job := job;
+	 Conditions.Init(cond, doneDomain);
+	 condition := cond;
+      END;
+   END CreateCondition;
+
+BEGIN
+   Init;
+END Jobs.

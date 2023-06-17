@@ -1,0 +1,269 @@
+MODULE HTTPConversions;
+   
+   IMPORT
+      Dates, Read, Streams, Strings, Times, Write;
+      
+   TYPE
+      DateStr = ARRAY 34 OF CHAR;
+   
+   CONST
+      rfc1123Date = 0;
+      ansiCDate = 1;
+      rfc850Date = 2;
+
+   VAR
+      months: ARRAY 12, 4 OF CHAR;
+      wkDays: ARRAY 7, 4 OF CHAR;
+      dDayOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to day *)
+      dMonthOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to month *)
+      dYearOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to year *)
+      dHourOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to hour *)
+      dMinuteOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to minute *)
+      dSecondOff: ARRAY 3 OF INTEGER; (* Date-reference-offset to second *)
+   
+   
+   PROCEDURE ToHTTPDate(date: Times.Time; VAR httpDate: DateStr);
+      (* Converts an oberon date to a HTTP-date as referred in RFC 1123 *)
+      
+      VAR
+         info: Dates.InfoRec;
+         s: Streams.Stream;
+         
+   BEGIN
+      Dates.GetO(date, 0, info);
+      httpDate[0] := 0X;
+      Strings.Open(s, httpDate);
+      Write.StringS(s, wkDays[info.weekday]);
+      Write.StringS(s, ", ");
+      IF info.day < 10 THEN
+         Write.CharS(s, "0");
+      END;
+      Write.IntS(s, info.day, 1);
+      Write.CharS(s, " ");
+      Write.StringS(s, months[info.month -1]);
+      Write.IntS(s, info.year, 5); (* assume year has 4 digits *)
+      Write.CharS(s, " ");
+      IF info.hour < 10 THEN
+         Write.CharS(s, "0");
+      END;
+      Write.IntS(s, info.hour, 1);
+      Write.CharS(s, ":");
+      IF info.minute < 10 THEN
+         Write.CharS(s, "0");
+      END;
+      Write.IntS(s, info.minute, 1);
+      Write.CharS(s, ":");
+      IF info.second < 10 THEN
+         Write.CharS(s, "0");
+      END;
+      Write.IntS(s, info.second, 1);
+      Write.StringS(s, " GMT");
+      
+      Streams.Release(s);
+   END ToHTTPDate;
+   
+   
+   PROCEDURE FromHTTPDate(httpDate: Streams.Stream; date: Times.Time): BOOLEAN;
+      (* Converts the date of 'httpDate' to the oberon date format. Every
+         allowed version of a HTTP-date is recognized. Parsing of 'httpDate'
+         starts at the actual position. FALSE is returned in case of errors.
+         
+         The three possible date-formats are determined by the fourth position
+         in the date. There you can find a "," wenn a RFC-1123-date is present,
+         a " ", when an ANSI-C-date is present and one of "d", "s", "n", "r"
+         and "u", wenn a RFC-850-date is present.
+      *)
+      
+      VAR
+         ref: Streams.Count;
+         dateFormat: INTEGER; (* indicator: which date is present *)
+         ch: CHAR;
+         error: BOOLEAN;
+         info: Dates.Info;
+         month: ARRAY 4 OF CHAR;
+         i: SHORTINT;
+         
+         PROCEDURE CompStrings(a, b: ARRAY OF CHAR): BOOLEAN;
+            (* Compares two 0-terminated Strings case insensitive. result ist
+               TRUE if they are equal.
+            *)
+            
+            VAR
+               i, j: LONGINT;
+     
+         BEGIN
+            i := 0; j:= 0;
+            WHILE (a[i] # 0X) & (b[j] # 0X) & (CAP(a[i]) = CAP(b[j])) DO
+               INC(i);
+               INC(j);
+            END;
+            
+            RETURN CAP(a[i]) = CAP(b[j]);
+         END CompStrings;
+         
+   BEGIN
+      NEW(info);
+      error := ~Streams.Seek(httpDate, 3, Streams.fromPos);
+      error := error OR ~Streams.ReadByte(httpDate, ch);
+      CASE ch OF
+      | ",":
+         (* RFC-1123-date: reference Point is first space after weekday *)
+         dateFormat := rfc1123Date;
+      | " ":
+         (* ANSI-C-date, reference Point is first letter of month *)
+         dateFormat := ansiCDate;
+      ELSE
+         (* RFC-850-date, reference Point is first space after weekday *)
+         dateFormat := rfc850Date;
+         (* don't know how long the weekday is. Check for it. *)
+         WHILE Streams.ReadByte(httpDate, ch) & (ch # ",") DO
+         END;
+      END;
+      Streams.GetPos(httpDate, ref);
+      Streams.SetPos(httpDate, ref + dDayOff[dateFormat]);
+      Read.ShortIntS(httpDate, info.day);
+      Streams.SetPos(httpDate, ref + dMonthOff[dateFormat]);
+      error := error OR ~Streams.ReadPart(httpDate, month, 0, 3);
+      month[3] := 0X;
+      i := 0;
+      WHILE (i < 12) & ~CompStrings(month, months[i]) DO
+         INC(i);
+      END;
+      IF i >= 12 THEN
+         RETURN FALSE;
+      END;
+      info.month := i + 1;
+      Streams.SetPos(httpDate, ref + dYearOff[dateFormat]);
+      Read.LongIntS(httpDate, info.year);
+      IF dateFormat = rfc850Date THEN
+         (* Year has only two digits. Bring it up to four *)
+         IF info.year > 50 THEN
+            INC(info.year, 1900);
+         ELSE
+            INC(info.year, 2000);
+         END;
+      END;
+      Streams.SetPos(httpDate, ref + dHourOff[dateFormat]);
+      Read.ShortIntS(httpDate, info.hour);
+      error := error OR ~Streams.ReadByte(httpDate, ch); (* skip ":" *)
+      Read.ShortIntS(httpDate, info.minute);
+      error := error OR ~Streams.ReadByte(httpDate, ch); (* skip ":" *)
+      Read.ShortIntS(httpDate, info.second);
+      info.msec := 0;
+      Dates.SetO(date, 0, info^);
+      RETURN ~error;
+   END FromHTTPDate;
+   
+   
+   PROCEDURE Base64Decode(in: Streams.Stream; VAR out: ARRAY OF CHAR): BOOLEAN;
+      (* Decodes a base-64-encoded Stream 'in' and writes the result to out.
+         Decoding starts at the actual actual position in the stream and is done
+         up to 'in.eof'. IF the result can't be stored in 'out' FALSE will be
+         returned.
+      *)
+      
+      VAR
+         i, o: INTEGER;
+         finished: BOOLEAN;
+         ch: CHAR;
+         value, lastValue: INTEGER;
+         
+      PROCEDURE Base64ToInt(ch: CHAR): INTEGER;
+         (* Returns the value of the base64-encoded char. If 'ch' is not a valid
+            character then -1 will be returned.
+         *)
+         
+      BEGIN
+         CASE ch OF
+         | "A".."Z":
+            RETURN ORD(ch)-ORD("A");
+         | "a".."z":
+            RETURN ORD(ch)-71; (* = ORD(ch)-ORD("a")+26 *)
+         | "0".."9":
+            RETURN ORD(ch)+4; (* = ORD(ch)-ORD("0")+52 *)
+         | "+":
+            RETURN 62;
+         | "/":
+            RETURN 63;
+         ELSE
+            RETURN -1;
+         END;
+      END Base64ToInt;
+   
+   BEGIN
+      i := 0;
+      o := 0;
+      WHILE Streams.ReadByte(in, ch) & (ch # "=") & (o < LEN(out)) DO
+         value := Base64ToInt(ch);
+         IF value >= 0 THEN
+            CASE i MOD 4 OF
+            | 0:
+            | 1:
+               out[o] := CHR(ASH(lastValue, 2) + ASH(value, -4));
+               INC(o);
+            | 2:
+               out[o] := CHR(ASH(lastValue MOD 16, 4) + ASH(value, -2));
+               INC(o);
+            | 3:
+               out[o] := CHR(ASH(lastValue MOD 4, 6) + value);
+               INC(o);
+            END;
+            lastValue := value;
+            INC(i);
+         END;
+      END;
+      
+      IF o < LEN(out) THEN
+         out[o] := 0X;
+         RETURN TRUE;
+      END;
+      
+      RETURN FALSE;
+   END Base64Decode;
+
+BEGIN
+   months[0] := "Jan";
+   months[1] := "Feb";
+   months[2] := "Mar";
+   months[3] := "Apr";
+   months[4] := "May";
+   months[5] := "Jun";
+   months[6] := "Jul";
+   months[7] := "Aug";
+   months[8] := "Sep";
+   months[9] := "Oct";
+   months[10] := "Nov";;
+   months[11] := "Dec";;
+   
+   wkDays[0] := "Sun";
+   wkDays[1] := "Mon";
+   wkDays[2] := "Tue";
+   wkDays[3] := "Wed";
+   wkDays[4] := "Thu";
+   wkDays[5] := "Fri";
+   wkDays[6] := "Sat";
+   
+   (* Offsets to values for different date-formats. 
+      RFC-1123-date, reference Point is first space after weekday
+      ANSI-C-date, reference Point is first letter of month
+      RFC-850-date, reference Point is first space after weekday
+   *)
+   dDayOff[rfc1123Date] := 1;
+   dDayOff[ansiCDate] := 4;
+   dDayOff[rfc850Date] := 1;
+   dMonthOff[rfc1123Date] := 4;
+   dMonthOff[ansiCDate] := 0;
+   dMonthOff[rfc850Date] := 4;
+   dYearOff[rfc1123Date] := 8;
+   dYearOff[ansiCDate] := 16;
+   dYearOff[rfc850Date] := 8;
+   dHourOff[rfc1123Date] := 13;
+   dHourOff[ansiCDate] := 7;
+   dHourOff[rfc850Date] := 11;
+   dMinuteOff[rfc1123Date] := 16;
+   dMinuteOff[ansiCDate] := 10;
+   dMinuteOff[rfc850Date] := 14;
+   dSecondOff[rfc1123Date] := 19;
+   dSecondOff[ansiCDate] := 13;
+   dSecondOff[rfc850Date] := 22;
+END HTTPConversions.

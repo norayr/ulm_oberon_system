@@ -1,0 +1,128 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Scales.od,v 1.1 1994/02/22 20:09:59 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Scales.od,v $
+   Revision 1.1  1994/02/22  20:09:59  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 12/91
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Scales;
+
+   IMPORT Disciplines, Events, Objects, Operations;
+
+   TYPE
+      Family = POINTER TO FamilyRec;
+      FamilyRec = RECORD (Disciplines.ObjectRec) END;
+      Scale = POINTER TO ScaleRec;
+      ScaleRec = RECORD (Disciplines.ObjectRec) END;
+
+   CONST
+      unitNameLength = 32;
+   TYPE
+      Unit = POINTER TO UnitRec;
+      UnitRec = RECORD (Disciplines.ObjectRec) END;
+      UnitName = ARRAY unitNameLength OF CHAR;
+
+   CONST
+      absolute = 1; relative = 2; (* measure types *)
+   TYPE
+      Measure = POINTER TO MeasureRec;
+      MeasureRec = RECORD (Operations.OperandRec) END;
+
+   TYPE
+      Value = LONGINT;
+
+   CONST
+      add = Operations.add; sub = Operations.sub;
+   TYPE
+      Operation = SHORTINT; (* add or sub *)
+   TYPE
+      CreateProc = PROCEDURE (scale: Scale; VAR measure: Measure; abs: BOOLEAN);
+      GetValueProc = PROCEDURE (measure: Measure; unit: Unit; VAR value: Value);
+      SetValueProc = PROCEDURE (measure: Measure; unit: Unit; value: Value);
+      AssignProc = PROCEDURE (target: Measure; source: Measure);
+      OperatorProc = PROCEDURE (op: Operation; op1, op2, result: Measure);
+      CompareProc = PROCEDURE (op1, op2: Measure) : INTEGER;
+      ConvertProc = PROCEDURE (from, to: Measure);
+			       
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    create: CreateProc;
+	    getvalue: GetValueProc;
+	    setvalue: SetValueProc;
+	    assign: AssignProc;
+	    op: OperatorProc;
+	    compare: CompareProc;
+	    (* the conversion routines are only to be provided
+	       if the scaling system belongs to a family
+	    *)
+	    scaleToReference: ConvertProc;
+	    referenceToScale: ConvertProc;
+	 END;
+
+   VAR
+      invalidOperation: Events.EventType;
+	 (* operation cannot be performed for the given combination
+	    of types (absolute or relative)
+	 *)
+      incompatibleScales: Events.EventType;
+	 (* the scales of the operands do not belong to the same family *)
+      badCombination: Events.EventType;
+	 (* SetValue or GetValue:
+	    given measure and unit do not belong to the same scaling system
+	 *)
+
+   PROCEDURE InitFamily(family: Family; reference: Scale);
+   PROCEDURE Init(scale: Scale; family: Family; if: Interface);
+      (* reference scales are to be initialized with family = NIL *)
+   PROCEDURE InitUnit(scale: Scale; unit: Unit; name: UnitName);
+   PROCEDURE CreateMeasure(scale: Scale; VAR measure: Measure; type: SHORTINT);
+   PROCEDURE CreateAbsMeasure(scale: Scale; VAR measure: Measure);
+      (* create measure and init it to the origin of the given system *)
+   PROCEDURE CreateRelMeasure(scale: Scale; VAR measure: Measure);
+      (* create relative measure and init it to 0 *)
+   PROCEDURE ConvertMeasure(scale: Scale; VAR measure: Measure);
+      (* convert measure to the given scale which must belong
+	 to the same family as the original scale of measure
+      *)
+
+   PROCEDURE GetReference(family: Family; VAR reference: Scale);
+   PROCEDURE GetFamily(scale: Scale; VAR family: Family);
+   PROCEDURE GetScaleOfUnit(unit: Unit; VAR scale: Scale);
+   PROCEDURE GetScale(measure: Measure; VAR scale: Scale);
+
+   PROCEDURE TraverseUnits(scale: Scale);
+   PROCEDURE NextUnit(scale: Scale; VAR unit: Unit) : BOOLEAN;
+   PROCEDURE GetName(unit: Unit; VAR name: UnitName);
+   PROCEDURE GetValue(measure: Measure; unit: Unit; VAR value: Value);
+   PROCEDURE SetValue(measure: Measure; unit: Unit; value: Value);
+
+   PROCEDURE IsAbsolute(measure: Measure) : BOOLEAN;
+   PROCEDURE IsRelative(measure: Measure) : BOOLEAN;
+   PROCEDURE MeasureType(measure: Measure) : SHORTINT;
+
+END Scales.

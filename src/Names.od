@@ -1,0 +1,268 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Names.od,v 1.4 2004/04/02 18:31:04 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Names.od,v $
+   Revision 1.4  2004/04/02 18:31:04  borchert
+   MakeSubnode added
+
+   Revision 1.3  1998/04/05 15:16:05  martin
+   historical relics (Alive, Purge) removed
+
+   Revision 1.2  1998/03/24  23:15:02  borchert
+   InitMemberEventType added to support PersistentEvents for
+   member event types of non-standard extensions of Names.Node
+
+   Revision 1.1  1995/12/22  15:12:08  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Names;
+(*
+ *	Abstraction for globally distributable names for objects.
+ *	Name spaces are directed and (in general) cycle-free graphs.
+ *	Nodes in the "root" hierarchy as defined in this module can
+ *	belong to other processes (name servers).  Access to individual
+ *	nodes can be controlled by use of an authorization scheme.
+ *)
+
+   IMPORT
+      ConstStrings, Events, Iterators, Objects, RelatedEvents, Services,
+      Shards;
+
+   TYPE
+      Name = ConstStrings.String;
+
+      Node = POINTER TO NodeRec;
+      NodeRec =
+	 RECORD
+	    (Services.ObjectRec)
+	 END;
+
+      Lister = Iterators.Iterator;
+
+   CONST
+      examine = 0;			(* GetStatus *)
+      change = 1;			(* SetStatus *)
+      read = 2;				(* GetMembers, TakeInterest *)
+      search = 3;			(* GetNode *)
+      insert = 4;			(* Insert *)
+      delete = 5;			(* Delete *)
+      destroy = 6;			(* Destroy *)
+      accessmodes = 7;
+
+   TYPE
+      AccessMode = SHORTINT;		(* [examine..destroy] *)
+
+      Permissions = ARRAY accessmodes OF Shards.Pot;
+
+   TYPE
+      Status = POINTER TO StatusRec;
+      StatusRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* authorization: *)
+	    perm: Permissions;
+	 END;
+
+   CONST
+      accessCap = 0;
+      statusCap = 1;
+      domainCap = 2;
+      destroyCap = 3;
+      makeSubnodeCap = 4;
+      allCaps = {accessCap .. makeSubnodeCap};
+      (* capabilities causing failures when missing: *)
+      strictCaps = {statusCap, domainCap, makeSubnodeCap};
+
+   TYPE
+      CapabilitySet = SET;		(* of [accessCap..makeSubnodeCap] *)
+
+   TYPE
+      AccessProc = PROCEDURE (node: Node; mode: AccessMode;
+				 auth: Shards.Lid): BOOLEAN;
+
+      GetStatusProc = PROCEDURE (node: Node; auth: Shards.Lid;
+				 VAR status: StatusRec): BOOLEAN;
+
+      SetStatusProc = PROCEDURE (node: Node; status: Status;
+				 auth: Shards.Lid): BOOLEAN;
+
+      GetMembersProc = PROCEDURE (node: Node; auth: Shards.Lid;
+				 VAR members: Lister): BOOLEAN;
+
+      TakeInterestProc = PROCEDURE (node: Node; auth: Shards.Lid;
+			      VAR eventType: Events.EventType): BOOLEAN;
+
+      GetNodeProc = PROCEDURE (node: Node; name: Name; auth: Shards.Lid;
+				 VAR subnode: Node): BOOLEAN;
+
+      InsertProc = PROCEDURE (node, subnode: Node; name: Name;
+				 auth: Shards.Lid): BOOLEAN;
+
+      MakeSubnodeProc = PROCEDURE (node: Node; name: Name; status: Status;
+				       caps: CapabilitySet; auth: Shards.Lid;
+				       VAR subnode: Node): BOOLEAN; 
+
+      DeleteProc = PROCEDURE (node: Node; name: Name;
+				 auth: Shards.Lid): BOOLEAN;
+
+      DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid): BOOLEAN;
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* access checking method *)
+	    access:           AccessProc;
+	    (* status methods *)
+	    getStatus:        GetStatusProc;
+	    setStatus:        SetStatusProc;
+	    (* domain methods *)
+	    getMembers:       GetMembersProc;
+	    takeInterest:     TakeInterestProc;
+	    getNode:          GetNodeProc;
+	    insert:           InsertProc;
+	    makeSubnode:      MakeSubnodeProc;
+	    delete:           DeleteProc;
+	    (* cleanup method *)
+	    destroy:          DestroyProc;
+	 END;
+
+   CONST
+      inserted = insert;
+      deleted = delete;
+
+   TYPE
+      State = SHORTINT;			(* inserted or deleted *)
+
+      MemberEvent = POINTER TO MemberEventRec;
+      MemberEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    state: State;
+	    name: Name;			(* of inserted/deleted member *)
+	    node: Node;
+	 END;
+
+   VAR
+      root: Node;		(* common root of all global domains *)
+
+   CONST
+      noPermission = 0;		(* operation was not permitted *)
+      badAccessMode = 1;	(* illegal access mode *)
+      noStatus = 2;		(* node does not maintain a status *)
+      noDomain = 3;		(* node is not a domain *)
+      nodeNotFound = 4;		(* node could not be found *)
+      nodeDestroyed = 5;	(* node has been destroyed *)
+      nameExists = 6;		(* name is already in use *)
+      nodeBusy = 7;		(* node busy, possible deadlock situation *)
+      cyclicLink = 8;		(* operation would cause a cyclic link *)
+      serverFailure = 9;	(* name server failure *)
+      unknownError = 10;	(* unknown error code *)
+      noSubDomain = 11;         (* node does not support MakeSubdomain *)
+      errorcodes = 12;
+
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+   (*
+    * Errors related to nodes are queued on default; priority is
+    * Priorities.liberrors
+    *)
+
+   (* ======== implementation procedures ======== *)
+
+   PROCEDURE InitNode(node: Node; if: Interface; caps: CapabilitySet);
+      (* to be called after NEW(node) *)
+
+   PROCEDURE CreateNode(VAR node: Node; status: Status; caps: CapabilitySet);
+      (* create a default node *)
+      (* status may be NIL if no restrictions are required *)
+
+   PROCEDURE InitMemberEventType(eventType: Events.EventType);
+      (* to be called for event types that are returned
+         by implementations of TakeInterest
+      *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      (* raise an error event; to be called in standard situations *)
+
+   (* ======== procedures of general interest ======== *)
+
+   PROCEDURE Capabilities(node: Node): CapabilitySet;
+      (* return capabilities of node *)
+
+   PROCEDURE Access(node: Node; mode: AccessMode; auth: Shards.Lid): BOOLEAN;
+      (* guess if node would allow a particular access mode *)
+      (* when in doubt, e.g. for lack of access capability, return TRUE *)
+
+   PROCEDURE GetStatus(node: Node; auth: Shards.Lid;
+			      VAR status: StatusRec): BOOLEAN;
+      (* examine current status of node *)
+
+   PROCEDURE SetStatus(node: Node; status: Status; auth: Shards.Lid): BOOLEAN;
+      (* change status of node *)
+
+   PROCEDURE GetMembers(node: Node; auth: Shards.Lid;
+			      VAR members: Lister): BOOLEAN;
+      (* read from node all names of direct subnodes *)
+
+   PROCEDURE TakeInterest(node: Node; auth: Shards.Lid;
+			      VAR eventType: Events.EventType): BOOLEAN;
+      (* return node specific event type notificating members changes *)
+
+   PROCEDURE GetNode(node: Node; name: Name; auth: Shards.Lid;
+			      VAR subnode: Node): BOOLEAN;
+      (* search node for a direct subnode named name *)
+
+   PROCEDURE Insert(node, subnode: Node; name: Name;
+			      auth: Shards.Lid): BOOLEAN;
+      (* insert name name for subnode subnode into node *)
+
+   PROCEDURE MakeSubnode(node: Node;
+                         name: Name;
+			 status: Status;
+			 caps: CapabilitySet;
+			 auth: Shards.Lid;
+			 VAR subnode: Node): BOOLEAN; 
+      (* create subnode of node *)
+
+   PROCEDURE Delete(node: Node; name: Name; auth: Shards.Lid): BOOLEAN;
+      (* delete subnode named name from node *)
+
+   PROCEDURE Destroy(node: Node; auth: Shards.Lid): BOOLEAN;
+      (* destroy node and delete references to node where possible *)
+
+END Names.

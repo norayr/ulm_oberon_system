@@ -1,0 +1,133 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: IPv4NameSys.om,v 1.2 2004/05/12 17:55:11 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: IPv4NameSys.om,v $
+   Revision 1.2  2004/05/12 17:55:11  borchert
+   byte orderung bug fixed in ImportFrom
+
+   Revision 1.1  2004/03/30 12:21:52  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE IPv4NameSystems;
+
+   (* import name systems using IPv4 addresses *)
+
+   IMPORT DNSRecords, DNSResolvers, DNSStdResolvers, InetTCP, IPv4Addresses,
+      Names, NamesBootService, Networks, Read, RelatedEvents,
+      StreamDisciplines, Streams, Strings, SYS := SYSTEM;
+
+   PROCEDURE Import(ipaddr: IPv4Addresses.SocketAddress;
+                    VAR root: Names.Node;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 address: Networks.Address;
+   BEGIN
+      InetTCP.CreateAddress(address, ipaddr);
+      RETURN NamesBootService.Import(address, root, errors)
+   END Import;
+
+   PROCEDURE ImportFrom(source: ARRAY OF CHAR;
+                        VAR root: Names.Node;
+			errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 addr: IPv4Addresses.Address;
+	 port: IPv4Addresses.PortNumber;
+	 nestlevel: INTEGER;
+	 sockaddr: IPv4Addresses.SocketAddress;
+
+      PROCEDURE ^ TryThemAll(source: ARRAY OF CHAR) : BOOLEAN;
+
+      PROCEDURE TryDottedDecimal(source: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    s: Streams.Stream;
+	    ch: CHAR;
+	    portnum: INTEGER;
+      BEGIN
+	 Strings.Open(s, source);
+	 IF ~IPv4Addresses.ReadText(s, addr) THEN RETURN FALSE END;
+	 Read.CharS(s, ch);
+	 IF (s.count = 0) OR (ch # ":") THEN RETURN FALSE END;
+	 Read.IntS(s, portnum);
+	 IF (s.count = 0) OR (portnum < 0) OR (portnum >= 10000H) THEN
+	    RETURN FALSE
+	 END;
+	 port := SYS.VAL(IPv4Addresses.PortNumber, portnum);
+	 RETURN TRUE
+      END TryDottedDecimal;
+
+      PROCEDURE TryHostname(source: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    s: Streams.Stream;
+	    hostname: DNSRecords.Name;
+	    portnum: INTEGER;
+	    onsstring: DNSRecords.Name;
+	    portfield: ARRAY 16 OF CHAR;
+	    gotport: BOOLEAN;
+	    addresses: DNSResolvers.IPv4AddressList;
+      BEGIN
+	 Strings.Open(s, source);
+	 StreamDisciplines.SetFieldSep(s, ":");
+	 IF ~Read.FieldS(s, hostname) THEN RETURN FALSE END;
+	 gotport := FALSE;
+	 IF Read.FieldS(s, portfield) THEN
+	    Strings.Open(s, portfield);
+	    Read.IntS(s, portnum);
+	    gotport := s.count > 0;
+	 END;
+	 IF ~gotport THEN
+	    (* just a domain name was given *)
+	    IF ~DNSResolvers.GetAttribute(DNSResolvers.std,
+		  hostname, "ons", onsstring, errors) THEN
+	       RETURN FALSE
+	    END;
+	    RETURN TryThemAll(onsstring)
+	 ELSIF (portnum < 0) OR (portnum >= 10000H) THEN
+	    RETURN FALSE
+	 ELSE
+	    port := SYS.VAL(IPv4Addresses.PortNumber, portnum);
+	    IF ~DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+		  hostname, addresses, errors) THEN
+	       RETURN FALSE
+	    END;
+	    addr := addresses.addr;
+	    RETURN TRUE
+	 END;
+      END TryHostname;
+
+      PROCEDURE TryThemAll(source: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 INC(nestlevel);
+	 IF nestlevel > 3 THEN RETURN FALSE END;
+	 RETURN TryDottedDecimal(source) OR TryHostname(source)
+      END TryThemAll;
+
+   BEGIN (* ImportFrom *)
+      nestlevel := 0;
+      IF ~TryThemAll(source) THEN RETURN FALSE END;
+      sockaddr.host := addr;
+      IPv4Addresses.SetPort(sockaddr, port);
+      RETURN Import(sockaddr, root, errors)
+   END ImportFrom;
+
+END IPv4NameSystems.

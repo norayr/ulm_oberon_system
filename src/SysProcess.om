@@ -1,0 +1,337 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysProcess.om,v 1.2 1994/07/01 11:22:56 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysProcess.om,v $
+   Revision 1.2  1994/07/01  11:22:56  borchert
+   nonblocking variants of Wait & WaitFor added
+   Wait4 added
+
+   Revision 1.1  1994/02/23  07:59:54  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysProcess;
+
+   IMPORT Events, Priorities, RelatedEvents, SYS := SYSTEM, Sys, SysArgs,
+      SysErrors, SysSignals, SysTypes, Sets, SysSignalOperations;
+
+   TYPE
+      ProcessId = INTEGER;		(* non-negative *)
+      ProcessGroup = INTEGER;
+      UserId = INTEGER;
+      GroupId = INTEGER;
+      Signal = SysSignals.Signal;
+
+      Status =				(* termination status *)
+	 RECORD
+	    signal: Signal;		(* termination causing signal;
+					   = 0 if terminated by exit
+					*)
+	    exitcode: INTEGER;		(* exit code (if signal = 0) *)
+	    core: BOOLEAN;		(* core file produced? *)
+	    stopped: BOOLEAN;		(* stop of traced process? *)
+	 END;
+
+   CONST
+      (* see <sys/wait.h> *)
+      (* Note: exited and trapped aren't supported by linux. *)
+      (* exited = 1;    (* wait for processes that exited *) *)
+      (* trapped = 2;   (* wait for processes that trapped *) *)
+      untraced = 2;     (* tell about stopped, untraced children *)
+      nohang = 1;       (* don't hang in wait *)
+
+   VAR
+      profbuf, proflen : LONGINT;
+
+   PROCEDURE Getpid() : ProcessId;
+      (* returns process id *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getpid, d0, d1) THEN END;
+      RETURN d0
+   END Getpid;
+
+   PROCEDURE Getpgrp() : ProcessGroup;
+      (* returns process group *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getpgrp, d0, d1) THEN END;
+      RETURN d0
+   END Getpgrp;
+
+   PROCEDURE Getppid() : ProcessId;
+      (* returns parent process id *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getpid, d0, d1) THEN END;
+      RETURN d0
+   END Getppid;
+
+   PROCEDURE Getuid() : UserId;
+      (* return user ID *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getuid, d0, d1) THEN END;
+      RETURN d0
+   END Getuid;
+
+   PROCEDURE Geteuid() : UserId;
+      (* return effective UID *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.geteuid, d0, d1) THEN END;
+      RETURN d0
+   END Geteuid;
+
+   PROCEDURE Getgid() : GroupId;
+      (* return group ID *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getgid, d0, d1) THEN END;
+      RETURN d0
+   END Getgid;
+
+   PROCEDURE Getegid() : GroupId;
+      (* return effective GID *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.getegid, d0, d1) THEN END;
+      RETURN d0
+   END Getegid;
+
+   PROCEDURE Kill(pid: INTEGER; sig: Signal;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* send signal `sig' to process pid (if pid > 0)
+			      own process group (if pid = 0)
+			      process group -pid (if pid < 0)
+      *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.kill, d0, d1, pid, sig) THEN
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, d0, Sys.kill, "");
+	 RETURN FALSE
+      END;
+   END Kill;
+
+   PROCEDURE Fork(VAR pid: ProcessId; errors: RelatedEvents.Object) : BOOLEAN;
+      (* returns FALSE on failure;
+	 pid = 0: son process
+	 pid # 0: process id of son
+      *)
+      VAR
+	 result: ProcessId;
+   BEGIN
+      IF SYS.UNIXFORK(result) THEN
+	 pid := result;
+	 RETURN TRUE
+      ELSE
+	 SysErrors.Raise(errors, result, Sys.fork, "");
+	 RETURN FALSE
+      END;
+   END Fork;
+
+   PROCEDURE ExecEnv(path: ARRAY OF CHAR; argv, envp: SysArgs.Arguments;
+		     errors: RelatedEvents.Object);
+      (* replace process image by `path' and pass `argv' and `envp' *;
+	 path must be 0X-terminated
+      *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.execve, d0, d1, SYS.ADR(path), argv, envp) THEN END;
+      SysErrors.Raise(errors, d0, Sys.execve, path);
+   END ExecEnv;
+
+   PROCEDURE Exec(path: ARRAY OF CHAR; argv: SysArgs.Arguments;
+		  errors: RelatedEvents.Object);
+      (* like ExecEnv: envp = SysArgs.environ *)
+   BEGIN
+      ExecEnv(path, argv, SysArgs.environ, errors);
+   END Exec;
+
+   PROCEDURE Wait4(VAR pid: ProcessId; VAR status: Status;
+		   options: INTEGER;
+		   errors: RelatedEvents.Object;
+		   retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+      (* wait4 is supported by linux, waitid isn't. This is the
+         reason for the different implementation. The rusage argument
+	 is ignored.
+      *)
+      VAR
+	 d0, d1: INTEGER;
+	 statusword: INTEGER;
+	 low, high : INTEGER;
+   BEGIN (* Wait4 *)
+      interrupted := FALSE;
+      LOOP
+	 IF SYS.UNIXCALL(Sys.wait4, d0, d1,
+	       pid, SYS.ADR(statusword), options, NIL) THEN
+	    EXIT
+	 END;
+	 IF d0 = SysErrors.intr THEN
+	    interrupted := TRUE;
+	 END;
+	 IF (d0 # SysErrors.intr) OR ~retry THEN
+	    SysErrors.Raise(errors, d0, Sys.wait4, "");
+	    pid := 0;
+	    RETURN FALSE
+	 END;
+      END;
+
+      pid := d0;
+      (* we get pid = 0 on non-blocking calls of waitsys which would
+	 otherwise hang
+	 statusword has the following format:
+	 coredumped := statusword & 0x80;
+	 IF low byte = 0 THEN
+	    (* normal exit *)
+	    exitcode := second byte (*   (statusword >> 8) & 0xFF   *)
+	 ELSIF low byte = 07FH THEN
+	    (* Program stopped *)
+	    stopsignal := second byte
+	 ELSE
+	    (* Program signaled *)
+	    termsignal := second byte
+	 END;
+      *)
+      IF pid # 0 THEN
+	 status.stopped := FALSE;
+	 status.core := FALSE;
+	 low := statusword MOD 256;
+	 high := (statusword DIV 256) MOD 256;
+	 IF low = 0 THEN
+	    (* Normal exit with exit code. *)
+	    status.signal := 0;
+	    status.exitcode := high;
+	 ELSIF low = 07FH THEN
+	    (* Process stopped *)
+	    status.signal := high;
+	    status.exitcode := -1;
+	    status.stopped := TRUE;
+	 ELSE
+	    (* Process terminated by signal *)
+	    status.core := (low >= 080H);
+	    status.signal := low MOD 128;
+	    status.exitcode := -1;
+	 END;
+      END;
+      RETURN TRUE
+   END Wait4;
+
+   PROCEDURE WaitFor(VAR pid: ProcessId; VAR status: Status;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 interrupted: BOOLEAN;
+   BEGIN
+      RETURN Wait4(pid, status, 0, errors, TRUE, interrupted)
+   END WaitFor;
+
+   PROCEDURE Wait(VAR status: Status; VAR pid: ProcessId;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* wait for exit of child;
+	 if successful
+	    pid contains the process id of the terminated process;
+	    status contains the termination signal and exit code
+      *)
+   BEGIN
+      pid := 0;
+      RETURN WaitFor(pid, status, errors)
+   END Wait;
+
+   PROCEDURE NonBlockingWait(VAR status: Status; VAR pid: ProcessId;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 interrupted: BOOLEAN;
+   BEGIN
+      pid := 0;
+      RETURN Wait4(pid, status, nohang, errors, FALSE, interrupted) OR
+	     interrupted
+   END NonBlockingWait;
+
+   PROCEDURE NonBlockingWaitFor(VAR pid: ProcessId; VAR status: Status;
+				errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ok, interrupted: BOOLEAN;
+   BEGIN
+      ok := Wait4(pid, status, nohang, errors, FALSE, interrupted);
+      IF interrupted THEN
+	 pid := 0; RETURN TRUE
+      ELSE
+	 RETURN ok
+      END;
+   END NonBlockingWaitFor;
+
+   PROCEDURE Exit(code: INTEGER);
+      (* causes immediate termination without events *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF SYS.UNIXCALL(Sys.write, d0, d1, 3, profbuf, proflen) THEN END;
+      IF SYS.UNIXCALL(Sys.exit, d0, d1, code) THEN END;
+      (* not reached -- perhabs SYS.UNIXCALL generates wrong code?!? *)
+      SysErrors.Raise(NIL, d0, Sys.exit, "");
+      d0 := 0; d0 := 1 DIV d0; (* an almost sure kill... *)
+      LOOP END;
+   END Exit;
+
+   PROCEDURE Abort;
+      (* raises abort and exits with core dump (if possible);
+	 this is done by sending SysSignals.ABRT to the process
+	 (which is set to default reaction)
+      *)
+      VAR
+	 sset: SysSignalOperations.SignalSet;
+   BEGIN
+      Events.RemoveHandlers(SysSignals.ABRT);
+      IF ~Kill(Getpid(), SysSignals.ABRT.signo, NIL) THEN END;
+      (* OK, we have survived this attempt of suicide;
+	 most likely ABRT was blocked during the critical
+	 region of SysStorage
+      *)
+      Sets.InitSet(sset);
+      SysSignalOperations.SetMask(sset);
+      IF ~Kill(Getpid(), SysSignals.ABRT.signo, NIL) THEN END;
+      Exit(-1);
+   END Abort;
+
+   PROCEDURE Pause;
+      (* Pause does not raise any events *)
+      VAR
+	 d0, d1: INTEGER;
+   BEGIN
+      IF ~SYS.UNIXCALL(Sys.pause, d0, d1) THEN END;
+   END Pause;
+
+END SysProcess.

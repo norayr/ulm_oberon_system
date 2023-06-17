@@ -1,0 +1,100 @@
+DEFINITION Registers;
+
+   IMPORT Conclusions, Disciplines, StackAlloc;
+
+   TYPE
+      Register = INTEGER;
+      Mode     = INTEGER;
+
+   CONST
+      stdM       = 0;    (* normal value *)
+      addrM      = 1;    (* This register contains a traced address *)
+      ptrM       = 2;    (* This register contains a traced pointer *)
+
+      maxregs = 8;
+
+   TYPE
+      Owner = LONGINT;
+
+      RegSet = POINTER TO RegSetRec;
+
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD
+	 (Disciplines.ObjectRec)
+      END;
+
+      RegIoProc = PROCEDURE (set : RegSet; value : Value; reg : Register; offset : LONGINT);
+      RegXchgProc = PROCEDURE (set : RegSet; reg1, reg2 : Register);
+      RegProc = PROCEDURE (set : RegSet; reg : Register);
+      ValueProc = PROCEDURE (set : RegSet; value : Value);
+
+
+      RegSetRec = RECORD
+	 (Disciplines.ObjectRec)
+	 alloc : StackAlloc.Stack;
+      END;
+
+
+   PROCEDURE InitSet (ret : RegSet; nregs : INTEGER; defconstraint : SET;
+                      regsz : INTEGER; alloc : StackAlloc.Stack;
+		      read, write : RegIoProc; xchg : RegXchgProc;
+		      create : ValueProc; markused : RegProc);
+
+   PROCEDURE EnterLevel (set : RegSet);
+
+   PROCEDURE LeaveLevel (set : RegSet);
+
+   PROCEDURE DoneLevel (set : RegSet);
+
+   PROCEDURE GetOwner (set : RegSet) : Owner;
+
+   PROCEDURE DebugGetOwn (value : Value) : Owner;
+  
+   PROCEDURE CreateValue (VAR value : Value; set : RegSet; own : Owner; mode : Mode);
+
+   PROCEDURE DestroyValue (value : Value);
+
+   PROCEDURE DestroyOwnedValue (value : Value; caller : Owner);
+
+   PROCEDURE SaveReg (value : Value);
+
+   PROCEDURE SaveAll (set : RegSet);
+
+   PROCEDURE LoadReg (value : Value; possible : SET);
+
+   PROCEDURE RegCode (value : Value; VAR reg : Register) : BOOLEAN;
+   
+   PROCEDURE SetRegCode (value : Value; reg : Register);
+
+   PROCEDURE StackOffset (value : Value; VAR offset : LONGINT) : BOOLEAN;
+
+   PROCEDURE GetSize (set : RegSet) : LONGINT;
+
+   PROCEDURE Chown (value : Value; newowner : Owner);
+
+   PROCEDURE SetMode (value : Value; new : Mode);
+
+   PROCEDURE GetMode (value : Value) : Mode;
+
+   PROCEDURE AddConstraint (reg : Value; constraint : SET);
+
+   PROCEDURE RemoveConstraint (reg : Value);
+
+   PROCEDURE GetConstraint (reg : Value) : SET;
+
+   PROCEDURE PrepareInstruction (nregs : INTEGER; regs : ARRAY OF Value;
+				 possible : ARRAY OF SET) : BOOLEAN;
+
+   PROCEDURE DestroyOwnerOnError (set : RegSet; owner : Owner);
+
+   PROCEDURE Traced (value : Value) : BOOLEAN;
+
+   PROCEDURE UntracedValue (VAR value : Value; reg : Register);
+
+   PROCEDURE MakeUntraced (VAR value : Value; own : Owner);
+
+   PROCEDURE CheckLoc (reg : Value);
+
+   PROCEDURE Foreach (set : RegSet; proc : ValueProc);
+
+END Registers.

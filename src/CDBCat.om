@@ -1,0 +1,89 @@
+MODULE CDBCat;
+
+   IMPORT Args := UnixArguments, CDBNames, Conclusions, ConstStrings, Errors,
+      Names, Paths, PersistentObjects, PersistentTexts, Print, Process, Read,
+      RelatedEvents, RemoteCDBNames, RemoteIterators, RemoteNames, Services,
+      Shards, Storage, Streams, UnixFiles, UnixNames, Write;
+
+   VAR
+      outputfilename: ARRAY 512 OF CHAR;
+      auth: Shards.Lid;
+      path: ARRAY 512 OF CHAR;
+      errors: RelatedEvents.Object;
+
+      lidType: Services.Type;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+   BEGIN (* ProcessArguments *)
+      outputfilename[0] := 0X;
+      Args.Init("[-a auth] [-o output] path");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a": Args.FetchString(filename); CreateLid(auth, filename);
+	 | "o": Args.FetchString(outputfilename);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.FetchString(path); Args.AllArgs;
+   END ProcessArguments;
+
+   PROCEDURE FetchIt;
+      VAR
+	 node: Names.Node;
+	 text: PersistentTexts.Text;
+	 output: Streams.Stream;
+   BEGIN
+      IF ~Paths.GetNode(path, auth, errors, node) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, path);
+      END;
+      IF ~(node IS CDBNames.Node) THEN
+	 Write.StringS(Streams.stderr, path);
+	 Write.LineS(Streams.stderr, " is not a CDB node");
+	 Process.Exit(Process.indicateFailure);
+      END;
+      RelatedEvents.Forward(node, errors);
+      IF ~CDBNames.GetText(node(CDBNames.Node), auth, text) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, path);
+      END;
+      IF outputfilename # "" THEN
+	 IF ~UnixFiles.Open(output, outputfilename,
+	                    UnixFiles.write + UnixFiles.create,
+			    Streams.onebuf, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+      ELSE
+	 output := Streams.stdout;
+      END;
+      RelatedEvents.Forward(output, errors);
+      IF ~PersistentObjects.Write(output, text) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, outputfilename);
+      END;
+      Streams.Release(output);
+   END FetchIt;
+
+BEGIN
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+
+   ProcessArguments;
+   FetchIt;
+   Process.Exit(Process.indicateSuccess);
+END CDBCat.

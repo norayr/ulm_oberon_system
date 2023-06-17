@@ -1,0 +1,480 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1997 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: MD5.om,v 1.3 1998/04/04 18:35:11 martin Exp martin $
+   ----------------------------------------------------------------------------
+   $Log: MD5.om,v $
+   Revision 1.3  1998/04/04  18:35:11  martin
+   major revision: arithmetic, data structures, naming conventions and
+   layout polished up, changes of OneWayHashes propagated
+
+   Revision 1.2  1998/03/24  22:50:44  borchert
+   module name of OneWayHashes was fixed
+
+   Revision 1.1  1997/04/02  14:04:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE MD5; (* Frank B.J. Fischer / rev.: mh *)
+
+   IMPORT
+      MemStreams, NetIO, OneWayHashes, PersistentObjects, Services,
+      Streams, SYS := SYSTEM, Types;
+
+   CONST
+      bufsize = 2048;
+
+      chunkWords  = 16;
+      chunkBytes  = 4 * chunkWords;
+
+      digestWords = 4;
+      digestBytes = 4 * digestWords;
+      digestBits  = 8 * digestBytes;
+
+   TYPE 
+      Int8   = Types.Int8;
+      Int32  = Types.Int32;
+
+      Input  = ARRAY chunkWords OF Int32;
+      State  = ARRAY digestWords OF Int32;
+      Length = ARRAY 2 OF Int32;
+      Buffer = ARRAY chunkBytes OF Int32;
+      Digest = ARRAY digestBytes OF Int8;
+
+      Context =
+	 RECORD
+	    state : State;
+	    length: Length;		(* total number of bits processed *)
+	    count : INTEGER;		(* number of bytes in buffer *)
+	    buffer: Buffer;		(* buffered bytes, one per entry *)
+	 END;
+
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (OneWayHashes.ValueRec)
+	    digest:  Digest;
+	 END;
+
+   VAR
+      hash     : OneWayHashes.Hash;
+      valueType: Services.Type;
+      if       : OneWayHashes.ValueInterface;
+      poif     : PersistentObjects.Interface;
+
+   PROCEDURE LSB(x: Int32): Int8;
+      (* return least significant byte as a signed shortint *)
+   BEGIN
+      RETURN SYS.VAL(Int8, CHR(x MOD 100H))
+   END LSB;
+
+   PROCEDURE F(x, y, z: Int32): Int32;
+   BEGIN
+      (* (x AND y) OR (z AND NOT(x)) *)
+      RETURN SYS.VAL(Int32,
+	 SYS.VAL(SET, x) * SYS.VAL(SET, y) +
+	 (SYS.VAL(SET, z) - SYS.VAL(SET, x)) )
+   END F;
+
+   PROCEDURE G(x, y, z: Int32): Int32;
+   BEGIN
+      (* (x AND z) OR (y AND NOT(z)) *)
+      RETURN SYS.VAL(Int32,
+	 SYS.VAL(SET, x) * SYS.VAL(SET, z) +
+	 (SYS.VAL(SET, y) - SYS.VAL(SET, z)) )
+   END G;
+
+   PROCEDURE H(x, y, z: Int32): Int32;
+   BEGIN
+      (* (x XOR y) XOR z *)
+      RETURN SYS.VAL(Int32,
+	 SYS.VAL(SET, x) / SYS.VAL(SET, y) / SYS.VAL(SET, z) )
+   END H;
+
+   PROCEDURE I(x, y, z: Int32): Int32;
+   BEGIN
+      (* y XOR (NOT(z) OR x) *)
+      RETURN SYS.VAL(Int32,
+	 SYS.VAL(SET, y) / (-SYS.VAL(SET, z) + SYS.VAL(SET, x)) )
+   END I;
+
+   PROCEDURE FF(VAR a: Int32; b, c, d, x, s, ac: Int32);
+   BEGIN
+      a := SYS.ROT(a + F(b, c, d) + x + ac, s) + b;
+   END FF;
+
+   PROCEDURE GG(VAR a: Int32; b, c, d, x, s, ac: Int32);
+   BEGIN
+      a := SYS.ROT(a + G(b, c, d) + x + ac, s) + b;
+   END GG;
+
+   PROCEDURE HH(VAR a: Int32; b, c, d, x, s, ac: Int32);
+   BEGIN
+      a := SYS.ROT(a + H(b, c, d) + x + ac, s) + b;
+   END HH;
+
+   PROCEDURE II(VAR a: Int32; b, c, d, x, s, ac: Int32);
+   BEGIN
+      a := SYS.ROT(a + I(b, c, d) + x + ac, s) + b;
+   END II;
+
+   PROCEDURE Transform(VAR state: State; in: Input);
+      CONST
+	 s11 = 7;    s12 = 12;   s13 = 17;   s14 = 22;
+	 s21 = 5;    s22 = 9;    s23 = 14;   s24 = 20;
+	 s31 = 4;    s32 = 11;   s33 = 16;   s34 = 23;   
+	 s41 = 6;    s42 = 10;   s43 = 15;   s44 = 21;   
+      VAR
+	 a, b, c, d: Int32;
+   BEGIN
+      a := state[0];
+      b := state[1];
+      c := state[2];
+      d := state[3];
+
+      (* Round 1 *)
+      FF (a, b, c, d, in[ 0], s11,  -680876936); (* 1 *)
+      FF (d, a, b, c, in[ 1], s12,  -389564586); (* 2 *)
+      FF (c, d, a, b, in[ 2], s13,   606105819); (* 3 *)
+      FF (b, c, d, a, in[ 3], s14, -1044525330); (* 4 *)
+      FF (a, b, c, d, in[ 4], s11,  -176418897); (* 5 *)
+      FF (d, a, b, c, in[ 5], s12,  1200080426); (* 6 *)
+      FF (c, d, a, b, in[ 6], s13, -1473231341); (* 7 *)
+      FF (b, c, d, a, in[ 7], s14,   -45705983); (* 8 *)
+      FF (a, b, c, d, in[ 8], s11,  1770035416); (* 9 *)
+      FF (d, a, b, c, in[ 9], s12, -1958414417); (* 10 *)
+      FF (c, d, a, b, in[10], s13,      -42063); (* 11 *)
+      FF (b, c, d, a, in[11], s14, -1990404162); (* 12 *)
+      FF (a, b, c, d, in[12], s11,  1804603682); (* 13 *)
+      FF (d, a, b, c, in[13], s12,   -40341101); (* 14 *)
+      FF (c, d, a, b, in[14], s13, -1502002290); (* 15 *)
+      FF (b, c, d, a, in[15], s14,  1236535329); (* 16 *)
+
+      (* Round 2 *)
+      GG (a, b, c, d, in[ 1], s21,  -165796510); (* 17 *)
+      GG (d, a, b, c, in[ 6], s22, -1069501632); (* 18 *)
+      GG (c, d, a, b, in[11], s23,   643717713); (* 19 *)
+      GG (b, c, d, a, in[ 0], s24,  -373897302); (* 20 *)
+      GG (a, b, c, d, in[ 5], s21,  -701558691); (* 21 *)
+      GG (d, a, b, c, in[10], s22,    38016083); (* 22 *)
+      GG (c, d, a, b, in[15], s23,  -660478335); (* 23 *)
+      GG (b, c, d, a, in[ 4], s24,  -405537848); (* 24 *)
+      GG (a, b, c, d, in[ 9], s21,   568446438); (* 25 *)
+      GG (d, a, b, c, in[14], s22, -1019803690); (* 26 *)
+      GG (c, d, a, b, in[ 3], s23,  -187363961); (* 27 *)
+      GG (b, c, d, a, in[ 8], s24,  1163531501); (* 28 *)
+      GG (a, b, c, d, in[13], s21, -1444681467); (* 29 *)
+      GG (d, a, b, c, in[ 2], s22,   -51403784); (* 30 *)
+      GG (c, d, a, b, in[ 7], s23,  1735328473); (* 31 *)
+      GG (b, c, d, a, in[12], s24, -1926607734); (* 32 *)
+
+      (* Round 3 *)
+      HH (a, b, c, d, in[ 5], s31,     -378558); (* 33 *)
+      HH (d, a, b, c, in[ 8], s32, -2022574463); (* 34 *)
+      HH (c, d, a, b, in[11], s33,  1839030562); (* 35 *)
+      HH (b, c, d, a, in[14], s34,   -35309556); (* 36 *)
+      HH (a, b, c, d, in[ 1], s31, -1530992060); (* 37 *)
+      HH (d, a, b, c, in[ 4], s32,  1272893353); (* 38 *) 
+      HH (c, d, a, b, in[ 7], s33,  -155497632); (* 39 *)
+      HH (b, c, d, a, in[10], s34, -1094730640); (* 40 *)
+      HH (a, b, c, d, in[13], s31,   681279174); (* 41 *)
+      HH (d, a, b, c, in[ 0], s32,  -358537222); (* 42 *)
+      HH (c, d, a, b, in[ 3], s33,  -722521979); (* 43 *)
+      HH (b, c, d, a, in[ 6], s34,    76029189); (* 44 *)
+      HH (a, b, c, d, in[ 9], s31,  -640364487); (* 45 *)
+      HH (d, a, b, c, in[12], s32,  -421815835); (* 46 *)
+      HH (c, d, a, b, in[15], s33,   530742520); (* 47 *)
+      HH (b, c, d, a, in[ 2], s34,  -995338651); (* 48 *)
+
+      (* Round 4 *)
+      II (a, b, c, d, in[ 0], s41,  -198630844); (* 49 *)
+      II (d, a, b, c, in[ 7], s42,  1126891415); (* 50 *)
+      II (c, d, a, b, in[14], s43, -1416354905); (* 51 *)
+      II (b, c, d, a, in[ 5], s44,   -57434055); (* 52 *)
+      II (a, b, c, d, in[12], s41,  1700485571); (* 53 *)
+      II (d, a, b, c, in[ 3], s42, -1894986606); (* 54 *)
+      II (c, d, a, b, in[10], s43,    -1051523); (* 55 *)
+      II (b, c, d, a, in[ 1], s44, -2054922799); (* 56 *)
+      II (a, b, c, d, in[ 8], s41,  1873313359); (* 57 *)
+      II (d, a, b, c, in[15], s42,   -30611744); (* 58 *)
+      II (c, d, a, b, in[ 6], s43, -1560198380); (* 59 *)
+      II (b, c, d, a, in[13], s44,  1309151649); (* 60 *)
+      II (a, b, c, d, in[ 4], s41,  -145523070); (* 61 *)
+      II (d, a, b, c, in[11], s42, -1120210379); (* 62 *)
+      II (c, d, a, b, in[ 2], s43,   718787259); (* 63 *)
+      II (b, c, d, a, in[ 9], s44,  -343485551); (* 64 *)
+
+      INC(state[0], a);
+      INC(state[1], b);
+      INC(state[2], c);
+      INC(state[3], d);
+   END Transform;
+
+   PROCEDURE CreateValue(VAR value: Value);
+   BEGIN
+      NEW(value);
+      PersistentObjects.Init(value, valueType);
+      OneWayHashes.InitValue(value, if);
+   END CreateValue;
+
+   PROCEDURE MD5Init(VAR context: Context);
+   BEGIN
+      context.length[0] := 0;
+      context.length[1] := 0;
+      context.state[0] := 067452301H;
+      context.state[1] := 0EFCDAB89H;
+      context.state[2] := 098BADCFEH;
+      context.state[3] := 010325476H;
+      context.count := 0;
+   END MD5Init;
+
+   PROCEDURE MD5Update(VAR context: Context; 
+		       VAR inBuf: ARRAY OF Int8; inLen: Streams.Count);
+      VAR
+	 index: Streams.Count;
+	 mdi,
+	 i, ii: INTEGER;
+	 aux  : Int32;
+         input: Input;
+   BEGIN
+      (* get number of already processed bytes mod chunk size *)
+      mdi := context.count;
+
+      (* update number of bits *)
+      ASSERT( (0 <= inLen) & (inLen <= MAX(Int32) DIV 8) );
+      aux := context.length[0];
+      INC(context.length[0], inLen * 8);
+      IF context.length[0] < aux THEN
+	 INC(context.length[1]);
+      END;
+
+      index := 0;
+      WHILE index < inLen DO
+	 (* fill buffer *)
+	 context.buffer[mdi] := inBuf[index];
+	 INC(mdi);
+	 INC(index);
+
+	 (* transform next chunk if buffer full *)
+	 IF mdi = chunkBytes THEN
+	    i := 0;
+	    ii:= 0;
+	    WHILE i < chunkWords DO
+	       (* pack 4 bytes lsb first into one int, signed (!) arithmetic *)
+	       input[i] := ((context.buffer[ii+3] * 100H +
+		  context.buffer[ii+2] MOD 100H) * 100H +
+		  context.buffer[ii+1] MOD 100H) * 100H +
+		  context.buffer[ii] MOD 100H;
+	       INC(i);
+	       INC(ii, 4);
+	    END;
+	    Transform(context.state, input);
+	    mdi := 0;
+	 END;
+      END; (*WHILE index*)
+      context.count := mdi;
+   END MD5Update;
+
+   PROCEDURE MD5Final(VAR context: Context; VAR value: Value);
+      VAR
+	 i, ii  : INTEGER;
+	 padLen : INTEGER;
+	 aux    : Int32;
+	 input  : Input;
+         padding: ARRAY chunkBytes OF Int8;
+   BEGIN
+      (* save filelength *)
+      input[chunkWords-2] := context.length[0];
+      input[chunkWords-1] := context.length[1];
+
+      (* padding: at least one byte, stopping 8 bytes before end of chunk *)
+      padLen := chunkBytes - (context.count + 8) MOD chunkBytes;
+      padding[0] := MIN(Int8);    (* 80H *)
+      i := 1;
+      WHILE i < padLen DO
+	 padding[i] := 0H;
+	 INC(i);
+      END;
+      MD5Update(context, padding, padLen);
+      ASSERT(context.count = chunkBytes - 8);
+
+      (* transform final chunk with saved filelength in last 8 bytes *)
+      i := 0;
+      ii:= 0;
+      WHILE (i < chunkWords-2) DO
+	 (* pack 4 bytes lsb first into one int, using signed (!) arithmetic *)
+	 input[i] := ((context.buffer[ii+3] * 100H +
+	    context.buffer[ii+2] MOD 100H) * 100H +
+	    context.buffer[ii+1] MOD 100H) * 100H +
+	    context.buffer[ii] MOD 100H;
+	 INC(i);
+	 INC(ii, 4);
+      END;
+      Transform(context.state, input);
+
+      (* store state in digest *)
+      i := 0;
+      ii:= 0;
+      WHILE (i < digestWords) DO
+	 aux := context.state[i];
+	 value.digest[ii] := LSB(aux); aux := aux DIV 100H; INC(ii);
+	 value.digest[ii] := LSB(aux); aux := aux DIV 100H; INC(ii);
+	 value.digest[ii] := LSB(aux); aux := aux DIV 100H; INC(ii);
+	 value.digest[ii] := Types.ToInt8(aux); INC(ii);
+	 INC(i);
+      END;
+   END MD5Final;
+
+   (* ----- OneWayHashes interface procedures ----- *)
+
+   PROCEDURE Generate(hash: OneWayHashes.Hash; message: Streams.Stream; 
+		      VAR value: OneWayHashes.Value);
+      VAR
+	 context  : Context;
+	 md5value : Value;
+         bytesRead: Streams.Count;
+         ibuf     : ARRAY bufsize OF Int8;
+   BEGIN
+      CreateValue(md5value);
+      MD5Init(context);
+      LOOP
+	 bytesRead := Streams.ReadPacket(message, ibuf, 0, bufsize);
+	 IF bytesRead = 0 THEN
+	    EXIT
+	 END;
+	 MD5Update(context, ibuf, bytesRead);
+      END; (*LOOP*)
+      MD5Final(context, md5value);
+      value := md5value;
+   END Generate;
+
+   PROCEDURE Bitlength(hash: OneWayHashes.Hash): LONGINT;
+   BEGIN
+      RETURN digestBits
+   END Bitlength;
+
+   PROCEDURE Generator(value: OneWayHashes.Value): OneWayHashes.Hash;
+   BEGIN
+      RETURN hash
+   END Generator;
+
+   PROCEDURE Equal(value1, value2: OneWayHashes.Value): BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      WITH value1: Value DO
+	 WITH value2: Value DO
+	    i := 0;
+	    WHILE i < digestBytes DO
+	       IF value1.digest[i] # value2.digest[i] THEN
+		  RETURN FALSE
+	       END;
+	       INC(i);
+	    END; (*WHILE i*)
+	    RETURN TRUE
+	 END;
+      END;
+   END Equal;
+
+   PROCEDURE CreateStream(value: OneWayHashes.Value; VAR s: Streams.Stream);
+      VAR 
+	 copy: POINTER TO Digest;
+   BEGIN
+      WITH value: Value DO
+	 NEW(copy);
+	 copy^ := value.digest;
+         MemStreams.Open(s,
+	    SYS.VAL(Types.Address, copy), SYS.SIZE(Digest),
+	    MemStreams.read);
+      END;
+   END CreateStream;
+
+   (* ----- marshalling procedures ----- *)
+
+   PROCEDURE POCreate(VAR object: PersistentObjects.Object);
+      VAR
+	 value: Value;
+   BEGIN
+      CreateValue(value);
+      object := value;
+   END POCreate;
+
+   PROCEDURE PORead(s: Streams.Stream;
+		    object: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      WITH object: Value DO
+	 i := 0;
+	 WHILE i < digestBytes DO
+	    IF ~NetIO.ReadShortInt(s, object.digest[i]) THEN 
+	       RETURN FALSE 
+	    END;
+	    INC(i);
+         END;
+      END;
+      RETURN TRUE
+   END PORead;
+
+   PROCEDURE POWrite(s: Streams.Stream;
+		     object: PersistentObjects.Object): BOOLEAN;
+      VAR
+	 i: INTEGER;
+   BEGIN
+      WITH object: Value DO
+	 i := 0;
+	 WHILE i < digestBytes DO
+	    IF ~NetIO.WriteShortInt(s, object.digest[i]) THEN 
+	       RETURN FALSE 
+	    END;
+	    INC(i);
+         END;
+      END;
+      RETURN TRUE
+   END POWrite;
+
+   PROCEDURE Init;
+      VAR
+	 hif: OneWayHashes.Interface;
+	 hashType: Services.Type;
+   BEGIN
+      Services.SeekType("OneWayHashes.Hash", hashType);
+      NEW(hif);
+      hif.generate := Generate;
+      hif.bitlength := Bitlength;
+      NEW(hash);
+      Services.Init(hash, hashType);
+      OneWayHashes.Init(hash, hif);
+
+      NEW(poif);
+      poif.create := POCreate; poif.read := PORead; poif.write := POWrite;
+      poif.createAndRead := NIL;
+      PersistentObjects.RegisterType(valueType,
+	 "MD5.Value", "OneWayHashes.Value", poif);
+      NEW(if);
+      if.generator := Generator;
+      if.equal := Equal;
+      if.createStream := CreateStream;
+   END Init;
+
+BEGIN
+   Init;
+END MD5.

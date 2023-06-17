@@ -1,0 +1,174 @@
+MODULE HTTPHeaders;
+   
+   IMPORT
+      Disciplines, Maps, Streams, Strings;
+      
+   CONST
+      hashTableSize = 63;
+      
+   TYPE
+      Header = POINTER TO HeaderRec;
+      HeaderRec =
+         RECORD
+            name: Streams.Stream;
+            value: Streams.Stream;
+            next: Header; (* use linear List, if same hash-value *)
+         END;
+
+      (* a set of headers *)   
+      HeaderSet = POINTER TO HeaderSetRec;
+      HeaderSetRec =
+         RECORD
+            (Disciplines.ObjectRec)
+            (* private *)
+            table: ARRAY hashTableSize OF Header;
+         END;
+   
+   PROCEDURE Hash(s: Streams.Stream): INTEGER;
+      (* Calculates an index to the hashtable out of a Stream 's'.
+         The index is calculated by simply adding up all Characters and return
+         the modulo 'hashTableSize' value.
+      *)
+      
+      VAR
+         i: INTEGER;
+         ch: CHAR;
+         sum: INTEGER;
+         
+   BEGIN
+      sum := 0;
+      i := 0;
+      Streams.SetPos(s, 0);
+      WHILE Streams.ReadByte(s, ch) DO
+         sum := sum*2 + ORD(CAP(ch)); (* don't check overflow *)
+      END;
+      
+      RETURN sum MOD hashTableSize;
+   END Hash;
+      
+   
+   PROCEDURE CreateSet(VAR headerSet: HeaderSet);
+      (* Creates a new set of headers. *)
+      
+   BEGIN
+      NEW(headerSet);
+   END CreateSet;
+   
+   PROCEDURE Add(headerSet: HeaderSet; name: Streams.Stream;
+                    value: Streams.Stream; begin, end: Streams.Count);
+      (* Adds a header (name and value) to a set of headers. If the specified
+         name is already in the set the 'value' will be combined with the
+         existing value (separated by a comma). This is normaly only possible if 
+         the field-value is a list but will not be checked. 'begin' and 'end'
+         determin the limits of value (including 'begin', but excluding 'end').
+      *)
+      
+      VAR
+         index: INTEGER;
+         header: Header;
+         last: Streams.Count;
+         commaStream: Streams.Stream;
+         commaString: POINTER TO ARRAY 2 OF CHAR;
+         
+      PROCEDURE CompStreams(a, b: Streams.Stream): BOOLEAN;
+         (* Compares two streams case insensitive starting at stream position 0.
+            The result ist TRUE if both streams are equal 
+         *)
+
+         VAR
+            aCh, bCh: CHAR;
+            ok: BOOLEAN;
+
+      BEGIN
+         Streams.SetPos(a, 0);
+         Streams.SetPos(b, 0);
+         ok := Streams.ReadByte(a, aCh);
+         ok := Streams.ReadByte(b, bCh) & ok;
+         WHILE ok & (CAP(aCh) = CAP(bCh)) DO
+            ok := Streams.ReadByte(a, aCh);
+            ok := Streams.ReadByte(b, bCh) & ok;
+         END;
+         RETURN a.eof & b.eof;
+      END CompStreams;
+   
+   BEGIN
+      index := Hash(name);
+      header := headerSet.table[index];
+      WHILE (header # NIL) & ~CompStreams(name, header.name) DO
+         header := header.next;
+      END;
+      
+      IF header = NIL THEN
+         (* name is new in set *)
+         NEW(header);
+         header.name := name;
+         Maps.Open(header.value);
+         Maps.AddMap(header.value, 0, end-begin, begin, value);
+         header.next := headerSet.table[index];
+         headerSet.table[index] := header;
+      ELSE
+         (* name already exists; append values *)
+         NEW(commaString);
+         COPY(",", commaString^);
+         Strings.Open(commaStream, commaString^);
+         
+         IF Streams.Seek(header.value, 0, Streams.fromEnd) THEN END;
+         Streams.GetPos(header.value, last);
+         
+         Maps.AddMap(header.value, last, last+1, 0, commaStream);
+         Maps.AddMap(header.value, last+1, last+1+end-begin, begin, value);
+      END;
+   END Add;
+   
+   PROCEDURE Get(headerSet: HeaderSet; name: ARRAY OF CHAR; 
+                 VAR value: Streams.Stream);
+      (* Provides the field-value to a field-name. 'value' will be NIL if there
+         is no such name.
+      *)
+
+      VAR
+         header: Header;
+         nameS: Streams.Stream;
+         
+      PROCEDURE CompStreamString(a: Streams.Stream; b: ARRAY OF CHAR): BOOLEAN;
+         (* CompStreamString caseINSENSITIVly compares a stream and a
+            0x-terminated string starting at stream position 0 and returns TRUE
+            if they are equal.
+         *)
+
+         VAR
+            i: LONGINT;
+            aCh: CHAR;
+
+      BEGIN
+         Streams.SetPos(a, 0);
+         i := 0;
+         WHILE Streams.ReadByte(a, aCh) & (b[i] # 0X) & (CAP(aCh) = CAP(b[i])) DO
+            INC(i);
+         END;
+
+         IF a.eof THEN
+            aCh := 0X;
+         END;
+
+         RETURN CAP(aCh) = CAP(b[i]);
+      END CompStreamString;
+   
+   BEGIN
+      Strings.Open(nameS, name);
+      header := headerSet.table[Hash(nameS)];
+      Streams.Release(nameS);
+      
+      WHILE (header # NIL) & ~CompStreamString(header.name, name) DO
+         header := header.next;
+      END;
+      
+      IF header # NIL THEN
+         value := header.value;
+      ELSE
+         value := NIL;
+      END;
+   END Get;
+   
+   
+END HTTPHeaders.

@@ -1,0 +1,513 @@
+'\" t
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH genrem 1 "Last change: 3 February 1998" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+genrem \- generate \fIRemoteObjects(3)\fP provider modules
+.SH SYNOPSIS
+.B genrem
+.I abstraction
+.SH DESCRIPTION
+Objects which are to be accessed via specific abstractions
+remotely need the support of a specific module which acts
+as a service provider (see \fIServices(3)\fP and \fIRemoteObjects(3)\fP).
+In most cases, this module can be more or less directly derived
+from the definition of the abstraction.
+Regrettably, lots of declarations and code are to be given
+for each of the operations of the abstraction and some care
+must be taken to avoid typing errors.
+\fIgenrem\fP allows to generate such service providing modules
+from an abstraction definition (syntax see below) for the most
+common cases.
+.SS Restrictions
+\fIgenrem\fP imposes several restrictions on the abstraction:
+.IP \(bu
+The abstraction must have exactly one object base type.
+.IP \(bu
+This base type is the first parameter (\fIcall by value\fP!)
+of \fIall\fP operations.
+.IP \(bu
+Interface records are used as OO-technique,
+i.e. all operations call directly an associated interface procedure
+which was given by the associated implementation.
+.IP \(bu
+The interface procedures must match exactly their associated operations.
+.IP \(bu
+The component names of the interface record must match the
+names of the associated operations with the first letter
+converted to lower case.
+.SS "Defining an Abstraction"
+Regrettably, the definition module of an abstraction is not
+sufficient to describe some of the semantics which are needed
+in the context of \fIRemoteObjects(3)\fP.
+Therefore, a special syntax was defined which looks a little
+bit strange because it was designed to allow an easy implementation
+(\fIgenrem\fP is implemented as \fIperl\fP script).
+.PP
+The grammar is given in EBNF (extended Backus-Naur form),
+nonterminals are set in italic, terminals either in double quotes
+or in bold (in case of keywords):
+.TS
+l l.
+\fIAbstraction\fP =	\fIAnyText\fP "\en%%\en" \fITypeDecl\fP [ProxyParams]
+	{ \fIOperation\fP } "\en%%\en" \fIAnyText\fP .
+\fIProxyParams\fP =	\fBPROXY\fP \fBPARAMS\fP "\en" { \fIProxyParameter\fP } .
+\fIProxyParameter\fP =	\fITransferType\fP \fIIdentifier\fP \fIType\fP "\en" .
+\fITransferType\fP =	\fBREF\fP | \fBCOPY\fP | \fBCOPYORNIL\fP | \fBLCOPY\fP | \fIBaseType\fP .
+\fITypeDecl\fP =	[\fBPERSISTENT\fP] (\fBSERIAL\fP|\fBPARALLEL\fP) \fBTYPE\fP \fIQualIdent\fP "\en" .
+\fIOperation\fP =	\fBOPERATION\fP \fIIdentifier\fP "\en" { \fIParameter\fP } .
+\fIParameter\fP =	\fIParamType\fP \fIIdentifier\fP \fIType\fP "\en" .
+\fIParamType\fP =	(\fBIN\fP | \fBOUT\fP | \fBINOUT\fP | \fBRVAL\fP) \fITransferType\fP |
+	\fBRETURNS\fP \fBSUCCESS\fP .
+\fIBaseType\fP =	(* one of the basetypes which are supported by \fINetIO(3)\fP *)
+\fIType\fP =	\fIIdentifier\fP | \fIQualIdent\fP | \fBARRAY\fP \fBOF\fP \fBCHAR\fP .
+\fIAnyText\fP =	(* Oberon declarations *) .
+.TE
+.PP
+The text which defines an abstraction is divided into three parts
+which are separated by lines which just contain a %%-token 
+(this construct is similar to \fIyacc(1)\fP and \fIlex(1)\fP).
+The first and the last part are plain Oberon text which are
+taken as provided without further checking.
+The part in the middle defines the abstraction and is replaced
+by the Oberon declarations and procedures which are generated by \fIgenrem\fP.
+Note that (unlike as in Oberon) newlines are not considered as white space
+but as separators (as defined by the grammar).
+.PP
+The abstraction is defined by the type of the objects we
+are operating on together with some parameters of
+\fIRemoteObjects(3)\fP (\fITypeDecl\fP and \fIProxyParams\fP)
+which is followed by an unlimited number of operations (\fIOperation\fP).
+.PP
+The optional keyword \fBPERSISTENT\fP must be given if the type
+is an extension of \fIPersistentDisciplines.Object\fP
+(extensions just of \fIPersistentObjects.Object\fP are not
+useful in this context).
+The selection \fBSERIAL\fP or \fBPARALLEL\fP is mapped
+to the associated access mode \fIRemoteObjects.AccessMode\fP
+of \fIRemoteObjects(3)\fP.
+The type itself is specified by the qualified type identifier
+which is imported from the module which defines the abstraction.
+\fIRemoteObjects(3)\fP allows the creation of proxy objects
+to be parameterized by the supporting module.
+These parameters may be optionally given as \fIProxyParams\fP.
+.PP
+The rest of this section specifies the operations of the abstraction
+together with their parameters.
+The names of the operations are to be given as simple identifiers
+(not qualified) and must match exactly the name of the operation
+in the module which defines the abstraction.
+Each parameter is to be given on an extra line and is specified
+by its parameter type, its transfer type, its identifier, and its Oberon type.
+Note that the order of parameters is significant and must match
+exactly the order of the formal parameters of the associated procedure.
+.PP
+Oberon supports two parameter types: \fIcall by value\fP
+and \fIcall by reference\fP (so-called \fBVAR\fP-parameters).
+The semantics of \fIcall by reference\fP cannot be hold
+in full for operations across address space boundaries.
+A substitute for this technique is \fIcall by value return\fP
+where, on invocation, a copy is made of the parameter (as in the case
+of \fIcall by value\fP), and, on returning, a copy of the
+possibly updated value of this parameter is assigned back
+to the actual parameter.
+.PP
+Following parameter types are supported by \fIgenrem\fP:
+.TS
+lfB l.
+IN	\fIcall by value\fP
+INOUT	\fIcall by value return\fP
+OUT	like \fIcall by value return\fP but just returning a value
+RVAL	like \fBOUT\fP but as \fBRETURN\fP-value
+.TE
+Note that the return value is handled like other parameters here
+except that it must be given as \fBRVAL\fP-parameter.
+Consequently, no more than one \fBRVAL\fP-parameter may be specified.
+.PP
+The transfer type specifies how values are to be converted into
+sequences of bytes.
+Currently, following transfer types are supported:
+.TS
+lfB l.
+REF	\fIRemoteObjects.Export\fP  and  \fIRemoteObjects.Import\fP
+COPY	\fIPersistentObjects.Write\fP  and  \fIPersistentObjects.Read,\fP
+COPYORNIL	\fIPersistentObjects.WriteObjectOrNIL\fP and
+	\fIPersistentObjects.ReadObjectOrNIL\fP
+LCOPY	\fILinearizedStructures.Write\fP  and  \fILinearizedStructures.Read\fP
+Byte	\fINetIO.WriteByte\fP  and  \fINetIO.ReadByte\fP
+Char	\fINetIO.WriteChar\fP  and  \fINetIO.ReadChar\fP
+Boolean	\fINetIO.WriteBoolean\fP  and  \fINetIO.ReadBoolean\fP
+ShortInt	\fINetIO.WriteShortInt\fP  and  \fINetIO.ReadShortInt\fP
+Integer	\fINetIO.WriteInteger\fP  and  \fINetIO.ReadInteger\fP
+LongInt	\fINetIO.WriteLongInt\fP  and  \fINetIO.ReadLongInt\fP
+Real	\fINetIO.WriteReal\fP  and  \fINetIO.ReadReal\fP
+LongReal	\fINetIO.WriteLongReal\fP  and  \fINetIO.ReadLongReal\fP
+Set	\fINetIO.WriteSet\fP  and  \fINetIO.ReadSet\fP
+String	\fINetIO.WriteString\fP  and  \fINetIO.ReadString\fP
+ConstString	\fINetIO.WriteConstString\fP  and  \fINetIO.ReadConstString\fP
+Event	\fIPersistentEvents.Write\fP and \fIPersistentEvents.Read\fP
+.TE
+.PP
+Instead of the parameter type and the transfer type it is possible
+to specify \fBRETURNS SUCCESS\fP in cases of a \fBBOOLEAN\fP-valued
+\fBRETURN\fP-type.
+.PP
+The Oberon type of the parameter may be given as type identifier
+(for one of the Oberon base types) or as qualified identifier
+(if it is defined elsewhere) or as \fBARRAY OF CHAR\fP
+for strings.
+.SS "Abstraction-specific Oberon Code"
+The header and trailer of the resulting module are
+to be given in Oberon in the first and third part of the input file
+which is given to \fIgenrem\fP.
+The header contains the module declaration (i.e. \fBMODULE\fP,
+followed by the name of the module) and the import list.
+The import list not only covers all modules mentioned in
+the definition of the abstraction but also has to give all other
+modules which are used by the text which is generated by \fIgenrem\fP:
+.IP \(bu
+\fIMessages(3)\fP, \fINetIO(3)\fP, \fIPersistentObjects(3)\fP,
+\fIRelatedEvents(3)\fP,
+\fIRemoteObjects(3)\fP, \fIServices(3)\fP and \fIStreams(3)\fP
+are to be given in all cases.
+.IP \(bu
+\fIRemotePersistentObjects(3)\fP has to be imported if
+the base type is an extension of \fIPersistentDisciplines.Object\fP.
+.IP \(bu
+Additionally, following modules may be necessary
+in dependance of the transfer types:
+\fIConstStrings(3)\fP, \fILinearizedStructures(3)\fP and
+\fIPersistentEvents(3)\fP.
+.PP
+The trailer must contain
+.IP \(bu
+the \fIRemoteObjects.CreateProxyProc\fP
+interface procedure which is to be called \fICreateProxy\fP,
+.IP \(bu
+if a \fBPROXY PARAMS\fP section was specified,
+the \fIRemoteObjects.GetParamsProc\fP
+interface procedure which is to be named \fIGetParams\fP,
+.IP \(bu
+an invocation of \fIRemotePersistentObjects.Init\fP in \fIGetParams\fP
+if the base type is a descendent of \fIPersistentObjects.Disciplines\fP
+(note that the returned \fIparams\fP object may be just set to \fBNIL\fP
+if proxy parameters are not used), and
+.IP \(bu
+a module body which calls \fIInitIFs\fP (a procedure
+which is generated by \fIgenrem\fP).
+.PP
+.I CreateProxy
+needs and is allowed to use
+the \fIServices.Type\fP of the proxy object type \fItype\fP
+and the filled interface record \fIif\fP.
+Both variables are global and initialized by \fIInitIFs\fP.
+Further,
+.I CreateProxy
+should call \fIRelatedEvents.QueueEvents\fP for the created
+proxy object.
+.PP
+If proxy parameters were specified by \fBPROXY PARAMS\fP,
+\fIgenrem\fP generates a type declaration for \fIProxyParameters\fP
+and the necessary interface procedures for \fIPersistentObjects(3)\fP.
+Note that \fICreateProxyParams\fP should be used then to
+create the proxy parameter object in \fIGetParams\fP.
+.PP
+In some cases it may be necessary to add more declarations and
+procedures to the resulting module text.
+Additional declarations with the exception of procedures may be given
+in the header.
+Further procedures may be added to trailer but not to
+the header.
+.SS Invocation
+\fIgenrem\fP reads the abstraction (in the syntax as given above)
+from the given file and generates the module (not the definition)
+on standard output.
+Usually, the file name of the abstraction is
+(with suffix ``.rm'') named after
+the service providing module which, in turn, is by convention
+named \fIRemoteXXX\fP is the module which defines the abstraction
+is called \fIXXX\fP.
+Therefore, the typical invocation of \fIgenrem\fP looks like:
+.Pg
+genrem RemoteXXX.rm >RemoteXXX.om
+.Pe
+This rule can be easily put into makefiles for GNU-make (see \fImmo(1)\fP):
+.Pg
+GenremSrc :=            $(shell echo *.rm)
+GenremTargets :=        $(patsubst %.rm,%.om,$(GenremSrc))
+$(GenremTargets):       %.om: %.rm
+                        genrem $^ >$@
+.Pe
+.SH EXAMPLE
+Following definition defines an abstraction for integer sequences:
+.Pg
+DEFINITION IntSequences;
+
+   IMPORT Objects, Services;
+
+   TYPE
+      IntSequence = POINTER TO IntSequenceRec;
+      IntSequenceRec = RECORD (Services.ObjectRec) END;
+
+      NextProc = PROCEDURE (is: IntSequence) : INTEGER;
+      SkipProc = PROCEDURE (is: IntSequence; positions: INTEGER);
+      RewindProc = PROCEDURE (is: IntSequence);
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+         RECORD
+            (Objects.ObjectRec)
+            next: NextProc;
+            skip: SkipProc;
+            rewind: RewindProc;
+         END;
+
+   PROCEDURE Next(is: IntSequence) : INTEGER;
+   PROCEDURE Skip(is: IntSequence; positions: INTEGER);
+   PROCEDURE Rewind(is: IntSequence);
+
+   PROCEDURE Init(is: IntSequence; if: Interface);
+
+END IntSequences.
+.Pe
+An associated input file for \fIgenrem\fP:
+.Pg
+MODULE RemoteIntSequences;
+
+   IMPORT IntSequences, Messages, NetIO, RelatedEvents, RemoteObjects,
+      Services, Streams;
+
+%%
+
+   SERIAL TYPE IntSequences.IntSequence
+
+   OPERATION Next
+      RVAL Integer nextval INTEGER
+
+   OPERATION Skip
+      IN Integer positions INTEGER
+
+   OPERATION Rewind
+
+%%
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+         is: IntSequence;
+   BEGIN
+      NEW(is);
+      Services.Init(is, type);
+      IntSequences.Init(is, if);
+      RelatedEvents.QueueEvents(is);
+      object := is;
+   END CreateProxy;
+
+BEGIN
+   InitIFs;
+END RemoteIntSequences.
+.Pe
+.SH DIAGNOSTICS
+\fIgenrem\fP generates only some error messages on its own \(em
+most errors are detected and reported by the Oberon compiler.
+The output of \fIgenrem\fP is rather readable and should allow
+to track errors back to the original source.
+.PP
+Following error messages may be generated by \fIgenrem\fP:
+.IP "No %% seen"
+This indicates that the %%-token which separates the three parts
+are missing.
+.IP "2nd %% missing"
+Just one %%-token was found but no second.
+.IP "\fBTYPE\fP declaration expected"
+The declaration of the object type of the abstraction is missing.
+.IP "only one \fBTYPE\fP declaration expected"
+Exactly one type declaration of the object type of
+the abstraction is to be given.
+.IP "only one \fBPROXY PARAMS\fP declaration expected"
+Only one proxy parameter section may be given.
+.IP "\fBPROXY PARAMS\fP must be given before \fBOPERATION\fP-declarations"
+A proxy parameter section was given after the definition of operations.
+.IP "qualified identifier expected"
+A simple or invalid identifier was given where a qualified identifier
+was expected.
+Note that, for example, the object type of the abstraction must
+be given as qualified identifier.
+.IP "invalid qualified identifier"
+An invalid identifier was found.
+.IP "unknown transfer type"
+A transfer type was given which is not mentioned in the table above.
+.IP "\fBOPERATION\fP Identifier expected"
+The name of the operation is missing.
+.IP "more than one return construct"
+Just one return construct may be given per operation.
+.IP "valid declaration expected"
+Catch-all message for all other problems to understand a declaration.
+.SH "SEE ALSO"
+.Tb RemotePersistentObjects(3)
+.Tp oc(1)
+Oberon Compiler
+.Tp RemoteObjects(3)
+remote object invocations
+.Tp RemotePersistentObjects(3)
+delegates operations of \fIPersistentObjects(3)\fP
+.Te
+.SH BUGS
+Only up to 1023 characters are transferred of
+parameters which are specified as \fBARRAY OF CHAR\fP.
+If the given character array is longer it gets silently truncated.
+.\" ---------------------------------------------------------------------------
+.\" $Id: genrem.1,v 1.5 1998/02/03 18:25:58 borchert Exp borchert $
+.\" ---------------------------------------------------------------------------
+.\" $Log: genrem.1,v $
+.\" Revision 1.5  1998/02/03  18:25:58  borchert
+.\" references regarding RemotePersistentObjects added
+.\"
+.\" Revision 1.4  1998/02/03  17:43:14  borchert
+.\" some notes added regarding proxy parameters
+.\"
+.\" Revision 1.3  1996/11/20  18:22:09  borchert
+.\" GNU-makefile excerpt fixed
+.\"
+.\" Revision 1.2  1996/09/17  14:47:04  borchert
+.\" minor fix: example module should end with a . and not a ;
+.\"
+.\" Revision 1.1  1996/01/04  15:55:22  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

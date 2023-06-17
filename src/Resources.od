@@ -1,0 +1,123 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Resources.od,v 1.1 1996/01/04 16:44:41 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Resources.od,v $
+   Revision 1.1  1996/01/04  16:44:41  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Resources;
+
+   (* general interface for objects which are shared and need
+      some cooperative termination/cleanup handling
+   *)
+
+   IMPORT Disciplines, Events, Objects;
+
+   TYPE
+      Resource = Disciplines.Object;
+
+   (* notification of state changes:
+      initially, resources are alive;
+      later the communication to an object may be temporarily
+      stopped (communicationStopped) and resumed (communicationResumed) --
+      the effect of calling operations during the communicationStopped
+      state is undefined: possible variants are (1) immediate failure
+      and (2) being blocked until the state changes to communicationResumed;
+      unreferenced objects are still alive but no longer in use by
+      our side -- some cleanup actions may be associated with this state change;
+      terminated objects are no longer alive and all operations for
+      them will fail
+   *)
+   CONST
+      (* state changes *)
+      terminated = 0;
+      unreferenced = 1;
+      communicationStopped = 2;
+      communicationResumed = 3;
+   TYPE
+      StateChange = SHORTINT; (* terminated..communicationResumed *)
+      Event = POINTER TO EventRec; (* notification of state changes *)
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    change: StateChange;
+	    resource: Resource;
+	 END;
+
+   TYPE
+      Key = POINTER TO KeyRec;
+      KeyRec = RECORD (Objects.ObjectRec) END;
+
+   PROCEDURE TakeInterest(resource: Resource; VAR eventType: Events.EventType);
+      (* return resource specific event type for state notifications;
+	 eventType is guaranteed to be # NIL even if
+	 the given resource is already terminated
+      *)
+
+   PROCEDURE Notify(resource: Resource; change: StateChange);
+      (* notify all interested parties about the new state;
+	 only valid state changes are accepted:
+	 - Notify doesn't accept any changes after termination
+	 - unreferenced is generated conditionally by Detach only
+	 - communicationResumed is valid after communicationStopped only
+	 valid notifications are propagated to all dependants (see below);
+      *)
+
+   PROCEDURE DependsOn(dependant, resource: Resource);
+      (* states that `dependant' depends entirely on `resource' --
+	 this is usually the case if operations on `dependant'
+	 are delegated to `resource';
+	 only one call of DependsOn may be given per `dependant' while
+	 several DependsOn for one resource are valid;
+	 DependsOn calls implicitely Attach for `resource' and
+	 detaches if the dependant becomes unreferenced;
+	 all other state changes propagate from `resource' to
+	 `dependant';
+	 the dependency relation is released when `dependant'
+	 becomes unreferenced or terminated
+      *)
+
+   PROCEDURE Attach(resource: Resource; VAR key: Key);
+      (* mark the resource as being used until Detach gets called *)
+
+   PROCEDURE Detach(resource: Resource; key: Key);
+      (* mark the resource as unused; the returned key of Attach must
+	 be given -- this allows to check for proper balances
+	 of Attach/Detach calls;
+	 the last Detach operation causes a state change to unreferenced
+	 and to undo a former call of DependsOn
+      *)
+
+   PROCEDURE Alive(resource: Resource) : BOOLEAN;
+      (* returns TRUE if the resource is not yet terminated
+	 and ready for communication (i.e. not communicationStopped)
+      *)
+
+   PROCEDURE Stopped(resource: Resource) : BOOLEAN;
+      (* returns TRUE if the object is currently not responsive *)
+
+   PROCEDURE Terminated(resource: Resource) : BOOLEAN;
+      (* returns TRUE if the resource is terminated *)
+
+END Resources.

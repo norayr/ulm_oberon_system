@@ -1,0 +1,305 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: LinearizedS.om,v 1.2 1998/03/24 22:56:19 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: LinearizedS.om,v $
+   Revision 1.2  1998/03/24  22:56:19  borchert
+   bug fix: PersistentObjects.GuardedRead must not be used because
+            our object variable will be set too late in case of
+            self-referential data structures;
+            to avoid any likewise errors in the future an
+            assertion has been added
+
+   Revision 1.1  1996/01/04  16:46:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE LinearizedStructures; (* AFB 8/94 *)
+
+   IMPORT Disciplines, Events, NetIO, PersistentObjects, Priorities,
+      RelatedEvents, Services, Streams;
+
+   (* save or load data structures which may contain cycles simply
+      by replacing PersistentObjects.Read by LinearizedStructures.Read
+      and PersistentObjects.Write by LinearizedStructures.Write
+   *)
+
+   TYPE
+      Object = PersistentObjects.Object;
+
+   CONST
+      readM = 0; writeM = 1;
+   TYPE
+      Mode = SHORTINT; (* readM or writeM *)
+
+   CONST
+      keyOnly = "K"; keyAndObject = "O"; nil = "N";
+   TYPE
+      Key = LONGINT;
+
+   CONST
+      btlen = 64;
+   TYPE
+      HashTabEntry = POINTER TO HashTabEntryRec;
+      HashTabEntryRec =
+	 RECORD
+	    key: Key;
+	    object: Object;
+	    next: HashTabEntry;
+	 END;
+      BucketTable = ARRAY btlen OF HashTabEntry;
+      ObjectList = POINTER TO ObjectListRec;
+      ObjectListRec =
+	 RECORD
+	    object: Object;
+	    next: ObjectList;
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    mode: Mode;
+	    (* needed if mode = readM *)
+	    bucket: BucketTable;
+	    (* needed if mode = writeM *)
+	    nextKey: Key;
+	    odID: Disciplines.Identifier;
+	    objects: ObjectList;
+	 END;
+      ObjectDiscipline = POINTER TO ObjectDisciplineRec;
+      ObjectDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    key: Key;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   CONST
+      missingReset = 0; (* Reset must be called before switching mode *)
+      cannotReadHeader = 1; (* failed to read object header *)
+      invalidHeader = 2; (* corrupted/invalid object header *)
+      cannotReadObject = 3; (* failed to read object *)
+      unknownKey = 4; (* unknown key encountered *)
+      cannotWriteHeader = 5; (* failed to write object header *)
+      cannotWriteObject = 6; (* failed to write object *)
+      typeGuardFailure = 7;
+      errors = 8;
+   TYPE
+      ErrorCode = SHORTINT; (* missingReset.. *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* ====== private procedures =========================================== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[missingReset] :=
+	 "LinearizedStructures.Reset should have been called";
+      errormsg[cannotReadHeader] := "failed to read object header";
+      errormsg[invalidHeader] := "corrupted or invalid object header";
+      errormsg[cannotReadObject] := "failed to read object";
+      errormsg[unknownKey] := "unknown key encountered";
+      errormsg[cannotWriteHeader] := "failed to write object header";
+      errormsg[cannotWriteObject] := "failed to write object";
+      errormsg[typeGuardFailure] := "type guard failure";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; code: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   PROCEDURE GetStreamDisc(s: Streams.Stream;
+			   mode: Mode;
+			   VAR sd: StreamDiscipline);
+   BEGIN
+      IF Disciplines.Seek(s, sdID, sd) THEN
+	 IF sd.mode # mode THEN
+	    Error(s, missingReset);
+	    sd := NIL; (* do a reset *)
+	 END;
+      ELSE
+	 sd := NIL;
+      END;
+      IF sd = NIL THEN
+	 NEW(sd); sd.id := sdID;
+	 sd.mode := mode; sd.nextKey := 1;
+	 sd.odID := Disciplines.Unique();
+	 sd.objects := NIL;
+	 Disciplines.Add(s, sd);
+      END;
+   END GetStreamDisc;
+
+   PROCEDURE EnterKey(sd: StreamDiscipline;
+		      key: Key; VAR entry: HashTabEntry);
+      VAR
+	 index: LONGINT;
+	 p: HashTabEntry;
+   BEGIN
+      index := key MOD btlen;
+      NEW(p); p.key := key; p.next := sd.bucket[index];
+      sd.bucket[index] := p;
+      entry := p;
+   END EnterKey;
+
+   PROCEDURE SeekObject(sd: StreamDiscipline;
+			key: Key; VAR object: Object) : BOOLEAN;
+      VAR
+	 p: HashTabEntry;
+   BEGIN
+      p := sd.bucket[key MOD btlen];
+      WHILE (p # NIL) & (p.key # key) DO
+	 p := p.next;
+      END;
+      IF p # NIL THEN
+	 object := p.object; RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END SeekObject;
+
+   (* ====== exported procedures ========================================== *)
+
+   PROCEDURE Reset(s: Streams.Stream);
+      (* restart saving/loading of persistent data from the given stream *)
+      VAR
+	 sd: StreamDiscipline;
+	 p: ObjectList;
+   BEGIN
+      IF Disciplines.Seek(s, sdID, sd) THEN
+	 p := sd.objects;
+	 WHILE p # NIL DO
+	    Disciplines.Remove(p.object, sd.odID);
+	    p := p.next;
+	 END;
+	 Disciplines.Remove(s, sdID);
+      END;
+   END Reset;
+
+   PROCEDURE Read(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+	 entry: HashTabEntry;
+	 key: Key;
+	 sy: CHAR;
+	 obj: Object;
+   BEGIN
+      GetStreamDisc(s, readM, sd);
+      IF ~NetIO.ReadChar(s, sy) OR ~NetIO.ReadLongInt(s, key) THEN
+	 Error(s, cannotReadHeader);
+	 RETURN FALSE
+      END;
+      CASE sy OF
+      | keyOnly:        IF ~SeekObject(sd, key, obj) THEN
+			   Error(s, unknownKey); RETURN FALSE
+			END;
+			ASSERT(obj # NIL);
+			object := obj;
+      | keyAndObject:   (* we must create an entry BEFORE the object
+			   gets read because the object may reference
+			   itself (directly or indirectly)
+			*)
+			EnterKey(sd, key, entry);
+			IF ~PersistentObjects.Read(s, entry.object) THEN
+			   Error(s, cannotReadObject); RETURN FALSE
+			END;
+			object := entry.object;
+      | nil:            object := NIL;
+      ELSE
+	 Error(s, invalidHeader); RETURN FALSE
+      END;
+      RETURN TRUE
+   END Read;
+
+   PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+			 VAR object: Object) : BOOLEAN;
+      VAR
+	 testObject: Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~Read(s, testObject) THEN RETURN FALSE END;
+      IF testObject = NIL THEN
+	 object := NIL;
+	 RETURN TRUE
+      END;
+      Services.GetType(testObject, type);
+      IF Services.IsExtensionOf(type, guard) THEN
+	 object := testObject; RETURN TRUE
+      ELSE
+	 Error(s, typeGuardFailure);
+	 RETURN FALSE
+      END;
+   END GuardedRead;
+
+   PROCEDURE Write(s: Streams.Stream; object: Object) : BOOLEAN;
+      VAR
+	 sd: StreamDiscipline;
+	 od: ObjectDiscipline;
+	 sy: CHAR;
+	 key: Key;
+	 list: ObjectList;
+   BEGIN
+      GetStreamDisc(s, writeM, sd);
+      IF object = NIL THEN
+	 sy := nil; key := 0;
+      ELSIF Disciplines.Seek(object, sd.odID, od) THEN
+	 sy := keyOnly; key := od.key;
+      ELSE
+	 sy := keyAndObject;
+	 NEW(od); od.id := sd.odID;
+	 od.key := sd.nextKey; INC(sd.nextKey); key := od.key;
+	 Disciplines.Add(object, od);
+	 NEW(list);
+	 list.object := object;
+	 list.next := sd.objects;
+	 sd.objects := list;
+      END;
+      IF ~NetIO.WriteChar(s, sy) OR ~NetIO.WriteLongInt(s, key) THEN
+	 Error(s, cannotWriteHeader); RETURN FALSE
+      END;
+      IF (sy = keyAndObject) & ~PersistentObjects.Write(s, object) THEN
+	 Error(s, cannotWriteObject); RETURN FALSE
+      END;
+      RETURN TRUE
+   END Write;
+
+BEGIN
+   sdID := Disciplines.Unique();
+   InitErrorHandling;
+END LinearizedStructures.

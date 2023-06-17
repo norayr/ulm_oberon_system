@@ -1,0 +1,205 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NameServer;
+(*
+ *	simple implementation of a name server
+ *)
+
+   IMPORT
+      RemoteCDBNames, RemoteCmdNodes,
+      Conclusions, ConstStrings, Errors, Events, InetTCP, Iterators, MD5,
+      NamedObjects, Names, NameServerMaintenance, Networks,
+      PasswordShards, PersistentDisciplines, PersistentEvents,
+      PersistentObjects, PersMesgMaintenance, PrivateShards, Process,
+      RelatedEvents, RemoteEvents, RemoteNames, RemoteObjects, Services,
+      Shards, Storage, Streams, SysSignals, UnixEnvironment, UnixFiles,
+      VolatileShards, Write;
+
+   CONST
+      rootfilenameEnv = "ONS_ROOT";
+      rootfilenameDefault = "/usr/local/etc/ons/root";
+
+   VAR
+      intensity: INTEGER;
+      errors: RelatedEvents.Object;
+      file: Streams.Stream;
+      myname: Names.Name;
+      mobject: Names.Node;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors);
+      RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE Init;
+      VAR
+	 tmp,
+	 etc: Names.Node;
+	 name: ConstStrings.String;
+	 status: Names.Status;
+	 event: Events.EventType;
+	 somepot: Shards.Pot;
+	 statrec: Names.StatusRec;	(*dideldum*)
+   BEGIN
+
+      (* === install etc === *)
+      Names.CreateNode(etc, NIL, Names.allCaps);
+      RelatedEvents.Forward(etc, Names.root);
+      ConstStrings.Create(name, "etc");
+      IF ~Names.Insert(Names.root, etc, name, NIL) THEN
+	 Conclusions.Conclude(Names.root, Errors.error,
+	    "NameServer: can't install etc");
+      END;
+
+      (* === install tmp === *)
+      Names.CreateNode(tmp, NIL, Names.allCaps);
+      RelatedEvents.Forward(tmp, Names.root);
+      ConstStrings.Create(name, "tmp");
+      IF ~Names.Insert(Names.root, tmp, name, NIL) THEN
+	 Conclusions.Conclude(Names.root, Errors.error,
+	    "NameServer: can't install tmp");
+      END;
+
+      (* === install maintenance object === *)
+      ConstStrings.Create(myname, "nameserver");
+      Shards.CreateSimplePot(somepot, TRUE);
+      NameServerMaintenance.Create(mobject, somepot);
+      IF ~Names.Insert(Names.root, mobject, myname, NIL) THEN
+	 Conclusions.Conclude(Names.root, Errors.error,
+	    "NameServer: can't install maintenance object");
+      END;
+
+      (* === shield root === *)
+      NEW(status);
+      (*dideldum**
+      IF ~Names.GetStatus(Names.root, NIL, status^) THEN
+      **dideldum*)IF ~Names.GetStatus(Names.root, NIL, statrec) THEN
+	 Conclusions.Conclude(Names.root, Errors.error, "")
+      ELSE
+	 status^ := statrec;	(*dideldum*)
+	 Shards.CreateSimplePot(somepot, FALSE);
+	 status.perm[Names.examine] := NIL;
+	 status.perm[Names.change] := somepot;
+	 status.perm[Names.read] := NIL;
+	 status.perm[Names.search] := NIL;
+	 status.perm[Names.insert] := NIL;
+	 status.perm[Names.delete] := NIL;
+	 status.perm[Names.destroy] := somepot;
+	 IF ~Names.SetStatus(Names.root, status, NIL) THEN
+	    Conclusions.Conclude(Names.root, Errors.error, "")
+	 END;
+      END;
+
+      RelatedEvents.GetEventType(Names.root, event);
+      Conclusions.CatchEvent(event, Errors.error);
+   END Init;
+
+   PROCEDURE KillOldServer;
+      VAR
+	 foreignserver,
+	 foreignroot: Names.Node;
+	 pos: Streams.Count;
+	 nodeType: Services.Type;
+   BEGIN
+      Services.SeekType("Names.Node", nodeType);
+      ASSERT( nodeType # NIL );
+      RelatedEvents.Save(file);
+      RelatedEvents.Forward(file, RelatedEvents.null);
+      IF RemoteObjects.GuardedImport(file, nodeType, foreignroot) THEN
+	 (* another name server is present *)
+	 Write.StringS(Streams.stderr, Process.name);
+	 Write.LineS(Streams.stderr, ": trying to kill old server ...");
+	 IF ~Names.GetNode(foreignroot, myname, NIL, foreignserver) THEN
+	    Conclusions.Conclude(foreignroot, Errors.error, "");
+	 ELSE
+	    IF ~NameServerMaintenance.Shutdown(foreignserver, NIL) THEN
+	       Conclusions.Conclude(foreignserver, Errors.error, "shutdown");
+	    END;
+	    (* RemoteNames.Drop(foreignserver); *)
+	 END;
+	 (* RemoteNames.Drop(foreignroot); *)
+      END;
+      IF ~Streams.Trunc(file, 0) THEN END;
+      IF Streams.Tell(file, pos) & (pos # 0) THEN
+	 Streams.SetPos(file, 0);
+      END;
+      RelatedEvents.Restore(file);
+   END KillOldServer;
+
+   PROCEDURE Termination(event: Events.Event);
+      VAR
+	 ok: BOOLEAN;
+   BEGIN
+      ok := NameServerMaintenance.Shutdown(mobject, NIL);
+      ASSERT(ok);
+   END Termination;
+
+   PROCEDURE GoPublic;
+      VAR
+	 rootfilename: ARRAY 1024 OF CHAR;
+   BEGIN
+      IF ~UnixEnvironment.String(rootfilenameEnv, rootfilename) THEN
+	 rootfilename := rootfilenameDefault;
+      END;
+      IF ~UnixFiles.Open(file, rootfilename,
+			 UnixFiles.rdwr + UnixFiles.condcreate,
+			 Streams.onebuf, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, rootfilename);
+      END;
+
+      KillOldServer;
+
+      RelatedEvents.QueueEvents(file);
+      IF ~RemoteObjects.Export(file, Names.root) OR
+	    ~Streams.Close(file) THEN
+	 Conclusions.Conclude(file, Errors.fatal, rootfilename);
+      END;
+   END GoPublic;
+
+BEGIN
+   intensity := Storage.Intensity(6);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   OpenAllKindsOfPorts;
+   Init;
+   Events.Handler(SysSignals.TERM, Termination);
+   GoPublic;
+END NameServer.

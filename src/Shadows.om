@@ -1,0 +1,418 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Shadows.om,v 1.2 2004/04/02 17:57:38 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Shadows.om,v $
+   Revision 1.2  2004/04/02 17:57:38  borchert
+   support of Process.softTermination added
+
+   Revision 1.1  1995/12/29 14:52:02  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Shadows;
+
+   (* invocations - as defined by RemoteObjects - of remote objects are
+      unidirectional; there is no way to forward a message from the
+      exporting object to the proxy objects;
+      this module provides a solution on base of shadow objects:
+      shadow objects are created at all sites which create a proxy object
+      and are exported back to the site which has exported the original
+      object; now we can perform call backs via the proxy objects of
+      the proxy objects;
+
+      note that this mechanism must be supported by the RemoteXXX-module
+      which offers the RemoteObjects service for the object type in
+      question
+   *)
+
+   IMPORT BlockingEvents, Conditions, Coroutines, Disciplines,
+      EventConditions, Events, Messages, PersistentObjects, Process,
+      RelatedEvents, RemoteObjects, Resources, RoundRobin, Schedulers,
+      Services, Streams, SYS := SYSTEM, Tasks;
+
+   TYPE
+      Shadow = POINTER TO ShadowRec;
+      ShadowRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    proxy: Services.Object;
+	 END;
+   VAR
+      shadowType: Services.Type;
+
+   TYPE
+      ProxiesDiscipline = POINTER TO ProxiesDisciplineRec;
+	 (* this discipline is attached to the exported object
+	    (by InitObject)
+	 *)
+      ProxiesDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    tg: Schedulers.TaskGroup;
+	       (* we maintain one task per shadow proxy object *)
+	    message: BlockingEvents.EventType;
+	       (* with events of type MessageEvent *)
+	 END;
+      MessageEvent = POINTER TO MessageEventRec;
+      MessageEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    msg: Messages.Message;
+	    except: Shadow;
+	 END;
+   VAR
+      pdID: Disciplines.Identifier;
+
+   TYPE
+      ShadowDiscipline = POINTER TO ShadowDisciplineRec;
+	 (* this discipline is attached to the proxy object (by Init) *)
+      ShadowDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    shadow: Shadow;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      AddShadowMessage = POINTER TO AddShadowMessageRec;
+      AddShadowMessageRec =
+         RECORD
+            (MessageRec)
+            shadow: Shadow; (* IN via REF *)
+         END;
+   VAR
+      addShadowMessageType: Services.Type;
+
+   (* === private procedures ============================================ *)
+
+   PROCEDURE CreateAddShadowMessage(VAR object: PersistentObjects.Object);
+      VAR msg: AddShadowMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, addShadowMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateAddShadowMessage;
+
+   PROCEDURE WriteAddShadowMessage(s: Streams.Stream;
+                                   msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddShadowMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Export(s, msg.shadow)
+         END;
+      END;
+   END WriteAddShadowMessage;
+
+   PROCEDURE ReadAddShadowMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: AddShadowMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN RemoteObjects.Import(s, msg.shadow)
+         END;
+      END;
+   END ReadAddShadowMessage;
+
+   PROCEDURE MessageListener(VAR cr: Coroutines.Coroutine;
+			     shadow: Shadow;
+			     message: BlockingEvents.EventType);
+      (* listen for all messages which are destinated for shadow
+	 objects and forward them to one specific shadow object;
+	 this is done by separate tasks to parallelize the broadcast
+	 of messages
+      *)
+      VAR
+	 shadowEventType: Events.EventType;
+	 messageCond: Conditions.Condition;
+	 shadowCond: Conditions.Condition;
+	 softTermCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 revent: Resources.Event;
+	 mevent: MessageEvent;
+	 event: Events.Event;
+   BEGIN
+      BlockingEvents.Register(message, messageCond);
+      SYS.CRSPAWN(cr);
+      Resources.TakeInterest(shadow, shadowEventType);
+      EventConditions.Create(shadowCond, shadowEventType);
+      EventConditions.Create(softTermCond, Process.softTermination);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, messageCond);
+      Conditions.Incl(conditions, shadowCond);
+      Conditions.Incl(conditions, softTermCond);
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 WHILE EventConditions.TestAndGet(shadowCond, revent) DO
+	    IF revent.change = Resources.terminated THEN EXIT END;
+	 END;
+	 WHILE BlockingEvents.TestAndGet(messageCond, mevent) DO
+	    IF shadow # mevent.except THEN
+	       Messages.Send(shadow, mevent.msg);
+	    END;
+	    BlockingEvents.Done(messageCond);
+	 END;
+	 IF EventConditions.TestAndGet(softTermCond, event) THEN
+	    EXIT
+	 END;
+      END;
+      BlockingEvents.Unregister(messageCond);
+      EventConditions.Drop(shadowCond);
+      EventConditions.Drop(softTermCond);
+      Tasks.Terminate;
+   END MessageListener;
+
+   PROCEDURE AddShadow(object: Services.Object; shadow: Shadow);
+      VAR
+	 pd: ProxiesDiscipline;
+	 ok: BOOLEAN;
+	 cr: Coroutines.Coroutine; task: Tasks.Task;
+   BEGIN
+      ok := Disciplines.Seek(object, pdID, pd); ASSERT(ok);
+      MessageListener(cr, shadow, pd.message);
+      Schedulers.AddTask(pd.tg, cr, task);
+   END AddShadow;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      (* handler of original (exported) object *)
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: Services.Object DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS AddShadowMessage THEN
+            WITH msg: AddShadowMessage DO
+               AddShadow(object, msg.shadow);
+               msg.done := TRUE;
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+                         params: PersistentObjects.Object);
+      VAR
+	 shadow: Shadow;
+   BEGIN
+      NEW(shadow);
+      Services.Init(shadow, shadowType);
+      params := NIL;
+      object := shadow;
+   END CreateProxy;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+   BEGIN
+      PersistentObjects.RegisterType(msgtype,
+         "Shadows.Message", "Messages.Message", NIL);
+      InitPO(addShadowMessageType,
+	     "Shadows.AddShadowMessage", "Shadows.Message",
+             CreateAddShadowMessage, ReadAddShadowMessage,
+	     WriteAddShadowMessage);
+
+      Services.CreateType(shadowType, "Shadows.Shadow", "");
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := NIL;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := NIL;
+      remoteObjIf.register := NIL;
+      RemoteObjects.Register(shadowType, remoteObjIf, RemoteObjects.serial);
+   END InitIFs;
+
+   PROCEDURE ObjectListener(VAR cr: Coroutines.Coroutine;
+			    object: Services.Object);
+      (* the main purpose of this task is to keep the task group
+	 living as long as there are no MessageListener tasks running
+      *)
+      VAR
+	 resourceEventType: Events.EventType;
+	 resourceCond: Conditions.Condition;
+	 revent: Resources.Event;
+	 softTermCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 event: Events.Event;
+   BEGIN
+      SYS.CRSPAWN(cr);
+      Conditions.CreateSet(conditions);
+      Resources.TakeInterest(object, resourceEventType);
+      EventConditions.Create(resourceCond, resourceEventType);
+      Conditions.Incl(conditions, resourceCond);
+      EventConditions.Create(softTermCond, Process.softTermination);
+      Conditions.Incl(conditions, softTermCond);
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 WHILE EventConditions.TestAndGet(resourceCond, revent) DO
+	    IF revent.change = Resources.terminated THEN EXIT END;
+	 END;
+	 IF EventConditions.TestAndGet(softTermCond, event) THEN
+	    EXIT
+	 END;
+      END;
+      EventConditions.Drop(resourceCond);
+      EventConditions.Drop(softTermCond);
+      Tasks.Terminate;
+   END ObjectListener;
+
+   PROCEDURE Scheduler(VAR cr: Coroutines.Coroutine; tg: Schedulers.TaskGroup);
+   BEGIN
+      SYS.CRSPAWN(cr);
+      Schedulers.StartScheduler(tg);
+      Tasks.Terminate;
+   END Scheduler;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE InitObject(object: Services.Object);
+      (* to be called by the GetParams interface procedure of RemoteObjects *)
+      VAR
+	 pd: ProxiesDiscipline;
+	 olcr, cr: Coroutines.Coroutine; task: Tasks.Task;
+   BEGIN
+      NEW(pd); pd.id := pdID;
+      BlockingEvents.Define(pd.message);
+      RoundRobin.CreateTaskGroup(pd.tg);
+      Scheduler(cr, pd.tg); Tasks.Create(task, cr);
+      ObjectListener(olcr, object); Schedulers.AddTask(pd.tg, olcr, task);
+      Disciplines.Add(object, pd);
+      Messages.InstallHandler(object, Handler);
+   END InitObject;
+
+   PROCEDURE Init(shadow: Shadow; proxy: Services.Object);
+      (* to be called instead of Create if an own extension of
+	 Shadows.Shadow is used
+      *)
+      VAR
+	 msg: AddShadowMessage;
+	 queue: RelatedEvents.Queue;
+	 sd: ShadowDiscipline;
+   BEGIN
+      Resources.DependsOn(shadow, proxy);
+      shadow.proxy := proxy;
+      NEW(sd); sd.id := sdID; sd.shadow := shadow;
+      Disciplines.Add(proxy, sd);
+
+      CreateAddShadowMessage(msg);
+      msg.shadow := shadow;
+      Messages.Send(proxy, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(shadow, queue);
+   END Init;
+
+   PROCEDURE Create(VAR shadow: Shadow; proxy: Services.Object);
+      (* to be called by the Register interface procedure of RemoteObjects;
+	 the shadow object depends on the proxy object and hence
+	 terminates when the proxy object terminates
+      *)
+   BEGIN
+      NEW(shadow); Services.Init(shadow, shadowType);
+      Init(shadow, proxy);
+   END Create;
+
+   PROCEDURE Send(object: Services.Object; VAR message: Messages.Message);
+      (* may be called on the exporting side to send a message to
+	 all shadow objects;
+	 this is a noop if the given object isn't shadowed
+      *)
+      VAR
+	 pd: ProxiesDiscipline;
+	 mevent: MessageEvent;
+   BEGIN
+      IF ~Disciplines.Seek(object, pdID, pd) THEN RETURN END;
+      NEW(mevent);
+      mevent.type := pd.message;
+      mevent.message := "message via Shadows.Send";
+      mevent.msg := message;
+      mevent.except := NIL;
+      BlockingEvents.Raise(mevent);
+   END Send;
+
+   PROCEDURE SendExcept(object: Services.Object; shadow: Shadow;
+			VAR message: Messages.Message);
+      (* send the message to all shadows except to the given one *)
+      VAR
+	 pd: ProxiesDiscipline;
+	 mevent: MessageEvent;
+   BEGIN
+      IF ~Disciplines.Seek(object, pdID, pd) THEN RETURN END;
+      NEW(mevent);
+      mevent.type := pd.message;
+      mevent.message := "message via Shadows.Send";
+      mevent.msg := message;
+      mevent.except := shadow;
+      BlockingEvents.Raise(mevent);
+   END SendExcept;
+
+   PROCEDURE GetProxy(shadow: Shadow; VAR proxy: Services.Object);
+      (* returns the proxy object of a shadow *)
+   BEGIN
+      proxy := shadow.proxy;
+   END GetProxy;
+
+   PROCEDURE GetShadow(proxy: Services.Object; VAR shadow: Shadow);
+      (* returns the shadow of a proxy object *)
+      VAR
+	 sd: ShadowDiscipline;
+   BEGIN
+      IF Disciplines.Seek(proxy, sdID, sd) THEN
+	 shadow := sd.shadow;
+      ELSE
+	 shadow := NIL;
+      END;
+   END GetShadow;
+
+BEGIN
+   pdID := Disciplines.Unique();
+   sdID := Disciplines.Unique();
+   InitIFs;
+END Shadows.

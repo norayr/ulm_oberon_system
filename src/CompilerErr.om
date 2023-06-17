@@ -1,0 +1,306 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: CompilerErr.om,v 1.1 1998/03/29 18:55:36 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: CompilerErr.om,v $
+   Revision 1.1  1998/03/29 18:55:36  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE CompilerErrors;
+
+   (* common type of error events which are related to
+      an source file (i.e. syntax, semantics and
+      implementation restrictions or problems);
+      I/O errors, temporary failures etc. do not belong here
+   *)
+
+   IMPORT CompilerObjects, CompilerSources, CompilerStreamPosKeys,
+      Disciplines, Events, Iterators, Keys, Objects, Priorities,
+      RelatedEvents, Services, SortedBags, StreamPosKeys, Streams, Strings,
+      Texts, Write;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    loc1, loc2, reference: CompilerObjects.Location;
+	       (* loc1 is always # NIL;
+	          loc2 is set if two items belong to
+		  this error event (for example, on assignment incompatibility);
+		  reference optionally references a possibly distant
+		  line (e.g. in case of multiple declarations)
+	       *)
+	    longmsg: Streams.Stream;
+	 END;
+   VAR
+      error: Events.EventType;
+
+   TYPE
+      ErrorEntry = POINTER TO ErrorEntryRec;
+      ErrorEntryRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    event: ErrorEvent;
+	 END;
+   VAR
+      entryType: Services.Type;
+
+   TYPE
+      ErrorList = POINTER TO ErrorListRec;
+      ErrorListRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    src: CompilerSources.Source;
+	    errors: SortedBags.Bag;
+	    next: ErrorList;
+	 END;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    event: ErrorEvent;
+	 END;
+   VAR
+      sdID: Disciplines.Identifier;
+
+   (* === Keys if procedure for ErrorEntry / StreamPosKeys ================= *)
+
+   PROCEDURE Extract(object: Services.Object; key: Keys.Key;
+                     VAR keyval: Keys.Value);
+      VAR
+	 streamposKeyVal: StreamPosKeys.Value;
+   BEGIN
+      WITH object: ErrorEntry DO
+	 StreamPosKeys.CreateValue(streamposKeyVal);
+	 streamposKeyVal.pos := object.event.loc1.begin;
+	 keyval := streamposKeyVal;
+      END;
+   END Extract;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 service: Services.Service;
+   BEGIN
+      sdID := Disciplines.Unique();
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Services.CreateType(entryType, "CompilerErrors.ErrorEntry", "");
+      Services.Seek("StreamPosKeys", service); ASSERT(service # NIL);
+      Keys.Support(service, entryType, Extract);
+   END Init;
+
+   (* === misc private stuff =============================================== *)
+
+   PROCEDURE GetEvent(s: Streams.Stream; VAR event: ErrorEvent);
+      VAR
+	 ok: BOOLEAN;
+	 disc: StreamDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(s, sdID, disc); ASSERT(ok);
+      event := disc.event;
+   END GetEvent;
+
+   PROCEDURE IterateErrorEvents(it: Iterators.Iterator;
+                                ref: Iterators.Reference;
+				mode: Iterators.Mode);
+      VAR
+	 bagit: Iterators.Iterator;
+	 member: ErrorList;
+	 entry: ErrorEntry;
+   BEGIN
+      IF ref # NIL THEN
+	 member := ref(ErrorList);
+	 WHILE member # NIL DO
+	    SortedBags.GetEntries(member.errors, SortedBags.ascending,
+				  NIL, NIL, bagit);
+	    WHILE Iterators.Get(bagit, entry) DO
+	       Iterators.Yield(it, entry.event);
+	    END;
+	    member := member.next;
+	 END;
+      END;
+   END IterateErrorEvents;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE Raise(errors: RelatedEvents.Object;
+		   at: CompilerObjects.Location;
+                   message: ARRAY OF CHAR);
+      (* short & simple form *)
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      COPY(message, event.message);
+      event.loc1 := at; event.loc2 := NIL; event.reference := NIL;
+      Texts.Open(event.longmsg);
+      Write.StringS(event.longmsg, message);
+      Streams.SetPos(event.longmsg, 0);
+      RelatedEvents.Raise(errors, event);
+   END Raise;
+
+   PROCEDURE Open(VAR s: Streams.Stream);
+      VAR
+	 disc: StreamDiscipline;
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message[0] := 0X;
+      event.loc1 := NIL; event.loc2 := NIL; event.reference := NIL;
+      Texts.Open(event.longmsg);
+      NEW(disc); disc.id := sdID; disc.event := event;
+      Disciplines.Add(event.longmsg, disc);
+      s := event.longmsg;
+   END Open;
+
+   PROCEDURE At1(s: Streams.Stream; location: CompilerObjects.Location);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      GetEvent(s, event);
+      ASSERT(event.loc1 = NIL);
+      ASSERT((location.src # NIL) & (location.src.header # NIL));
+      event.loc1 := location;
+   END At1;
+
+   PROCEDURE At2(s: Streams.Stream; location: CompilerObjects.Location);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      GetEvent(s, event);
+      ASSERT(event.loc2 = NIL);
+      event.loc2 := location;
+   END At2;
+
+   PROCEDURE Ref(s: Streams.Stream; location: CompilerObjects.Location);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      GetEvent(s, event);
+      ASSERT(event.reference = NIL);
+      event.reference := location;
+   END Ref;
+
+   PROCEDURE AtObject1(s: Streams.Stream; object: CompilerObjects.Object);
+      VAR
+	 loc: CompilerObjects.Location;
+   BEGIN
+      At1(s, object.loc);
+   END AtObject1;
+
+   PROCEDURE AtObject2(s: Streams.Stream; object: CompilerObjects.Object);
+      VAR
+	 loc: CompilerObjects.Location;
+   BEGIN
+      At2(s, object.loc);
+   END AtObject2;
+
+   PROCEDURE RefObject(s: Streams.Stream; object: CompilerObjects.Object);
+      VAR
+	 loc: CompilerObjects.Location;
+   BEGIN
+      Ref(s, object.loc);
+   END RefObject;
+
+   PROCEDURE Close(s: Streams.Stream; errors: RelatedEvents.Object);
+      VAR
+	 event: ErrorEvent;
+	 msg: Streams.Stream;
+	 range: CompilerObjects.Location;
+   BEGIN
+      GetEvent(s, event);
+      ASSERT(event.loc1 # NIL);
+      IF (event.loc2 # NIL) & (event.loc2.begin < event.loc1.end) THEN
+	 (* regions must not overlap *)
+	 ASSERT(event.loc2.end < event.loc1.begin);
+	 (* assure that loc1 comes before loc2 *)
+	 range := event.loc1;
+	 event.loc1 := event.loc2;
+	 event.loc2 := range;
+      END;
+      Streams.SetPos(event.longmsg, 0);
+      Strings.Open(msg, event.message);
+      IF ~Streams.Copy(event.longmsg, msg, -1) THEN END;
+      Streams.Release(msg);
+      ASSERT(event.message[0] # 0X);
+      Streams.SetPos(event.longmsg, 0);
+      Disciplines.Remove(s, sdID);
+      RelatedEvents.Raise(errors, event);
+   END Close;
+
+   PROCEDURE GetSortedErrors(errors: RelatedEvents.Object;
+                             VAR it: Iterators.Iterator);
+      (* remove all ErrorEvents from errors, sort them by location,
+	 and return them as events through the iterator
+      *)
+      VAR
+	 queue: RelatedEvents.Queue;
+	 event: ErrorEvent;
+	 otherErrors: RelatedEvents.Object;
+	 head, tail, member: ErrorList;
+	 entry: ErrorEntry;
+	 ok: BOOLEAN;
+	 keyval: StreamPosKeys.Value;
+   BEGIN
+      RelatedEvents.GetQueue(errors, queue);
+      NEW(otherErrors); RelatedEvents.QueueEvents(otherErrors);
+      WHILE queue # NIL DO
+	 IF queue.event IS ErrorEvent THEN
+	    event := queue.event(ErrorEvent);
+	    IF (head = NIL) OR
+		  (head.src.header.srcid # event.loc1.src.header.srcid) THEN
+	       NEW(member);
+	       member.src := event.loc1.src;
+	       member.next := NIL;
+	       SortedBags.Create(member.errors, StreamPosKeys.key);
+	       IF head = NIL THEN
+		  head := member;
+	       ELSE
+		  tail.next := member;
+	       END;
+	       tail := member;
+	    END;
+	    NEW(entry); Services.Init(entry, entryType);
+	    entry.event := event;
+	    SortedBags.Add(tail.errors, entry);
+	 ELSE
+	    RelatedEvents.Raise(otherErrors, queue.event);
+	 END;
+	 queue := queue.next;
+      END;
+      RelatedEvents.GetQueue(otherErrors, queue);
+      RelatedEvents.AppendQueue(errors, queue);
+
+      Iterators.Create(it, IterateErrorEvents, head, 0);
+   END GetSortedErrors;
+
+BEGIN
+   Init;
+END CompilerErrors.

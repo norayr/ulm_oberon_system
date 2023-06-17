@@ -1,0 +1,334 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Maintenance.om,v 1.1 1998/04/07 09:35:31 martin Exp $
+   ----------------------------------------------------------------------------
+   $Log: Maintenance.om,v $
+   Revision 1.1  1998/04/07  09:35:31  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE Maintenance;
+
+   IMPORT
+      Clocks, Conditions, Coroutines, Disciplines, Errors,
+      EventConditions, Events, Messages, NetIO, Objects,
+      PersistentObjects, Priorities, RelatedEvents, Services, Shards,
+      Streams, Strings, SYSTEM, Tasks, TimeConditions, Times;
+
+   CONST
+      shutdown = 0;
+      reboot = 1;
+      jobtypes = 2;
+
+   TYPE
+      JobType = SHORTINT;		(* [shutdown..reboot] *)
+      CapabilitySet = SET;		(* of JobType *)
+
+      Object = Messages.Object;
+
+      SimpleProc = PROCEDURE (object: Object);
+
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    proc: SimpleProc;
+	    control: Shards.Pot;
+	    delay: Times.Time;		(* NIL -> default delay *)
+	 END;
+
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    jobs: ARRAY jobtypes OF Job;
+	    caps: CapabilitySet;
+	 END;
+
+      Message = POINTER TO MessageRec;
+      MessageRec =
+	 RECORD
+	    (Messages.MessageRec)
+	    type: JobType;
+	    auth: Shards.Lid;
+	 END;
+
+      JobEvent = POINTER TO JobEventRec;
+      JobEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    job: Job;
+	    obj: Object;
+	 END;
+
+   VAR
+      discId: Disciplines.Identifier;
+      lidType,
+      messageType: Services.Type;
+      stdDelay: Times.Time;
+      jobEventType: Events.EventType;
+      jobEventCond: Conditions.Condition;
+
+   CONST
+      notCapable = 0;		(* job has not been defined *)
+      noPermission = 1;		(* job was not permitted *)
+      noAccess = 2;		(* job request did not reach object *)
+      errorcodes = 3;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	 END;
+
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[notCapable] :=   " has not been defined";
+      errormsg[noPermission] := " was not permitted";
+      errormsg[noAccess] :=     " request did not reach object";
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object; jobtype: JobType;
+			      code: SHORTINT);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      CASE jobtype OF
+      | shutdown: event.message := "shutdown";
+      | reboot:   event.message := "reboot";
+      ELSE        event.message := "job";
+      END;
+      Strings.Concatenate(event.message, errormsg[code]);
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE ReadAuth(s: Streams.Stream; VAR auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.GuardedReadObjectOrNIL(s, lidType, auth)
+   END ReadAuth;
+
+   PROCEDURE WriteAuth(s: Streams.Stream; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN PersistentObjects.WriteObjectOrNIL(s, auth)
+   END WriteAuth;
+
+   PROCEDURE CreateMessage(VAR obj: PersistentObjects.Object);
+      VAR
+	 msg: Message;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, messageType);
+      Messages.Init(msg);
+      obj := msg;
+   END CreateMessage;
+
+   PROCEDURE ReadMessage(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: Message DO
+	 IF ~msg.processed THEN
+	    RETURN NetIO.ReadShortInt(s, msg.type) & ReadAuth(s, msg.auth)
+	 END;
+	 RETURN TRUE
+      END;
+   END ReadMessage;
+
+   PROCEDURE WriteMessage(s: Streams.Stream;
+			      msg: PersistentObjects.Object): BOOLEAN;
+   BEGIN
+      WITH msg: Message DO
+	 IF ~msg.processed THEN
+	    RETURN NetIO.WriteShortInt(s, msg.type) & WriteAuth(s, msg.auth)
+	 END;
+	 RETURN TRUE
+      END;
+   END WriteMessage;
+
+   PROCEDURE InitDatatypes;
+      VAR
+	 face: PersistentObjects.Interface;
+   BEGIN
+      NEW(face);
+      face.read := ReadMessage;
+      face.write := WriteMessage;
+      face.create := CreateMessage;
+      face.createAndRead := NIL;
+      PersistentObjects.RegisterType( messageType, "Maintenance.Message",
+	 "Messages.Message", face);
+      Services.SeekType("Shards.Lid", lidType);
+      ASSERT(lidType # NIL);
+   END InitDatatypes;
+
+   PROCEDURE DelayOp(op: SimpleProc; obj: Object; at: Times.Time);
+      VAR
+	 timecond: Conditions.Condition;
+   BEGIN
+      TimeConditions.Create(timecond, Clocks.system, at);
+      Tasks.WaitFor(timecond);
+      op(obj);
+   END DelayOp;
+
+   PROCEDURE JobTask(VAR cr: Coroutines.Coroutine);
+      VAR
+	 event: Events.Event;
+   BEGIN
+      SYSTEM.CRSPAWN(cr);
+      Tasks.WaitFor(jobEventCond);
+      IF EventConditions.TestAndGet(jobEventCond, event) THEN
+	 WITH event: JobEvent DO
+	    DelayOp(event.job.proc, event.obj, event.job.delay);
+	 END;
+      END;
+      Tasks.Terminate;
+   END JobTask;
+
+   PROCEDURE AddTask(cr: Coroutines.Coroutine);
+      VAR
+	 task: Tasks.Task;
+   BEGIN
+      Tasks.Create(task, cr);
+   END AddTask;
+
+   PROCEDURE DelayedOperation(job: Job; obj: Object);
+      VAR
+	 cr: Coroutines.Coroutine;
+	 event: JobEvent;
+   BEGIN
+      NEW(event);
+      event.type := jobEventType;
+      event.message := "job event";
+      event.job := job;
+      event.obj := obj;
+      Events.Raise(event);
+      JobTask(cr);
+      AddTask(cr);
+   END DelayedOperation;
+
+   PROCEDURE Handler(obj: Messages.Object; VAR msg: Messages.Message);
+      VAR
+	 type: JobType;
+	 disc: Discipline;
+	 job: Job;
+   BEGIN
+      IF msg IS Message THEN
+	 WITH msg: Message DO
+	    type := msg.type;
+	    IF (type < 0) OR (jobtypes <= type) OR
+		  ~Disciplines.Seek(obj, discId, disc) THEN
+	       Error(msg.errors, type, notCapable);
+	       msg.done := FALSE;
+	    ELSE
+	       job := disc.jobs[type];
+	       IF (job.control # NIL) &
+		     ~Shards.Fits(job.control, msg.auth) THEN
+		  Error(msg.errors, type, noPermission);
+		  msg.done := FALSE;
+	       ELSE
+		  DelayedOperation(job, obj);
+		  msg.done := TRUE;
+	       END;
+	    END;
+	    msg.processed := TRUE;
+	 END;
+      END;
+   END Handler;
+
+   PROCEDURE Attach(object: Object; job: Job; type: JobType);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF (0 <= type) & (type < jobtypes) THEN
+	 IF job.delay = NIL THEN
+	    job.delay := stdDelay;
+	 END;
+	 IF ~Disciplines.Seek(object, discId, disc) THEN
+	    NEW(disc);
+	    disc.id := discId;
+	    disc.caps := {type};
+	    disc.jobs[type] := job;
+	    Disciplines.Add(object, disc);
+	    Messages.InstallHandler(object, Handler);
+	 ELSE
+	    INCL(disc.caps, type);
+	    disc.jobs[type] := job;
+	 END;
+      END;
+   END Attach;
+
+   PROCEDURE InitTasks;
+      VAR
+	 cr: Coroutines.Coroutine;
+   BEGIN
+      Events.Define(jobEventType);
+      Events.SetPriority(jobEventType, Priorities.message);
+      EventConditions.Create(jobEventCond, jobEventType);
+      JobTask(cr);
+      AddTask(cr);
+   END InitTasks;
+
+   PROCEDURE Send(object: Object; type: JobType; auth: Shards.Lid): BOOLEAN;
+      VAR
+	 msg: Message;
+	 queue: RelatedEvents.Queue;
+   BEGIN
+      CreateMessage(msg);
+      msg.type := type;
+      msg.auth := auth;
+      Messages.Send(object, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(object, queue);
+      IF ~msg.processed THEN
+	 Error(object, type, noAccess);
+      END;
+      RETURN msg.done
+   END Send;
+
+   PROCEDURE Shutdown(object: Object; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN Send(object, shutdown, auth)
+   END Shutdown;
+
+   PROCEDURE Reboot(object: Object; auth: Shards.Lid): BOOLEAN;
+   BEGIN
+      RETURN Send(object, reboot, auth)
+   END Reboot;
+
+BEGIN
+   discId := Disciplines.Unique();
+   Times.CreateAndSet(stdDelay, Times.relative, 0, 2, 0);
+   InitErrorHandling;
+   InitDatatypes;
+   InitTasks;
+END Maintenance.

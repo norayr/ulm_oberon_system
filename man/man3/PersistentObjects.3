@@ -1,0 +1,643 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH PersistentObjects 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+PersistentObjects \- abstraction for persistent objects
+.SH SYNOPSIS
+.Pg
+CONST fullTypeName = 1; typeCode = 2; incrTypeCode = 3;
+CONST withSize = 4; withoutSize = 0;
+CONST withHier = 8; withoutHier = 0;
+TYPE Mode = SHORTINT;
+.sp 0.7
+TYPE Object = POINTER TO ObjectRec;
+TYPE ObjectRec = RECORD (Services.ObjectRec) END;
+.sp 0.7
+TYPE ReadProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+TYPE WriteProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+TYPE CreateProc = PROCEDURE (VAR o: Object);
+TYPE CreateAndReadProc = PROCEDURE (s: Streams.Stream;
+                                    create: BOOLEAN;
+                                    VAR o: Object) : BOOLEAN;
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      create: CreateProc;  (* create object *)
+      read: ReadProc;      (* read data from stream *)
+      write: WriteProc;    (* write data to stream  *)
+      createAndRead: CreateAndReadProc; (* replaces create & read *)
+   END;
+.sp 0.7
+CONST cannotReadData = 0;
+CONST cannotWriteData = 1;
+CONST cannotReadType = 2;
+CONST cannotWriteType = 3;
+CONST invalidType = 4;
+CONST unknownType = 5;
+CONST otherTypeHier = 6;
+CONST eofReached = 7;
+CONST cannotSkip = 8;
+CONST typeGuardFailure = 9;
+CONST errorcodes = 10;
+TYPE ErrorCode = SHORTINT;
+.sp 0.3
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec)
+      stream: Streams.Stream;
+      errorcode: ErrorCode;
+   END;
+.sp 0.3
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.7
+PROCEDURE RegisterType(VAR type: Services.Type;
+                       name, baseName: ARRAY OF CHAR;
+                       if: Interface);
+PROCEDURE Init(object: Object; type: Services.Type);
+.sp 0.3
+PROCEDURE SetMode(s: Streams.Stream; mode: Mode);
+PROCEDURE GetMode(s: Streams.Stream; VAR mode: Mode);
+PROCEDURE IsProjected(object: Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE Read(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+PROCEDURE Write(s: Streams.Stream; object: Object) : BOOLEAN;
+PROCEDURE ReadObjectOrNIL(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+PROCEDURE WriteObjectOrNIL(s: Streams.Stream; object: Object) : BOOLEAN;
+.sp 0.3
+PROCEDURE ReadInto(s: Streams.Stream; object: Object) : BOOLEAN;
+PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                      VAR object: Object) : BOOLEAN;
+PROCEDURE GuardedReadObjectOrNIL(s: Streams.Stream; guard: Services.Type;
+                                 VAR object: Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I PersistentObjects
+defines an extensible abstraction for persistent
+objects and implements input and output operations for them
+(i.e. transforming the object into a sequence of bytes
+and vice versa).
+A persistent object is a data structure whose existence
+transcends time
+(i.e.  the object continues to exist after
+its creator ceases to exist)
+and/or space
+(i.e. the object's location moves from the address space in which
+it was created).
+.SS "Defining persistent objects"
+An interface defines a set of procedures which implement a
+\fIPersistentObjects\fP-abstraction for
+a specific extension of \fIPersistentObjects.Object\fP.
+Not all interface procedures must be given,
+some of them may be set to \fBNIL\fP:
+.IP \(bu
+The whole interface may be passed as \fBNIL\fP
+to \fIRegisterType\fP for abstract objects which
+are never instantiated,
+do not carry any data to be saved and restored,
+and serve only as base type for other extensions.
+.IP \(bu
+Empty extensions which may be instantiated but
+don't carry any data need just \fIcreate\fP,
+all other interface procedures are then to be set to \fBNIL\fP.
+.IP \(bu
+The most common variant is to provide \fIcreate\fP,
+\fIread\fP, and \fIwrite\fP.
+In this case, \fIcreateAndRead\fP must be passed as \fBNIL\fP.
+.IP \(bu
+Abstract extensions that are never instantiated may
+set \fIcreate\fP and \fIcreateAndRead\fP to \fBNIL\fP while
+defining \fIread\fP and \fIwrite\fP.
+.IP \(bu
+Modules which filter all operations of
+\fIPersistentObjects\fP for a specific type
+need to implement \fIcreate\fP and \fIread\fP
+as a joined operation which allows the creation
+to be delayed to the reading time.
+This allows the read object to be of a different
+type than the object written.
+This technique is for example used
+by \fIRemotePersistentObjects(3)\fP which causes
+written proxy objects to be read as original objects.
+In this case, \fIcreateAndRead\fP and
+\fIwrite\fP are to be provided
+with \fIcreate\fP and \fIread\fP set to \fBNIL\fP.
+Types which support \fIcreateAndRead\fP must not
+be extended and are better kept private for this reason.
+.PP
+The interface procedures should meet following specification:
+.Is
+.If create "\fBVAR\fP \fIo\fP: \fIObject\fP"
+create (via \fBNEW\fP) a new object of the specific type
+and perform the type-specific initializations for that
+object which includes the call of \fIInit\fP for it.
+Note that \fIServices.Init\fP is called by \fIInit\fP
+and that initializations of extensions between
+\fIPersistentObjects.Object\fP and the specific extension
+should be done in the extension order
+after calling \fIInit\fP.
+.If read "\fIs\fP: \fIStreams.Stream\fP; \fIo\fP: \fIObject\fP" "\fBBOOLEAN\fP"
+read the extension-specific data of \fIo\fP from \fIs\fP.
+Note that one call of \fIPersistentObjects.Read\fP
+causes \fIread\fP to be called for each non-abstract
+extension between \fIPersistentObjects.Object\fP
+and the type of the object.
+.If write "\fIs\fP: \fIStreams.Stream\fP; \fIo\fP: \fIObject\fP" "\fBBOOLEAN\fP"
+write the extension-specific data of \fIo\fP to \fIs\fP.
+Note that if \fIcreateAndRead\fP is specified instead of
+\fIcreate\fP and \fIread\fP, \fIwrite\fP must write
+the data of all extensions and not only that of
+the specific extension.
+.If createAndRead "\fIs\fP: \fIStreams.Stream\fP; \fIcreate\fP: \fBBOOLEAN\fP; \fBVAR\fP \fIo\fP: \fIObject\fP" "\fBBOOLEAN\fP"
+perform the operations of \fIcreate\fP (if requested)
+and \fIread\fP.
+Note that in difference to \fIread\fP the interface procedure
+\fIcreateAndRead\fP is responsible for reading the
+whole object covering all extensions.
+.Ef
+.PP
+In some cases there exist several variants
+for the interface procedures \fIwrite\fP and \fIread\fP
+to save and load extension-specific data,
+e.g. a deep copy with all depending objects, or a
+copy of the object only with further references exported
+(see \fIRemoteObjects(3)\fP).
+Additional parameterization may be achieved
+by attaching disciplines
+(see \fIDisciplines(3)\fP) to the output stream
+and by examining them in the \fIwrite\fP interface procedure.
+But please note that \fIPersistentObjects\fP is free to pass
+temporary in-memory streams to the interface procedures.
+To allow discipline access in this case
+\fIPersistentObjects\fP links the temporary stream
+via \fIIndirectDisciplines.Forward\fP to the original stream.
+Thus, \fIIndirectDisciplines.Seek\fP has to be used instead of
+\fIDisciplines.Seek\fP to find additional parameters inside of
+the interface procedures.
+.PP
+The interface procedures should read and write Oberon base types
+by the use of \fINetIO(3)\fP.
+This assures that the exchange of persistent objects
+is even possible between different hardware architectures.
+The interface procedures are free to call \fIRead\fP and \fIWrite\fP
+for persistent subobjects.
+In case of deep copies of possibly circular data structures
+the use of \fILinearizedStructures(3)\fP is recommended.
+.PP
+.I RegisterType
+is to be called
+during the initialization time
+by modules which extend
+\fIPersistentObjects.Object\fP.
+The type names to be given should be of the form
+"\fIModuleName.TypeName\fP"
+(where
+.I ModuleName
+is the name of the module the data type is defined in, and 
+.I TypeName
+is the name of the data type)
+to assure uniqueness and to support dynamic loading.
+If the
+data type of an object is a direct extension
+of \fIPersistentObjects.Object\fP, "" is
+to be given as \fIbaseName\fP.
+Types which have \fIcreateAndRead\fP as
+interface procedure must not be given as base type.
+.PP
+.I Init
+connects a newly created object
+with its data type given by \fItype\fP.
+Note that \fIInit\fP calls \fIServices.Init\fP for \fIobject\fP.
+.SS "Using persistent objects"
+Persistent objects may be saved and loaded in dependence of
+a stream-specific mode.
+By default, each object saved is accompanied by
+a full type description which includes the whole type hierarchy
+of that object.
+This allows each object to be read in independently from
+others and makes projections possible.
+Projections are necessary if one of the modules
+which belongs to the type hierarchy is not present
+and cannot be loaded dynamically.
+.PP
+For many applications, however, this full type information
+takes too much space and needs too long to be read in.
+\fIPersistentObjects\fP supports an incremental
+type coding mode which leads to very compact coding
+for object sequences with repeating types.
+But this requires that objects are read in the
+same sequence as they have been written earlier.
+.PP
+Modes are to be given as the sum of three integer constants which
+select three different submodes:
+.IP \(bu
+\fIfullTypeName\fP, \fItypeCode\fP, or \fIincrTypeCode\fP
+specify how types are to be encoded.
+\fIfullTypeName\fP encodes types by giving the
+type names which has been earlier given to \fIRegisterType\fP,
+\fItypeCode\fP emits just type numbers which are not
+compatible to other programs, and
+\fIincrTypeCode\fP enables an efficient incremental encoding
+(as described above)
+which preserves compatibility to other programs.
+.IP \(bu
+\fIwithSize\fP or \fIwithoutSize\fP specify
+whether the size of the whole object saved will be
+stored (at the beginning) or not.
+The reading party is able to skip unsupported parts
+of the object in case of projections if the size
+is part of the encoding.
+Note that size informations are expensive to generate
+if a stream is used which does not support seek operations.
+.IP \(bu
+\fIwithHier\fP or \fIwithoutHier\fP specify
+whether the whole type hierarchy is to be encoded or just
+the exact type of the object only.
+Projections are only possible if the type hierarchy
+is supported.
+.PP
+The default mode is \fIfullTypeName\fP +
+\fIwithSize\fP + \fIwithHier\fP,
+a more efficient variant for sequential access is
+\fIincrTypeCode\fP + \fIwithSize\fP + \fIwithHier\fP,
+and the most efficient variant which still supports
+exchangeability with other programs but
+prohibits projections is
+\fIincrTypeCode\fP + \fIwithoutSize\fP + \fIwithoutHier\fP.
+.PP
+.I SetMode
+sets the mode for \fIs\fP and
+.I GetMode
+returns the mode of \fIs\fP which is currently in use.
+Note that the mode affects write operations only.
+.I IsProjected
+allows to test whether \fIobject\fP
+was projected during its read operation or not.
+.PP
+.I Write
+converts \fIobject\fP into a sequence of bytes which
+is written to \fIs\fP which may be later read in by \fIRead\fP.
+Note that \fIWrite\fP requires \fIobject\fP to be non-\fBNIL\fP
+and that \fIRead\fP guarantees \fIobject\fP to be non-\fBNIL\fP
+on success.
+.PP
+\fIGuardedRead\fP works like \fIRead\fP but applies
+a type guard to the object read in and returns \fBFALSE\fP
+if the read object is not an extension of \fIguard\fP.
+Note that in case of type guard failures the read object
+is not assigned to \fIobject\fP to avoid hard
+type guard failures (i.e. those which would lead
+to runtime errors which at least abort the current coroutine).
+To differentiate between type guard failures
+(which leave the stream at a defined position) and
+I/O errors (which possibly leave the stream at an undefined
+position) it may be useful to examine the error events
+which have been passed to \fIs\fP.
+.PP
+.I WriteObjectOrNIL
+and
+.I ReadObjectOrNIL
+work like \fIWrite\fP and \fIRead\fP but allow \fBNIL\fP
+to be passed and to be returned.
+Note that \fIReadObjectOrNIL\fP returns \fBTRUE\fP
+even when \fBNIL\fP has been successfully passed.
+\fIGuardedReadObjectOrNIL\fP works like
+\fIGuardedRead\fP but allows like \fIReadObjectOrNIL\fP
+\fBNIL\fP to be returned.
+Because \fBNIL\fP may always be assigned to an object
+reference, the type test is skipped in case of \fBNIL\fP
+and \fBTRUE\fP is returned.
+Note that read and write operations must be properly paired, i.e.
+the \fIXXXOrNIL\fP operations are \fBnot\fP compatible
+to the other operations.
+.PP
+\fIReadInto\fP allows to avoid the creation of a new
+object by reading into an already existing object.
+This requires the type of the object to be read in
+to be an extension of \fIobject\fP.
+\fIReadInto\fP is compatible to \fIWrite\fP only.
+.SH DIAGNOSTICS
+All read and write operations return \fBFALSE\fP
+in case of errors and generate an error event in that
+case which is related to the given stream.
+Following error codes are implemented:
+.Tb typeGuardFailure
+.Tp cannotReadData
+while it was possible to read and decode the type,
+a read error occurred during reading of the object data,
+i.e. one of the \fIread\fP interface procedures returned
+\fBFALSE\fP.
+Note that reading is immediately aborted in such a case
+which leaves the stream at an undefined position
+(possibly inside of an object).
+.Tp cannotWriteData
+while it was possible to encode and write the type information,
+a write error occurred during writing of the object data,
+i.e. one of the \fIwrite\fP interface procedures returned
+\fBFALSE\fP.
+Note that writing is immediately aborted in such a case
+which leaves the stream at an undefined position.
+.Tp cannotReadType
+is returned in case of failed stream operations only
+during reading the type information.
+.Tp cannotWriteType
+a write operation for the underlying stream failed.
+.Tp invalidType
+bogus input was found which does not conform
+to a valid type information.
+This may happen due to undefined stream positions
+or due to incompatible versions of \fIPersistentObjects\fP.
+Another common source of this problem are unpaired
+read and write operations (e.g. writing an object
+with \fIWriteObjectOrNIL\fP but trying to read it
+with \fIRead\fP).
+.Tp unknownType
+a valid type information was found which,
+however, is not known or supported by the reading program
+and does not permit projections.
+This leaves the stream at a defined position only
+if \fIwithSize\fP was given at the time of writing.
+.Tp otherTypeHier
+is returned in case of incremental type informations
+which include type hierarchies if inconsistencies have
+been found.
+Inconsistencies may result from non-sequential
+write or read operations, or from different writing sources.
+.Tp eofReached
+end of file was unexpectedly encountered.
+This may be returned during reading of the type information
+or during the reading of the object data.
+.Tp cannotSkip
+a projection was attempted and failed projections
+were prohibited (due to missing size information) or
+the non-supported data parts could not be skipped.
+Nevertheless, the so far created and read object is
+returned in \fIobject\fP
+despite the return value of \fBFALSE\fP.
+.Tp typeGuardFailure
+is returned by \fIGuardedRead\fP or \fIGuardedReadObjectOrNIL\fP
+if the read object is not an extension of \fIguard\fP,
+or by \fIReadInto\fP
+if the object to be read
+has not a type which is an extension of that of \fIobject\fP.
+.Te
+.PP
+Several errors which result from programming mistakes
+are covered by assertions:
+.IP \(bu
+\fIRegisterType\fP and \fIServices.InitType\fP
+(which is called by \fIRegisterType\fP)
+check all parameters for validity,
+i.e. \fIname\fP must be non-empty and unique,
+\fIbaseName\fP must be empty or an already known
+name of a type which has been passed to
+\fIRegisterType\fP (not to \fIService.CreateType\fP),
+and \fIif\fP must be \fBNIL\fP (for abstract types)
+or contain a valid combination of supported interface
+procedures as described above.
+Types which have \fIcreateAndRead\fP as
+interface procedure must not be given as base type.
+.IP \(bu
+\fIInit\fP must not be called for objects
+of abstract types (i.e. those which must not be instantiated)
+and \fItype\fP must be one of type which has
+been earlier returned by \fIRegisterType\fP.
+.IP \(bu
+Invalid mode values which are passed to \fISetMode\fP
+lead to failures on subsequent write operations.
+.SH "SEE ALSO"
+.Tb RemotePersistentObjects(3)
+.Tp ConstantObjects(3)
+simplified support of \fIPersistentObjects\fP for constant objects
+.Tp Containers(3)
+collections of persistent objects
+.Tp Disciplines(3)
+attachment of non-persistent data structures
+.Tp IndirectDisciplines(3)
+shared disciplines
+.Tp LinearizedStructures(3)
+I/O of possibly circular data structures
+.Tp ModularizedStructures(3)
+distribution of graphs of persistent objects across multiple byte sequences
+.Tp NetIO(3)
+I/O of Oberon base types
+.Tp PersistentDisciplines(3)
+persistent disciplines
+.Tp PersistentEvents(3)
+support of persistent events
+.Tp PersistentTexts(3)
+persistent objects representing texts
+.Tp RelatedEvents(3)
+error handling
+.Tp RemotePersistentObjects(3)
+support of \fIPersistentObjects\fP for proxy objects
+which have been returned by \fIRemoteObjects(3)\fP
+.Tp Services(3)
+type system of the library
+.Tp Streams(3)
+stream operations
+.Te
+.SH AUTHORS
+The original implementation and manual page was written 1993
+by Detlef Birkholz.
+The revisions are due to Andreas Borchert.
+.\" ---------------------------------------------------------------------------
+.\" $Id: PersistentObjects.3,v 1.16 2003/07/10 09:20:14 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: PersistentObjects.3,v $
+.\" Revision 1.16  2003/07/10 09:20:14  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.15  2000/05/31 20:15:47  borchert
+.\" various references added
+.\"
+.\" Revision 1.14  1998/04/24  17:38:34  borchert
+.\" - wrong specification of createAndRead if procedure fixed
+.\" - support of abstract modules added that define read and write if procs
+.\"   but neither create nor createAndRead
+.\"
+.\" Revision 1.13  1996/01/04  16:13:20  borchert
+.\" - layout fixed
+.\" - hints about incompatibilities between Write and ReadObjectOrNIL added
+.\"
+.\" Revision 1.12  1995/03/20  08:44:08  borchert
+.\" major revision of PersistentObjects:
+.\" - sizeOf interface procedure removed
+.\" - createAndRead added (to support RemotePersistentObjects)
+.\" - incremental type encoding added
+.\" - guarded read procedures added
+.\" - Connect renamed to Init
+.\" - RegisterType is no longer a function procedure
+.\" - better error codes
+.\"
+.\" Revision 1.11  1994/09/02  08:29:40  borchert
+.\" hints about discipline access, NetIO(3), and LinearizedStructures(3) added
+.\"
+.\" Revision 1.10  1994/02/12  16:35:58  borchert
+.\" PersistentObjects.Object is now an extension of Disciplines.Object
+.\"
+.\" Revision 1.9  1993/12/14  11:03:55  wbirkhol
+.\" init procedure renamed to create procedure
+.\"
+.\" Revision 1.8  93/07/21  11:09:23  wbirkhol
+.\" some typos corrected
+.\" 
+.\" Revision 1.7  93/07/12  14:17:14  wbirkhol
+.\" interface procedure getName is no longer supported
+.\" IsProjection and GetProjectionName are now getting their information from 
+.\" the object itself and not from the stream
+.\" 
+.\" Revision 1.6  93/07/07  11:17:43  wbirkhol
+.\" typos corrected
+.\" 
+.\" Revision 1.5  93/07/06  13:44:28  wbirkhol
+.\" Adaption to the new Syntax of PersistentObjects
+.\" 
+.\" Revision 1.4  93/06/22  16:42:25  wbirkhol
+.\" new error codes added
+.\" procedure Capabilities added
+.\" interface procedure sizeOf is now optional
+.\" some typos corrected
+.\" 
+.\" Revision 1.1  93/05/18  11:56:09  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

@@ -1,0 +1,84 @@
+MODULE TmpPtrs;
+
+   IMPORT FragmentedStreams, Disciplines, Regs := Registers, Streams, Write;
+
+   TYPE
+      Ptr = POINTER TO PtrRec;
+      PtrRec = RECORD
+         (Disciplines.ObjectRec)
+         start, end : FragmentedStreams.Label;
+	 mode : Regs.Mode;
+	 offset : Streams.Count;
+	 next : Ptr;
+      END;
+
+   VAR
+      ptrdiscid : Disciplines.Identifier;
+
+   TYPE
+
+      PtrDisc = POINTER TO PtrDiscRec;
+      PtrDiscRec = RECORD
+         (Disciplines.DisciplineRec)
+	 ptr : Ptr;
+	 commited : BOOLEAN;
+      END;
+
+   PROCEDURE Open (obj : Disciplines.Object; start : FragmentedStreams.Label;
+                   offset : Streams.Count; mode : Regs.Mode);
+      VAR
+         disc : PtrDisc;
+   BEGIN
+      Disciplines.Remove (obj, ptrdiscid);
+      ASSERT (~Disciplines.Seek (obj, ptrdiscid, disc));
+      NEW (disc);
+      disc.id := ptrdiscid;
+      disc.commited := FALSE;
+      NEW (disc.ptr);
+      disc.ptr.start := start;
+      disc.ptr.offset := offset;
+      disc.ptr.mode := mode;
+      disc.ptr.end := NIL;
+      disc.ptr.next := NIL;
+      Disciplines.Add (obj, disc);
+   END Open;
+
+   PROCEDURE Commit (obj : Disciplines.Object);
+      VAR
+         ok : BOOLEAN;
+	 disc : PtrDisc;
+   BEGIN
+      ok := Disciplines.Seek (obj, ptrdiscid, disc);
+      IF ok THEN
+	 disc.commited := TRUE;
+      END;
+   END Commit;
+
+   PROCEDURE Close (obj : Disciplines.Object;
+                    end : FragmentedStreams.Label) : Ptr;
+      VAR
+         ok : BOOLEAN;
+	 disc : PtrDisc;
+	 ret : Ptr;
+   BEGIN
+      ok := Disciplines.Seek (obj, ptrdiscid, disc);
+      IF ~ok THEN
+         RETURN NIL
+      END;
+      Disciplines.Remove (obj, ptrdiscid);
+      IF end = NIL THEN
+         RETURN NIL;
+      END;
+      IF ~disc.commited THEN
+         RETURN NIL;
+      END;
+      ret := disc.ptr;
+      disc.ptr := NIL;
+      ASSERT ((ret # NIL) & (ret.start #  NIL) & (ret.end = NIL));
+      ret.end := end;
+      RETURN ret;
+   END Close;
+
+BEGIN
+   ptrdiscid := Disciplines.Unique();
+END TmpPtrs.

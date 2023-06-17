@@ -1,0 +1,312 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixOberonSources;
+
+   IMPORT Args, Clocks, ConstStrings, Disciplines, Events, Lex := OberonLex,
+      MD5Names, NetIO, PersistentObjects, Priorities, RelatedEvents,
+      Resources, Services, Sources := CompilerSources, Streams, SubStreams,
+      SysStat, Times, UnixMappedFiles;
+
+   CONST
+      filenamelen = 1024;
+   TYPE
+      Source = POINTER TO SourceRec;
+      SourceRec =
+	 RECORD
+	    (Sources.SourceRec)
+	    (* persistent components *)
+	    filename: ARRAY filenamelen OF CHAR;
+	    (* non-persistent components *)
+	    stream: Streams.Stream;
+	    length: Streams.Count; (* defined only if stream # NIL *)
+	 END;
+   VAR
+      type: Services.Type;
+      if: Sources.Interface;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    src: Source;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   CONST
+      invalidSuffix = 0;
+      noOberonSource = 1;
+      sourceKindConflict = 2;
+      noModuleName = 3;
+      errors = 4;
+   TYPE
+      ErrorCode = SHORTINT; (* invalidSuffix ... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    code: ErrorCode;
+	    filename: ConstStrings.String;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      errormsg[invalidSuffix] :=
+	 "suffix should be either ``.od'', ``.om'', or ``.mod''";
+      errormsg[noOberonSource] :=
+	 "contents does not look like an Oberon source";
+      errormsg[sourceKindConflict] :=
+	 "file name suffix in conflict with first keyword";
+      errormsg[noModuleName] :=
+	 "module name missing (syntax error in Oberon source)";
+   END InitErrorHandling;
+
+   PROCEDURE Error(object: RelatedEvents.Object; code: ErrorCode;
+                   filename: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errormsg[code];
+      event.code := code;
+      ConstStrings.Create(event.filename, filename);
+      RelatedEvents.Raise(object, event);
+   END Error;
+
+   (* === PersistentObjects interface for Source =========================== *)
+
+   PROCEDURE CreateSource(VAR object: PersistentObjects.Object);
+      VAR
+	 src: Source;
+   BEGIN
+      NEW(src); PersistentObjects.Init(src, type);
+      Sources.Init(src, if); src.stream := NIL;
+      object := src;
+   END CreateSource;
+
+   PROCEDURE ReadSource(s: Streams.Stream;
+                        object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Source DO
+	 RETURN NetIO.ReadString(s, object.filename)
+      END;
+   END ReadSource;
+
+   PROCEDURE WriteSource(s: Streams.Stream;
+                         object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: Source DO
+	 RETURN NetIO.WriteString(s, object.filename)
+      END;
+   END WriteSource;
+
+   (* === Sources interface ========================================== *)
+
+   PROCEDURE StreamTerminationHandler(event: Events.Event);
+      VAR
+	 src: Source;
+	 disc: StreamDiscipline;
+	 ok: BOOLEAN;
+   BEGIN
+      WITH event: Resources.Event DO
+	 IF event.change IN {Resources.unreferenced, Resources.terminated} THEN
+	    ok := Disciplines.Seek(event.resource, sdid, disc); ASSERT(ok);
+	    disc.src.stream := NIL; (* cut it off for GC *)
+	 END;
+      END;
+   END StreamTerminationHandler;
+
+   PROCEDURE Open(source: Sources.Source;
+                  VAR s: Streams.Stream) : BOOLEAN;
+      VAR
+	 disc: StreamDiscipline;
+	 eventType: Events.EventType;
+   BEGIN
+      WITH source: Source DO
+	 IF Resources.Terminated(source) THEN
+	    RETURN FALSE
+	 ELSIF (source.stream = NIL) OR Resources.Terminated(source.stream) THEN
+	    IF ~UnixMappedFiles.Open(source.stream, source.filename,
+				     UnixMappedFiles.read, source) THEN
+	       RETURN FALSE
+	    END;
+	    RelatedEvents.Forward(source.stream, source);
+	    IF ~Streams.Seek(source.stream, 0, Streams.fromEnd) OR
+		  ~Streams.Tell(source.stream, source.length) THEN
+	       Streams.Release(source.stream); source.stream := NIL;
+	       RETURN FALSE
+	    END;
+	    Resources.DependsOn(source.stream, source);
+	    NEW(disc); disc.id := sdid; disc.src := source;
+	    Disciplines.Add(source.stream, disc);
+	    Resources.TakeInterest(source.stream, eventType);
+	    Events.Handler(eventType, StreamTerminationHandler);
+	 END;
+	 RETURN SubStreams.Open(s, source.stream, 0, source.length, source)
+      END;
+   END Open;
+
+   (* === initialization =================================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      NEW(persif);
+      persif.create := CreateSource;
+      persif.read := ReadSource;
+      persif.write := WriteSource;
+      persif.createAndRead := NIL;
+      PersistentObjects.RegisterType(type,
+	 "UnixOberonSources.Source", "CompilerSources.Source", persif);
+
+      NEW(if); if.open := Open;
+
+      sdid := Disciplines.Unique();
+   END Init;
+
+   (* === exported constructor ============================================= *)
+
+   PROCEDURE Create(VAR src: Sources.Source;
+                    filename: ARRAY OF CHAR;
+		    args: Args.Arguments;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 source: Source;
+	 suffix: ARRAY 4 OF CHAR;
+	 statbuf: SysStat.StatRec;
+	 s: Streams.Stream;
+	 token: Lex.Token;
+	 kind: Sources.SourceKind;
+	 srcid: ConstStrings.String;
+	 time: Times.Time;
+
+      PROCEDURE GetSuffix(filename: ARRAY OF CHAR;
+                          VAR suffix: ARRAY OF CHAR);
+	 VAR
+	    index: INTEGER;
+	    dotindex: INTEGER;
+      BEGIN
+	 index := 0; dotindex := -1;
+	 WHILE (index < LEN(filename)) & (filename[index] # 0X) DO
+	    IF filename[index] = "." THEN
+	       dotindex := index;
+	    END;
+	    INC(index);
+	 END;
+	 IF dotindex = -1 THEN
+	    suffix[0] := 0X;
+	 ELSE
+	    INC(dotindex); index := 0;
+	    WHILE (dotindex < LEN(filename)) & (filename[dotindex] # 0X) &
+		  (index + 1 < LEN(suffix)) DO
+	       suffix[index] := filename[dotindex];
+	       INC(index); INC(dotindex);
+	    END;
+	    suffix[index] := 0X;
+	 END;
+      END GetSuffix;
+
+      PROCEDURE GetSy;
+      BEGIN
+	 REPEAT
+	    Lex.GetToken(s, token);
+	 UNTIL token.sy # Lex.comment;
+      END GetSy;
+
+   BEGIN (* Create *)
+      ASSERT(args # NIL);
+      GetSuffix(filename, suffix);
+      IF suffix = "od" THEN
+	 kind := Sources.definition;
+      ELSIF suffix = "om" THEN
+	 kind := Sources.module;
+      ELSIF suffix = "mod" THEN
+	 kind := Sources.defmod;
+      ELSE
+	 Error(errors, invalidSuffix, filename); RETURN FALSE
+      END;
+      IF ~SysStat.Stat(filename, statbuf, errors) THEN
+	 RETURN FALSE
+      END;
+      Times.CreateAndSet(time, Times.absolute, 0, statbuf.mtime, 0);
+
+      CreateSource(source); COPY(filename, source.filename);
+      Sources.Init(source, if);
+      RelatedEvents.Save(source);
+      RelatedEvents.Forward(source, errors);
+      IF ~UnixMappedFiles.Open(s, source.filename,
+			       UnixMappedFiles.read, errors) THEN
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(s, errors);
+
+      GetSy;
+      CASE token.sy OF
+      | Lex.definition: IF kind # Sources.definition THEN
+                           Error(errors, sourceKindConflict, filename);
+			   Resources.Notify(source, Resources.terminated);
+			   RETURN FALSE
+			END;
+      | Lex.module:     IF kind = Sources.definition THEN
+                           Error(errors, sourceKindConflict, filename);
+			   Resources.Notify(source, Resources.terminated);
+			   RETURN FALSE
+                        END;
+      ELSE
+	 Error(errors, noOberonSource, filename);
+	 Resources.Notify(source, Resources.terminated);
+	 RETURN FALSE
+      END;
+      GetSy;
+      IF token.sy # Lex.ident THEN
+	 Error(errors, noModuleName, filename);
+	 Resources.Notify(source, Resources.terminated);
+	 RETURN FALSE
+      END;
+      Streams.SetPos(s, 0);
+      MD5Names.Create(srcid, s);
+      Streams.Release(s);
+      RelatedEvents.Restore(source);
+
+      Sources.CreateHeader(source.header, token.ident, kind, time, srcid, args);
+      src := source;
+      RETURN TRUE
+   END Create;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END UnixOberonSources.

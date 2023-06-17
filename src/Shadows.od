@@ -1,0 +1,81 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Shadows.od,v 1.1 1995/12/12 18:26:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Shadows.od,v $
+   Revision 1.1  1995/12/12  18:26:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Shadows;
+
+   (* invocations - as defined by RemoteObjects - of remote objects are
+      unidirectional; there is no way to forward a message from the
+      exporting object to the proxy objects;
+      this module provides a solution on base of shadow objects:
+      shadow objects are created at all sites which create a proxy object
+      and are exported back to the site which has exported the original
+      object; now we can perform call backs via the proxy objects of
+      the proxy objects;
+
+      note that this mechanism must be supported by the RemoteXXX-module
+      which offers the RemoteObjects service for the object type in
+      question
+   *)
+
+   IMPORT Messages, Services;
+
+   TYPE
+      Shadow = POINTER TO ShadowRec;
+      ShadowRec = RECORD (Services.ObjectRec) END;
+
+   PROCEDURE InitObject(object: Services.Object);
+      (* to be called by the GetParams interface procedure of RemoteObjects *)
+
+   PROCEDURE Create(VAR shadow: Shadow; proxy: Services.Object);
+      (* to be called by the Register interface procedure of RemoteObjects;
+	 the shadow object depends on the proxy object and hence
+	 terminates when the proxy object terminates
+      *)
+
+   PROCEDURE Init(shadow: Shadow; proxy: Services.Object);
+      (* to be called instead of Create if an own extension of
+	 Shadows.Shadow is used
+      *)
+
+   PROCEDURE Send(object: Services.Object; VAR message: Messages.Message);
+      (* may be called on the exporting side to send a message to
+	 all shadow objects;
+	 this is a noop if the given object isn't shadowed
+      *)
+
+   PROCEDURE SendExcept(object: Services.Object; shadow: Shadow;
+			VAR message: Messages.Message);
+      (* send the message to all shadows except to the given one *)
+
+   PROCEDURE GetProxy(shadow: Shadow; VAR proxy: Services.Object);
+      (* returns the proxy object of a shadow *)
+
+   PROCEDURE GetShadow(proxy: Services.Object; VAR shadow: Shadow);
+      (* returns the shadow of a proxy object *)
+
+END Shadows.

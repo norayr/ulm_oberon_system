@@ -1,0 +1,342 @@
+.\" --------------------------------------
+.\" Oberon System Documentation   AFB 8/90
+.\" (c) University of Ulm, SAI, D-7900 Ulm
+.\" --------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH symbolfile 5 "Last change: 18 April 1995" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+symbolfile \- format of an Oberon symbol file
+.SH DESCRIPTION
+Symbol files are generated on successful compilation of Oberon definitions.
+A symbol file contains the export list of a module.
+This includes constants, types, variables, and procedures.
+Any imported module is named but not copied into the symbol file.
+Tables are sequences of binary records.
+Tables of \fIIdentRec\fP,
+\fIParamRec\fP, and \fIFieldRec\fP are preceded by their identifier.
+Identifiers are 0X-terminated sequences of non-null-characters.
+An empty identifier marks the end of a table.
+.PP
+The header consists of a magic number followed by the header structure:
+.Pg
+CONST
+   version = 14;
+   magic = 100AFB00H + version;
+TYPE
+   Header =
+      RECORD
+         nmodules: INTEGER; (* number of modules *)
+         ntypes: INTEGER;   (* number of types *)
+         nidents: INTEGER;  (* number of ident-recs *)
+      END;
+.Pe
+.PP
+The header is followed by the table of modules.
+Every module imported and the compiled definition-module are included.
+Modules are later referred to by their module number.
+Numbering starts at 1
+(module number 0 is reserved for standard names).
+Module number 1 represents the compiled module.
+For every module the identifier and the key are given.
+.Pg
+TYPE
+   Key =
+      RECORD
+         time: SysTypes.Time;    (* of compilation *)
+         pid: Process.ProcessId; (* of compiler *)
+      END;
+.Pe
+.PP
+The next table contains the types.
+Every exported or referenced type record is included.
+Types are optionally followed by field names and parameter lists.
+The number of types is found in the header.
+Because the compiler is written in Modula-2 the records are
+given in Modula-2 syntax:
+.Pg
+TYPE
+   Form = (
+      shortint, int16, integer, longint, real, longreal, (* numeric types *)
+      boolean, char, set, byte,                 (* non-numeric types *)
+      array, record, pointer, proceduretype);   (* structured types *)
+CONST
+   address = longint;
+      (* mark that numeric type which is suited for addresses *)
+
+TYPE
+   VarKind = (paramV, varparamV, copyparamV, noparamV);
+      (* paramV:        call by value; value is copied by calling procedure
+         varparmV:      call by reference; address is pushed on stack
+         copyparamV:    call by value; address is pushed on stack
+         noparamV:      no parameter
+      *)
+TYPE
+   Size = LONGINT;
+   FieldListRec =
+      RECORD
+         id: Identifier;
+         CASE : BOOLEAN OF
+         | TRUE:  typeno: CARDINAL;
+         | FALSE: type: Type;
+         END;
+         offset: Size;
+         link: FieldList;
+         seekpos: OFF; (* used by `SymFile' *)
+      END;
+   ParamListRec =
+      RECORD
+         id: Identifier;        (* for error messages only *)
+         typeno: CARDINAL;
+         varkind: VarKind;      (* anything but noparamV *)
+         offset: Size;          (* 1st parameter has offset 0 *)
+         link: ParamList;
+         seekpos: OFF;          (* used by `SymFile' *)
+      END;
+   TypeRec =
+      RECORD
+         identno: CARDINAL;     (* for SymFile *)
+         refcnt: CARDINAL; (* reference count -- used if ident = NIL *)
+         typeno: CARDINAL; (* used by `SymFile' *)
+         rtypeno: CARDINAL;(* used by `SymRef' *)
+         tagno: CARDINAL;  (* used by `GenTypes' *)
+         containsptr: BOOLEAN; (* type containing pointers? *)
+         size: Size;          (* in bytes *)
+         link: Type;       (* chain of types -- used by `SymFile' *)
+         seekpos: OFF;     (* seek position in symbol file; ident # NIL *)
+         privateparts: BOOLEAN; (* any private parts we don't know about? *)
+         sizemodified: BOOLEAN; (* size modified by SymFile.Update *)
+         CASE form: Form OF
+         | address:   treatAsAddress: BOOLEAN;
+         | array:     CASE dyn: BOOLEAN OF
+                      | FALSE: length: Size;
+                      END;
+                      CASE : BOOLEAN OF
+                      | TRUE:  elementtypeno: CARDINAL;
+                      | FALSE: element: Type;
+                      END;
+         | record:    CASE : BOOLEAN OF
+                      | TRUE:  basetypeno: CARDINAL;
+                      | FALSE: basetype: Type;    (* may be NIL *)
+                      END;
+                      fields: FieldList; (* list of known fields *)
+                      CASE projection: BOOLEAN OF (* hidden parts possible *)
+                      | TRUE: extmod: Ident;   (* quick reference *)
+                              extended: BOOLEAN;
+                      ELSE
+                      END;
+         | pointer:   CASE : BOOLEAN OF
+                      | TRUE:  reftypeno: CARDINAL;
+                      | FALSE: reftype: Type;    (* may be NIL: forward! *)
+                      END;
+                      taggedptr: BOOLEAN; (* IS and WITH legal? *)
+         | proceduretype:
+                      function: BOOLEAN;
+                      CASE std: BOOLEAN OF
+                      | TRUE:  stdproc: StdProc;
+                      | FALSE: param: ParamList;
+                               CASE (* function *) : BOOLEAN OF
+                               | TRUE: CASE : BOOLEAN OF
+                                       | TRUE:  restypeno: CARDINAL;
+                                       | FALSE: restype: Type;
+                                       END;
+                               END;
+                      END;
+         END;
+      END;
+.Pe
+.PP
+Some comments:
+The compiler uses the same data structures during its runtime and
+for symbol files.
+Consequently, not all components are meaningful inside a symbol file.
+Field lists of record types do not include the fields of the base type.
+The component \fItreatAsAddress\fP allows to distinguish between
+traced and untraced \fBLONGINT\fP values.
+.PP
+The final table contains the identifiers.
+Every identifier exported or used (by types) is included.
+References between identifiers and
+types are given by numbers.
+Zero values represent \fBNIL\fP.
+The list of Ident-records is split into two parts
+(separated by a zero-length identifier): export list and other
+identifiers.
+\fIIdentRec\fP's of string constants are followed by their 0X-terminated
+string contents.
+Like type records, ident records are variant records in Modula-2 and must
+be split for Oberon.
+The second part of an \fIIdentRec\fP has a size of 24 bytes.
+.Pg
+TYPE
+   IdentClass = (moduleC, constC, typeC, varC, procedureC, badclass);
+TYPE
+   Symbol = INTEGER;
+   IdentRec =
+      RECORD
+         hidden: HiddenPart;
+         name: Identifier;
+         identno: CARDINAL;             (* used by `SymFile'; >0 if set *)
+         error: BOOLEAN;
+         CASE class: IdentClass OF
+         | badclass:
+         | moduleC:  export: IdentList;
+                     key: Key;
+                     origname: Identifier;      (* original name *)
+                     modid: CARDINAL;   (* used by `SymFile' *)
+         ELSE
+            typeno: CARDINAL;
+            modno: CARDINAL;   (* used by `SymFile' *)
+            exported: BOOLEAN;
+            CASE (* class *) : IdentClass OF
+            | constC:            constval: Constval;
+            | typeC:
+            | varC, procedureC:  plevel: CARDINAL; (* procedure nest level *)
+                                 CASE : IdentClass OF
+                                 | varC:        offset: Size;
+                                                indirect: BOOLEAN;
+                                                CASE varkind: VarKind OF
+                                                | copyparamV:  ptroffset:
+                                                                  Size;
+                                                END;
+                                 | procedureC:  local: IdentList; (* vars *)
+                                                params: IdentList;
+                                                parmoffset: Size;
+                                                varoffset: Size;
+                                                forward: BOOLEAN;
+                                                procno: CARDINAL;
+                                 END;
+            END;
+         END;
+      END;
+.Pe
+.SH BUGS
+The format for symbol files will be changed completely for
+the next major compiler release.
+.\" ---------------------------------------------------------------------------
+.\" $Id: symbolfile.5,v 1.3 1995/04/18 07:50:09 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: symbolfile.5,v $
+.\" Revision 1.3  1995/04/18  07:50:09  borchert
+.\" upgraded to version 14
+.\"
+.\" Revision 1.2  1994/02/17  09:00:37  borchert
+.\" upgraded to version 13
+.\"
+.\" Revision 1.1  1990/08/31  17:02:24  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

@@ -1,0 +1,236 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPUnixDirL.om,v 1.1 2001/05/03 15:54:47 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPUnixDirL.om,v $
+   Revision 1.1  2001/05/03 15:54:47  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPUnixDirLister;
+
+   IMPORT ASCII, Clocks, Dates, Op := Operations, Print, Read, RelatedEvents,
+      ScanDir, Streams, Strings, SysFile, SysStat, SysTypes, Times,
+      UnixDirectories, Write;
+
+   CONST
+      regular = 0; directory = 1; symlink = 2; other = 3;
+
+   PROCEDURE ^ GetFileType(pathname: ARRAY OF CHAR;
+			   VAR ftype: SHORTINT;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+
+   (* === exported procedures ====================================== *)
+
+   PROCEDURE List(s: Streams.Stream;
+		  pathname, relpath, pattern: ARRAY OF CHAR;
+		  long: BOOLEAN;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 ftype: SHORTINT;
+	 dir: Streams.Stream;
+	 now, halfyear, halfyearago: Times.Time;
+	 errorcnt: INTEGER;
+	 entry: UnixDirectories.Entry;
+
+      PROCEDURE GenEntry(filename: ARRAY OF CHAR);
+	 VAR
+	    statbuf: SysStat.StatRec;
+	    ftype: SET;
+	    isDir, isReg, isSymlink: BOOLEAN;
+	    pname: ARRAY 8192 OF CHAR;
+	    linkname: ARRAY 8192 OF CHAR;
+
+	 PROCEDURE PrintDate(mtime: SysTypes.Time);
+	    VAR
+	       time: Times.Time;
+	       info: Dates.InfoRec;
+	       month: ARRAY 4 OF CHAR;
+	 BEGIN
+	    Times.CreateAndSet(time, Times.absolute, 0, mtime, 0);
+	    Dates.Get(time, info);
+	    CASE info.month OF
+	    | Dates.january:     month := "Jan";
+	    | Dates.february:    month := "Feb";
+	    | Dates.march:       month := "Mar";
+	    | Dates.april:       month := "Apr";
+	    | Dates.may:         month := "May";
+	    | Dates.june:        month := "Jun";
+	    | Dates.july:        month := "Jul";
+	    | Dates.august:      month := "Aug";
+	    | Dates.september:   month := "Sep";
+	    | Dates.october:     month := "Oct";
+	    | Dates.november:    month := "Nov";
+	    | Dates.december:    month := "Dec";
+	    END;
+	    Write.StringS(s, month);
+	    Write.IntS(s, info.day, 3);
+	    IF (Op.Compare(time, halfyearago) < 0) OR
+		  (Op.Compare(time, now) > 0) THEN
+	       Write.IntS(s, info.year, 6);
+	    ELSE
+	       Print.S2(s, " %02d:%02d", info.hour, info.minute);
+	    END;
+	 END PrintDate;
+
+	 PROCEDURE PrintFileName(filename: ARRAY OF CHAR);
+	    VAR
+	       index: INTEGER;
+	       ch: CHAR;
+	 BEGIN
+	    index := 0;
+	    WHILE (index < LEN(filename)) & (filename[index] # 0X) DO
+	       ch := filename[index];
+	       IF ch = ASCII.nl THEN
+		  ch := 0X;
+	       END;
+	       Write.CharS(s, ch);
+	       INC(index);
+	    END;
+	 END PrintFileName;
+
+      BEGIN (* GenEntry *)
+	 COPY(pathname, pname);
+	 IF filename # "" THEN
+	    Strings.Concatenate(pname, "/");
+	    Strings.Concatenate(pname, filename);
+	 END;
+	 IF ~SysStat.Lstat(pname, statbuf, errors) THEN RETURN END;
+	 ftype := statbuf.mode * SysStat.type;
+	 isDir := ftype = SysStat.dir;
+	 isReg := ftype = SysStat.reg;
+	 isSymlink := ftype = SysStat.symlink;
+	 IF ~isDir & ~isReg & ~isSymlink THEN RETURN END;
+	 IF long THEN
+	    IF isReg THEN
+	       Write.StringS(s, "-rw-r--r--");
+	    ELSIF isDir THEN
+	       Write.StringS(s, "drwxr-xr-x");
+	    ELSE (* symlinks *)
+	       IF ~SysFile.ReadLink(pname, linkname, errors) THEN RETURN END;
+	       Write.StringS(s, "lrwxrwxrwx");
+	    END;
+	    Print.S3(s, " %3d %d %14d ",
+	       statbuf.nlinks, 0, statbuf.size);
+	    PrintDate(statbuf.mtime);
+	    Write.CharS(s, " ");
+	 END;
+	 IF relpath # "" THEN
+	    PrintFileName(relpath);
+	    IF filename # "" THEN
+	       Write.CharS(s, "/");
+	    END;
+	 END;
+	 IF filename # "" THEN
+	    PrintFileName(filename);
+	 END;
+	 IF isSymlink THEN
+	    Write.StringS(s, " -> ");
+	    PrintFileName(linkname);
+	 END;
+	 Write.LnS(s);
+      END GenEntry;
+
+   BEGIN (* List *)
+      Clocks.GetTime(Clocks.system, now);
+      Times.CreateAndSet(halfyear, Times.relative, 0, 60*60*24*182, 0);
+      Op.Sub3(halfyearago, now, halfyear);
+
+      errorcnt := s.errors;
+      IF ~GetFileType(pathname, ftype, errors) THEN
+	 RETURN FALSE
+      END;
+      IF ftype = directory THEN
+	 IF ~UnixDirectories.Open(dir, pathname, errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF pattern = "" THEN
+	    (* do not show relative path if a directory was given
+	       without any patterns
+	    *)
+	    relpath[0] := 0X;
+	 END;
+	 RelatedEvents.Forward(dir, errors);
+	 WHILE Streams.Read(dir, entry) DO
+	    IF (pattern = "") OR ScanDir.Match(entry.name, pattern) THEN
+	       GenEntry(entry.name);
+	    END;
+	 END;
+	 Streams.Release(dir);
+	 RETURN (dir.errors = 0) & (s.errors = errorcnt)
+      ELSE
+	 ASSERT(relpath # "");
+	 GenEntry("");
+	 RETURN s.errors = errorcnt
+      END;
+   END List;
+
+   PROCEDURE GetFileType(pathname: ARRAY OF CHAR;
+			 VAR ftype: SHORTINT;
+			 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 statbuf: SysStat.StatRec;
+	 type: SET;
+   BEGIN
+      IF ~SysStat.Lstat(pathname, statbuf, errors) THEN RETURN FALSE END;
+      type := statbuf.mode * SysStat.type;
+      IF type = SysStat.dir THEN ftype := directory; RETURN TRUE END;
+      IF type = SysStat.reg THEN ftype := regular; RETURN TRUE END;
+      IF type = SysStat.symlink THEN ftype := symlink; RETURN TRUE END;
+      ftype := other;
+      RETURN TRUE
+   END GetFileType;
+
+   PROCEDURE GetSize(pathname: ARRAY OF CHAR;
+		     VAR size: LONGINT;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 statbuf: SysStat.StatRec;
+   BEGIN
+      IF ~SysStat.Lstat(pathname, statbuf, errors) THEN RETURN FALSE END;
+      IF statbuf.mode * SysStat.reg = {} THEN RETURN FALSE END;
+      size := statbuf.size;
+      RETURN TRUE
+   END GetSize;
+
+   PROCEDURE GetTimestamp(pathname: ARRAY OF CHAR;
+		          VAR timestamp: ARRAY OF CHAR;
+		          errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 statbuf: SysStat.StatRec;
+	 time: Times.Time;
+	 out: Streams.Stream;
+	 info: Dates.InfoRec;
+   BEGIN
+      IF ~SysStat.Lstat(pathname, statbuf, errors) THEN RETURN FALSE END;
+      IF statbuf.mode * SysStat.reg = {} THEN RETURN FALSE END;
+      Times.CreateAndSet(time, Times.absolute, 0, statbuf.mtime, 0);
+      Dates.Get(time, info);
+      timestamp[0] := 0X; Strings.Open(out, timestamp);
+      Print.S6(out, "%04d%02d%02d%02d%02d%02d",
+	 info.year, info.month, info.day,
+	 info.hour, info.minute, info.second);
+      Streams.Release(out);
+      RETURN TRUE
+   END GetTimestamp;
+
+END FTPUnixDirLister.

@@ -1,0 +1,339 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Timezones.om,v 1.4 1999/05/30 10:52:55 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Timezones.om,v $
+   Revision 1.4  1999/05/30 10:52:55  borchert
+   offset definition of manual page and comment in source are now in sync:
+   offset is to be interpreted relative to UTC
+
+   Revision 1.3  1995/01/16  22:15:05  borchert
+   - assertions of Assertions replaced by real assertions
+   - time zones are now an extension of PersistentDisciplines.Object
+   - fixes due to changed if of PersistentObjects
+
+   Revision 1.2  1994/05/03  10:43:14  martin
+   lastChange, nextChange, TYPE Offset added;
+   some name changes; Lookup may be called with at=NIL.
+
+   Revision 1.1  1994/04/05  12:55:36  martin
+   Initial revision
+   ----------------------------------------------------------------------------
+   Martin Hasch, Mar 1994
+   ----------------------------------------------------------------------------
+*)
+(*
+ *	Abstraction for time zones.
+ *	A time zone is a persistent object that can tell how a local
+ *	time differs from universal time (aka Greenwich mean time).
+ *	We want to keep time values uniform around the globe;
+ *	location dependent, however, their interpretation.
+ *)
+MODULE Timezones;
+
+   IMPORT
+      Events, NetIO, Objects, PersistentDisciplines,
+      Persistent := PersistentObjects,
+      SYSTEM(*.TAS*), Scales, Services, Streams, Times;
+
+   TYPE
+      Name = ARRAY 12 OF CHAR;
+      Offset = Scales.Value;
+
+      Timezone = POINTER TO TimezoneRec;
+
+      Glimpse = POINTER TO GlimpseRec;
+      GlimpseRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    name:	Name;		(* identifying time zone & dst mode *)
+	    offset:	Offset;		(* in seconds relative to UTC *)
+	    isDst:	BOOLEAN;	(* daylight saving time in effect *)
+	    lastChange,			(* times of previous and next change,*)
+	    nextChange: Times.Time;	(* if determinable, otherwise NIL *)
+	 END;
+
+      LookupProc =
+	 PROCEDURE (tz: Timezone; at: Times.Time; VAR glimpse: GlimpseRec);
+
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    unsteady:	BOOLEAN;	(* if TRUE, name and offset can vary *)
+	    lookup:	LookupProc;	(* ... and lookup will be needed     *)
+	    stdGlimpse: Glimpse;	(* consulted if time is not relevant *)
+	 END;
+
+      InitProc = PROCEDURE (tz: Timezone) : Interface; (* must not fail *)
+
+      TimezoneRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    baseName:	Name;		(* identifying time zone *)
+	    (* private components: *)
+	    if:		Interface;
+	    init:	InitProc;	(* # NIL until called *)
+	    lock:	BOOLEAN;	(* prevent recursion *)
+	 END;
+
+      FindProc =
+	 PROCEDURE (name: ARRAY OF CHAR;
+		     VAR tz: Timezone; VAR glimpse: GlimpseRec) : BOOLEAN;
+
+      FindList = POINTER TO FindListRec;
+      FindListRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    find: FindProc;
+	    next: FindList;
+	 END;
+
+   VAR
+      utc,				(* universal time (GMT), "readonly" *)
+      local: Timezone;			(* can be reset by the system *)
+      findList: FindList;		(* list of declared find procedures *)
+      utcPriv: Timezone;		(* unchangeable copy of utc *)
+      utcType: Services.Type;
+
+   (*
+    * Init or DelayInit must be called by any tz constructor.
+    * In the latter case, init will be called later to supply the
+    * interface when access to tz is needed for the first time.
+    * If stdGlimpse is provided, lookup will never be called with
+    * at = NIL.
+    *)
+   PROCEDURE Init(tz: Timezone; if: Interface);
+   BEGIN
+      IF if.unsteady THEN
+	 ASSERT(if.lookup # NIL);
+      ELSE
+	 ASSERT(if.stdGlimpse # NIL);
+      END;
+      tz.if := if;
+      tz.init := NIL;
+      tz.lock := FALSE;
+   END Init;
+
+   PROCEDURE DelayInit(tz: Timezone; init: InitProc);
+   BEGIN
+      ASSERT(init # NIL);
+      tz.if := NIL;
+      tz.init := init;
+      tz.lock := FALSE;
+   END DelayInit;
+
+   PROCEDURE InitNow(tz: Timezone);
+   BEGIN
+      ASSERT(~SYSTEM.TAS(tz.lock)); (* recursion loop *)
+      Init(tz, tz.init(tz));
+   END InitNow;
+
+   (* -------- timezone access procedures -------- *)
+
+   PROCEDURE GetOffset(tz: Timezone; at: Times.Time) : Offset;
+      (* supplies basic offset if at = NIL *)
+      VAR
+	 glimpse: GlimpseRec;
+   BEGIN
+      IF tz.init # NIL THEN
+	 InitNow(tz);
+      END;
+      IF tz.if.unsteady & ((at # NIL) OR (tz.if.stdGlimpse = NIL)) THEN
+	 ASSERT(~SYSTEM.TAS(tz.lock)); (* recursion loop *)
+	 tz.if.lookup(tz, at, glimpse);
+	 tz.lock := FALSE;
+	 RETURN glimpse.offset
+      ELSE
+	 RETURN tz.if.stdGlimpse.offset
+      END;
+   END GetOffset;
+
+   PROCEDURE Unsteady(tz: Timezone) : BOOLEAN;
+   BEGIN
+      IF tz.init # NIL THEN
+	 InitNow(tz);
+      END;
+      RETURN tz.if.unsteady
+   END Unsteady;
+
+   PROCEDURE Lookup(tz: Timezone; at: Times.Time; VAR glimpse: GlimpseRec);
+      (*
+       * works for steady timezones as well as for unsteady ones;
+       * supplies basic glimpse if at = NIL
+       *)
+   BEGIN
+      IF tz.init # NIL THEN
+	 InitNow(tz);
+      END;
+      IF tz.if.unsteady & ((at # NIL) OR (tz.if.stdGlimpse = NIL)) THEN
+	 ASSERT(~SYSTEM.TAS(tz.lock)); (* recursion loop *)
+	 tz.if.lookup(tz, at, glimpse);
+	 tz.lock := FALSE;
+      ELSE
+	 glimpse := tz.if.stdGlimpse^;
+      END;
+   END Lookup;
+
+   PROCEDURE FindOffset(name: ARRAY OF CHAR; VAR offset: Offset) : BOOLEAN;
+      VAR
+	 tz: Timezone;
+	 glimpse: GlimpseRec;
+	 felem: FindList;
+   BEGIN
+      felem := findList;
+      WHILE felem # NIL DO
+	 IF felem.find(name, tz, glimpse) THEN
+	    offset := glimpse.offset;
+	    RETURN TRUE
+	 END;
+	 felem := felem.next;
+      END; (*WHILE felem*)
+      RETURN FALSE
+   END FindOffset;
+
+   PROCEDURE Find(name: ARRAY OF CHAR;
+		  VAR tz: Timezone; VAR glimpse: GlimpseRec) : BOOLEAN;
+      VAR
+	 felem: FindList;
+   BEGIN
+      felem := findList;
+      WHILE felem # NIL DO
+	 IF felem.find(name, tz, glimpse) THEN
+	    RETURN TRUE
+	 END;
+	 felem := felem.next;
+      END; (*WHILE felem*)
+      RETURN FALSE
+   END Find;
+
+   (* -------- procedures for timezone implementors -------- *)
+
+   PROCEDURE Declare(find: FindProc);
+      (* last declared = first called *)
+      VAR
+	 felem: FindList;
+   BEGIN
+      ASSERT(find # NIL);
+      NEW(felem);
+      felem.find := find;
+      felem.next := findList;
+      findList := felem;
+   END Declare;
+
+   (* -------- trivial (universal time) implementation -------- *)
+
+   PROCEDURE UtcCreate(VAR o: Persistent.Object);
+      VAR tz: Timezone;
+   BEGIN
+      NEW(tz);
+      (* tz.baseName will be taken care of elsewhere *)
+      Init(tz, utcPriv.if);
+      Persistent.Init(tz, utcType);
+      o := tz;
+   END UtcCreate;
+
+   PROCEDURE UtcFind(name: ARRAY OF CHAR;
+		     VAR tz: Timezone; VAR glimpse: GlimpseRec) : BOOLEAN;
+   BEGIN
+      IF name = utcPriv.if.stdGlimpse.name THEN
+	 tz := utcPriv;
+	 glimpse := utcPriv.if.stdGlimpse^;
+	 RETURN TRUE
+      END;
+      RETURN FALSE
+   END UtcFind;
+
+   PROCEDURE UtcInit;
+      VAR
+	 face: Persistent.Interface;
+	 utcIf: Interface;
+	 glimpse: Glimpse;
+   BEGIN
+      NEW(face);
+      face.create := UtcCreate;
+      face.read := NIL; face.write := NIL; face.createAndRead := NIL;
+      Persistent.RegisterType(utcType, "Timezones.Utc", "Timezones.Timezone",
+	 face);
+      NEW(glimpse);
+      glimpse.name := "GMT";
+      glimpse.offset := 0;
+      glimpse.isDst := FALSE;
+      glimpse.lastChange := NIL;
+      glimpse.nextChange := NIL;
+      NEW(utcIf);
+      utcIf.unsteady := FALSE;
+      utcIf.lookup := NIL;
+      utcIf.stdGlimpse := glimpse;
+      NEW(utcPriv);
+      COPY(glimpse.name, utcPriv.baseName);
+      Init(utcPriv, utcIf);
+      Persistent.Init(utcPriv, utcType);
+      Declare(UtcFind);
+   END UtcInit;
+
+   (* -------- persistency -------- *)
+
+   PROCEDURE TzRead(s: Streams.Stream; tz: Persistent.Object) : BOOLEAN;
+   BEGIN
+      WITH tz: Timezone DO
+	 RETURN NetIO.ReadString(s, tz.baseName)
+      END;
+   END TzRead;
+
+   PROCEDURE TzWrite(s: Streams.Stream; tz: Persistent.Object) : BOOLEAN;
+   BEGIN
+      WITH tz: Timezone DO
+	 IF tz.init # NIL THEN
+	    InitNow(tz);
+	 END;
+	 RETURN NetIO.WriteString(s, tz.baseName)
+      END;
+   END TzWrite;
+
+   (* -------- initializations -------- *)
+
+   PROCEDURE TimezonesInit;
+      VAR
+	 face: Persistent.Interface;
+	 tzType: Services.Type;
+   BEGIN
+      findList := NIL;
+
+      (*
+       * arrange for unknown timezone implementations to be mapped
+       * to universal time on input, if projection was allowed
+       *)
+      NEW(face);
+      face.read := TzRead;
+      face.write := TzWrite;
+      face.create := UtcCreate;
+      face.createAndRead := NIL;
+      Persistent.RegisterType(tzType,
+	 "Timezones.Timezone", "PersistentDisciplines.Object", face);
+
+      UtcInit;
+      utc := utcPriv;
+      local := utcPriv;
+   END TimezonesInit;
+
+BEGIN
+   TimezonesInit;
+END Timezones.

@@ -1,0 +1,177 @@
+(* Ulm's Oberon Compiler
+   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   This file is part of Ulm's Oberon Compiler.
+
+   Ulm's Oberon Compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 1, or
+   (at your option) any later version.
+
+   Ulm's Oberon Compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Ulm's Compiler Toolkit; see the file COPYING.  If not,
+   write to the Free Software Foundation, 675 Mass Ave, Cambridge, MA
+   02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE OberonDependencies;
+
+   IMPORT Architectures, Args := UnixArguments, BoolArgs, CDB,
+      CompilerDatabases, CompilerErrors, CompilerKeys, CompilerObjects,
+      Conclusions, ConstStrings, Errors, GenArgs := Args, IntArgs, Iterators,
+      Names, OberonBuiltIns, OberonLex, OberonSymbols, PersistentObjects,
+      PersistentTexts, Print, PrivateShards, Process, RelatedEvents,
+      RemoteCDBNames, RemoteIterators, RemoteNames, Services, Shards,
+      Sources := CompilerSources, Storage, StreamDisciplines, Streams,
+      StringArgs, StrListArgs, UnixFiles, UnixNames, Write;
+
+   CONST
+      language = "oberon";
+
+   VAR
+      intensity: INTEGER;
+      errors: RelatedEvents.Object;
+
+      db: CompilerDatabases.Database;
+      authfile, basedir: ARRAY 512 OF CHAR;
+      modname: ConstStrings.String;
+      auth: Shards.Lid;
+      type: CompilerObjects.ObjectType;
+      arch: Architectures.Architecture;
+
+      it: Iterators.Iterator;
+      keys: CompilerKeys.Set;
+      header: CompilerObjects.Header;
+      text: PersistentTexts.Text;
+      key: CompilerKeys.Key;
+
+      lidType: Services.Type;
+
+   PROCEDURE CreateLid(VAR lid: Shards.Lid; filename: ARRAY OF CHAR);
+      VAR
+	 s: Streams.Stream;
+   BEGIN
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+			 errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      RelatedEvents.Forward(s, errors);
+      IF ~PersistentObjects.GuardedRead(s, lidType, lid) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, filename);
+      END;
+   END CreateLid;
+
+   PROCEDURE ProcessArguments;
+      VAR
+	 flag: CHAR;
+	 filename: ARRAY 512 OF CHAR;
+	 archstring: ARRAY 80 OF CHAR;
+	 archcstring: ConstStrings.String;
+
+   BEGIN (* ProcessArguments *)
+      basedir := "/pub/cdb";
+      type := CompilerObjects.public;
+      arch := NIL;
+      Args.Init("[-a auth] [-b basedir] [-A arch] [-D|-M] modname");
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "a": Args.FetchString(filename); CreateLid(auth, filename);
+	 | "b": Args.FetchString(basedir);
+	 | "D": type := CompilerObjects.public;
+	 | "M": type := CompilerObjects.private;
+	 | "A": Args.FetchString(archstring);
+	        ConstStrings.Create(archcstring, archstring);
+		Architectures.GetArch(archcstring, arch);
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.FetchString(filename); Args.AllArgs;
+      ConstStrings.Create(modname, filename);
+   END ProcessArguments;
+
+   PROCEDURE WriteKey(key: CompilerKeys.Key);
+      VAR
+	 string: ConstStrings.String;
+
+      PROCEDURE WriteValue(val: CompilerKeys.Value);
+	 VAR
+	    string: ConstStrings.String;
+      BEGIN
+	 CompilerKeys.ValueToString(val, string);
+	 ConstStrings.Write(Streams.stdout, string);
+      END WriteValue;
+
+   BEGIN
+      Write.Indent;
+      ConstStrings.Write(Streams.stdout, key.modname);
+      Write.Line(":");
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      Write.Indent; Write.String("defsrcid: ");
+      ConstStrings.Write(Streams.stdout, key.defsrcid); Write.Ln;
+      IF key.modsrcid # NIL THEN
+	 Write.Indent; Write.String("modsrcid: ");
+	 ConstStrings.Write(Streams.stdout, key.modsrcid); Write.Ln;
+      END;
+      Write.Indent; Write.String("genkey: "); WriteValue(key.genkey); Write.Ln;
+      IF key.arch # NIL THEN
+	 Write.Indent;
+	 Write.String("arch: ");
+	 Architectures.GetString(key.arch, string);
+	 ConstStrings.Write(Streams.stdout, string); Write.Ln;
+	 Write.Indent;
+	 Write.String("archkey: ");
+	 WriteValue(key.archkey); Write.Ln;
+      END;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+   END WriteKey;
+
+BEGIN
+   intensity := Storage.Intensity(4);
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   Services.SeekType("Shards.Lid", lidType);
+
+   ProcessArguments;
+
+   IF ~CDB.Open(db, basedir, language, auth, errors) THEN
+      Conclusions.Conclude(errors, Errors.fatal, "");
+   END;
+   RelatedEvents.Forward(db, errors);
+
+   CompilerKeys.CreateSet(keys);
+   IF CompilerDatabases.Lookup(db, modname, type, arch, keys,
+                               header, text, errors) THEN
+      Write.String("module name = ");
+      ConstStrings.Write(Streams.stdout, header.modname); Write.Ln;
+      Write.String("src id = ");
+      ConstStrings.Write(Streams.stdout, header.srcid); Write.Ln;
+      Write.String("key = "); Write.Ln;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      WriteKey(header.key);
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+
+      Write.Line("dependencies");
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, 3);
+      CompilerKeys.GetKeys(header.dependencies, it);
+      WHILE Iterators.Get(it, key) DO
+	 WriteKey(key);
+      END;
+      StreamDisciplines.IncrIndentationWidth(Streams.stdout, -3);
+   END;
+   IF RelatedEvents.EventsPending(errors) THEN
+      Conclusions.Conclude(errors, Errors.error, "");
+   END;
+   Process.Exit(Process.indicateSuccess);
+END OberonDependencies.

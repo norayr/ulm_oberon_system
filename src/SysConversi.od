@@ -1,0 +1,155 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysConversi.od,v 1.1 1994/02/23 07:58:23 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysConversi.od,v $
+   Revision 1.1  1994/02/23  07:58:23  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysConversions;
+
+   (* convert Oberon records to/from C structures *)
+
+   IMPORT Events, Objects, SysTypes;
+
+   TYPE
+      Address = SysTypes.Address;
+      Size = Address;
+
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    format: Events.Message;
+	 END;
+
+      Format = POINTER TO FormatRec;
+      FormatRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	 END;
+
+   VAR
+      badformat: Events.EventType;
+      (* badformat is raised in case of syntax errors in formats *)
+
+   (* format:
+
+      Format = Conversion { "/" Conversion } .
+      Conversion = [ Factors ] ConvChars [ Comment ] .
+      Factors = Array | Factor | Array Factor | Factor Array .
+      Array = Integer ":" .
+      Factor = Integer "*" .
+      ConvChars = OberonType CType | Skip CType | OberonType Skip .
+      OberonType = "a" | "b" | "c" | "s" | "i" | "l" | "S" .
+      CType = "a" | "c" | "s" | "i" | "l" .
+      Integer = Digit { Digit } .
+      Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" .
+      Skip = "-" .
+      Comment = "=" { AnyChar } .
+      AnyChar = (* all characters except "/" *) .
+
+      Oberon data types:
+
+      a: Address
+      b: BYTE
+      B: BOOLEAN
+      c: CHAR
+      s: SHORTINT
+      i: INTEGER
+      l: LONGINT
+      S: SET
+
+      C data types:
+
+      a: char *
+      c: /* signed */ char
+      C: unsigned char
+      s: short int
+      S: unsigned short int
+      i: int
+      I: unsigned int
+      u: unsigned int
+      l: long int
+      L: unsigned long int
+
+      example:
+
+      conversion from
+
+	 Rec =
+	    RECORD
+	       a, b: INTEGER;
+	       c: CHAR;
+	       s: SET;
+	       f: ARRAY 3 OF INTEGER;
+	    END;
+
+      to
+
+	 struct rec {
+	    short a, b;
+	    char c;
+	    int xx;	/* to be skipped on conversion */
+	    int s;
+	    int f[3];
+	 };
+
+      or vice versa:
+
+	 "2*is=a,b/cc=c/-i=xx/Si=s/3:ii=f"
+
+      The comments allow to give the field names.
+   *)
+
+   PROCEDURE ByAddrToC(from, to: Address; format: ARRAY OF CHAR);
+
+   PROCEDURE ByAddrFromC(from, to: Address; format: ARRAY OF CHAR);
+
+   PROCEDURE ToC(VAR from, to: ARRAY OF BYTE; format: ARRAY OF CHAR);
+
+   PROCEDURE FromC(VAR from, to: ARRAY OF BYTE; format: ARRAY OF CHAR);
+
+   PROCEDURE CSize(format: ARRAY OF CHAR) : Size;
+      (* returns the size of the C-structure described by `format' *)
+
+   PROCEDURE OberonSize(format: ARRAY OF CHAR) : Size;
+      (* returns the size of the Oberon-structure described by `format' *)
+
+   PROCEDURE Compile(VAR fmt: Format; format: ARRAY OF CHAR);
+      (* translate format into an internal representation
+	 which is later referenced by fmt;
+	 ByFmtToC and ByFmtFromC are faster than ToC and FromC
+      *)
+
+   PROCEDURE ByFmtAndAddrToC(from, to: Address; format: Format);
+
+   PROCEDURE ByFmtAndAddrFromC(from, to: Address; format: Format);
+
+   PROCEDURE ByFmtToC(VAR from, to: ARRAY OF BYTE; format: Format);
+
+   PROCEDURE ByFmtFromC(VAR from, to: ARRAY OF BYTE; format: Format);
+
+END SysConversions.

@@ -1,0 +1,432 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixArgumen.om,v 1.2 1995/01/04 16:54:54 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixArgumen.om,v $
+   Revision 1.2  1995/01/04 16:54:54  borchert
+   support of Services added
+
+   Revision 1.1  1994/02/23  07:26:40  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   (* Oberon Library - UNIX System V - MH,AFB 9/89 *)
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixArguments;
+
+   (* This module reads options and other arguments from the command
+      line. An argument "-" or "--" stops option reading. "-", how-
+      ever, will be delivered as argument then, whereas "--" will not.
+   *)
+
+   IMPORT Process, Read, Services, Streams, Strings, SysArgs, Texts, Write;
+
+   CONST
+      firstlen = 4;
+
+   TYPE
+      Stream = Streams.Stream;
+      Argument = POINTER TO ArgumentRec;
+      ArgumentRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    argindex,		(* read from SysArgs.argv[argindex] *)
+	    index,
+	    len: LONGINT;
+	    first: ARRAY firstlen OF CHAR; (* first characters of argument *)
+	 END;
+
+   VAR
+      usagecode: INTEGER;	(* exit code of Usage *)
+      usageString: Texts.Text;
+      argindex: LONGINT;	(* current argument *)
+      lastarg: LONGINT;		(* index of last argument *)
+      argument: Argument;
+      argif: Streams.Interface;
+      argcaps: Streams.CapabilitySet;
+      argtype: Services.Type; (* UnixArguments.Argument *)
+      next: BOOLEAN;		(* call NextArg *)
+
+   (* === Streams interface procedures =============================== *)
+
+   PROCEDURE ReadChar(s: Stream; VAR byte: BYTE) : BOOLEAN;
+      VAR
+	 ch: CHAR;
+   BEGIN
+      WITH s: Argument DO
+	 ch := SysArgs.argv[s.argindex][s.index];
+	 IF ch = 0X THEN RETURN FALSE END;
+	 byte := ch;
+	 INC(s.index);
+	 RETURN TRUE
+      END;
+   END ReadChar;
+
+   PROCEDURE Tell(s: Stream; VAR pos: Streams.Count) : BOOLEAN;
+   BEGIN
+      WITH s: Argument DO
+	 pos := s.index;
+      END;
+      RETURN TRUE
+   END Tell;
+
+   PROCEDURE Seek(s: Stream;
+		  pos: Streams.Count; whence: Streams.Whence) : BOOLEAN;
+      VAR
+	 seekpos: Streams.Count;
+   BEGIN
+      WITH s: Argument DO
+	 CASE whence OF
+	 | Streams.fromStart: seekpos := pos;
+	 | Streams.fromPos:   seekpos := pos + s.index;
+	 | Streams.fromEnd:   seekpos := s.len + pos;
+	 ELSE
+	    RETURN FALSE
+	 END;
+	 IF (seekpos >= 0) & (seekpos <= s.len) THEN
+	    s.index := seekpos;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END Seek;
+
+   PROCEDURE Open(VAR arg: Streams.Stream; index: LONGINT) : BOOLEAN;
+      VAR
+	 len: LONGINT;
+	 i: INTEGER;
+	 new: Argument;
+   BEGIN
+      IF (SysArgs.argv # NIL) & (index < SysArgs.argc) THEN
+	 NEW(new);
+	 Services.Init(new, argtype);
+	 Streams.Init(new, argif, argcaps, Streams.onebuf); arg := new;
+	 WITH arg: Argument DO
+	    arg.argindex := index;
+	    arg.index := 0;
+	    len := 0;
+	    WHILE SysArgs.argv[index][len] # 0X DO
+	       INC(len);
+	    END;
+	    arg.len := len;
+	    i := 0;
+	    WHILE (i+1 < firstlen) & (i < len) DO
+	       arg.first[i] := SysArgs.argv[index][i];
+	       INC(i);
+	    END;
+	    arg.first[i] := 0X;
+	 END;
+	 RETURN TRUE
+      ELSE
+	 RETURN FALSE
+      END;
+   END Open;
+
+   PROCEDURE NextArg;
+   BEGIN
+      IF argument # NIL THEN
+	 Streams.Release(argument);
+      END;
+      INC(argindex);
+      IF ~Open(argument, argindex) THEN
+	 argument := NIL;
+      END;
+      next := FALSE;
+   END NextArg;
+
+   (* === exported procedures ======================================== *)
+
+   PROCEDURE Init(infostring: ARRAY OF CHAR);
+      (* specifies infostring and (re)starts the reading cyclus *)
+      VAR
+	 cmdname: Argument;
+	 ch: CHAR;
+   BEGIN
+      argument := NIL;
+      lastarg := SysArgs.argc - 1;
+      IF (usageString = NIL) OR
+	 ~Streams.Seek(usageString, 0, Streams.fromStart) OR
+	 ~Streams.Trunc(usageString, 0) THEN
+	 Texts.Open(usageString);
+      END;
+      Write.StringS(usageString, "Usage: ");
+      IF Open(cmdname, 0) THEN
+	 WHILE Streams.Read(cmdname, ch) DO
+	    Write.CharS(usageString, ch);
+	 END;
+	 IF ~Streams.Close(cmdname) THEN END;
+	 Write.CharS(usageString, " ");
+      END;
+      Write.LineS(usageString, infostring);
+      argindex := 0;
+      NextArg;
+   END Init;
+
+   PROCEDURE Usage;
+      (* prints 'Usage: command infostring' on stderr and aborts
+	 program execution. FetchString, FetchCard and FetchInt call
+	 this procedure automatically in case of errors.
+      *)
+      VAR
+	 ch: CHAR;
+   BEGIN
+      Streams.SetPos(usageString, 0);
+      WHILE Streams.Read(usageString, ch) & Streams.Write(Streams.stderr, ch) DO
+      END;
+      Process.Exit(usagecode);
+   END Usage;
+
+   PROCEDURE GetFlagOrOption(VAR flag: CHAR;
+			     option: BOOLEAN; VAR plus: BOOLEAN) : BOOLEAN;
+      (* tries to read one flag, i.e. a character within a string containing
+	 a leading "-",from the argument list and returns TRUE if successful.
+      *)
+      VAR
+	 pos: Streams.Count;
+	 ch: CHAR;
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF (argument = NIL) OR
+	 (argument.first[0] # "-") & (~option OR (argument.first[0] # "+")) OR
+	 (argument.first[1] = 0X) THEN
+	 RETURN FALSE
+      END;
+      (* argument.len >= 2 *)
+      Streams.GetPos(argument, pos);
+      IF pos = 0 THEN
+	 IF argument.first = "--" THEN
+	    NextArg;
+	    RETURN FALSE
+	 END;
+	 Read.CharS(argument, ch); (* "-" or "+" *)
+	 INC(pos);
+      END;
+      IF option THEN
+	 plus := argument.first[0] = "+";
+      END;
+      Read.CharS(argument, flag); INC(pos);
+      IF pos = argument.len THEN
+	 NextArg;
+      END;
+      RETURN TRUE
+   END GetFlagOrOption;
+
+   PROCEDURE GetFlag(VAR flag: CHAR) : BOOLEAN;
+      (* tries to read one flag, i.e. a character within a string containing
+	 a leading "-",from the argument list and returns TRUE if successful.
+      *)
+      VAR
+	 dummy: BOOLEAN;
+   BEGIN
+      RETURN GetFlagOrOption(flag, (* option = *) FALSE, dummy)
+   END GetFlag;
+
+   PROCEDURE GetOpt(VAR flag: CHAR; VAR plus: BOOLEAN) : BOOLEAN;
+      (* reads one character within a string starting in "+" or "-". *)
+      VAR
+	 start: CHAR;
+   BEGIN
+      RETURN GetFlagOrOption(flag, (* option = *) TRUE, plus)
+   END GetOpt;
+
+   PROCEDURE Fetch(VAR arg: Streams.Stream);
+      (* opens `arg' to read data from the argument list;
+	 `arg' is closed automatically
+      *)
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument = NIL THEN
+	 Usage;
+      END;
+      arg := argument;
+      next := TRUE;
+   END Fetch;
+
+   PROCEDURE FetchString(VAR string: ARRAY OF CHAR);
+      (* store data from argument list into `string' *)
+      VAR
+	 index: LONGINT;
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument = NIL THEN
+	 Usage;
+      END;
+      index := 0;
+      WHILE (index+1 < LEN(string)) &
+	    Streams.Read(argument, string[index]) DO
+	 INC(index);
+      END;
+      string[index] := 0X;
+      NextArg;
+   END FetchString;
+
+   PROCEDURE GetArg(VAR string: ARRAY OF CHAR) : BOOLEAN;
+      (* reads one argument or returns FALSE if all are read. *)
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 FetchString(string);
+	 RETURN TRUE
+      END;
+   END GetArg;
+
+   PROCEDURE OpenArg(VAR arg: Streams.Stream) : BOOLEAN;
+      (* opens `arg' to read one argument;
+	 `arg' is closed automatically
+	 return FALSE if all are read
+      *)
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument = NIL THEN
+	 RETURN FALSE
+      ELSE
+	 arg := argument;
+	 next := TRUE;
+	 RETURN TRUE
+      END;
+   END OpenArg;
+
+   PROCEDURE UngetArg;
+      (* pushes the argument that has been read just before
+	 back to the argument list.
+      *)
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument = NIL THEN
+	 IF lastarg >= 1 THEN
+	    argindex := lastarg-1;
+	 ELSE
+	    argindex := 0;
+	 END;
+      ELSIF argument.index > 0 THEN
+	 DEC(argindex);
+      ELSIF argindex >= 2 THEN
+	 DEC(argindex, 2);
+      ELSE
+	 argindex := 0;
+      END;
+      NextArg;
+   END UngetArg;
+
+   PROCEDURE UngetOpt;
+      (* pushes the flag or option that has been read just before
+	 back to the argument list.
+      *)
+      VAR
+	 pos: Streams.Count;
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF (argument = NIL) OR ~Streams.Tell(argument, pos) OR (pos = 0) THEN
+	 UngetArg;
+	 IF argument # NIL THEN
+	    IF ~Streams.Seek(argument, -1, Streams.fromEnd) THEN END;
+	 END;
+      ELSE
+	 IF ~Streams.Back(argument) THEN END;
+      END;
+   END UngetOpt;
+
+   PROCEDURE AllArgs;
+      (* calls `Usage' if any arguments are not read yet *)
+   BEGIN
+      IF next THEN
+	 NextArg;
+      END;
+      IF argument # NIL THEN
+	 Usage;
+      END;
+   END AllArgs;
+
+   PROCEDURE GetCommandName(VAR name: ARRAY OF CHAR);
+      (* return basename of the first argument *)
+      VAR
+	 index: INTEGER;
+	 slash: INTEGER;
+	 destindex: INTEGER;
+   BEGIN
+      IF (SysArgs.argc > 0) & (SysArgs.argv # NIL) THEN
+	 slash := -1;
+	 index := 0;
+	 WHILE SysArgs.argv[0][index] # 0X DO
+	    IF SysArgs.argv[0][index] = "/" THEN
+	       slash := index;
+	    END;
+	    INC(index);
+	 END;
+	 IF slash >= 0 THEN
+	    index := slash + 1;
+	 ELSE
+	    index := 0;
+	 END;
+	 destindex := 0;
+	 WHILE (destindex+1 < LEN(name)) & (SysArgs.argv[0][index] # 0X) DO
+	    name[destindex] := SysArgs.argv[0][index];
+	    INC(index); INC(destindex);
+	 END;
+	 name[destindex] := 0X;
+      ELSE
+	 name[0] := 0X;
+      END;
+   END GetCommandName;
+
+   PROCEDURE GetPathName(VAR path: ARRAY OF CHAR);
+      (* return the first argument *)
+      VAR
+	 index: INTEGER;
+   BEGIN
+      IF (SysArgs.argc > 0) & (SysArgs.argv # NIL) THEN
+	 index := 0;
+	 WHILE (index+1 < LEN(path)) & (SysArgs.argv[0][index] # 0X) DO
+	    path[index] := SysArgs.argv[0][index];
+	    INC(index);
+	 END;
+	 path[index] := 0X;
+      ELSE
+	 path[0] := 0X;
+      END;
+   END GetPathName;
+
+BEGIN
+   NEW(argif); argif.read := ReadChar; argif.tell := Tell; argif.seek := Seek;
+   argcaps := {Streams.read, Streams.seek, Streams.tell};
+   Services.CreateType(argtype, "UnixArguments.Argument", "Streams.Stream");
+   usagecode := Process.indicateFailure;
+   usageString := NIL;
+   Init("");
+END UnixArguments.

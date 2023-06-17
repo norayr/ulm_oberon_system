@@ -1,0 +1,262 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PersistentNameServer;
+
+   IMPORT Args := UnixArguments, Conclusions, Containers, DNSRecords,
+      DNSResolvers, DNSStdResolvers, Errors, Events, InetTCP, IPv4Addresses,
+      Iterators, Loader, LoaderErrors, NamedObjects, Names, NamesBootService,
+      Networks, PasswordShards, PersistentNodes, PersistentObjects,
+      PrivateShards, Process, Read, RelatedEvents, RemoteCDBNames,
+      RemoteEvents, RemoteNames, RemoteObjects, Resources, Services, Shards,
+      StandardContainers, Storage, Streams, Strings, SYS := SYSTEM, SysMain,
+      SysSignals, TransStreams, UnixFiles, VolatileShards, Write;
+
+   TYPE
+      ListOfAddresses = POINTER TO ListOfAddressesRec;
+      ListOfAddressesRec =
+	 RECORD
+	    address: Networks.Address;
+	    next: ListOfAddresses;
+	 END;
+   VAR
+      bootAddresses: ListOfAddresses;
+      dbfile: ARRAY 512 OF CHAR;
+      root: Names.Node;
+      potType: Services.Type;
+      pot: Shards.Pot;
+      termination: BOOLEAN;
+      verbose: BOOLEAN;
+      rootEventType: Events.EventType;
+      intensity: INTEGER;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors);
+      RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE StartBootServices;
+      VAR
+	 list: ListOfAddresses;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      list := bootAddresses;
+      WHILE list # NIL DO
+	 IF ~NamesBootService.Export(list.address, root, errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 list := list.next;
+      END;
+   END StartBootServices;
+
+   PROCEDURE SetupRoot(VAR root: Names.Node; dbfile: ARRAY OF CHAR);
+      VAR
+	 errors: RelatedEvents.Object;
+	 s, ts: Streams.Stream;
+	 container: Containers.Container;
+	 new: BOOLEAN;
+	 accessmode: Names.AccessMode;
+	 permissions: Names.Permissions;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF UnixFiles.Open(s, dbfile, UnixFiles.rdwr, Streams.nobuf,
+	    errors) THEN
+	 new := FALSE;
+      ELSIF UnixFiles.Open(s, dbfile, UnixFiles.rdwr + UnixFiles.create,
+	       Streams.nobuf, errors) THEN
+	 new := TRUE;
+      ELSE
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF ~TransStreams.Open(ts, s, TransStreams.standard, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF ~StandardContainers.Open(container, ts,
+	    (* auto = *) FALSE, errors) THEN
+	 Conclusions.Conclude(errors, Errors.fatal, "");
+      END;
+      IF new THEN
+	 accessmode := 0;
+	 WHILE accessmode < Names.accessmodes DO
+	    permissions[accessmode] := pot;
+	    INC(accessmode);
+	 END;
+	 IF ~PersistentNodes.Init(container, permissions) THEN
+	    Conclusions.Conclude(container, Errors.fatal, "");
+	 END;
+      END;
+      IF ~PersistentNodes.Open(root, container) THEN
+	 Conclusions.Conclude(container, Errors.fatal, "");
+      END;
+   END SetupRoot;
+
+   PROCEDURE ProcessArgs;
+      VAR
+	 flag: CHAR;
+	 hostname: DNSRecords.Name;
+	 args: Streams.Stream;
+	 portnum: IPv4Addresses.PortNumber;
+	 port: INTEGER;
+	 addresses: DNSResolvers.IPv4AddressList;
+	 errors: RelatedEvents.Object;
+	 s: Streams.Stream;
+	 ipaddr: IPv4Addresses.Address;
+	 filename: ARRAY 512 OF CHAR;
+
+      PROCEDURE AddIPv4(VAR list: ListOfAddresses;
+                        ipaddr: IPv4Addresses.Address;
+			portnum: IPv4Addresses.PortNumber);
+	 VAR
+	    sockaddr: IPv4Addresses.SocketAddress;
+	    address: Networks.Address;
+	    member: ListOfAddresses;
+      BEGIN
+	 sockaddr.host := ipaddr; sockaddr.portnum := portnum;
+	 InetTCP.CreateAddress(address, sockaddr);
+	 NEW(member); member.next := list; member.address := address;
+	 list := member;
+      END AddIPv4;
+
+      PROCEDURE ReadPot(VAR pot: Shards.Pot; filename: ARRAY OF CHAR);
+	 VAR
+	    s: Streams.Stream;
+      BEGIN
+	 IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf,
+	       errors) THEN
+	    Conclusions.Conclude(errors, Errors.fatal, "");
+	 END;
+	 IF ~PersistentObjects.GuardedReadObjectOrNIL(s, potType, pot) THEN
+	    Conclusions.Conclude(s, Errors.fatal, "");
+	 END;
+	 Streams.Release(s);
+      END ReadPot;
+
+   BEGIN (* ProcessArgs *)
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      Args.Init("{-b bind-address port} [-p pot-file] dbfile");
+      bootAddresses := NIL; pot := NIL; verbose := FALSE;
+      WHILE Args.GetFlag(flag) DO
+	 CASE flag OF
+	 | "b":
+	       Args.FetchString(hostname);
+	       Args.Fetch(args); Read.IntS(args, port);
+	       IF args.count = 0 THEN Args.Usage END;
+	       IF (port >= 0) & (port < 10000H) THEN
+		  portnum := SYS.VAL(IPv4Addresses.PortNumber, port);
+	       ELSE
+		  Args.Usage;
+	       END;
+	       Strings.Open(s, hostname);
+	       IF IPv4Addresses.ReadText(s, ipaddr) THEN
+		  AddIPv4(bootAddresses, ipaddr, portnum);
+	       ELSIF DNSResolvers.GetIPv4AddrByHost(DNSResolvers.std,
+			hostname, addresses, errors) THEN
+		  WHILE addresses # NIL DO
+		     AddIPv4(bootAddresses, addresses.addr, portnum);
+		     addresses := addresses.next;
+		  END;
+	       ELSE
+		  Conclusions.Conclude(errors, Errors.fatal, "");
+	       END;
+	 | "p":
+	       Args.FetchString(filename);
+	       ReadPot(pot, filename);
+	 | "v":
+	       verbose := TRUE;
+	 ELSE
+	    Args.Usage;
+	 END;
+      END;
+      Args.FetchString(dbfile);
+      Args.AllArgs;
+   END ProcessArgs;
+
+   PROCEDURE InitiateTermination;
+      VAR
+	 event: Events.Event;
+   BEGIN
+      RemoteObjects.RemoveAllPorts;
+      RemoteObjects.CloseAllConnections;
+      IF Resources.Alive(root) THEN
+	 Resources.Notify(root, Resources.terminated);
+      END;
+      Process.TerminateSoftly;
+   END InitiateTermination;
+
+   PROCEDURE TerminationHandler(event: Events.Event);
+   BEGIN
+      IF ~SYS.TAS(termination) THEN
+	 IF verbose THEN
+	    Write.LineS(Streams.stderr, "SIGTERM received");
+	 END;
+	 InitiateTermination;
+      END;
+   END TerminationHandler;
+
+   PROCEDURE RootTerminationHandler(event: Events.Event);
+   BEGIN
+      IF ~SYS.TAS(termination) THEN
+	 IF verbose THEN
+	    Write.LineS(Streams.stderr, "root object is terminated");
+	 END;
+	 WITH event: Resources.Event DO
+	    IF event.change = Resources.terminated THEN
+	       InitiateTermination;
+	    END;
+	 END;
+      END;
+   END RootTerminationHandler;
+
+BEGIN
+   intensity := Storage.Intensity(8);
+   Services.SeekType("Shards.Pot", potType); ASSERT(potType # NIL);
+   ProcessArgs;
+   SetupRoot(root, dbfile);
+   OpenAllKindsOfPorts;
+   StartBootServices;
+   termination := FALSE;
+   Events.Handler(SysSignals.TERM, TerminationHandler);
+   Resources.TakeInterest(root, rootEventType);
+   Events.Handler(rootEventType, RootTerminationHandler);
+   IF verbose THEN
+      Conclusions.CatchEvent(Loader.error, Errors.warning);
+      Write.LineS(Streams.stderr, "initialization finished");
+   END;
+END PersistentNameServer.

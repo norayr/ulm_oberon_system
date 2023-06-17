@@ -1,0 +1,190 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysSignalOp.om,v 1.4 2004/05/20 18:28:02 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysSignalOp.om,v $
+   Revision 1.4  2004/05/20 18:28:02  borchert
+   additional operations that accept internal signal sets allow
+   to save CPU time if the same signal set is used multiple times
+
+   Revision 1.3  2001/06/18 08:31:12  borchert
+   signal sets are no longer assumed to fit into a single SET
+
+   Revision 1.2  1994/07/05  12:57:29  borchert
+   sigblock is not expected to return error conditions
+
+   Revision 1.1  1994/02/23  08:00:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 10/93
+   ----------------------------------------------------------------------------
+*)
+
+MODULE SysSignalOperations; (* Solaris version *)
+
+   (* misc signal operations *)
+
+   IMPORT Objects, Sets, SYS := SYSTEM, Sys, SysErrors, SysSignals;
+
+   CONST
+      sigsetlen = (SysSignals.nsigs + Sets.setsize - 1) DIV Sets.setsize;
+      setsize = MAX(SET) + 1;
+   TYPE
+      Signal = SysSignals.Signal;
+      SignalSet = ARRAY sigsetlen OF SET;
+
+   CONST
+      masklen = 2;
+   TYPE
+      Mask = ARRAY masklen OF LONGINT; (* see sigset_t in <sys/signal.h> *)
+      InternalSignalSet =
+	 RECORD
+	    (Objects.ObjectRec)
+	    (* private *)
+	    mask: Mask;
+	 END;
+
+   (* check conversion routines against sigmask macro
+      in <sys/signal.h>
+   *)
+
+   CONST
+      (* first argument to sigprocmask *)
+      sigBLOCK = 0;
+      sigUNBLOCK = 1;
+      sigSETMASK = 2;
+
+   PROCEDURE ConvertSetToMask(signals: SignalSet; VAR mask: Mask);
+      VAR
+	 signal: Signal;
+	 maskindex: INTEGER;
+   BEGIN
+      SYS.WCLEAR(SYS.ADR(mask), masklen);
+      signal := 1;
+      WHILE signal < SysSignals.nsigs DO
+	 IF (signal MOD setsize) IN signals[signal DIV setsize] THEN
+	    maskindex := (signal - 1) DIV 32;
+	    INC(mask[maskindex], SYS.LSH(1, (signal - 1) MOD 32));
+	 END;
+	 INC(signal);
+      END;
+   END ConvertSetToMask;
+
+   PROCEDURE ConvertMaskToSet(mask: Mask; VAR signals: SignalSet);
+      VAR
+	 signal: Signal;
+	 maskindex: INTEGER;
+   BEGIN
+      Sets.InitSet(signals);
+      signal := 1;
+      WHILE signal < SysSignals.nsigs DO
+	 maskindex := (signal - 1) DIV 32;
+	 IF ODD(mask[maskindex]) THEN
+	    INCL(signals[signal DIV setsize], signal MOD setsize);
+	 END;
+	 mask[maskindex] := SYS.LSH(mask[maskindex], -1);
+	 INC(signal);
+      END;
+   END ConvertMaskToSet;
+
+   PROCEDURE Block(VAR signals: SignalSet);
+      VAR
+	 mask, omask: Mask;
+	 d0, d1: INTEGER;
+   BEGIN
+      ConvertSetToMask(signals, mask);
+      IF ~SYS.UNIXCALL(Sys.rtsigprocmask, d0, d1,
+	    sigBLOCK, SYS.ADR(mask), SYS.ADR(omask), 4*masklen) THEN
+	 SysErrors.Raise(NIL, d0, Sys.rtsigprocmask, "SIG_BLOCK");
+      END;
+      ConvertMaskToSet(omask, signals);
+   END Block;
+
+   PROCEDURE SetMask(VAR signals: SignalSet);
+      VAR
+	 mask, omask: Mask;
+	 d0, d1: INTEGER;
+   BEGIN
+      ConvertSetToMask(signals, mask);
+      IF ~SYS.UNIXCALL(Sys.rtsigprocmask, d0, d1,
+            sigSETMASK, SYS.ADR(mask), SYS.ADR(omask), 4*masklen) THEN
+	 SysErrors.Raise(NIL, d0, Sys.rtsigprocmask, "SIG_SETMASK");
+      END;
+      ConvertMaskToSet(omask, signals);
+   END SetMask;
+
+   PROCEDURE ConvertSetToInternalSet(signals: SignalSet;
+                                     VAR isignals: InternalSignalSet);
+   BEGIN
+      ConvertSetToMask(signals, isignals.mask);
+   END ConvertSetToInternalSet;
+
+   PROCEDURE ConvertInternalSetToSet(isignals: InternalSignalSet;
+                                     VAR signals: SignalSet);
+   BEGIN
+      ConvertMaskToSet(isignals.mask, signals);
+   END ConvertInternalSetToSet;
+
+   PROCEDURE InternalBlock(VAR signals: InternalSignalSet);
+      VAR
+	 mask, omask: Mask;
+	 d0, d1: INTEGER;
+   BEGIN
+      mask := signals.mask;
+      IF ~SYS.UNIXCALL(Sys.rtsigprocmask, d0, d1,
+	    sigBLOCK, SYS.ADR(mask), SYS.ADR(omask), 4*masklen) THEN
+	 SysErrors.Raise(NIL, d0, Sys.rtsigprocmask, "SIG_BLOCK");
+      END;
+      signals.mask := omask;
+   END InternalBlock;
+
+   PROCEDURE InternalSetMask(VAR signals: InternalSignalSet);
+      VAR
+	 mask, omask: Mask;
+	 d0, d1: INTEGER;
+   BEGIN
+      mask := signals.mask;
+      IF ~SYS.UNIXCALL(Sys.rtsigprocmask, d0, d1,
+            sigSETMASK, SYS.ADR(mask), SYS.ADR(omask), 4*masklen) THEN
+	 SysErrors.Raise(NIL, d0, Sys.rtsigprocmask, "SIG_SETMASK");
+      END;
+      signals.mask := omask;
+   END InternalSetMask;
+
+   PROCEDURE CopyInternalSet(VAR from, to: InternalSignalSet);
+   BEGIN
+      to := from;
+   END CopyInternalSet;
+
+   PROCEDURE Init;
+      VAR
+         set : SignalSet;
+   BEGIN
+      (* The set of blocked signals is inherited from the parent
+       * process. This is espcially bad, if the parent process has
+       * SIGCHLD blocked. Hence we manually unblock all signals. *)
+      Sets.InitSet (set);
+      SetMask (set);
+   END Init;
+
+BEGIN
+   Init;
+END SysSignalOperations.

@@ -1,0 +1,241 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: BoolArgs.om,v 1.2 1995/04/11 06:58:43 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: BoolArgs.om,v $
+   Revision 1.2  1995/04/11  06:58:43  borchert
+   simplifications & cleanup
+
+   Revision 1.1  1994/10/28  10:22:48  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE BoolArgs;
+
+   IMPORT Args, ASCII, BoolDisciplines, ConstStrings, Errors, Events,
+      Iterators, NetIO, PersistentObjects, Priorities, Read,
+      RelatedEvents, Services, Streams, Strings, Write;
+
+   TYPE 
+      Value = POINTER TO ValueRec;
+      ValueRec =
+	 RECORD
+	    (Args.ValueRec)
+	    bool: BOOLEAN;
+	 END;
+
+   VAR 
+      type: Args.Type;
+
+   VAR 
+      valueType: Services.Type;
+
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    name: ARRAY 80 OF CHAR;
+	 END;
+   VAR
+      error: Events.EventType;
+
+   (* === error handling ================================================= *)
+
+   PROCEDURE UnknownName(errors: RelatedEvents.Object;
+			 name: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := "undefined BOOLEAN value";
+      COPY(name, event.name);
+      RelatedEvents.Raise(errors, event);
+   END UnknownName;
+
+   PROCEDURE PrintError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      Write.StringS(s, event.message);
+      IF event IS ErrorEvent THEN
+	 WITH event: ErrorEvent DO
+	    Write.StringS(s, ": ");
+	    Write.CharS(s, ASCII.quote);
+	    Write.StringS(s, event.name);
+	    Write.CharS(s, ASCII.quote);
+	 END;
+      END;
+   END PrintError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      Events.SetPriority(error, Priorities.liberrors);
+      Events.Ignore(error);
+      Errors.AssignWriteProcedure(error, PrintError);
+   END InitErrorHandling;
+
+   (* === interface to PersistentObjects ================================= *)
+
+   PROCEDURE CreateValue(VAR obj: PersistentObjects.Object);
+      VAR 
+	 value : Value;
+   BEGIN
+      NEW(value);
+      PersistentObjects.Init(value, valueType);
+      obj := value;
+   END CreateValue;
+
+   PROCEDURE WriteValue(s: Streams.Stream;
+			obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.WriteBoolean(s, obj.bool)
+      END;
+   END WriteValue;
+
+   PROCEDURE ReadValue(s: Streams.Stream;
+		       obj: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH obj: Value DO
+	 RETURN NetIO.ReadBoolean(s, obj.bool)
+      END;
+   END ReadValue;
+
+   (* === interface to Args ========================================== *)
+
+   PROCEDURE ReadArg(s: Streams.Stream; VAR value: Args.Value) : BOOLEAN;
+      VAR 
+	 myval: Value;
+	 name: ARRAY 80 OF CHAR;
+   BEGIN
+      IF ~Read.FieldS(s, name) THEN RETURN FALSE END;
+      CreateValue(myval);
+      IF BoolDisciplines.IsTrue(s, name) THEN
+	 myval.bool := TRUE;
+      ELSIF BoolDisciplines.IsFalse(s, name) THEN
+	 myval.bool := FALSE;
+      ELSE
+	 value := NIL;
+	 UnknownName(s, name); RETURN FALSE
+      END;
+      value := myval;
+      RETURN TRUE
+   END ReadArg;
+
+   PROCEDURE PrintValue(s: Streams.Stream; value: Args.Value);
+   BEGIN
+      IF value = NIL THEN
+	 Write.StringS(s, "undefined");
+      ELSE
+	 WITH value: Value DO
+	    IF value.bool THEN
+	       Write.StringS(s, "TRUE");
+	    ELSE
+	       Write.StringS(s, "FALSE");
+	    END;
+	 END;
+      END;
+   END PrintValue;
+
+   PROCEDURE Help(s: Streams.Stream);
+      VAR
+	 itT, itF: Iterators.Iterator;
+	 first    : BOOLEAN;
+
+      PROCEDURE PrintList(of: BOOLEAN; name: ARRAY OF CHAR);
+	 VAR
+	    it: Iterators.Iterator;
+	    prev, next: ConstStrings.String;
+	    count: INTEGER;
+      BEGIN
+	 BoolDisciplines.CreateIterator(it, s, of);
+	 Write.IndentS(s); Write.StringS(s, "   ");
+	 IF Iterators.Get(it, prev) THEN
+	    count := 0;
+	    WHILE Iterators.Get(it, next) DO
+	       IF count > 0 THEN
+		  Write.StringS(s, ", ");
+	       END;
+	       Write.CharS(s, ASCII.quote);
+	       ConstStrings.Write(s, prev);
+	       Write.CharS(s, ASCII.quote);
+	       prev := next;
+	    END;
+	    IF count > 0 THEN
+	       IF count > 1 THEN
+		  Write.StringS(s, ",");
+	       END;
+	       Write.StringS(s, " and ");
+	    END;
+	    Write.CharS(s, ASCII.quote);
+	    ConstStrings.Write(s, prev);
+	    Write.CharS(s, ASCII.quote);
+	 ELSE
+	    Write.StringS(s, "Nothing");
+	 END;
+	 Write.StringS(s, " will be interpreted as ");
+	 Write.StringS(s, name);
+      END PrintList;
+
+   BEGIN
+      Write.StringS(s, "boolean value:"); Write.LnS(s);
+      PrintList(TRUE, "TRUE"); Write.LnS(s);
+      PrintList(FALSE, "FALSE");
+   END Help;
+
+   PROCEDURE Init;
+      VAR
+	 if: Args.TypeInterface;
+	 valueIf: PersistentObjects.Interface;
+   BEGIN
+      NEW(valueIf);
+      valueIf.read := ReadValue;
+      valueIf.write := WriteValue;
+      valueIf.create := CreateValue;
+      valueIf.createAndRead := NIL;
+      PersistentObjects.RegisterType(valueType,
+	 "BoolArgs.Value", "Args.Value", valueIf);
+
+      NEW(if);
+      if.read := ReadArg;
+      if.help := Help;
+      if.print := PrintValue;
+      NEW (type);
+      type.name := "bool";
+      type.moduleName := "BoolArgs";
+      Args.DefineType(type, if, valueType);
+   END Init;
+
+   (* === exported procedure ============================================== *)
+
+   PROCEDURE Create(VAR value: Args.Value; bool: BOOLEAN);
+   BEGIN
+      CreateValue(value);
+      value(Value).bool := bool;
+   END Create;
+
+BEGIN
+   InitErrorHandling;
+   Init;
+END BoolArgs.

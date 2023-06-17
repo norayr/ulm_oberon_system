@@ -1,0 +1,144 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1994 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: SysProcess.od,v 1.2 1994/07/01 11:22:28 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: SysProcess.od,v $
+   Revision 1.2  1994/07/01  11:22:28  borchert
+   nonblocking variants of Wait & WaitFor added
+   Wait4 added
+
+   Revision 1.1  1994/02/23  07:59:50  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   AFB 8/90
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION SysProcess;
+
+   IMPORT RelatedEvents, SysArgs, SysSignals;
+
+   TYPE
+      ProcessId = INTEGER;		(* non-negative *)
+      ProcessGroup = INTEGER;
+      UserId = INTEGER;
+      GroupId = INTEGER;
+      Signal = SysSignals.Signal;
+
+      Status =				(* termination status *)
+	 RECORD
+	    signal: Signal;		(* termination causing signal;
+					   = 0 if terminated by exit
+					*)
+	    exitcode: INTEGER;		(* exit code (if signal = 0) *)
+	    core: BOOLEAN;		(* core file produced? *)
+	    stopped: BOOLEAN;		(* stop of traced process? *)
+	 END;
+
+   CONST
+      (* Wait4 options; see <sys/wait.h> *)
+      nohang = 1;    (* don't hang in wait *)
+      untraced = 2;  (* tell about stopped, untraced children *)
+
+   VAR
+      profbuf, proflen : LONGINT;
+
+   PROCEDURE Getpid() : ProcessId;
+      (* returns process id *)
+
+   PROCEDURE Getpgrp() : ProcessGroup;
+      (* returns process group *)
+
+   PROCEDURE Getppid() : ProcessId;
+      (* returns parent process id *)
+
+   PROCEDURE Getuid() : UserId;
+      (* return user ID *)
+
+   PROCEDURE Geteuid() : UserId;
+      (* return effective UID *)
+
+   PROCEDURE Getgid() : GroupId;
+      (* return group ID *)
+
+   PROCEDURE Getegid() : GroupId;
+      (* return effective GID *)
+
+   PROCEDURE Kill(pid: INTEGER; sig: Signal;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* send signal `sig' to process pid (if pid > 0)
+			      own process group (if pid = 0)
+			      process group -pid (if pid < 0)
+      *)
+
+   PROCEDURE Exit(code: INTEGER);
+      (* causes immediate termination without events *)
+
+   PROCEDURE Abort;
+      (* raises abort and exits with core dump (if possible);
+	 this is done by sending SysSignals.IOT to the process
+	 (which is set to default reaction)
+      *)
+
+   PROCEDURE Fork(VAR pid: ProcessId; errors: RelatedEvents.Object) : BOOLEAN;
+      (* returns FALSE on failure;
+	 pid = 0: son process
+	 pid # 0: process id of son
+      *)
+
+   PROCEDURE ExecEnv(path: ARRAY OF CHAR;
+		     argv, envp: SysArgs.Arguments;
+		     errors: RelatedEvents.Object);
+      (* replace process image by `path' and pass `argv' and `envp';
+	 path must be 0X-terminated
+      *)
+
+   PROCEDURE Exec(path: ARRAY OF CHAR; argv: SysArgs.Arguments;
+		  errors: RelatedEvents.Object);
+      (* like ExecEnv: envp = SysArgs.environ *)
+
+   PROCEDURE Wait(VAR status: Status; VAR pid: ProcessId;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      (* wait for exit of child;
+	 if successful
+	    pid contains the process id of the terminated process;
+	    status contains the termination signal and exit code
+      *)
+
+   PROCEDURE WaitFor(VAR pid: ProcessId; VAR status: Status;
+		     errors: RelatedEvents.Object) : BOOLEAN;
+      (* wait for exit of child with given pid *)
+
+   PROCEDURE NonBlockingWait(VAR status: Status; VAR pid: ProcessId;
+			     errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE NonBlockingWaitFor(VAR pid: ProcessId; VAR status: Status;
+				errors: RelatedEvents.Object) : BOOLEAN;
+
+   PROCEDURE Wait4(VAR pid: ProcessId; VAR status: Status;
+		   options: INTEGER;
+		   errors: RelatedEvents.Object;
+		   retry: BOOLEAN; VAR interrupted: BOOLEAN) : BOOLEAN;
+
+   PROCEDURE Pause;
+      (* Pause does not raise any events *)
+
+END SysProcess.

@@ -1,0 +1,69 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1999 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixShell.om,v 1.1 1999/12/08 15:50:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixShell.om,v $
+   Revision 1.1  1999/12/08 15:50:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixShell;
+
+   IMPORT Conditions, Events, RelatedEvents, Streams, SYS := SYSTEM, SysArgs,
+      SysProcess, SysSignals, Tasks, Types, UnixArgLists, UnixWaitConditions,
+      UntaggedStorage, Write;
+
+   (* pass command to our shell *)
+
+   PROCEDURE Command(cmd: ARRAY OF CHAR;
+		     VAR status: SysProcess.Status;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+      CONST
+         failure = 127;
+      VAR
+	 list: Streams.Stream;
+	 arglist: SysArgs.Arguments;
+	 pid: SysProcess.ProcessId;	(* process id of son *)
+	 waitCond: Conditions.Condition;
+   BEGIN
+      IF ~SysProcess.Fork(pid, errors) THEN RETURN FALSE END;
+      IF pid = 0 THEN
+	 UnixArgLists.Open(list);
+	 Write.StringS(list, "sh"); (* command name *)
+	 UnixArgLists.Next(list); Write.StringS(list, "-c");
+	 UnixArgLists.Next(list); Write.StringS(list, cmd);
+	 UnixArgLists.Close(list, arglist);
+	 SysProcess.Exec("/bin/sh", arglist, errors);
+	 UntaggedStorage.Dispose(SYS.VAL(Types.UntracedAddress, arglist));
+	 SysProcess.Exit(failure);
+      END;
+      Events.SaveReaction(SysSignals.INT); Events.Ignore(SysSignals.INT);
+      Events.SaveReaction(SysSignals.QUIT); Events.Ignore(SysSignals.QUIT);
+      UnixWaitConditions.Create(waitCond, pid);
+      Tasks.WaitFor(waitCond);
+      UnixWaitConditions.FetchStatus(waitCond, status);
+      Events.RestoreReaction(SysSignals.INT);
+      Events.RestoreReaction(SysSignals.QUIT);
+      RETURN TRUE
+   END Command;
+
+END UnixShell.

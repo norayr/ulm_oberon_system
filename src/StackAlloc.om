@@ -1,0 +1,265 @@
+MODULE StackAlloc;
+
+   IMPORT Disciplines, Write;
+
+   TYPE
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD
+         (Disciplines.ObjectRec)
+	 offset, size : LONGINT;
+	 next, prev : Value;
+	 autofree : BOOLEAN;
+      END;
+
+   CONST
+      growsup = 1;
+      growsdown = 2;
+
+   TYPE
+      Direction = INTEGER;
+
+      Stack = POINTER TO StackRec;
+      StackRec = RECORD
+         (Disciplines.ObjectRec)
+	 align, maxoffset: LONGINT;
+	 dir : Direction;
+	 values : Value;
+	 state : INTEGER;  (* open .. terminated *)
+      END;
+
+   CONST
+      open = 0;
+      closed = 1;
+      terminated = 2;
+
+   PROCEDURE Init (stack : Stack; baseoff, align : LONGINT; dir : Direction);
+   BEGIN
+      ASSERT (stack # NIL);
+      ASSERT (dir IN {growsup, growsdown});
+      ASSERT (baseoff MOD align = 0);
+      NEW (stack.values);
+      stack.values.prev := NIL;
+      stack.values.next := NIL;
+      stack.values.size := 0;
+      stack.values.offset := baseoff;
+      stack.dir := dir;
+      stack.maxoffset := 0; (* XXX ?? *) ASSERT (baseoff = 0);
+      stack.align := align;
+      stack.state := open;
+   END Init;
+
+   PROCEDURE Allocate (stack : Stack; size, align : LONGINT; autofree : BOOLEAN) : LONGINT;
+      VAR
+         best, tmp, next, val : Value;
+	 waste, newwaste : INTEGER;
+	 start, end, alignstart, alignend, space, offset : LONGINT;
+	 badness, newbadness : LONGINT;
+	 
+      PROCEDURE AlignUp (VAR val : LONGINT);
+      BEGIN
+         INC(val, align-1);
+	 DEC(val, val MOD align);
+	 ASSERT (val MOD align = 0);
+      END AlignUp;
+
+      PROCEDURE AlignDown (VAR val : LONGINT);
+      BEGIN
+         DEC(val, val MOD align);
+	 ASSERT (val MOD align = 0);
+      END AlignDown;
+      
+   BEGIN
+      best := NIL;
+      AlignUp (size);
+      ASSERT (size > 0);
+      ASSERT (stack.align MOD align = 0);
+      ASSERT (stack.state = open);
+      tmp := stack.values;
+      best := NIL;
+      waste := 3;
+      badness := 0;
+      LOOP
+         next := tmp.next;
+	 IF next = NIL THEN
+	    EXIT
+	 END;
+	 IF stack.dir = growsdown THEN
+	    start := (next.offset + next.size);
+	    end := tmp.offset;
+	 ELSE
+	    start := tmp.offset + tmp.size;
+	    end := next.offset;
+	 END;
+	 alignstart := start;
+	 AlignUp (alignstart);
+	 alignend := end;
+	 AlignDown (alignend);
+	 space := alignend - alignstart;
+	 IF space >= size THEN
+	    newwaste := 0;
+	    IF alignend # end THEN
+	       INC(newwaste);
+	    END;
+	    IF alignstart # start THEN
+	       INC(newwaste);
+	    END;
+	    newbadness := end-start-size;
+	    IF (newwaste < waste) OR
+	       ((newwaste = waste) & (newbadness < badness)) THEN
+	       best := tmp;
+	       badness := newbadness;
+	       waste := newwaste;
+	    END;
+	 END;
+	 tmp := next;
+      END;
+      IF best = NIL THEN
+         best := tmp;
+      END;
+      next := best.next;
+      IF next = NIL THEN
+         IF stack.dir = growsdown THEN
+	    offset := best.offset - size;
+	    AlignDown (offset);
+	 ELSE
+	    offset := best.offset + best.size;
+	    AlignUp (offset);
+	 END;
+      ELSE
+	 IF stack.dir = growsdown THEN
+	    start := (next.offset + next.size);
+	    end := best.offset;
+	 ELSE
+	    start := best.offset + best.size;
+	    end := next.offset;
+	 END;
+	 alignstart := start;
+	 AlignUp (alignstart);
+	 alignend := end;
+	 AlignDown (alignend);
+	 IF ((start = alignstart) & (end = alignend)) OR
+	    ((start # alignstart) & (end # alignend)) THEN
+	    (* Choose the offset next to the base *)
+	    IF stack.dir = growsdown THEN
+	       offset := alignend - size;
+	       AlignDown (offset);
+	    ELSE
+	       offset := alignstart;
+	       AlignUp (offset);
+	    END;
+	 ELSIF (start = alignstart) THEN
+	    offset := alignstart;
+	 ELSE
+	    offset := alignend - size;
+	 END;
+      END;
+      NEW (val);
+      val.offset := offset;
+      val.size := size;
+      val.next := best.next;
+      val.prev := best;
+      val.autofree := autofree;
+      best.next := val;
+      IF val.next # NIL THEN
+         val.next.prev := val;
+      END;
+      IF stack.dir = growsdown THEN
+         ASSERT (offset < stack.values.offset);
+	 IF offset < stack.maxoffset THEN
+	    stack.maxoffset := offset;
+	 END;
+      ELSE
+         ASSERT (offset >= stack.values.offset);
+	 INC (offset, size);
+	 IF offset > stack.maxoffset THEN
+	    stack.maxoffset := offset;
+	 END;
+      END;
+      RETURN val.offset;
+   END Allocate;
+
+   PROCEDURE Free (stack : Stack; offset : LONGINT);
+      VAR
+         tmp : Value;
+   BEGIN
+      tmp := NIL;
+      ASSERT ((stack # NIL) & (stack.values # NIL));
+      ASSERT (stack.state = open);
+      tmp := stack.values.next;
+      IF stack.dir = growsdown THEN
+	 ASSERT (offset < stack.values.offset);
+      ELSE
+         ASSERT (offset >= stack.values.offset);
+      END;
+      LOOP
+         ASSERT (tmp # NIL); (* offset must exist! *)
+	 IF tmp.offset = offset THEN
+	    EXIT
+	 END;
+	 tmp := tmp.next;
+      END;
+      ASSERT ((tmp # NIL) & ~tmp.autofree);
+      IF tmp.next # NIL THEN
+         tmp.next.prev := tmp.prev;
+      END;
+      tmp.prev.next := tmp.next;
+      tmp.prev := NIL;
+      tmp.next := NIL;
+   END Free;
+
+   PROCEDURE Close (stack : Stack);
+      VAR
+         tmp : Value;
+   BEGIN
+      tmp := NIL;
+      ASSERT (stack.state = open);
+      tmp := stack.values.next;
+      WHILE tmp # NIL DO
+         IF tmp.autofree THEN
+	    IF tmp.next # NIL THEN
+	       tmp.next.prev := tmp.prev;
+	    END;
+	    tmp.prev.next := tmp.next;
+	 END;
+	 tmp := tmp.next;
+      END;
+      ASSERT (stack.values.next = NIL);
+      stack.state := closed;
+   END Close;
+
+
+   (* Allocate permanent storage after the stack is closed.
+    * This is useful if we want to save only those registers that
+    * are actually trashed. We don't know this until we generated
+    * code for the whole block, but at this point normal stack
+    * allocations don't work.
+    * WARNING: We don't honour alignment here. Please make sure that,
+    * that your data size already has the right alignment. *)
+   PROCEDURE AllocateClosed (stack : Stack; size : LONGINT) : LONGINT;
+      VAR ret : LONGINT;
+   BEGIN
+      ASSERT (stack.state = closed);
+      IF stack.dir = growsdown THEN
+         DEC (stack.maxoffset, size);
+	 ret := stack.maxoffset;
+      ELSE
+         ret := stack.maxoffset;
+         INC (stack.maxoffset, size);
+      END;
+      RETURN ret;
+   END AllocateClosed;
+
+   PROCEDURE GetSize (stack : Stack) : LONGINT;
+   BEGIN
+      ASSERT (stack.state IN {closed, terminated});
+      stack.state := terminated;
+      IF stack.maxoffset MOD stack.align # 0 THEN
+         IF stack.dir = growsup THEN
+	    INC (stack.maxoffset, stack.align);
+	 END;
+	 DEC (stack.maxoffset, stack.maxoffset MOD stack.align);
+      END;
+      RETURN stack.maxoffset;
+   END GetSize;
+
+END StackAlloc.

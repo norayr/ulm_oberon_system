@@ -1,0 +1,104 @@
+MODULE PersMesgServer;
+
+   IMPORT
+      BlockingEvents, Conclusions, Conditions, Coroutines, Errors,
+      EventConditions, Events, Iterators, MD5, Names, Networks,
+      PasswordShards, Paths, PersMesgMaintenance, PrivateShards, Process,
+      RelatedEvents, RemoteEvents, RemoteObjects, Resources, SysSignals,
+      SYSTEM, Tasks, UnixNames;
+
+   CONST
+      myname = "/etc/msg";
+
+   VAR
+      termination: BlockingEvents.EventType;
+      initiateTermination: Events.EventType;
+
+   PROCEDURE OpenAllKindsOfPorts;
+      VAR
+	 network: Networks.Network;
+	 it: Iterators.Iterator;
+	 port: Networks.Socket;
+	 address: Networks.Address;
+	 errors: RelatedEvents.Object;
+   BEGIN
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      Networks.GetNetworks(it);
+      WHILE Iterators.Get(it, network) DO
+	 IF ~Networks.CreateSomeSocket(port, network, address, errors) OR
+	       ~RemoteObjects.AddPort(port, address, errors) THEN
+	    Conclusions.Conclude(errors, Errors.error, "open ports");
+	 END;
+      END;
+   END OpenAllKindsOfPorts;
+
+   PROCEDURE TerminationCR(VAR cr: Coroutines.Coroutine);
+      VAR
+	 event: Events.Event;
+	 condition: Conditions.Condition;
+   BEGIN
+      SYSTEM.CRSPAWN(cr);
+
+      EventConditions.Create(condition, initiateTermination);
+      Tasks.WaitFor(condition);
+
+      NEW(event);
+      event.type := termination; event.message := "termination";
+      BlockingEvents.Raise(event);
+      RemoteObjects.RemoveAllPorts;
+      RemoteObjects.CloseAllConnections;
+      Process.Exit(0);
+   END TerminationCR;
+
+   PROCEDURE Terminate;
+      VAR
+	 event: Events.Event;
+   BEGIN
+      NEW(event);
+      event.type := initiateTermination;
+      event.message := "initiate termination";
+      Events.Raise(event);
+   END Terminate;
+
+   PROCEDURE ExitHandler(event: Events.Event);
+   BEGIN
+      IF ~(event IS Resources.Event) OR
+	    (event(Resources.Event).change = Resources.terminated) THEN
+	 Terminate;
+      END;
+   END ExitHandler;
+
+   PROCEDURE SetupTermination;
+      VAR
+	 cr: Coroutines.Coroutine;
+	 task: Tasks.Task;
+   BEGIN
+      BlockingEvents.Define(termination);
+      Events.Define(initiateTermination);
+      Events.Handler(SysSignals.TERM, ExitHandler);
+      Events.Handler(SysSignals.HUP, Events.NilHandler);
+      Events.Handler(SysSignals.INT, Events.NilHandler);
+      Events.Handler(SysSignals.PIPE, Events.NilHandler);
+      TerminationCR(cr);
+      Tasks.Create(task, cr);
+   END SetupTermination;
+
+   PROCEDURE StartService;
+      VAR
+	 me: Names.Node;
+	 etype: Events.EventType;
+   BEGIN
+      Names.CreateNode(me, NIL, Names.allCaps);
+      Resources.TakeInterest(me, etype);
+      Events.Handler(etype, ExitHandler);
+      PersMesgMaintenance.InitServer(me);
+      IF ~Paths.Insert(myname, me, NIL, me) THEN
+	 Conclusions.Conclude(me, Errors.fatal, "can't install msgsys")
+      END;
+   END StartService;
+
+BEGIN
+   OpenAllKindsOfPorts;
+   SetupTermination;
+   StartService;
+END PersMesgServer.

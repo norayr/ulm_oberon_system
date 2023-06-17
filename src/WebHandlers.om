@@ -1,0 +1,70 @@
+MODULE WebHandlers;
+
+   IMPORT
+      Disciplines, Headers:=HTTPHeaders, InetURLs, Networks, Objects,
+      RelatedEvents, Streams;
+      
+   TYPE
+      Handler = POINTER TO HandlerRec;
+      
+      Request = POINTER TO RequestRec;
+      RequestRec =
+         RECORD
+            serverAddress: Networks.Address; (* To distinguish clients on 
+               different ports *)
+            clientAddress: Networks.Address; (* address of the client *)
+            method: Streams.Stream; (* requested Method *)
+            url: InetURLs.URL; (* requested resource *)
+            versionMajor: SHORTINT; (* of Client *)
+            versionMinor: SHORTINT; (* of Client *)
+            headers: Headers.HeaderSet;
+            body: Streams.Stream; (* NIL, if there is no body *)
+            response: Streams.Stream; (* where to send the response *)
+         END;
+   
+      HandleRequestProc = PROCEDURE (handler: Handler; request: Request;
+                                     errors: RelatedEvents.Object);
+   
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+         RECORD
+            (Objects.ObjectRec)
+            handleRequest: HandleRequestProc;
+         END;
+         
+      (* Handler = POINTER TO HandlerRec; *)
+      HandlerRec =
+         RECORD
+            (Disciplines.ObjectRec)
+            (* private *)
+            if: Interface;
+         END;
+      
+         
+   PROCEDURE Init(handler: Handler; if: Interface);
+      (* Must be called after NEW. *)
+      
+   BEGIN
+      ASSERT((if # NIL) & (if.handleRequest # NIL));
+      handler.if := if;
+   END Init;
+   
+   
+   PROCEDURE HandleRequest(handler: Handler; request: Request;
+                           errors: RelatedEvents.Object);
+      (* is normally called by a Daemon wenn a request occurs. 'request'
+         contains all necessary information about the request. This request has
+         to be processed by the Handler and the response must be sent to
+         'request.response'. 'request.response' will remain open if it isn't
+         explicitly closed by 'HandleRequest' (so a client can make repeated
+         request on the same connection). Because of simultaneous requests, the
+         Implementor must be aware of creating a reentrant procedure.
+      *)
+      
+   BEGIN
+      handler.if.handleRequest(handler, request, errors);
+   END HandleRequest;
+   
+   
+BEGIN
+END WebHandlers.

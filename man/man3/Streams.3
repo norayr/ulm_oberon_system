@@ -1,0 +1,842 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Streams 3 "Last change: 22 May 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Streams \- abstraction for byte oriented input and output
+.SH SYNOPSIS
+.Pg
+(* Whence = (fromStart, fromPos, fromEnd); *)
+CONST fromStart = 0; fromPos = 1; fromEnd = 2;
+.sp 0.3
+(* capabilities of a stream *)
+CONST read = 0; write = 1; addrio = 2; bufio = 3; seek = 4; tell = 5;
+CONST trunc = 6; flush = 7; close = 8; holes = 9; handler = 10;
+.sp 0.3
+(* BufMode = (nobuf, linebuf, onebuf, bufpool); *)
+CONST nobuf = 0; linebuf = 1; onebuf = 2; bufpool = 3;
+.sp 0.7
+TYPE Address = LONGINT;
+TYPE Count = LONGINT;
+TYPE Whence = SHORTINT;
+TYPE CapabilitySet = SET; (* OF Capability *)
+TYPE Modes = SET; (* OF Mode; *)
+TYPE BufMode = SHORTINT;
+TYPE ErrorCode = SHORTINT; (* see below *)
+TYPE Stream = POINTER TO StreamRec;
+TYPE Message = RECORD (Objects.ObjectRec) END;
+.sp 0.7
+TYPE AddrIOProc = PROCEDURE (s: Stream; ptr: Address; cnt: Count) : Count;
+TYPE BufIOProc = PROCEDURE (s: Stream; VAR buf: ARRAY OF BYTE;
+                            off, cnt: Count) : Count;
+TYPE SeekProc = PROCEDURE (s: Stream; cnt: Count; whence: Whence) : BOOLEAN;
+TYPE TellProc = PROCEDURE (s: Stream; VAR cnt: Count) : BOOLEAN;
+TYPE ReadProc = PROCEDURE (s: Stream; VAR byte: BYTE) : BOOLEAN;
+TYPE WriteProc = PROCEDURE (s: Stream; byte: BYTE) : BOOLEAN;
+TYPE TruncProc = PROCEDURE (s: Stream; cnt: Count) : BOOLEAN;
+TYPE FlushProc = PROCEDURE (s: Stream) : BOOLEAN;
+TYPE CloseProc = PROCEDURE (s: Stream) : BOOLEAN;
+TYPE HandlerProc = PROCEDURE (s: Stream; VAR msg: Message);
+.sp 0.5
+TYPE Interface = POINTER TO InterfaceRec;
+TYPE InterfaceRec =
+   RECORD
+      (Objects.ObjectRec)
+      addrread: AddrIOProc;     (* read, addrio *)
+      addrwrite: AddrIOProc;    (* write, addrio *)
+      bufread: BufIOProc;       (* read, bufio *)
+      bufwrite: BufIOProc;      (* write, bufio *)
+      read: ReadProc;           (* read *)
+      write: WriteProc;         (* write *)
+      seek: SeekProc;           (* seek *)
+      tell: TellProc;           (* tell *)
+      trunc: TruncProc;         (* trunc *)
+      flush: FlushProc;         (* flush *)
+      close: CloseProc;         (* close *)
+      handler: HandlerProc;     (* handler *)
+   END;
+.sp 0.5
+TYPE StreamRec =
+   RECORD
+      (Services.ObjectRec)
+      (* following components are set after i/o-operations *)
+      count: Count; (* resulting count of last operation *)
+      errors: INTEGER; (* incremented for each error; may be set to 0 *)
+      error: BOOLEAN; (* last operation successful? *)
+      lasterror: ErrorCode; (* error code of last error *)
+      eof: BOOLEAN; (* last read-operation with count=0 returned *)
+   END;
+.sp 0.5
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+   RECORD
+      (Events.EventRec)
+      stream: Stream;
+      errorcode: ErrorCode;
+   END;
+.sp 0.5
+VAR null: Stream; (* accepts any output; does not return input *)
+VAR stdin, stdout, stderr: Stream;
+VAR errormsg: ARRAY errorcodes OF Events.Message;
+VAR error: Events.EventType;
+.sp 0.5
+PROCEDURE Init(s: Stream; if: Interface; caps: CapabilitySet;
+               bufmode: BufMode);
+PROCEDURE GetBufMode(s: Stream) : BufMode;
+PROCEDURE LineTerm(s: Stream; termch: BYTE);
+PROCEDURE Tie(in, out: Stream);
+PROCEDURE SetBufferPoolSize(s: Stream; nbuf: INTEGER);
+PROCEDURE GetBufferPoolSize(s: Stream; VAR nbuf: INTEGER);
+PROCEDURE Capabilities(s: Stream) : CapabilitySet;
+.sp 0.5
+PROCEDURE GetFlushEvent(s: Stream; VAR type: Events.EventType);
+PROCEDURE GetCloseEvent(s: Stream; VAR type: Events.EventType);
+.sp 0.5
+PROCEDURE Close(s: Stream) : BOOLEAN;
+PROCEDURE Release(s: Stream);
+PROCEDURE CloseAll;
+.sp 0.5
+PROCEDURE ReadByte(s: Stream; VAR byte: BYTE) : BOOLEAN;
+PROCEDURE ReadPart(s: Stream; VAR buf: ARRAY OF BYTE;
+                   off, cnt: Count) : BOOLEAN;
+PROCEDURE Read(s: Stream; VAR buf: ARRAY OF BYTE) : BOOLEAN;
+PROCEDURE ReadPacket(s: Stream; VAR buf: ARRAY OF BYTE;
+                     off, maxcnt: Count) : Count;
+.sp 0.5
+PROCEDURE WriteByte(s: Stream; byte: BYTE) : BOOLEAN;
+PROCEDURE WritePart(s: Stream;
+                    (* read-only *) VAR buf: ARRAY OF Byte;
+                    off, cnt: Count) : BOOLEAN;
+PROCEDURE Write(s: Stream;
+                (* read-only *) VAR buf: ARRAY OF Byte) : BOOLEAN;
+PROCEDURE WritePartC(s: Stream; buf: ARRAY OF Byte;
+                     off, cnt: Count) : BOOLEAN;
+PROCEDURE WriteC(s: Stream; buf: ARRAY OF Byte) : BOOLEAN;
+.sp 0.5
+PROCEDURE Seek(s: Stream; offset: Count; whence: Whence) : BOOLEAN;
+PROCEDURE Tell(s: Stream; VAR offset: Count) : BOOLEAN;
+PROCEDURE GetPos(s: Stream; VAR offset: Count);
+PROCEDURE SetPos(s: Stream; offset: Count);
+.sp 0.5
+PROCEDURE Trunc(s: Stream; length: Count) : BOOLEAN;
+.sp 0.5
+PROCEDURE Back(s: Stream) : BOOLEAN;
+PROCEDURE Insert(s: Stream; byte: BYTE) : BOOLEAN;
+.sp 0.5
+PROCEDURE Flush(s: Stream) : BOOLEAN;
+PROCEDURE InputInBuffer(s: Stream) : BOOLEAN;
+PROCEDURE OutputInBuffer(s: Stream) : BOOLEAN;
+PROCEDURE OutputWillBeBuffered(s: Stream) : BOOLEAN;
+PROCEDURE Touch(s: Stream);
+.sp 0.5
+PROCEDURE Send(s: Stream; VAR message: Message);
+.sp 0.5
+PROCEDURE Copy(source, dest: Stream; maxcnt: Count) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+The
+.I Streams
+module defines an extensible abstraction for byte oriented I/O-operations
+and implements an efficient buffering mechanism.
+.PP
+A stream is a data structure which references two components:
+a sequence of bytes and a position.
+Each byte of a sequence has an address:
+the first byte of a stream has address 0,
+the second byte 1, etc.
+The current position is the address of the byte to be affected by
+the next read or write operation.
+Thus the current position cannot be negative.
+Read and write requests cause the position to advance by the returned
+byte count which is less or equal to the requested count.
+Failures of read or write operations (count value equals zero)
+do not modify the current position.
+.PP
+The length of a stream is defined to be the highest byte address
+plus one.
+The length is infinite if the highest byte address is not defined
+(in case of infinite streams).
+In normal case a current position is valid
+if and only if it ranges from 0 to the stream length.
+Streams with holes may invalidate positions within this range
+or allow positions beyond the stream length.
+.PP
+Bidirectional streams reference a communication channel
+and do not maintain a current position.
+Instead, reading a character removes it from the input queue
+and writing a character appends it to the output queue.
+Streams are bidirectional if they support read and write operations
+but neither seek nor tell operations.
+.PP
+An interface defines a set of procedures which implement a
+.IR Streams -abstraction
+for a specific form of input and/or output.
+Not every interface procedure needs to be implemented.
+The set of implemented procedures is given by the
+.I caps
+parameter of \fIInit\fP.
+At least \fIread\fP or \fIwrite\fP must be provided.
+Note that the byte-wise read or write operation must always be given
+even if additional read/write-operations are supported (\fIbufio\fP
+or \fIaddrio\fP).
+All other operations (\fIseek\fP, \fItell\fP, \fItrunc\fP,
+\fIclose\fP, and \fIhandler\fP) are optional.
+The interface procedures should meet following specifications:
+.Is "\fIs\fP: \fIStream\fP"
+.If read "; \fBVAR\fP \fIbyte\fP: \fBBYTE\fP" "\fBBOOLEAN\fP"
+assign the byte at the current position to \fIbyte\fP and
+increment the current position by 1.
+Return of
+.B FALSE
+indicates read errors or end of stream.
+.If write "; \fIbyte\fP: \fBBYTE\fP" "\fBBOOLEAN\fP"
+replace the byte at the current position by
+.I byte
+and increment the current position by 1.
+Return of
+.B FALSE
+indicates write errors.
+.If seek "; \fIcnt\fP: \fICount\fP; \fIwhence\fP: \fIWhence\fP" "\fBBOOLEAN\fP"
+sets the current position in dependence of
+.I whence
+and
+.I cnt
+to:
+.Tb fromStart
+.Tp fromStart
+new position at \fIcnt\fP
+.Tp fromPos
+new position at the current position + \fIcnt\fP
+.Tp fromEnd
+new position at the length of the stream + \fIcnt\fP
+.Te
+.If tell "; \fBVAR\fP \fIcount\fP: \fICount\fP" "\fBBOOLEAN\fP"
+stores the current position into
+.IR count .
+This operation should not fail in normal case.
+.I Streams
+calls
+.I tell
+for buffered streams after opening.
+In case of failures
+.I Streams
+assumes a starting position of 0.
+In normal case
+.I Streams
+keeps track of the current position.
+This interface procedure is called only
+in case of unbuffered streams,
+or if
+.I Seek
+is called relative to the stream length
+(\fIfromEnd\fP) or if
+.I Touch
+is called.
+.If flush "" "\fBBOOLEAN\fP"
+is called by \fIFlush\fP
+after having performed the necessary write operations.
+This interface procedure allows the implementation to propagate
+\fIFlush\fP operations to an underlying stream.
+.If trunc "; \fIcnt\fP: \fICount\fP" "\fBBOOLEAN\fP"
+truncate the length of the stream to
+.IR cnt .
+Thus all bytes with addresses greater or equal to
+.I cnt
+are to be deleted.
+This call must not modify the current position.
+.If close "" "\fBBOOLEAN\fP"
+is called by
+.I Close
+and allows final cleanup.
+Return of
+.B FALSE
+indicates errors on cleanup
+but does not prevent the stream from being closed.
+.If handler "; \fBVAR\fP \fImsg\fP: \fIMessage\fP"
+allows the implementation of extended operations
+which are identified and parameterized by extensions of \fIMessage\fP.
+.Ef
+.PP
+The interface procedures of type
+.I AddrIOProc
+and
+.I BufIOProc
+must be equivalent to multiple calls of
+.I read
+or
+.I write
+(until the first failure) for buffered streams.
+Positive counts returned by reading procedures which are less
+than the requested count are not interpreted as failure.
+If necessary, \fIStreams\fP repeats reading until all requested bytes
+are read or a zero count is returned.
+.PP
+.I Init
+initializes the stream \fIs\fP for the interface specified by
+\fIif\fP and \fIcaps\fP with buffering mode \fIbufmode\fP.
+Note that \fIInit\fP does not allocate \fIs\fP.
+Buffering mode is one of
+.Tb bufpool
+.Tp nobuf
+All operations are translated to the
+appropriate interface procedures.
+.Tp onebuf
+One buffer of a system dependent size is allocated to
+reduce the number of interface procedure calls.
+.Tp linebuf
+Like \fIonebuf\fP but an automatic flush occurs if a
+line terminator is written
+(default 0AX; can be modified by \fILineTerm\fP).
+Line buffered streams may be tied together.
+In case of read operations from line buffered streams
+the line buffered output of the associated stream gets flushed.
+This buffering mode is intended for interactive line oriented I/O
+and is much more efficient than \fInobuf\fP.
+.Tp bufpool
+A set of buffers serves as cache of the underlying implementation.
+The number of buffers may be retrieved and set by
+\fIGetBufferPoolSize\fP and \fISetBufferPoolSize\fP.
+.Te
+This procedure is called by modules which implement a abstraction.
+Normal user programs call open procedures of abstraction implementations
+(e.g. \fIUnixFiles.Open\fP).
+.PP
+.I GetBufMode
+returns the buffering mode associated with \fIs\fP.
+.PP
+.I LineTerm
+allows to change the line terminator for line buffered streams.
+The default line terminator is newline (0AX).
+.PP
+.I Tie
+ties the line buffered stream \fIin\fP
+to the stream \fIout\fP,
+i.e. read operations on \fIin\fP cause \fIout\fP to be flushed.
+Bidirectional line buffered streams are always tied to themselves,
+so \fITie\fP must not be called if \fIin\fP is equal to \fIout\fP.
+Streams may be untied by calling \fITie\fP with \fIout\fP set
+to \fBNIL\fP.
+.PP
+.I GetBufferPoolSize
+and
+.I SetBufferPoolSize
+return and set the number of buffers.
+The number of buffers may only be modified if
+\fIbufpool\fP has been taken as buffering mode.
+.PP
+.I Capabilities
+returns the capabilities of the given stream.
+.PP
+.I GetFlushEvent
+returns an event type which will be raised
+\fIbefore\fP executing any flush operations
+(either call \fIFlush\fP or internal flush operations).
+This event type is suitable for bidirectional streams and allows
+to empty the input queue before the output queue gets flushed.
+.PP
+.I GetCloseEvent
+returns like
+.I GetFlushEvent
+an event type which will be raised \fIbefore\fP
+the stream is shut by the close operation.
+\fIStreams\fP assures that this event will be raised with
+a priority which is greater than the current priority
+(see \fIEvents(3)\fP).
+This event type allows some final operations to be called.
+Note that \fIStreams\fP protects against recursive calls of
+\fIClose\fP or \fIRelease\fP (in this case a \fINestedCall\fP
+error would be returned for the first call).
+.PP
+.I Close
+closes \fIs\fP.
+The value of
+.I s
+remains unchanged to allow examination of the public components
+(this is useful in case of errors).
+.I Release
+works like \fIClose\fP but does not return a \fBBOOLEAN\fP value.
+Note that \fIStreams\fP maintains a list of open streams
+which may need some cleanup on termination
+(i.e. streams which have a close interface procedure or are buffered).
+These streams are therefore not subject to the garbage collection
+as long as \fIClose\fP has not been called for them.
+.PP
+.I Streams
+supports the mechanisms of \fIResources(3)\fP:
+.IP \(bu
+\fIRelease\fP is called automatically for unreferenced streams.
+.IP \(bu
+\fIClose\fP and \fIRelease\fP cause the stream
+to terminate.
+.PP
+.I ReadByte
+assigns the byte at the current position to
+.I byte
+and increments the current position by one.
+.I ReadByte
+returns
+.B FALSE
+in case of end of stream (current position equals the stream length)
+or errors.
+.I WriteByte
+assigns
+.I byte
+to the byte at the current position
+and increments the current position by one.
+.I ReadByte
+and
+.I WriteByte
+are much faster than
+.I Read
+and
+.I Write
+for single bytes.
+.PP
+.I ReadPart
+and
+.I WritePart
+allow to read and write parts of \fIbuf\fP:
+.I off
+specifies the start position and
+.I cnt
+the number of bytes to be read or written.
+.I Read
+and
+.I Write
+call
+.I ReadPart
+and
+.I WritePart
+with
+.I off
+= 0
+and
+.I cnt
+= \fBLEN\fP(\fIbuf\fP).
+.PP
+Note that \fIWritePart\fP and \fIWrite\fP take \fIbuf\fP as
+\fBVAR\fP parameter to avoid the overhead of an unnecessary copy.
+Neither \fIWritePart\fP nor \fIWrite\fP modify \fIbuf\fP. If
+an arbitrary expression is to be passed, \fIWritePartC\fP and
+\fIWriteC\fP may be used instead.
+.PP
+\fIReadPart\fP tries to read the given number of bytes even when
+multiple calls of the read interface procedure are necessary.
+This may not be appropriate in cases where the first read operation
+wouldn't block but subsequent ones.
+\fIReadPacket\fP returns available input from the associated buffer
+or, in case of unbuffered streams or empty buffers, invokes one
+read operation.
+\fImaxcnt\fP specifies the maximal number of bytes to be read and
+\fIReadPart\fP returns the number of bytes actually copied into \fIbuf\fP.
+.PP
+.I Seek
+sets the current position in dependence of
+.I whence
+and
+.I cnt
+to:
+.Tb fromStart
+.Tp fromStart
+new position at \fIcnt\fP
+.Tp fromPos
+new position at the current position + \fIcnt\fP
+.Tp fromEnd
+new position at the length of the stream + \fIcnt\fP
+.Te
+If
+.I s
+is buffered
+then the seek-operation is possibly delayed to the next
+read or write operation.
+This can result in seek-related errors on subsequent read or write operations.
+.PP
+.I Tell
+returns the current position.
+This position can differ from the
+real position of the underlying implementation
+in case of buffered streams.
+.I Touch
+allows to synchronize both positions.
+.PP
+.I GetPos
+and
+.I SetPos
+work like \fITell\fP and \fISeek\fP (\fIwhence\fP \fB=\fP \fIfromStart\fP)
+without returning a \fBBOOLEAN\fP value.
+.PP
+.I Trunc
+truncates the length of the stream to
+.IR cnt .
+Thus all bytes with addresses greater or equal to
+.I cnt
+are deleted.
+This call does not modify the current position.
+.PP
+Stream buffering allows to undo read operations.
+At least one successful undo operation is guaranteed.
+Further undo operations require seek ability.
+.I Back
+decrements the current position by one.
+.I Insert
+works like
+.I Back
+but causes
+.I byte
+to be returned on next read operation.
+.PP
+.I Flush
+and
+.I Touch
+synchronize buffered streams with the underlying implementation.
+.I Flush
+is useful for output streams and causes the buffer to be flushed.
+The current position remains unchanged.
+.I Touch
+calls
+.IR Flush ,
+causes any buffer contents to be forgotten,
+and sets the current position to that of the underlying implementation.
+.LP
+.I InputInBuffer
+and
+.I OutputInBuffer
+return \fBTRUE\fP if any bytes are buffered for reading
+or writing resp.
+.I OutputWillBeBuffered
+returns \fBTRUE\fP if the next byte passed to one
+of the writing procedures will be buffered.
+.PP
+.I Send
+passes the given message to the handler associated with \fIs\fP.
+.PP
+.I Copy
+copies from the current position of \fIsource\fP to
+the current position of \fIdest\fP until
+end of file is reached or \fImaxcnt\fP bytes
+are copied (if \fImaxcnt\fP is non-negative).
+.PP
+Some streams are predefined.
+The
+.IR null -stream
+accepts any output and returns read requests with zero counts.
+The standard streams
+.IR stdin ,
+.IR stdout ,
+and
+.I stderr
+are initialized to
+.I null
+but are possibly reinitialized by other modules
+(e.g. \fIUnixFiles(3)\fP initializes them to the UNIX standard files).
+.br
+.ne 10v
+.SH DIAGNOSTICS
+Error indications besides success or failure can be read from
+the public components of the stream record:
+.Tb lasterror
+.Tp count
+gives the count of the last read or write operation.
+.Tp errors
+is incremented for each error.
+A typical application is to set \fIerrors\fP
+to 0, then to call some stream operations and
+finally to check \fIerrors\fP
+for being positive.
+.Tp error
+represents the success of the last operation.
+.Tp lasterror
+is set to the error code of the last failure.
+.Tp eof
+is \fBTRUE\fP if read operations return zero counts.
+.Te
+.LP
+Note that \fIRead\fP, \fIReadPart\fP, \fIWrite\fP, \fIWritePart\fP,
+\fIWriteC\fP, and \fIWritePartC\fP return \fBTRUE\fP only if they
+were able to read or write the full amount of bytes as requested.
+In case of partial read or writes, the \fIcount\fP component tells
+how many bytes were actually read or written.
+.LP
+Following error codes are currently implemented:
+.sp 0.5
+.Tb NoHandlerDefined
+.Tp NoHandlerDefined
+\fISend\fP was called but no handler is defined.
+.Tp NotLineBuffered
+\fILineTerm\fP must not be called for streams
+which are not line buffered.
+.Tp Unbuffered
+Operation must not be called for unbuffered streams,
+e.g. \fIBack\fP or \fIInsert\fP.
+.Tp BadParameters
+Bad parameter values,
+e.g. wrong counts or offsets.
+.Tp WriteFailed
+write error: less bytes than requested have been written.
+.Tp CannotWrite
+stream is read-only.
+.Tp ReadFailed
+read error: less bytes than requested have been read.
+.Tp CannotRead
+stream is write-only.
+.Tp SeekFailed
+failed seek operation:
+e.g. seek beyond stream length.
+.Tp CannotSeek
+stream is not capable of seeking.
+.Tp BadWhence
+\fIwhence\fP value is outside of [\fIfromStart\fP..\fIfromEnd\fP].
+.Tp TellFailed
+tell operation failed.
+.Tp CannotTell
+the underlying implementation does not maintain a current position.
+.Tp CannotTrunc
+stream is not capable of truncating.
+.Tp TruncFailed
+trunc operation failed,
+e.g. current position is beyond the given length.
+.Tp CloseFailed
+close operation of the underlying implementation ended with errors.
+.Tp NestedCall
+the given stream is locked.
+.Tp FlushFailed
+flush operation failed.
+.Te
+.PP
+Valid error numbers range from 0 to
+.IR errorcodes -1.
+The array
+.I errormsg
+contains readable error messages for all valid error numbers.
+.PP
+All stream related errors lead to events of type \fIerror\fP which are
+passed to \fIRelatedEvents(3)\fP for further handling.
+Modules calling \fIInit\fP are expected to decide
+whether stream related events are to be queued or
+to be forwarded to another object.
+By default, events of type \fIerror\fP are ignored.
+.PP
+An assertion of
+.I Init
+fails in case of invalid interfaces
+(e.g. empty set of capabilities).
+.SH "SEE ALSO"
+.Tb StreamDisciplines(3)
+.Tp RelatedEvents(3)
+error handling
+.Tp StreamConditions(3)
+allow nonblocking I/O operations
+.Tp StreamDisciplines(3)
+standard disciplines for streams
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: Streams.3,v 1.20 2004/05/22 06:44:10 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Streams.3,v $
+.\" Revision 1.20  2004/05/22 06:44:10  borchert
+.\" interface of Write and WritePart changed, WriteC and WritePartC added
+.\"
+.\" Revision 1.19  2003/07/10 09:22:02  borchert
+.\" typo fixed
+.\"
+.\" Revision 1.18  2000/12/13 10:39:27  borchert
+.\" Streams.Stream changed to Stream (invalid self-reference)
+.\"
+.\" Revision 1.17  1996/09/16  17:02:25  borchert
+.\" - base type changed from Disciplines.Object to Services.Object
+.\" - Assertions.Raise replaced by ASSERTs
+.\" - PreventClose/EnableClose removed
+.\" - stream parameter of Close is call by value (was call by reference)
+.\" - more precise statements about which if procedures are to be given
+.\" - support of Resources added
+.\" - formatting changed
+.\" - ASSERTs used instead of Assertions.Raise
+.\"
+.\" Revision 1.16  1994/07/01  10:58:03  borchert
+.\" ReadPart added
+.\" notice about list of open streams added
+.\"
+.\" Revision 1.15  1993/09/25  19:56:43  borchert
+.\" Tie added
+.\" FlushEvent and CloseEvent changed to GetFlushEvent and GetCloseEvent
+.\"
+.\" Revision 1.14  1993/04/07  13:53:19  borchert
+.\" the return type of Copy was missing
+.\"
+.\" Revision 1.13  1992/05/18  09:40:29  borchert
+.\" parameter s of Init is not a VAR-parameter
+.\"
+.\" Revision 1.12  1992/03/11  13:28:40  borchert
+.\" flush added to the interface procedures
+.\" FlushEvent added
+.\"
+.\" Revision 1.11  1992/02/18  07:24:09  borchert
+.\" new buffering mode: bufpool
+.\"
+.\" Revision 1.10  1992/01/13  08:09:35  borchert
+.\" InputInBuffer & OutputInBuffer
+.\"
+.\" Revision 1.9  1991/11/25  09:16:18  borchert
+.\" badif is now handled by Assertions
+.\"
+.\" Revision 1.8  1991/11/14  08:28:24  borchert
+.\" errormsg component removed (not necessary since RelatedEvents)
+.\"
+.\" Revision 1.7  91/11/12  08:45:09  borchert
+.\" Events.EventNumber replaced by Events.EventType
+.\" 
+.\" Revision 1.6  1991/06/21  15:33:41  borchert
+.\" minor fix
+.\"
+.\" Revision 1.5  91/06/18  16:28:44  borchert
+.\" Open replaced by Init
+.\" handler & Send added
+.\" 
+.\" Revision 1.4  91/01/04  15:47:08  borchert
+.\" some references to stream implementations added
+.\" 
+.\" Revision 1.3  91/01/04  09:09:31  borchert
+.\" some constant and type definitions added
+.\" 
+.\" Revision 1.2  90/10/01  12:32:53  oberon
+.\" error code NestedCall added
+.\" 
+.\" Revision 1.1  90/08/31  17:02:20  borchert
+.\" Initial revision
+.\" 
+.\" ---------------------------------------------------------------------------

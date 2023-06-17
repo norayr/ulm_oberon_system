@@ -1,0 +1,190 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2000 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: FTPResponse.om,v 1.1 2001/04/20 16:18:49 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: FTPResponse.om,v $
+   Revision 1.1  2001/04/20 16:18:49  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FTPResponses;
+
+   IMPORT ASCII, Events, NetIO, PersistentDisciplines, PersistentObjects,
+      PersistentTexts, Services, Streams, Strings, Texts, Write;
+
+   TYPE
+      Response = POINTER TO ResponseRec;
+      ResponseRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    code: INTEGER; (* 3 digits, see RFC 959 *)
+	    shorttext: ARRAY 80 OF CHAR; (* one line of text or "" *)
+	    text: Streams.Stream; (* may be NIL *)
+	 END;
+   VAR
+      responseType, textType: Services.Type;
+
+   TYPE
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    response: Response;
+	 END;
+
+   (* === PersistentObjects if procedures ================================ *)
+
+   PROCEDURE CreateResponse(VAR object: PersistentObjects.Object);
+      VAR
+	 response: Response;
+   BEGIN
+      NEW(response); response.code := 0;
+      response.shorttext := ""; response.text := NIL;
+      PersistentObjects.Init(response, responseType);
+      object := response;
+   END CreateResponse;
+
+   PROCEDURE ReadResponse(s: Streams.Stream;
+			  object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 text: PersistentTexts.Text;
+	 textGiven: BOOLEAN;
+   BEGIN
+      WITH object: Response DO
+	 IF ~NetIO.ReadInteger(s, object.code) OR
+	       ~NetIO.ReadBoolean(s, textGiven) THEN
+	    RETURN FALSE
+	 END;
+	 IF textGiven THEN
+	    object.shorttext := "";
+	    RETURN PersistentObjects.GuardedRead(s, textType, text) &
+		   PersistentTexts.Open(object.text, text, s)
+	 ELSE
+	    object.text := NIL;
+	    RETURN NetIO.ReadString(s, object.shorttext)
+	 END;
+      END;
+   END ReadResponse;
+
+   PROCEDURE WriteResponse(s: Streams.Stream;
+			   object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 text: PersistentTexts.Text;
+	 textGiven: BOOLEAN;
+   BEGIN
+      WITH object: Response DO
+	 textGiven := object.text = NIL;
+	 IF ~NetIO.WriteInteger(s, object.code) OR
+	       ~NetIO.WriteBoolean(s, textGiven) THEN
+	    RETURN FALSE
+	 END;
+	 IF textGiven THEN
+	    RETURN PersistentTexts.Create(text, object.text) &
+		   PersistentObjects.Write(s, text)
+	 ELSE
+	    RETURN NetIO.WriteString(s, object.shorttext)
+	 END;
+      END;
+   END WriteResponse;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE Init;
+      VAR
+	 persif: PersistentObjects.Interface;
+   BEGIN
+      Services.SeekType("PersistentTexts.Text", textType);
+      ASSERT(textType # NIL);
+      NEW(persif); persif.create := CreateResponse;
+      persif.read := ReadResponse; persif.write := WriteResponse;
+      PersistentObjects.RegisterType(responseType,
+	 "FTPResponses.Response", "PersistentDisciplines.Object",
+	 persif);
+   END Init;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR response: Response; code: INTEGER; text: ARRAY OF CHAR);
+      VAR
+	 resp: Response;
+   BEGIN
+      CreateResponse(resp);
+      resp.code := code;
+      IF Strings.Len(text) < 80 THEN
+	 COPY(text, resp.shorttext); resp.text := NIL;
+      ELSE
+	 resp.shorttext := "";
+	 Texts.Open(resp.text);
+	 Write.StringS(resp.text, text);
+	 Streams.SetPos(resp.text, 0);
+      END;
+      response := resp;
+   END Create;
+
+   PROCEDURE SendResponse(s: Streams.Stream; response: Response) : BOOLEAN;
+      VAR
+	 noflines: INTEGER;
+	 in: Streams.Stream;
+	 ch: CHAR;
+   BEGIN
+      ASSERT((response.code >= 100) & (response.code <= 599));
+      IF response.text = NIL THEN
+	 Strings.Open(in, response.shorttext);
+      ELSE
+	 in := response.text;
+      END;
+      noflines := 1; Streams.SetPos(in, 0);
+      WHILE Streams.ReadByte(in, ch) DO
+	 IF ch = ASCII.nl THEN
+	    INC(noflines);
+	 END;
+      END;
+
+      Streams.SetPos(in, 0);
+      REPEAT
+	 DEC(noflines);
+	 Write.IntS(s, response.code, 3); IF s.count = 0 THEN RETURN FALSE END;
+	 IF noflines = 0 THEN
+	    ch := " ";
+	 ELSE
+	    ch := "-";
+	 END;
+	 IF ~Streams.WriteByte(s, ch) THEN RETURN FALSE END;
+	 LOOP
+	    IF ~Streams.ReadByte(in, ch) THEN EXIT END;
+	    IF ch = ASCII.nl THEN EXIT END;
+	    IF ~Streams.WriteByte(s, ch) THEN RETURN FALSE END;
+	    IF ch = 0FFX THEN
+	       IF ~Streams.WriteByte(s, ch) THEN RETURN FALSE END;
+	    END;
+	 END;
+	 IF ~Streams.WriteByte(s, ASCII.cr) OR
+	       ~Streams.WriteByte(s, ASCII.nl) THEN
+	    RETURN FALSE
+	 END;
+      UNTIL noflines = 0;
+      RETURN TRUE
+   END SendResponse;
+
+BEGIN
+   Init;
+END FTPResponses.

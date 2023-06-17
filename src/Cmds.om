@@ -1,0 +1,204 @@
+(* Glueck: select one or more sentences from a set of files per random *)
+(* University of Ulm, SAI, Helmholtzstr. 18, D-7900 Ulm  --   AFB 7/92 *)
+
+MODULE Cmds;
+
+   IMPORT Disciplines, Print, R := Read, Streams, Strings, Write;
+
+   CONST
+      unlimited = -1; (* for maxargs *)
+
+      (* return values of Read *)
+      unknown = -1; (* cmd not recognized *)
+      done = -2; (* no further action necessary, e.g. usage has been printed *)
+      error = -3; (* input errors occured *)
+      empty = -4; (* empty input line *)
+
+   TYPE
+      Set = SET; (* set of command codes *)
+
+   TYPE
+      Name = ARRAY 32 OF CHAR;
+      Text = ARRAY 80 OF CHAR;
+      Command = POINTER TO CommandRec;
+      CommandRec =
+	 RECORD
+	    code: INTEGER;
+	    name: Name;
+	    minargs, maxargs: INTEGER;
+	    usage: Text;
+	    help: Text;
+	    next: Command;
+	 END;
+      Discipline = POINTER TO DisciplineRec;
+      DisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    head, tail: Command;
+	    longestcmd: LONGINT;
+	    legal: Set;
+	    out: Streams.Stream;
+	 END;
+   VAR
+      discId: Disciplines.Identifier;
+
+   PROCEDURE FetchDiscipline(s: Streams.Stream; VAR disc: Discipline);
+   BEGIN
+      IF ~Disciplines.Seek(s, discId, disc) THEN
+	 NEW(disc); disc.id := discId;
+	 disc.head := NIL; disc.tail := NIL;
+	 disc.longestcmd := 0; disc.legal := {};
+	 disc.out := s;
+	 Disciplines.Add(s, disc);
+      END;
+   END FetchDiscipline;
+
+   PROCEDURE Add(s: Streams.Stream;
+		 code: INTEGER;        (* >=0, identifies the command *)
+		 name: ARRAY OF CHAR;  (* name of the command *)
+		 minargs: INTEGER;     (* minimal number of args *)
+		 maxargs: INTEGER;     (* maximal number of args; -1=unltd *)
+		 usage: ARRAY OF CHAR; (* usage text w/o Usage: and cmd name *)
+		 help: ARRAY OF CHAR   (* short description *)
+		 );
+      VAR
+	 disc: Discipline;
+	 cmd: Command;
+	 len: LONGINT;
+   BEGIN
+      FetchDiscipline(s, disc);
+      NEW(cmd);
+      cmd.code := code; COPY(name, cmd.name);
+      cmd.minargs := minargs; cmd.maxargs := maxargs;
+      COPY(usage, cmd.usage); COPY(help, cmd.help);
+
+      len := Strings.Len(name);
+      IF len > disc.longestcmd THEN
+	 disc.longestcmd := len;
+      END;
+
+      IF (code >= 0) & (code <= MAX(SET)) THEN
+	 INCL(disc.legal, code);
+      END;
+
+      cmd.next := NIL;
+      IF disc.head = NIL THEN
+	 disc.head := cmd;
+      ELSE
+	 disc.tail.next := cmd;
+      END;
+      disc.tail := cmd;
+   END Add;
+
+   PROCEDURE SetOutput(s, out: Streams.Stream);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      FetchDiscipline(s, disc);
+      disc.out := out;
+   END SetOutput;
+
+   PROCEDURE Legal(s: Streams.Stream; set: Set);
+      (* set the set of legal commands *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      FetchDiscipline(s, disc);
+      disc.legal := set;
+   END Legal;
+
+   PROCEDURE Read(s: Streams.Stream;
+		  VAR nfields: INTEGER;
+		  VAR fields: ARRAY OF ARRAY OF CHAR) : INTEGER;
+      (* read an entire line and return the command code together
+	 with its fields
+      *)
+      VAR
+	 disc: Discipline;
+	 cmdname: Name;
+	 rest: ARRAY 4 OF CHAR;
+	 argcountwrong: BOOLEAN;
+	 help: BOOLEAN;
+	 cmd: Command;
+
+      PROCEDURE PrintHelp;
+      BEGIN
+	 cmd := disc.head;
+	 WHILE cmd # NIL DO
+	    IF (cmd.code >= 0) & (cmd.code < MAX(SET)) &
+		  (cmd.code IN disc.legal) THEN
+	       Print.S3(disc.out,
+		  "%-*s %s\n", disc.longestcmd, cmd.name, cmd.help);
+	    END;
+	    cmd := cmd.next;
+	 END;
+      END PrintHelp;
+
+      PROCEDURE Match(cmd: Command; cmdname: Name) : BOOLEAN;
+      BEGIN
+	 IF (cmd.code >= 0) & (cmd.code <= MAX(SET)) &
+	       ~(cmd.code IN disc.legal) THEN
+	    RETURN FALSE
+	 END;
+	 RETURN cmd.name = cmdname
+      END Match;
+
+   BEGIN
+      FetchDiscipline(s, disc);
+      IF ~R.FieldS(s, cmdname) THEN
+	 IF s.error OR s.eof THEN
+	    RETURN error
+	 ELSE
+	    R.LnS(s); RETURN empty
+	 END;
+      END;
+      help := (cmdname = "?") OR (cmdname = "help");
+
+      nfields := 0;
+      LOOP
+	 IF nfields >= LEN(fields) THEN EXIT END;
+	 IF ~R.FieldS(s, fields[nfields]) THEN EXIT END;
+	 INC(nfields);
+      END;
+      argcountwrong := (nfields = LEN(fields)) & R.FieldS(s, rest);
+      IF ~s.eof THEN
+	 R.LnS(s);
+      END;
+
+      IF help THEN
+	 IF nfields >= 1 THEN
+	    COPY(fields[0], cmdname);
+	 ELSE
+	    PrintHelp; RETURN done
+	 END;
+      END;
+
+      cmd := disc.head;
+      WHILE (cmd # NIL) & ~Match(cmd, cmdname) DO
+	 cmd := cmd.next;
+      END;
+
+      IF cmd = NIL THEN
+	 IF help THEN
+	    PrintHelp; RETURN done
+	 END;
+	 RETURN unknown
+      END;
+      argcountwrong := argcountwrong & (cmd.maxargs >= 0);
+      help := help OR argcountwrong OR
+	      (nfields < cmd.minargs) OR
+	      (cmd.maxargs >= 0) & (nfields > cmd.maxargs);
+      IF help THEN
+	 Write.StringS(disc.out, "Usage: ");
+	 Write.StringS(disc.out, cmd.name);
+	 Write.CharS(disc.out, " ");
+	 Write.LineS(disc.out, cmd.usage);
+	 RETURN done
+      END;
+
+      RETURN cmd.code
+   END Read;
+
+BEGIN
+   discId := Disciplines.Unique();
+END Cmds.

@@ -1,0 +1,97 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: UnixNames.om,v 1.4 2004/04/02 18:34:39 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: UnixNames.om,v $
+   Revision 1.4  2004/04/02 18:34:39  borchert
+   entirely rewritten: we no longer find the address of the Oberon
+   name service within a file but through a network service that
+   is found through DNS TXT records
+
+   Revision 1.3  1998/04/18 14:07:01  martin
+   default root filename changed
+
+   Revision 1.2  1998/04/05  15:33:31  martin
+   filename of nameserver root is now taken from environment
+
+   Revision 1.1  1996/09/18  18:32:25  martin
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Martin Hasch, Sep 1994
+   ----------------------------------------------------------------------------
+*)
+
+MODULE UnixNames;
+
+   IMPORT ConstStrings, DNSRecords, IPv4NameSystems, Names, RelatedEvents,
+      UnixEnvironment, UnixHost;
+
+   CONST
+      rootEnvironment = "ONS_ROOT";
+      rootLinkName = "pub";
+
+   VAR
+      errors: RelatedEvents.Object;
+      ignore: BOOLEAN;
+
+   PROCEDURE ImportPublicRoot(errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 root: Names.Node;
+	 name: Names.Name;
+	 ok: BOOLEAN;
+
+      PROCEDURE Try(spec: ARRAY OF CHAR) : BOOLEAN;
+      BEGIN
+	 RETURN IPv4NameSystems.ImportFrom(spec, root, errors)
+      END Try;
+
+      PROCEDURE TryThemAll() : BOOLEAN;
+	 VAR
+	    rootspec: DNSRecords.Name;
+      BEGIN
+	 IF UnixEnvironment.String(rootEnvironment, rootspec) &
+	       Try(rootspec) THEN
+	    RETURN TRUE
+	 END;
+	 UnixHost.GetFullyQualifiedHostName(rootspec);
+	 IF Try(rootspec) THEN RETURN TRUE END;
+	 UnixHost.GetDomainName(rootspec);
+	 IF Try(rootspec) THEN RETURN TRUE END;
+	 UnixHost.GetHostName(rootspec);
+	 IF Try(rootspec) THEN RETURN TRUE END;
+	 RETURN FALSE
+      END TryThemAll;
+
+   BEGIN (* ImportRoot *)
+      IF ~TryThemAll() THEN RETURN FALSE END;
+      ASSERT(root # NIL);
+      ConstStrings.Create(name, rootLinkName);
+      RelatedEvents.Save(Names.root);
+      RelatedEvents.Forward(Names.root, errors);
+      ok := Names.Insert(Names.root, root, name, NIL);
+      RelatedEvents.Restore(Names.root);
+      RETURN ok
+   END ImportPublicRoot;
+
+BEGIN
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+   ignore := ImportPublicRoot(errors);
+END UnixNames.

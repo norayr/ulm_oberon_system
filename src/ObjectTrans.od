@@ -1,0 +1,94 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1996 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ObjectTrans.od,v 1.1 1996/11/25 08:08:25 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ObjectTrans.od,v $
+   Revision 1.1  1996/11/25  08:08:25  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION ObjectTransactions;
+
+   (* trivial case of Transactions with just one object *)
+
+   IMPORT Events, Objects, RelatedEvents, Services, Shards, Transactions;
+
+   TYPE
+      Object = Services.Object;
+
+   TYPE
+      BeginProc = PROCEDURE (object: Object;
+                             trans: Transactions.Transaction) : BOOLEAN;
+      TransProc = PROCEDURE (object: Object) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    begin: BeginProc;
+	    commit, abort, release: TransProc;
+	 END;
+
+   CONST
+      notSupported = 0; (* given object has no support for ObjectTransactions *)
+      oneObjectOnly = 1; (* just one object may be attached *)
+      alreadyAttached = 2; (* object is already attached to a transaction *)
+      authorizationFailed = 3; (* given shard was not valid *)
+      invalidTransition = 4; (* invalid state transition *)
+      noObjectAttached = 5; (* transactions must not be started w/o object *)
+      transReleased = 6; (* transaction is already released *)
+      errors = 7;
+   TYPE
+      ErrorCode = SHORTINT; (* notSupported..noObjectAttached *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* implementors side *)
+
+   PROCEDURE Register(type: Services.Type; if: Interface);
+      (* to be called during the initialization of the module
+	 that defines type
+      *)
+
+   (* client side *)
+
+   PROCEDURE Supported(object: Object) : BOOLEAN;
+      (* is object supported by ObjectTransactions? *)
+
+   PROCEDURE Create(VAR trans: Transactions.Transaction;
+                    object: Object; pot: Shards.Pot;
+		    errors: RelatedEvents.Object) : BOOLEAN;
+      (* create a transaction just for this object;
+         others must not be attached to this transaction;
+	 if object = NIL then exactly one object may be
+	 attached to this transaction;
+	 this object must be supported by ObjectTransactions;
+	 all transaction operation must be authorized if pot is non-NIL
+      *)
+
+END ObjectTransactions.

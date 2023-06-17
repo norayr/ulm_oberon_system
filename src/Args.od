@@ -1,0 +1,230 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: Args.od,v 1.3 2004/03/09 21:33:26 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: Args.od,v $
+   Revision 1.3  2004/03/09 21:33:26  borchert
+   CreateCopyOf added
+
+   Revision 1.2  1995/04/13 14:24:28  borchert
+   major revision:
+   - layout & formatting changed
+   - TypeInterface: init removed
+   - ScannerInterface replaced by ScanProc
+   - IteratorArg renamed to Argument and simplified
+   - ChangeNotification: reference to arg instead of name
+   - assertion of Assertion replaced by real assertion
+   - error events added
+   - global vars helpIndentationWidth & domain removed
+
+   Revision 1.1  1994/10/28  10:29:27  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+   Jan Oliver Stibane -- October 1994
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION Args;
+
+(* In comments: U:= User, P:= Provider, S:= System-dependent. *)
+
+   IMPORT Disciplines, Events, Iterators, Objects, PersistentDisciplines,
+      Services, Streams;
+
+   CONST 
+      nameLen = 256;
+   TYPE
+      Name = ARRAY nameLen OF CHAR;
+
+   TYPE
+      Value = POINTER TO ValueRec;
+      ValueRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+      Arguments = POINTER TO ArgumentsRec;
+      ArgumentsRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+      ReadProc = PROCEDURE(s: Streams.Stream; VAR value: Value) : BOOLEAN;
+	 (* Read an expanded value of a certain type out of an *)
+	 (* open stream. FALSE if the value cannot be read.    *)
+
+      PrintProc = PROCEDURE(s: Streams.Stream; value: Value);
+	 (* Prints value in a readable form into the stream.  *)
+
+      HelpProc = PROCEDURE(s: Streams.Stream);
+	 (* Writes a help text into an open stream, *)
+
+      TypeInterface = POINTER TO TypeInterfaceRec;
+      TypeInterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    read: ReadProc; (* obligatory *)
+	    print: PrintProc;  (* obligatory *)
+	    help: HelpProc;   (* optional *)
+	 END;
+
+      Type = POINTER TO TypeRec; 
+      TypeRec =
+	 RECORD 
+	    (Disciplines.ObjectRec)
+	    name: Name;         (* The extensions of ValueRec is called e.g.  *)
+	    moduleName: Name;   (* `bool', and is defined in Modul `BoolArgs'.*)
+	 END;
+
+      ScanProc = PROCEDURE (args: Arguments);
+      ScannerList = POINTER TO ScannerListRec;
+      ScannerListRec = RECORD (Disciplines.ObjectRec) END;
+      
+      Argument = POINTER TO ArgumentRec;
+      ArgumentRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    name: Name;
+	    short: CHAR;
+	    type: Type;
+	    description: Name;
+	 END;
+
+      ChangeNotification = POINTER TO ChangeNotificationRec;
+      ChangeNotificationRec =
+	 RECORD
+	    (Events.EventRec)
+	    args: Arguments;
+	    arg: Argument;
+	 END;
+
+   CONST
+      lowPriority    = 0; (* The results of the scanner may be overwritten.  *)
+      middlePriority = 1; (* Every scanner who doesn't care.                 *)
+      highPriority   = 2; (* A scanner who wants to be called at the end.    *)
+
+   TYPE
+      Priority = INTEGER;
+	 (* scanners with higher priority are registered later. *)
+
+   VAR 
+      systemScanners: ScannerList; (* predefined Scanners *)
+
+   CONST
+      cannotReadArgs     = 0;    (* failed to read list of arguments *)
+      unknownTypeName    = 1;    (* unknown type name encountered *)
+      twiceDefined       = 2;    (* an argument name has been defined twice *)
+      cannotWriteArgs    = 3;    (* failed to write list of arguments *)
+      unknownArgName     = 4;    (* an unknown argument name was given *)
+      namedErrors = {unknownTypeName, twiceDefined, unknownArgName};
+      errorcodes         = 5;    (* number of error codes *)
+   TYPE
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: SHORTINT;
+	    name: Name;
+	 END;
+   VAR
+      errormsg: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType; 
+
+   PROCEDURE Create(VAR args: Arguments);
+      (* U: Create an empty argument collection. *)
+
+   PROCEDURE CreateCopyOf(VAR args: Arguments; orig: Arguments);
+      (* U: create copy of orig *)
+
+   PROCEDURE Define (args: Arguments; name: ARRAY OF CHAR;
+	             short: CHAR; type: Type; description: ARRAY OF CHAR);
+      (* U: Define what I want to have. "short" may be 0X. *)
+
+   PROCEDURE Exists(args: Arguments; name: ARRAY OF CHAR) : BOOLEAN;
+      (* U,S: Is name defined ?  Name can be "short". *)
+
+   PROCEDURE Scan (args: Arguments; scanners: ScannerList);
+      (* U: Call to a ScannerList like systemScanners with *) 
+      (*    "UnixCommandLine.Scan(args)","UnixEnvironment.Scan(args)",*)
+      (*    ... which will fill the arguments in. *)
+
+   PROCEDURE ScanValue(args: Arguments; name: ARRAY OF CHAR;
+		       stream: Streams.Stream) : BOOLEAN;
+      (* S: Called by a Scanner if he has found "name"
+	 and wants to push the value.
+      *)
+
+   PROCEDURE GetValue (args: Arguments; name: ARRAY OF CHAR; VAR value: Value);
+      (* U: Pick up the value with name "name".*)
+      (*    later: WITH value: IntArgs.Integer DO ... *)
+
+   PROCEDURE SetValue (args: Arguments; name: ARRAY OF CHAR; value: Value);
+      (* U: Set the value of name to value. In case of value being already set *)
+      (*    an event ChangeNotification is created. *)
+
+   PROCEDURE GetNotification (args: Arguments; name: ARRAY OF CHAR;
+	 VAR eventType: Events.EventType);
+      (* U: RETURNS NIL in `eventType' if the argument of name is not *)
+      (*    existent; the event type of `name' otherwise. *)
+
+   PROCEDURE Seek(args: Arguments; name: ARRAY OF CHAR; VAR arg: Argument);
+      (* U: returnes the specified arg, if present *)
+
+
+   PROCEDURE DefineType (type: Type; if: TypeInterface; valtype: Services.Type);
+      (* P: called by XXXArgs modules to define a new type;
+	    NEW(type) is to be called by the caller before;
+	    valtype is the Services.Type of the associated extension
+	    of Args.Value
+      *)
+
+   PROCEDURE TypeHelp(args: Arguments; type: Type; s: Streams.Stream);
+      (* U: Get Help for Type, information is written into the open stream s. *)
+
+   PROCEDURE IterateTypes(VAR it: Iterators.Iterator);
+      (* U: Create an Iterator for examinating all defined types.
+	 Yield's a "type".
+      *)
+
+   PROCEDURE Print(args: Arguments; name: ARRAY OF CHAR; s: Streams.Stream);
+      (* U: Prints the value of the given argument onto the stream s. *)
+
+   PROCEDURE PrintValue(s: Streams.Stream; value: Value);
+      (* U: Print the given value onto the stream s;
+	    the value must have a type which has been declared by DefineType
+      *)
+
+   PROCEDURE ReadValue(s: Streams.Stream; type: Type;
+                       VAR value: Value) : BOOLEAN;
+      (* UP: Read a value of the given type from the given stream *)
+
+   PROCEDURE AssignPrintProc(s: Streams.Stream; type: Type; print: PrintProc);
+      (* U: Assign a new PrintProc for type to a stream *)
+
+   PROCEDURE RegisterScanner (scanners: ScannerList; scan: ScanProc;
+			      priority: Priority);
+      (* S: Called e.g. by UnixCommandline to provide a possibility to get Args. *)
+
+   PROCEDURE CreateScannerList(VAR list: ScannerList);
+      (* USP: Create a new scannerlist. E.g. Args provides systemScanners. *)
+
+   PROCEDURE IterateArgs(args: Arguments; VAR it: Iterators.Iterator);
+      (* U: Create an Iterator for examinating all arguments.*)
+
+   PROCEDURE String2Type(string: ARRAY OF CHAR) : Type;
+      (* U: Returns e.g. for "bool" the Type. Now it's possible to get more *)
+      (*    information by calling TypeHelp. *)
+
+END Args.

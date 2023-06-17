@@ -1,0 +1,131 @@
+MODULE ToLink;
+
+IMPORT Streams, UnixFiles, RelatedEvents,Objects, Conclusions, SYSTEM, Write,
+       PersistentObjects, CompilerObjects, Res := OberonI386Results,
+       PersistentTexts, ModularizedStructures, CompilerKeys, ASCII, Iterators,
+       ConstStrings, PersistentDisciplines, Times, Architectures, Read,
+       Relocations;
+
+PROCEDURE WriteCode (s : Streams.Stream; txt : PersistentTexts.Text);
+   VAR
+	i : INTEGER;
+	dgt1,dgt2 : SHORTINT;
+	ins : Streams.Stream;
+	c : CHAR;
+	err : RelatedEvents.Object;
+BEGIN
+	IF txt = NIL THEN RETURN END;
+	ASSERT(PersistentTexts.Open(ins, txt, err));
+	Read.CharS (ins, c);
+	Write.StringS (s, "       ");
+	i := 0;
+	LOOP
+		IF i > 15 THEN
+		   i := 0;
+		   Write.LnS(s);
+		   Write.StringS (s, "       ");
+		END;
+		INC(i);
+		Write.Int (ORD(c), 4);
+		Read.CharS (ins, c);
+		IF ins.eof THEN EXIT END;
+	END;
+	Write.LnS(s);
+END WriteCode;
+
+PROCEDURE WriteSym (s : Streams.Stream; sym : Res.Symbol; module : ConstStrings.String);
+BEGIN
+   Write.StringS (s, "SYM: "); ConstStrings.Write (s, module);
+   Write.StringS (s, "_"); ConstStrings.Write (s, sym.name);
+   Write.StringS (s, " "); Write.Int (sym.offset, 0);
+   Write.LnS(s);
+END WriteSym;
+
+PROCEDURE WriteReloc (s : Streams.Stream; reloc : Res.Reloc);
+BEGIN
+   IF reloc.type = Relocations.noReloc THEN
+      RETURN
+   END;
+   Write.String ("RELOC: ");
+   CASE reloc.type OF
+   | Relocations.addSym: Write.StringS (s, "ADD ");
+   | Relocations.setSym: Write.StringS (s, "SET ");
+   END;
+   Write.IntS (s, reloc.offset, 0); Write.StringS (s, " ");
+   Write.IntS (s, reloc.size, 0); Write.StringS (s, " ");
+   ConstStrings.Write (s, reloc.symref.modname); Write.StringS (s, "_");
+   ConstStrings.Write (s, reloc.symref.symname); Write.LnS (s); 
+END WriteReloc;
+
+
+PROCEDURE WriteBlock (s : Streams.Stream; blk : Res.Block; module : ConstStrings.String);
+   VAR
+      it : Iterators.Iterator;
+      sym : Res.Symbol;
+      reloc : Res.Reloc;
+BEGIN
+   Write.StringS (s, "NEW BLOCK"); Write.LnS(s);
+   Res.GetSymbols (it, blk);
+   WHILE Iterators.Get (it, sym) DO
+      WriteSym (s, sym, module);
+   END;
+   Res.GetRelocs (it, blk);
+   WHILE Iterators.Get (it, reloc) DO
+      WriteReloc (s, reloc);
+   END;
+   IF Res.read IN blk.mode THEN
+      Write.Char ("r");
+   ELSE
+      Write.Char ("-");
+   END;
+   IF Res.write IN blk.mode THEN
+      Write.Char ("w");
+   ELSE
+      Write.Char ("-");
+   END;
+   IF Res.execute IN blk.mode THEN
+      Write.Char ("x");
+   ELSE
+      Write.Char ("-");
+   END;
+   Write.IntS (s, blk.datalen, 10);
+   Write.IntS (s, blk.memlen, 10);
+   Write.IntS (s, blk.align, 10);
+   Write.LnS (s);
+   Write.StringS (s, "{"); Write.LnS(s);
+   WriteCode (s, blk.data);
+   Write.StringS (s, "}"); Write.LnS(s);
+END WriteBlock;
+
+
+PROCEDURE Init ();
+   VAR
+      txt,hdr : PersistentObjects.Object;
+      obj : CompilerObjects.Object;
+      table : ModularizedStructures.ObjectTable;
+      outs : Streams.Stream;
+      ins  : Streams.Stream;
+      blk : Res.Block;
+BEGIN
+   ModularizedStructures.CreateTable (table);
+   ASSERT(PersistentObjects.Read (Streams.stdin, hdr));
+   ASSERT(PersistentObjects.Read (Streams.stdin, txt));
+   WITH hdr : CompilerObjects.Header DO
+      WITH txt : PersistentTexts.Text DO
+         ASSERT(CompilerObjects.ConvertTextToObject (txt, table, hdr, obj, NIL));
+	 WITH obj : Res.Result DO
+	    blk := obj.blocks;
+	    WHILE blk # NIL DO
+	       WriteBlock (Streams.stdout, blk, obj.name);
+	       blk := blk.next;
+	    END;
+	    Write.StringS(Streams.stdout, "END"); Write.LnS(Streams.stdout);
+	 END;
+      END;
+   END;
+END Init;
+
+
+BEGIN
+	Init;
+END ToLink.
