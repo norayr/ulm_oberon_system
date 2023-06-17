@@ -1,11 +1,12 @@
 MODULE AdiTerm;
 
-   IMPORT Args := UnixArguments, ASCII, Conclusions, Conditions, Coroutines,
-      Errors, EventConditions, Events, InetResolver, IPv4Addresses,
-      IPv4TCPSockets, LocalSemaphores, Process, Read, RelatedEvents,
-      Semaphores, StreamConditions, StreamDisciplines, Streams, Strings,
-      SYSTEM, Tasks, TermAttributes, Terminals, TermKeys, TermLineGraphics,
-      TLG := TermLineGraphics, UnixTerminals, Write;
+   IMPORT AdiTermColors, Args := UnixArguments, ASCII, Conclusions,
+      Conditions, Coroutines, Errors, EventConditions, Events, InetResolver,
+      IPv4Addresses, IPv4TCPSockets, LocalSemaphores, Process, Read,
+      RelatedEvents, Semaphores, StreamConditions, StreamDisciplines,
+      Streams, Strings, SYSTEM, Tasks, TermAttributes, TermColors, Terminals,
+      TermKeys, TermLineGraphics, TLG := TermLineGraphics, UnixTerminals,
+      Write;
 
    CONST
       msglen = 512;
@@ -118,11 +119,32 @@ MODULE AdiTerm;
    PROCEDURE Output(line: Line);
       VAR
 	 index: INTEGER;
+	 colors: AdiTermColors.ColorSetting;
    BEGIN
+      IF TermColors.Supported(Terminals.console) THEN
+	 AdiTermColors.Process(line, colors);
+      ELSE
+	 colors := NIL;
+      END;
       Terminals.SetCursor(Terminals.console, status.lines-3, 0);
       Write.CharS(Terminals.console, ASCII.nl);
       index := 0;
       WHILE (index < LEN(line)) & (line[index] # 0X) DO
+	 IF (colors # NIL) & (colors.index = index) THEN
+	    IF colors.reset THEN
+	       TermColors.Reset(Terminals.console);
+	    ELSIF colors.changefg & colors.changebg THEN
+	       TermColors.Set(Terminals.console,
+		  colors.fgcolor, colors.bgcolor);
+	    ELSIF colors.changefg THEN
+	       TermColors.SetForeground(Terminals.console,
+		  colors.fgcolor);
+	    ELSIF colors.changebg THEN
+	       TermColors.SetBackground(Terminals.console,
+		  colors.bgcolor);
+	    END;
+	    colors := colors.next;
+	 END;
          Write.CharS(Terminals.console, line[index]);
 	 INC(index);
 	 IF (index MOD status.columns = 0) & (line[index] # 0X) THEN
@@ -132,6 +154,9 @@ MODULE AdiTerm;
 	       Terminals.SetCursor(Terminals.console, status.lines-2, 0);
             END;
          END;
+      END;
+      IF TermColors.Supported(Terminals.console) THEN
+	 TermColors.Reset(Terminals.console);
       END;
       WHILE index MOD status.columns # 0 DO
 	 INC(index);

@@ -88,7 +88,7 @@ MODULE I386LinuxOberonBuiltIns; (* Christian Ehrhardt *)
        *)
        sigsetbytes = 8;
        sigactwords = 3+(sigsetbytes+3) DIV 4;
-       sigflags = 008000004H;   (* SA_ONSTACK | SA_SIGINFO *)
+       sigflags = 00C000004H;   (* SA_ONSTACK | SA_SIGINFO | SA_RESTORER *)
 
    CONST
       dummytagsize = 20; (* 5 words. *)
@@ -632,10 +632,18 @@ MODULE I386LinuxOberonBuiltIns; (* Christian Ehrhardt *)
 	       END;
 	    END;
 	    i := 0;
-	    WHILE i < sigactwords - 2 DO
+	    WHILE i < sigactwords - 3 DO
 	       INC(i);
 	       Emit.Instr1 (proc.s, Pentium.PUSH, Op.RegOp (reg, 4));
 	    END;
+	    NEW (ref);
+	    ConstStrings.Create (ref.modname, "_rt");
+	    ConstStrings.Create (ref.symname, "_sigreturn");
+	    Reloc.Create (req, proc.s, Reloc.addSym, ref);
+	    op := Op.ImmIntFixed (0, 4 (* address *));
+	    Op.RelocOpen (op, req);
+	    Emit.Instr2 (proc.s, Pentium.MOV, Op.RegOp (reg, 4), op);
+	    Emit.Instr1 (proc.s, Pentium.PUSH, Op.RegOp (reg, 4));
 	    Regs.DestroyOwnedValue (reg, own);
 	    Emit.Instr1 (proc.s, Pentium.PUSH, op2);
 	    Regs.DestroyOwnedValue (op2.reg1, own);

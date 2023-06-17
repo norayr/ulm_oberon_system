@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: IPv4TCPSock.om,v 1.5 2004/03/09 21:28:55 borchert Exp $
+   $Id: IPv4TCPSock.om,v 1.5 2004/03/09 21:28:55 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: IPv4TCPSock.om,v $
    Revision 1.5  2004/03/09 21:28:55  borchert
@@ -41,8 +41,9 @@
 
 MODULE IPv4TCPSockets;
 
-   IMPORT Conditions, EphemeralPortRange, IPv4Addresses, RelatedEvents,
-      Streams, SysConversions, SysSockets, UnixSockets;
+   IMPORT Conditions, Disciplines, EphemeralPortRange, Errors, Events,
+      IPv4Addresses, RelatedEvents, Streams, SysConversions, SysSockets,
+      UnixSockets, Write;
 
    TYPE
       Socket = UnixSockets.Socket;
@@ -50,33 +51,111 @@ MODULE IPv4TCPSockets;
       SocketAddress = IPv4Addresses.SocketAddress;
       SysAddress = IPv4Addresses.SysAddress;
 
+   TYPE
+      ConditionDiscipline = POINTER TO ConditionDisciplineRec;
+      ConditionDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    address: SocketAddress; (* needed for error events only *)
+	 END;
+   VAR
+      cdid: Disciplines.Identifier;
+
+   CONST
+      openFailed = 0;
+      listenFailed = 1;
+      errors = 2;
+   TYPE
+      ErrorCode = SHORTINT; (* openFailed .. *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    address: SocketAddress;
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   (* === error handling ============================================= *)
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode;
+		   address: SocketAddress);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.address := address;
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IPv4Addresses.WriteText(s, event.address.host);
+	 Write.CharS(s, ":");
+	 Write.IntS(s, IPv4Addresses.GetPort(event.address), 1);
+	 Write.StringS(s, ": ");
+	 Write.StringS(s, event.message);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      errormsg[openFailed] := "IPv4 TCP socket could not be opened";
+      errormsg[listenFailed] := "cannot listen to this IPv4 address";
+      Events.Define(error);
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   (* === exported procedures ======================================== *)
+
    PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
 				 address: SocketAddress);
       VAR
 	 peerAddr: SysAddress;
+	 cd: ConditionDiscipline;
    BEGIN
       IPv4Addresses.ConvertToSys(address, peerAddr);
       UnixSockets.CreateOpenCondition(condition, SysSockets.afINET,
 	 SysSockets.stream, peerAddr, (* bind = *) FALSE, 0);
+      NEW(cd); cd.id := cdid; cd.address := address;
+      Disciplines.Add(condition, cd);
    END CreateOpenCondition;
 
    PROCEDURE CreateOpenConditionAs(VAR condition: Conditions.Condition;
 				   address, bindto: SocketAddress);
       VAR
 	 peerAddr, myAddr: SysAddress;
+	 cd: ConditionDiscipline;
    BEGIN
       IPv4Addresses.ConvertToSys(address, peerAddr);
       IPv4Addresses.ConvertToSys(bindto, myAddr);
       UnixSockets.CreateOpenCondition(condition, SysSockets.afINET,
 	 SysSockets.stream, peerAddr, (* bind = *) TRUE, myAddr);
+      NEW(cd); cd.id := cdid; cd.address := address;
+      Disciplines.Add(condition, cd);
    END CreateOpenConditionAs;
 
    PROCEDURE TestAndOpen(VAR s: Streams.Stream;
 			 condition: Conditions.Condition;
 			 bufmode: Streams.BufMode;
 			 errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 cd: ConditionDiscipline;
+	 ok: BOOLEAN;
    BEGIN
-      RETURN UnixSockets.TestAndOpen(s, condition, bufmode, errors)
+      IF UnixSockets.TestAndOpen(s, condition, bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      IF ~Conditions.Test(condition, errors) THEN RETURN FALSE END;
+      ok := Disciplines.Seek(condition, cdid, cd); ASSERT(ok);
+      Error(errors, openFailed, cd.address);
+      RETURN FALSE
    END TestAndOpen;
 
    PROCEDURE Open(VAR s: Streams.Stream; address: SocketAddress;
@@ -87,9 +166,13 @@ MODULE IPv4TCPSockets;
 	 peerAddr: SysAddress;
    BEGIN
       IPv4Addresses.ConvertToSys(address, peerAddr);
-      RETURN UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
+      IF UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
 	       peerAddr, (* bind = *) FALSE, 0,
-	       bufmode, errors)
+	       bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, openFailed, address);
+      RETURN FALSE
    END Open;
 
    PROCEDURE OpenAs(VAR s: Streams.Stream; address, bindto: SocketAddress;
@@ -101,9 +184,13 @@ MODULE IPv4TCPSockets;
    BEGIN
       IPv4Addresses.ConvertToSys(address, peerAddr);
       IPv4Addresses.ConvertToSys(bindto, myAddr);
-      RETURN UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
+      IF UnixSockets.Open(s, SysSockets.afINET, SysSockets.stream,
 	       peerAddr, (* bind = *) TRUE, myAddr,
-	       bufmode, errors)
+	       bufmode, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, openFailed, address);
+      RETURN FALSE
    END OpenAs;
 
    PROCEDURE Listen(VAR socket: Socket; portnum: INTEGER;
@@ -134,8 +221,12 @@ MODULE IPv4TCPSockets;
       END;
       IPv4Addresses.SetPort(address, portnum);
       IPv4Addresses.ConvertToSys(address, addr);
-      RETURN UnixSockets.Listen(socket, SysSockets.afINET,
-	       SysSockets.stream, addr, errors)
+      IF UnixSockets.Listen(socket, SysSockets.afINET,
+	       SysSockets.stream, addr, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, listenFailed, address);
+      RETURN FALSE
    END Listen;
 
    PROCEDURE ListenOn(VAR socket: Socket; address: SocketAddress;
@@ -146,8 +237,12 @@ MODULE IPv4TCPSockets;
 	 interrupted: BOOLEAN;
    BEGIN
       IPv4Addresses.ConvertToSys(address, addr);
-      RETURN UnixSockets.Listen(socket, SysSockets.afINET, SysSockets.stream,
-	       addr, errors)
+      IF UnixSockets.Listen(socket, SysSockets.afINET, SysSockets.stream,
+	       addr, errors) THEN
+	 RETURN TRUE
+      END;
+      Error(errors, listenFailed, address);
+      RETURN FALSE
    END ListenOn;
 
    PROCEDURE Accept(socket: Socket;
@@ -204,4 +299,7 @@ MODULE IPv4TCPSockets;
       UnixSockets.CreateAcceptCondition(condition, socket);
    END CreateAcceptCondition;
 
+BEGIN
+   InitErrorHandling;
+   cdid := Disciplines.Unique();
 END IPv4TCPSockets.

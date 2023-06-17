@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: TermLineGra.om,v 1.1 2004/06/11 12:11:51 borchert Exp $
+   $Id: TermLineGra.om,v 1.1 2004/06/11 12:11:51 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: TermLineGra.om,v $
    Revision 1.1  2004/06/11 12:11:51  borchert
@@ -46,20 +46,25 @@ MODULE TermLineGraphics; (* Ralf Beck *)
       bottomTee = 9;
       topTee = 10;
       chars = 11;
+   TYPE
+      Symbol = SHORTINT; (* verticalLine ... *)
 
+   CONST
       (* character sets *)
       standard = 0; graphics = 1;
+   TYPE
+      CharacterSet = SHORTINT; (* standard, graphics *)
 
    TYPE
       GraphicsChar =
 	 RECORD
-	    set: SHORTINT; (* characer set to use *)
+	    set: CharacterSet; (* characer set to use *)
 	    char: CHAR;    (* ASCII code of character *)
          END;
 
       CharSet = ARRAY chars OF GraphicsChar; (* set used for drawing *)
 
-      SetProc = PROCEDURE (s: Streams.Stream; charset: SHORTINT);
+      SetProc = PROCEDURE (s: Streams.Stream; charset: CharacterSet);
 
       Discipline = POINTER TO DisciplineRec;
       DisciplineRec =
@@ -72,12 +77,10 @@ MODULE TermLineGraphics; (* Ralf Beck *)
    VAR
       id: Disciplines.Identifier; (* identifier of discipline *)
 
-   PROCEDURE DummyProc(s: Streams.Stream; charset: SHORTINT);
-   BEGIN
-      RETURN;
-   END DummyProc;
+   PROCEDURE DefaultSetCharSet(s: Streams.Stream; charset: CharacterSet);
+   END DefaultSetCharSet;
 
-   PROCEDURE InitDefaultDiscipline(VAR discipline: Disciplines.Discipline);
+   PROCEDURE CreateDefaultDiscipline(VAR discipline: Disciplines.Discipline);
       VAR
 	 disc: Discipline;
 	 i: INTEGER;
@@ -94,13 +97,21 @@ MODULE TermLineGraphics; (* Ralf Beck *)
 	 disc.charset[i].char := "+";
 	 INC(i);
       END;
-      disc.setCharset := DummyProc;
+      disc.setCharset := DefaultSetCharSet;
       discipline := disc;
-   END InitDefaultDiscipline;
+   END CreateDefaultDiscipline;
+
+   PROCEDURE GetDisc(s: Streams.Stream; VAR disc: Discipline);
+   BEGIN
+      IF ~Disciplines.Seek(s, id, disc) THEN
+	 CreateDefaultDiscipline(disc);
+	 Disciplines.Add(s, disc);
+      END;
+   END GetDisc;
 
    PROCEDURE Init(s: Streams.Stream; charset: CharSet; setCharset: SetProc);
-   (* initialize the graphics charset *)
-   (* must be done by terminal implementation *)
+      (* initialize the graphics charset *)
+      (* must be done by terminal implementation *)
       VAR
 	 disc: Discipline;
    BEGIN
@@ -110,35 +121,57 @@ MODULE TermLineGraphics; (* Ralf Beck *)
       IF setCharset # NIL THEN
 	 disc.setCharset := setCharset;
       ELSE
-	 disc.setCharset := DummyProc;
+	 disc.setCharset := DefaultSetCharSet;
       END;
       Disciplines.Add(s, disc);
    END Init;
 
-   PROCEDURE Draw(s: Streams.Stream; char: SHORTINT);
-   (* draws a single graphics character *)
+   PROCEDURE Supported(s: Streams.Stream) : BOOLEAN;
+      (* return TRUE if line graphics are supported
+	 and not just simulated
+      *)
       VAR
 	 disc: Discipline;
    BEGIN
-      IF ~Disciplines.Seek(s, id, disc) THEN
-         InitDefaultDiscipline(disc);
-      END;
+      RETURN Disciplines.Seek(s, id, disc) &
+             (disc.setCharset # DefaultSetCharSet)
+   END Supported;
+
+   PROCEDURE SwitchCharSet(s: Streams.Stream; charset: CharacterSet);
+      (* switch to the given character set *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc); disc.setCharset(s, charset);
+   END SwitchCharSet;
+
+   PROCEDURE GetGraphicalCharacterSet(s: Streams.Stream; VAR charset: CharSet);
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc); charset := disc.charset;
+   END GetGraphicalCharacterSet;
+
+   PROCEDURE Draw(s: Streams.Stream; char: Symbol);
+      (* draws a single graphics character *)
+      VAR
+	 disc: Discipline;
+   BEGIN
+      GetDisc(s, disc);
       disc.setCharset(s, disc.charset[char].set);
       Write.CharS(s, disc.charset[char].char);
       disc.setCharset(s, standard);
    END Draw;
 
    PROCEDURE HLine(s: Streams.Stream; line, column, length: INTEGER);
-   (* draws a horizontal line from position (line, column) with *)
-   (* length (length)                                           *)
-   (* HLine doesn't check for validity of parameters            *)
+      (* draws a horizontal line from position (line, column) with *)
+      (* length (length)                                           *)
+      (* HLine doesn't check for validity of parameters            *)
       VAR
 	 disc: Discipline;
 	 i: INTEGER;
    BEGIN
-      IF ~Disciplines.Seek(s, id, disc) THEN
-         InitDefaultDiscipline(disc);
-      END;
+      GetDisc(s, disc);
       Terminals.SetCursor(s, line, column);
       disc.setCharset(s, disc.charset[horizontalLine].set);
       i := 0;
@@ -150,18 +183,16 @@ MODULE TermLineGraphics; (* Ralf Beck *)
    END HLine;
 
    PROCEDURE VLine(s: Streams.Stream; line, column, length: INTEGER);
-   (* draws a vertical line from position (line, column) with   *)
-   (* length (length)                                           *)
-   (* VLine doesn't check for validity of parameters            *)
-   (* terminal must be in raw mode for proper operation         *)
+      (* draws a vertical line from position (line, column) with   *)
+      (* length (length)                                           *)
+      (* VLine doesn't check for validity of parameters            *)
+      (* terminal must be in raw mode for proper operation         *)
       VAR
 	 disc: Discipline;
 	 i: INTEGER;
 	 status : Terminals.Status;
    BEGIN
-      IF ~Disciplines.Seek(s, id, disc) THEN
-         InitDefaultDiscipline(disc);
-      END;
+      GetDisc(s, disc);
       i := 0;
       Terminals.GetStatus(s, status);
       Terminals.SetCursor(s, line, column);
@@ -179,15 +210,14 @@ MODULE TermLineGraphics; (* Ralf Beck *)
 	    Terminals.MoveCursor(s, line-1, column+1, line, column);
          END;
       END;
-	 disc.setCharset(s, standard);
+      disc.setCharset(s, standard);
    END VLine;
 
    PROCEDURE Box(s: Streams.Stream; line, column, lines, columns: INTEGER);
-   (* draw a box starting at position (line, column) with *)
-   (* dimensions (lines, columns)                         *)
-   (* Box doesn't check for validity of parameters        *)
-   (* terminals must be in raw mode for proper operation  *)
-
+      (* draw a box starting at position (line, column) with *)
+      (* dimensions (lines, columns)                         *)
+      (* Box doesn't check for validity of parameters        *)
+      (* terminals must be in raw mode for proper operation  *)
    BEGIN
       Terminals.SetCursor(s, line, column);
       Draw(s, upperLeftCorner);
@@ -203,5 +233,4 @@ MODULE TermLineGraphics; (* Ralf Beck *)
 
 BEGIN
    id := Disciplines.Unique();
-
 END TermLineGraphics.

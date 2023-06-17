@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: RobustObjec.om,v 1.4 2004/09/03 09:35:46 borchert Exp $
+   $Id: RobustObjec.om,v 1.4 2004/09/03 09:35:46 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: RobustObjec.om,v $
    Revision 1.4  2004/09/03 09:35:46  borchert
@@ -43,8 +43,8 @@
 MODULE RobustObjects;
 
    IMPORT ASCII, Clocks, Conditions, ConstStrings, Disciplines, Errors,
-      Events, Messages, Names, NetIO, PathConditions, Paths,
-      PersistentObjects, Priorities, RelatedEvents, RemoteObjects,
+      EventConditions, Events, Messages, Names, NetIO, PathConditions, Paths,
+      PersistentObjects, Priorities, Process, RelatedEvents, RemoteObjects,
       Resources, Services, Shards, StreamDisciplines, Streams, Strings,
       Tasks, TimeConditions, Times;
 
@@ -377,12 +377,24 @@ MODULE RobustObjects;
 	 pd: ProxyDiscipline;
 	 ok: BOOLEAN;
 	 condition: PathConditions.Condition;
+	 softtermcond: Conditions.Condition;
+	 termcond: Conditions.Condition;
+	 resEventType: Events.EventType;
+	 conditions, selected: Conditions.ConditionSet;
+	 event: Events.Event;
+	 resevent: Resources.Event;
 	 node: Names.Node;
 	 proxy: Services.Object;
 	 try: INTEGER;
 	 delay: INTEGER;
    BEGIN
       ok := Disciplines.Seek(object, pdID, pd); ASSERT(ok);
+      Conditions.CreateSet(conditions);
+      EventConditions.Create(softtermcond, Process.softTermination);
+      Conditions.Incl(conditions, softtermcond);
+      Resources.TakeInterest(object, resEventType);
+      EventConditions.Create(termcond, resEventType);
+      Conditions.Incl(conditions, termcond);
       (* note that there may be temporary failures at the
 	 early beginning if the name server was yet unable
 	 to process the termination event; in this case
@@ -393,7 +405,19 @@ MODULE RobustObjects;
       LOOP
 	 INC(try);
 	 PathConditions.CreateCS(condition, pd.path, pd.root, pd.auth);
-	 IF PathConditions.GetNode(condition, node, object) THEN
+	 Conditions.Incl(conditions, condition);
+	 Tasks.Select(conditions, selected);
+	 IF Conditions.In(selected, softtermcond) &
+	       EventConditions.TestAndGet(softtermcond, event) THEN
+	    EXIT
+	 END;
+	 IF Conditions.In(selected, termcond) &
+	       EventConditions.TestAndGet(termcond, resevent) &
+	       (resevent.change = Resources.terminated) THEN
+	    EXIT
+	 END;
+	 IF Conditions.In(selected, condition) &
+	       PathConditions.GetNode(condition, node, object) THEN
 	    IF SendImportMsg(node, (* reimport = *) TRUE, pd.refobject,
 			     proxy, object) & (proxy = object) THEN
 	       EXIT
@@ -405,6 +429,7 @@ MODULE RobustObjects;
 	    RETURN
 	 END;
 	 Delay(delay); delay := delay * 2;
+	 Conditions.Excl(conditions, condition);
       END;
       DropTemporaryNode(node);
    END Recover;

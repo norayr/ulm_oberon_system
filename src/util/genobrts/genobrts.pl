@@ -58,6 +58,13 @@ if (defined $outfile) {
 }
 
 my $HEADER = <<'END_OF_HEADER';
+.global _rt__sigreturn
+_rt__sigreturn:
+	movl $0xad, %eax
+	int $0x80
+	nop
+	xor %eax, %eax
+	movl $0x0, (%eax)
 .global _entry
 _entry:
 END_OF_HEADER
@@ -69,7 +76,14 @@ my $RTINIT = <<'END_OF_RTINIT';
 	movl %ebx, SysArgs_argv
 	lea  4(%ebx, %eax, 4), %eax
 	movl %eax, SysArgs_environ
-
+envloop:
+	cmpl $0, (%eax)
+	je envend
+	addl $4, %eax
+	jmp envloop
+envend:
+	addl $4, %eax
+	movl %eax, SysArgs_auxv
 	xor %ebx, %ebx
 	movl $45, %eax
 	int $0x80
@@ -83,11 +97,39 @@ my $RTINIT = <<'END_OF_RTINIT';
 END_OF_RTINIT
 
 my $MEMINIT = <<'END_OF_MEMINIT';
-	mov Storage_end, %eax
+	movl SysArgs_auxv,%ebx
+	movl $0x1000,%esi
+	movl $0x0, %edi
+_auxvloop:
+	cmpl $0x0,(%ebx)
+	je _endauxvloop
+	cmpl $0x21,(%ebx)
+	jne _auxvbase
+	movl 0x4(%ebx),%edi
+	jmp _nextauxv
+_auxvbase:
+	cmpl $0x3,(%ebx)
+	jne _nextauxv
+	movl 0x4(%ebx),%esi
+_nextauxv:
+	addl $0x8,%ebx
+	jmp _auxvloop
+_endauxvloop:
+	andl $0xfffff000, %esi
+	cmpl $0x0,%esi
+	jne _skip3
+	movl $0x1000,%esi
+_skip3:
+	movl Storage_end, %eax
 	subl $0x100000, %eax
+	subl %esi, %eax
 	pushl $0
 	pushl %eax
-	pushl $0
+	pushl %esi
+	call SysSegments_Register
+	movl $0,0x8(%esp)
+	movl $0x1000,0x4(%esp)
+	movl $0,(%esp)
 	call SysSegments_Register
 	movl Storage_end, %eax
 	subl $0x100000, %eax
@@ -114,6 +156,21 @@ my $MEMINIT = <<'END_OF_MEMINIT';
 	movl %edx, 0x4(%esp)
 	call SysSegments_Register
 _skip:
+	cmpl $0x0,%edi
+	je _skip2
+	cmpl %esp,%edi
+	jae _skip2
+	cmpl Storage_end,%esi
+	jae _dosysinfo
+	cmpl %esi,%edi
+	jb _dosysinfo
+	jmp _skip2
+_dosysinfo:	
+	movl $0x0,0x8(%esp)
+	movl $0x1000,0x4(%esp)
+	movl %edi,(%esp)
+	call SysSegments_Register
+_skip2:
 	addl $0xc,%esp
 	call SysStorage___init
 	pushl $0

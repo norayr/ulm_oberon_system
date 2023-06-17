@@ -1,0 +1,109 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION TermWindows;
+
+   IMPORT Disciplines, Events, Streams, TermAttributes, TermColors,
+      Terminals, TermKeys;
+
+   TYPE
+      Device = POINTER TO DeviceRec;
+      DeviceRec = RECORD (Disciplines.ObjectRec) END;
+
+      Window = POINTER TO WindowRec;
+      WindowRec = RECORD (Terminals.StreamRec) END;
+
+   CONST
+      (* window attributes *)
+      flushalways = 0;
+      flushoninput = 1;
+      echo = 2;
+      scroll = 3;
+      movecursor = 4;
+      funckeys = 5;
+      readcr = 6;
+   TYPE
+      WindowAttribute = SHORTINT; (* flushalways ... *)
+      WindowAtSet = SET; (* OF WindowAttribute *)
+
+   TYPE
+      GetInputEventTypeProc = PROCEDURE (dev: Device;
+                                         win: Window;
+					 VAR eventType: Events.EventType);
+   TYPE
+      InputEvent = POINTER TO InputEventRec;
+      InputEventRec = RECORD (Events.EventRec) END;
+      FocusEvent = POINTER TO FocusEventRec;
+      FocusEventRec = RECORD (InputEventRec) END;
+      KeyEvent = POINTER TO KeyEventRec;
+      KeyEventRec =
+	 RECORD
+	    (InputEventRec)
+	    key: TermKeys.Key;
+	 END;
+
+   PROCEDURE CreateDevice(VAR dev: Device;
+                          terminal: Streams.Stream) : BOOLEAN;
+   PROCEDURE EnableEventHandling(dev: Device;
+                                 getInputEventType: GetInputEventTypeProc;
+				 VAR in: Streams.Stream);
+   PROCEDURE RedrawDevice(dev: Device);
+   PROCEDURE SuspendDevice(dev: Device);
+   PROCEDURE RestoreDevice(dev: Device);
+   PROCEDURE GetDeviceChar(dev: Device; line, column: INTEGER) : CHAR;
+
+   PROCEDURE CreateTopWindow(VAR win: Window; dev: Device);
+   PROCEDURE CreateNewWindow(VAR win: Window; newwinof: Window;
+                             sx, sy, lns, cols: INTEGER);
+   PROCEDURE CreateSubWindow(VAR win: Window; subwinof: Window;
+                             sx, sy, lns, cols: INTEGER);
+
+   PROCEDURE GetInputEventType(win: Window; VAR eventType: Events.EventType);
+   PROCEDURE GetSize(win: Window; VAR lines, columns: INTEGER);
+   PROCEDURE GetRelativePos(win: Window; VAR line, column: INTEGER);
+   PROCEDURE GetSupWin(win: Window; VAR supwin: Window);
+   PROCEDURE IsSubWin(win: Window) : BOOLEAN;
+   PROCEDURE GetPos(win: Window; VAR line, column: INTEGER);
+   PROCEDURE SetPos(win: Window; line, column: INTEGER);
+   PROCEDURE GotoLastLine(win: Window);
+
+   PROCEDURE Clear(win: Window);
+   PROCEDURE Scroll(win: Window; count: INTEGER);
+      (* scroll `win'
+	 ABS(count) = # of lines to be scrolled
+	 count > 0: scroll forward (up)
+	 count < 0: scroll backward (down)
+      *)
+
+   PROCEDURE ReadKey(win: Window; VAR key: TermKeys.Key);
+
+   PROCEDURE GetChar(win: Window; line, column: INTEGER) : CHAR;
+
+   PROCEDURE Flush(win: Window);
+
+   PROCEDURE GetAttributes(win: Window; VAR atset: WindowAtSet);
+   PROCEDURE SetAttributes(win: Window; atset: WindowAtSet);
+
+END TermWindows.

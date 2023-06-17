@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: RemoteObjec.om,v 1.23 2004/09/14 15:41:01 borchert Exp $
+   $Id: RemoteObjec.om,v 1.23 2004/09/14 15:41:01 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: RemoteObjec.om,v $
    Revision 1.23  2004/09/14 15:41:01  borchert
@@ -794,7 +794,8 @@ MODULE RemoteObjects;
       unsupportedType = 13; (* ``RemoteObjects'' service not supported *)
       typeGuardFailure = 14; (* guard of GuardedRead failed *)
       suspendedObject = 15; (* object is currently suspended *)
-      errors = 16;
+      privateObject = 16; (* object has no public ports *)
+      errors = 17;
    TYPE
       ErrorEvent = POINTER TO ErrorEventRec;
       ErrorEventRec =
@@ -958,6 +959,7 @@ MODULE RemoteObjects;
       errormsg[typeGuardFailure] :=
 	 "imported object is not of the expected type";
       errormsg[suspendedObject] := "object is currently suspended";
+      errormsg[privateObject] := "object has no public ports";
       Errors.AssignWriteProcedure(error, WriteEvent);
    END InitErrorHandling;
 
@@ -3031,7 +3033,11 @@ MODULE RemoteObjects;
       BEGIN
 	 RelatedEvents.GetQueue(newerrors, queue);
 	 RelatedEvents.AppendQueue(errors, queue);
-	 Error(errors, accessFailed, NIL);
+	 IF ports = NIL THEN
+	    Error(errors, privateObject, NIL);
+	 ELSE
+	    Error(errors, accessFailed, NIL);
+	 END;
 	 Semaphores.V(opensema[index]);
 	 IF ~newchannel THEN
 	    NotifyProxyObjects(channel, connectionBroken);

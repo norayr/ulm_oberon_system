@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Terminals.om,v 1.1 2004/06/11 12:12:09 borchert Exp $
+   $Id: Terminals.om,v 1.1 2004/06/11 12:12:09 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Terminals.om,v $
    Revision 1.1  2004/06/11 12:12:09  borchert
@@ -31,18 +31,19 @@ MODULE Terminals; (* Ralf Beck *)
    (* this module provides some basic procedures for *)
    (* managing ASCII-terminals                       *)
 
-   IMPORT Disciplines, Events, Objects, Priorities, Process, RelatedEvents, Services, Streams, Write;
+   IMPORT Disciplines, Events, Objects, Priorities, Process, RelatedEvents,
+      Services, Streams, Write;
 
-   CONST 
+   CONST
       (* terminal characteristics *)
       autoleftmargin = 0;  (* terminal wraps from last column to first column
                               of next line if character is typed *)
       autorightmargin = 1; (* backspace in first column moves cursor to
                               last column of previous line *)
-      overstrikes = 2;     (* terminal overstrikes characters rather than 
+      overstrikes = 2;     (* terminal overstrikes characters rather than
                               replacing them *)
       safelastcolumn = 3;  (* safe to write character in last column *)
-     
+
       (* errorcodes *)
       cannotSetEcho = 0;
       cannotSetTermMode = 1;
@@ -78,10 +79,10 @@ MODULE Terminals; (* Ralf Beck *)
       setScrollRegion = 6;
       clearScreen = 7;
 
-   TYPE 
+   TYPE
       CapabilitySet = SET;
-      Echomode = SHORTINT;
-      Termmode = SHORTINT;
+      EchoMode = SHORTINT;
+      TermMode = SHORTINT;
       Direction = SHORTINT;
       Shape = SHORTINT;
 
@@ -117,7 +118,7 @@ MODULE Terminals; (* Ralf Beck *)
          END;
 
       ErrorEvent = POINTER TO ErrorEventRec;
-      ErrorEventRec = 
+      ErrorEventRec =
          RECORD
            (Events.EventRec)
            errorcode: SHORTINT;
@@ -125,8 +126,8 @@ MODULE Terminals; (* Ralf Beck *)
 
      (* interface procedures *)
 
-      SetTermModeProc = PROCEDURE (s: Streams.Stream; mode: Termmode);
-      SetEchoProc = PROCEDURE (s: Streams.Stream; mode: Echomode);
+      SetTermModeProc = PROCEDURE (s: Streams.Stream; mode: TermMode);
+      SetEchoProc = PROCEDURE (s: Streams.Stream; mode: EchoMode);
       SetCursorProc = PROCEDURE (s: Streams.Stream; line, column: INTEGER);
       MoveCursorProc = PROCEDURE(s: Streams.Stream; fromline, fromcolumn,
 						    toline, tocolumn: INTEGER);
@@ -154,14 +155,14 @@ MODULE Terminals; (* Ralf Beck *)
             (Objects.ObjectRec)
             lines, columns: INTEGER;      (* of physical screen    *)
             scrtop, scrbottom: INTEGER;   (* start & end of scroll region *)
-            echo: Echomode;               (* on or off             *)
-            mode: Termmode;               (* raw or cooked         *)
+            echo: EchoMode;               (* on or off             *)
+            mode: TermMode;               (* raw or cooked         *)
             characteristics: SET;         (* of terminal characteristics *)
             scrollDirections: SET;        (* up, down *)
             cursorShape: Shape;           (* current shape of cursor *)
          END;
 
-      StreamRec = 
+      StreamRec =
          RECORD
             (Streams.StreamRec)
             status: Status;
@@ -169,14 +170,14 @@ MODULE Terminals; (* Ralf Beck *)
             if: Interface;
          END;
 
-   VAR 
+   VAR
       console: Streams.Stream;  (* terminal the user logged in *)
       terminaltype: Services.Type;
       windowchanged: Events.EventType;
       interrupt: Events.EventType;
       quit: Events.EventType;
       hangup: Events.EventType;
-      error: Events.EventType;    
+      error: Events.EventType;
       errormsg: ARRAY errorcodes OF Events.Message;
 
    PROCEDURE InitErrorHandling;
@@ -187,7 +188,7 @@ MODULE Terminals; (* Ralf Beck *)
          "cannot change echo mode";
       errormsg[cannotSetTermMode] :=
          "cannot change terminal mode";
-      errormsg[cannotSetCursor] := 
+      errormsg[cannotSetCursor] :=
          "cannot set cursor";
       errormsg[cannotMoveCursor] :=
          "cannot move cursor";
@@ -196,7 +197,7 @@ MODULE Terminals; (* Ralf Beck *)
       errormsg[cannotScroll] :=
          "terminal cannot scroll";
       errormsg[cannotSetScrollRegion] :=
-         "scroll regions not supported by terminal";  
+         "scroll regions not supported by terminal";
       errormsg[cannotClearScreen] :=
 	 "cannot clear screen";
       errormsg[invalidDirection] :=
@@ -222,18 +223,17 @@ MODULE Terminals; (* Ralf Beck *)
 
    (* ==================== public procedures ========================== *)
 
-   PROCEDURE Init(s: Streams.Stream; status: Status; caps: CapabilitySet; 
+   PROCEDURE Init(s: Stream; status: Status; caps: CapabilitySet;
                   if: Interface);
-   (* initializes terminal discipline and adds it to steam s *)
-   (* status: terminal's status                              *)
-   (* caps: terminal's capabilities                          *)
-   (* if: terminal's interface                               *)
+      (* initializes terminal discipline and adds it to steam s *)
+      (* status: terminal's status                              *)
+      (* caps: terminal's capabilities                          *)
+      (* if: terminal's interface                               *)
    BEGIN
-      WITH s: Stream DO
-         s.status := status;
-         s.caps := caps;
-         s.if := if;
-      END;
+      ASSERT(if # NIL);
+      s.status := status;
+      s.caps := caps;
+      s.if := if;
    END Init;
 
    PROCEDURE SetScreenSize(event: Events.Event);
@@ -247,7 +247,7 @@ MODULE Terminals; (* Ralf Beck *)
    (* ------------ client procedures --------------------------*)
 
    PROCEDURE ClearScreen(s: Streams.Stream);
-   (* clears the screen *)
+      (* clears the screen *)
    BEGIN
       WITH s: Stream DO
          IF clearScreen IN s.caps THEN
@@ -258,8 +258,8 @@ MODULE Terminals; (* Ralf Beck *)
       END;
    END ClearScreen;
 
-   PROCEDURE Echo(s: Streams.Stream; mode: Echomode);
-   (* turns echoing of characters on or off *)
+   PROCEDURE Echo(s: Streams.Stream; mode: EchoMode);
+      (* turns echoing of characters on or off *)
    BEGIN
       WITH s: Stream DO
          IF s.status.echo # mode THEN
@@ -272,9 +272,9 @@ MODULE Terminals; (* Ralf Beck *)
          END;
       END;
    END Echo;
- 
-   PROCEDURE SetTermMode(s: Streams.Stream; mode: Termmode);
-   (* set s's mode to raw or cooked *)
+
+   PROCEDURE SetTermMode(s: Streams.Stream; mode: TermMode);
+      (* set s's mode to raw or cooked *)
    BEGIN
       WITH s: Stream DO
          IF s.status.mode # mode THEN
@@ -289,8 +289,8 @@ MODULE Terminals; (* Ralf Beck *)
    END SetTermMode;
 
    PROCEDURE SetCursor(s: Streams.Stream; line, column: INTEGER);
-   (* set cursor absolute to (line, column)    *)
-   (* position must fit within screen limits   *)
+      (* set cursor absolute to (line, column)    *)
+      (* position must fit within screen limits   *)
    BEGIN
       WITH s: Stream DO
          IF (line >= 0) & (line < s.status.lines) &
@@ -306,7 +306,7 @@ MODULE Terminals; (* Ralf Beck *)
       END;
    END SetCursor;
 
-   PROCEDURE MoveCursor(s: Streams.Stream; 
+   PROCEDURE MoveCursor(s: Streams.Stream;
                        (* from *) fromline, fromcolumn,
                        (* to   *) toline, tocolumn: INTEGER);
       (* move cursor relative to current position *)
@@ -314,11 +314,13 @@ MODULE Terminals; (* Ralf Beck *)
    BEGIN
       WITH s: Stream DO
          IF (fromline >= 0) & (fromline < s.status.lines) &
-            (toline >= 0) & (toline < s.status.lines) & 
-            (fromcolumn >= 0) & (fromcolumn <= s.status.columns) &
-            (tocolumn >= 0) & (tocolumn < s.status.columns) THEN
+	       (toline >= 0) & (toline < s.status.lines) &
+	       (fromcolumn >= 0) & (fromcolumn <= s.status.columns) &
+	       (tocolumn >= 0) & (tocolumn < s.status.columns) THEN
             IF moveCursor IN s.caps THEN
                s.if.moveCursor(s, fromline, fromcolumn, toline, tocolumn);
+	    ELSIF setCursor IN s.caps THEN
+	       s.if.setCursor(s, toline, tocolumn);
             ELSE
                Error(s, cannotMoveCursor);
             END;
@@ -329,7 +331,7 @@ MODULE Terminals; (* Ralf Beck *)
    END MoveCursor;
 
    PROCEDURE CursorAppearance(s: Streams.Stream; shape: Shape);
-   (* set cursor appearance to normal, invisible or highlighted *)
+      (* set cursor appearance to normal, invisible or highlighted *)
    BEGIN
       WITH s: Stream DO
          IF shape # s.status.cursorShape THEN
@@ -344,7 +346,7 @@ MODULE Terminals; (* Ralf Beck *)
    END CursorAppearance;
 
    PROCEDURE Scroll(s: Streams.Stream; dir: Direction);
-   (* scroll scrollregion once in direction (dir) *)
+      (* scroll scrollregion once in direction (dir) *)
    BEGIN
       WITH s: Stream DO
          IF dir IN s.status.scrollDirections THEN
@@ -356,15 +358,15 @@ MODULE Terminals; (* Ralf Beck *)
          ELSE
             Error(s, invalidDirection);
 	 END;
-      END; 
+      END;
    END Scroll;
 
    PROCEDURE SetScrollRegion(s: Streams.Stream; top, bottom: INTEGER);
-   (* define scrollregion from line (top) to line (bottom) *)                          
+      (* define scrollregion from line (top) to line (bottom) *)
    BEGIN
       WITH s: Stream DO
          IF (top >= 0) & (top < s.status.lines) &
-            (bottom >= 0) & (bottom < s.status.lines) & (top < bottom) THEN
+	       (bottom >= 0) & (bottom < s.status.lines) & (top < bottom) THEN
             IF setScrollRegion IN s.caps THEN
                s.if.setScrollRegion(s, top, bottom);
 	       s.status.scrtop := top;
@@ -380,9 +382,9 @@ MODULE Terminals; (* Ralf Beck *)
          END;
       END;
    END SetScrollRegion;
-                                             
+
    PROCEDURE Capabilities(s: Streams.Stream): CapabilitySet;
-   (* return s's capabilities *)
+      (* return s's capabilities *)
    BEGIN
       WITH s: Stream DO
          RETURN s.caps;
@@ -390,22 +392,12 @@ MODULE Terminals; (* Ralf Beck *)
    END Capabilities;
 
    PROCEDURE GetStatus(s: Streams.Stream; VAR status: Status);
-   (* return s's status *)
+      (* return s's status *)
    BEGIN
       WITH s: Stream DO
          status := s.status;
       END;
    END GetStatus;
-
-   PROCEDURE Terminate(event: Events.Event);
-   BEGIN
-      Process.Terminate;
-   END Terminate;
-
-   PROCEDURE Abort(event: Events.Event);
-   BEGIN
-      Process.Abort;
-   END Abort;
 
 BEGIN
    Services.CreateType(terminaltype, "Terminals.Stream", "Streams.Stream");
@@ -423,11 +415,6 @@ BEGIN
    Events.SetPriority(hangup, Priorities.interrupts);
 
    Events.Handler(windowchanged, SetScreenSize);
-   (*
-   Events.Handler(interrupt, Terminate);
-   Events.Handler(quit, Abort);
-   Events.Handler(hangup, Terminate);
-   *)
 
    console := NIL;
 END Terminals.
