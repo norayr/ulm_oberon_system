@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Conditions.om,v 1.3 2001/05/18 21:59:01 borchert Exp $
+   $Id: Conditions.om,v 1.4 2004/09/01 13:32:18 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Conditions.om,v $
+   Revision 1.4  2004/09/01 13:32:18  borchert
+   performance improvement: condition sets are now based on hashes
+
    Revision 1.3  2001/05/18 21:59:01  borchert
    SetupAsyncEvents checks now all conditions to add as much conditions
    as possible to setOfTrueConditions
@@ -49,11 +52,10 @@ MODULE Conditions;
       Priorities, Process, RelatedEvents, Scales, Timers, Times;
 
    CONST
-      tags = MAX(SET) + 1; (* # of different tags *)
+      tags = 64;
    TYPE
-      Tag = SHORTINT; (* 0..tags-1 *)
-      TagSet = SET;
-	 (* tags are used to get faster set operations *)
+      Tag = INTEGER; (* 0..tags-1 *)
+	 (* tags are used for the hashs *)
    VAR
       nextTag: Tag; (* 0..tags-1, 0..tags-1, ... *)
 
@@ -76,14 +78,16 @@ MODULE Conditions;
 	    cond: Condition;
 	    next: ConditionList;
 	 END;
+
+      BucketTable = ARRAY tags OF ConditionList;
       ConditionSet = POINTER TO ConditionSetRec;
       ConditionSetRec =
 	 RECORD
 	    (Objects.ObjectRec)
 	    cardinality: INTEGER;
-	    tagset: TagSet;
-	    list: ConditionList;
-	    next: ConditionList;
+	    bucket: BucketTable;
+	    (* for the iterator *)
+	    next: ConditionList; i: INTEGER;
 	 END;
 
    CONST
@@ -187,70 +191,68 @@ MODULE Conditions;
    END GetTimeOfNextTry;
 
    PROCEDURE CreateSet(VAR conditionSet: ConditionSet);
+      VAR
+	 i: INTEGER;
+	 cset: ConditionSet;
    BEGIN
-      NEW(conditionSet);
-      conditionSet.cardinality := 0;
-      conditionSet.tagset := {};
-      conditionSet.list := NIL;
-      conditionSet.next := NIL;
+      NEW(cset);
+      cset.cardinality := 0;
+      (*
+	 commented out for reasons of efficiency
+	 as NEW delivers 0-initialized areas anyway
+
+	 i := 0;
+	 WHILE i < tags DO
+	    conditionSet.bucket[i] := NIL;
+	    INC(i);
+	 END;
+      *)
+      cset.next := NIL; cset.i := 0;
+      conditionSet := cset;
    END CreateSet;
 
    PROCEDURE Incl(conditionSet: ConditionSet; condition: Condition);
       VAR
 	 listp: ConditionList;
 	 new: ConditionList;
+	 i: INTEGER;
    BEGIN
       (* check if condition is already present in conditionSet *)
-      IF condition.tag IN conditionSet.tagset THEN
-	 listp := conditionSet.list;
-	 WHILE (listp # NIL) & (listp.cond # condition) DO
-	    listp := listp.next;
-	 END;
-	 IF listp # NIL THEN (* already in set *) RETURN END;
+      i := condition.tag;
+      listp := conditionSet.bucket[i];
+      WHILE (listp # NIL) & (listp.cond # condition) DO
+	 listp := listp.next;
       END;
+      IF listp # NIL THEN (* already in set *) RETURN END;
 
       NEW(new); new.cond := condition;
-      new.next := conditionSet.list; conditionSet.list := new;
+      new.next := conditionSet.bucket[i];
+      conditionSet.bucket[i] := new;
       INC(conditionSet.cardinality);
-      INCL(conditionSet.tagset, condition.tag);
    END Incl;
 
    PROCEDURE Excl(conditionSet: ConditionSet; condition: Condition);
       VAR
 	 prev, listp: ConditionList;
-	 uniqueTag: BOOLEAN;
+	 i: INTEGER;
    BEGIN
-      IF ~(condition.tag IN conditionSet.tagset) THEN
-	 (* condition not in set *)
-	 RETURN
-      END;
-      uniqueTag := TRUE;
-      listp := conditionSet.list; prev := NIL;
+      i := condition.tag;
+      listp := conditionSet.bucket[i]; prev := NIL;
       WHILE (listp # NIL) & (listp.cond # condition) DO
-	 IF listp.cond.tag = condition.tag THEN
-	    uniqueTag := FALSE;
-	 END;
 	 prev := listp; listp := listp.next;
       END;
       IF listp = NIL THEN (* condition not in set *) RETURN END;
 
       IF prev = NIL THEN
-	 conditionSet.list := listp.next;
+	 conditionSet.bucket[i] := listp.next;
       ELSE
 	 prev.next := listp.next;
       END;
-      IF conditionSet.next = listp THEN conditionSet.next := listp.next END;
-
       DEC(conditionSet.cardinality);
-      IF uniqueTag THEN
-	 (* check for uniqueness in rest of list *)
-	 listp := listp.next;
-	 WHILE (listp # NIL) & (listp.cond.tag # condition.tag) DO
-	    listp := listp.next;
-	 END;
-	 IF listp = NIL THEN
-	    EXCL(conditionSet.tagset, condition.tag);
-	 END;
+
+      (* make the iterator more robust *)
+      IF conditionSet.next = listp THEN
+	 conditionSet.next := listp.next;
       END;
    END Excl;
 
@@ -258,10 +260,7 @@ MODULE Conditions;
       VAR
 	 listp: ConditionList;
    BEGIN
-      IF ~(condition.tag IN conditionSet.tagset) THEN
-	 RETURN FALSE
-      END;
-      listp := conditionSet.list;
+      listp := conditionSet.bucket[condition.tag];
       WHILE (listp # NIL) & (listp.cond # condition) DO
 	 listp := listp.next;
       END;
@@ -273,20 +272,36 @@ MODULE Conditions;
 	 listp: ConditionList;
 	 newelem, newelems: ConditionList;
 	 count: INTEGER; (* # of added elements in newelems *)
+	 i: INTEGER;
    BEGIN
-      count := 0; newelems := result.list;
-      listp := set.list;
-      WHILE listp # NIL DO
-	 IF ~In(result, listp.cond) THEN
-	    NEW(newelem); newelem.cond := listp.cond;
-	    newelem.next := newelems; newelems := newelem; INC(count);
+      count := 0;
+      i := 0;
+      WHILE i < tags DO
+	 listp := set.bucket[i];
+	 newelems := result.bucket[i];
+	 IF newelems = NIL THEN
+	    WHILE listp # NIL DO
+	       NEW(newelem); newelem.cond := listp.cond;
+	       newelem.next := newelems;
+	       newelems := newelem;
+	       INC(count);
+	       listp := listp.next;
+	    END;
+	 ELSE
+	    WHILE listp # NIL DO
+	       IF ~In(result, listp.cond) THEN
+		  NEW(newelem); newelem.cond := listp.cond;
+		  newelem.next := newelems;
+		  newelems := newelem;
+		  INC(count);
+	       END;
+	       listp := listp.next;
+	    END;
 	 END;
-	 listp := listp.next;
+	 result.bucket[i] := newelems;
+	 INC(i);
       END;
-
-      result.list := newelems;
       INC(result.cardinality, count);
-      result.tagset := result.tagset + set.tagset;
    END Union;
 
    PROCEDURE Union3(VAR result: ConditionSet; set1, set2: ConditionSet);
@@ -301,19 +316,29 @@ MODULE Conditions;
 
    PROCEDURE ExamineConditions(conditionSet: ConditionSet);
    BEGIN
-      conditionSet.next := conditionSet.list;
+      conditionSet.next := NIL;
+      conditionSet.i := 0;
    END ExamineConditions;
 
    PROCEDURE GetNextCondition(conditionSet: ConditionSet;
 			      VAR condition: Condition) : BOOLEAN;
+      VAR
+	 i: INTEGER;
    BEGIN
-      IF conditionSet.next # NIL THEN
-	 condition := conditionSet.next.cond;
-	 conditionSet.next := conditionSet.next.next;
-	 RETURN TRUE
-      ELSE
-	 RETURN FALSE
+      IF conditionSet.next = NIL THEN
+	 i := conditionSet.i;
+	 WHILE (i < tags) & (conditionSet.bucket[i] = NIL) DO
+	    INC(i);
+	 END;
+	 conditionSet.i := i + 1;
+	 IF i >= tags THEN
+	    RETURN FALSE
+	 END;
+	 conditionSet.next := conditionSet.bucket[i];
       END;
+      condition := conditionSet.next.cond;
+      conditionSet.next := conditionSet.next.next;
+      RETURN TRUE
    END GetNextCondition;
 
    PROCEDURE InitDomain(domain: Domain; if: Interface; desc: Description);
@@ -340,19 +365,29 @@ MODULE Conditions;
       END;
    END Test;
 
-   PROCEDURE CommonDomain(conditionList: ConditionList;
+   PROCEDURE CommonDomain(cset: ConditionSet;
 			  VAR domain: Domain) : BOOLEAN;
+      VAR
+	 dom: Domain;
+	 i: INTEGER;
+	 listp: ConditionList;
    BEGIN
-      domain := conditionList.cond.domain;
-      IF conditionList.next = NIL THEN
-	 RETURN TRUE (* trivial case: cardinality = 1 *)
-      ELSE
-	 conditionList := conditionList.next;
-	 WHILE (conditionList # NIL) & (conditionList.cond.domain = domain) DO
-	    conditionList := conditionList.next;
+      dom := NIL;
+      i := 0;
+      WHILE i < tags DO
+	 listp := cset.bucket[i];
+	 WHILE listp # NIL DO
+	    IF dom = NIL THEN
+	       dom := listp.cond.domain;
+	    ELSIF dom # listp.cond.domain THEN
+	       RETURN FALSE
+	    END;
+	    listp := listp.next;
 	 END;
-	 RETURN conditionList = NIL
+	 INC(i);
       END;
+      domain := dom;
+      RETURN dom # NIL
    END CommonDomain;
 
    PROCEDURE SimpleWaitForAndSelect(
@@ -402,6 +437,7 @@ MODULE Conditions;
 
 	 VAR
 	    listp: ConditionList;
+	    i: INTEGER;
 
 	 PROCEDURE CreateList(VAR list: List);
 	 BEGIN
@@ -471,10 +507,14 @@ MODULE Conditions;
       BEGIN (* SortConditions *)
 	 asyncList := NIL; timeList := NIL; ring := NIL;
 	 otherAreInternal := TRUE;
-	 listp := conditionSet.list;
-	 WHILE listp # NIL DO
-	    Add(listp.cond);
-	    listp := listp.next;
+	 i := 0;
+	 WHILE i < tags DO
+	    listp := conditionSet.bucket[i];
+	    WHILE listp # NIL DO
+	       Add(listp.cond);
+	       listp := listp.next;
+	    END;
+	    INC(i);
 	 END;
       END SortConditions;
 
@@ -495,7 +535,7 @@ MODULE Conditions;
       PROCEDURE SetupAsyncEvents(list: List) : BOOLEAN;
 	 VAR
 	    elp: Element;
-	    listp: ConditionList;
+	    listp: ConditionList; i: INTEGER;
 	    wakeupEvent: WakeupEvent;
 	    sendevent: SendEventProc;
 	    anythingTrue: BOOLEAN;
@@ -504,21 +544,25 @@ MODULE Conditions;
 	 elp := list.head;
 	 WHILE elp # NIL DO
 	    sendevent := elp.domain.if.sendevent;
-	    listp := elp.cset.list;
-	    WHILE listp # NIL DO
-	       IF ~listp.cond.waitingForEvent OR listp.cond.gotEvent THEN
-		  SetupEventHandling(listp.cond, wakeupEvent);
-		  IF ~sendevent(elp.domain, listp.cond,
-			wakeupEvent, errors) THEN
-		     IF ~anythingTrue THEN
-			CreateSet(setOfTrueConditions);
+	    i := 0;
+	    WHILE i < tags DO
+	       listp := elp.cset.bucket[i];
+	       WHILE listp # NIL DO
+		  IF ~listp.cond.waitingForEvent OR listp.cond.gotEvent THEN
+		     SetupEventHandling(listp.cond, wakeupEvent);
+		     IF ~sendevent(elp.domain, listp.cond,
+			   wakeupEvent, errors) THEN
+			IF ~anythingTrue THEN
+			   CreateSet(setOfTrueConditions);
+			END;
+			Incl(setOfTrueConditions, listp.cond);
+			listp.cond.waitingForEvent := FALSE;
+			anythingTrue := TRUE;
 		     END;
-		     Incl(setOfTrueConditions, listp.cond);
-		     listp.cond.waitingForEvent := FALSE;
-		     anythingTrue := TRUE;
 		  END;
+		  listp := listp.next;
 	       END;
-	       listp := listp.next;
+	       INC(i);
 	    END;
 	    elp := elp.next;
 	 END;
@@ -615,20 +659,24 @@ MODULE Conditions;
 				       VAR setOfTrueConditions: ConditionSet;
 				       errors: RelatedEvents.Object) : BOOLEAN;
 		  VAR
-		     listp: ConditionList;
+		     listp: ConditionList; i: INTEGER;
 		     condition: Condition;
 		     anythingTrue: BOOLEAN;
 	       BEGIN (* TestAndSelect *)
 		  anythingTrue := FALSE;
 		  CreateSet(setOfTrueConditions);
-		  listp := conditionSet.list;
-		  WHILE listp # NIL DO
-		     condition := listp.cond;
-		     IF domain.if.test(domain, condition, errors) THEN
-			Incl(setOfTrueConditions, condition);
-			anythingTrue := TRUE;
+		  i := 0;
+		  WHILE i < tags DO
+		     listp := conditionSet.bucket[i];
+		     WHILE listp # NIL DO
+			condition := listp.cond;
+			IF domain.if.test(domain, condition, errors) THEN
+			   Incl(setOfTrueConditions, condition);
+			   anythingTrue := TRUE;
+			END;
+			listp := listp.next;
 		     END;
-		     listp := listp.next;
+		     INC(i);
 		  END;
 		  RETURN anythingTrue
 	       END TestAndSelect;
@@ -660,7 +708,7 @@ MODULE Conditions;
 	    PROCEDURE TestAsyncList(list: List) : BOOLEAN;
 	       VAR
 		  element: Element;
-		  listp: ConditionList;
+		  listp: ConditionList; i: INTEGER;
 		  condition: Condition;
 		  anythingFound: BOOLEAN;
 	    BEGIN
@@ -668,14 +716,18 @@ MODULE Conditions;
 	       anythingFound := FALSE;
 	       element := list.head;
 	       WHILE element # NIL DO
-		  listp := element.cset.list;
-		  WHILE listp # NIL DO
-		     condition := listp.cond;
-		     IF condition.gotEvent THEN
-			Incl(setOfTrueConditions, condition);
-			anythingFound := TRUE;
+		  i := 0;
+		  WHILE i < tags DO
+		     listp := element.cset.bucket[i];
+		     WHILE listp # NIL DO
+			condition := listp.cond;
+			IF condition.gotEvent THEN
+			   Incl(setOfTrueConditions, condition);
+			   anythingFound := TRUE;
+			END;
+			listp := listp.next;
 		     END;
-		     listp := listp.next;
+		     INC(i);
 		  END;
 		  element := element.next;
 	       END;
@@ -782,7 +834,7 @@ MODULE Conditions;
       END Block;
 
    BEGIN (* SimpleWaitForAndSelect *)
-      IF CommonDomain(conditionSet.list, domain) &
+      IF CommonDomain(conditionSet, domain) &
 	    (select IN domain.desc.caps) THEN
 	 ok := domain.if.select
 		  (domain, conditionSet, NIL, setOfTrueConditions,
@@ -800,7 +852,7 @@ MODULE Conditions;
 		     VAR setOfTrueConditions: ConditionSet;
 		     errors: RelatedEvents.Object);
       VAR
-	 listp: ConditionList;
+	 listp: ConditionList; i: INTEGER;
 	 testSet: ConditionSet;
 	 preconds: ConditionSet;
 	 domain: Domain;
@@ -809,49 +861,57 @@ MODULE Conditions;
 
       PROCEDURE PretestClosure(testSet, preconds: ConditionSet);
 	 VAR
-	    listp: ConditionList;
+	    listp: ConditionList; i: INTEGER;
 	    domain: Domain;
 	    morePreconditions: ConditionSet;
 	    evenMorePreconditions: ConditionSet;
       BEGIN
 	 REPEAT
 	    CreateSet(morePreconditions);
-	    listp := preconds.list;
-	    WHILE listp # NIL DO
-	       domain := listp.cond.domain;
-	       IF (preconditions IN domain.desc.caps) &
-		     domain.if.preconditions(domain, listp.cond,
-					     evenMorePreconditions, errors) &
-		     (evenMorePreconditions # NIL) &
-		     (Card(evenMorePreconditions) > 0) THEN
-		  Union(morePreconditions, evenMorePreconditions);
-	       ELSE
-		  Incl(testSet, listp.cond);
+	    i := 0;
+	    WHILE i < tags DO
+	       listp := preconds.bucket[i];
+	       WHILE listp # NIL DO
+		  domain := listp.cond.domain;
+		  IF (preconditions IN domain.desc.caps) &
+			domain.if.preconditions(domain, listp.cond,
+						evenMorePreconditions, errors) &
+			(evenMorePreconditions # NIL) &
+			(Card(evenMorePreconditions) > 0) THEN
+		     Union(morePreconditions, evenMorePreconditions);
+		  ELSE
+		     Incl(testSet, listp.cond);
+		  END;
+		  listp := listp.next;
 	       END;
-	       listp := listp.next;
+	       INC(i);
 	    END;
 	    preconds := morePreconditions;
 	 UNTIL Card(preconds) = 0
       END PretestClosure;
 
-   BEGIN (* WaitForAndSelect *)
-      ASSERT(conditionSet.list # NIL);
+   BEGIN (* WaitFor *)
+      ASSERT(conditionSet.cardinality > 0);
       LOOP
 	 CreateSet(testSet);
-	 listp := conditionSet.list;
 	 anyPreconditions := FALSE;
-	 WHILE listp # NIL DO
-	    domain := listp.cond.domain;
-	    IF (preconditions IN domain.desc.caps) &
-		  domain.if.preconditions(domain,
-					  listp.cond, preconds, errors) &
-		  (preconds # NIL) & (Card(preconds) > 0) THEN
-	       PretestClosure(testSet, preconds);
-	       anyPreconditions := TRUE;
-	    ELSE
-	       Incl(testSet, listp.cond);
+	 i := 0;
+	 WHILE i < tags DO
+	    listp := conditionSet.bucket[i];
+	    WHILE listp # NIL DO
+	       domain := listp.cond.domain;
+	       IF (preconditions IN domain.desc.caps) &
+		     domain.if.preconditions(domain,
+					     listp.cond, preconds, errors) &
+		     (preconds # NIL) & (Card(preconds) > 0) THEN
+		  PretestClosure(testSet, preconds);
+		  anyPreconditions := TRUE;
+	       ELSE
+		  Incl(testSet, listp.cond);
+	       END;
+	       listp := listp.next;
 	    END;
-	    listp := listp.next;
+	    INC(i);
 	 END;
 
 	 SimpleWaitForAndSelect(testSet, selected, errors);
@@ -859,12 +919,16 @@ MODULE Conditions;
 	    setOfTrueConditions := selected;
 	    EXIT
 	 END;
-	 listp := selected.list;
-	 WHILE listp # NIL DO
-	    IF ~In(conditionSet, listp.cond) THEN
-	       Excl(selected, listp.cond);
+	 i := 0;
+	 WHILE i < tags DO
+	    listp := selected.bucket[i];
+	    WHILE listp # NIL DO
+	       IF ~In(conditionSet, listp.cond) THEN
+		  Excl(selected, listp.cond);
+	       END;
+	       listp := listp.next;
 	    END;
-	    listp := listp.next;
+	    INC(i);
 	 END;
 	 IF Card(selected) > 0 THEN
 	    setOfTrueConditions := selected;

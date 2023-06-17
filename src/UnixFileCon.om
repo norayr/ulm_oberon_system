@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixFileCon.om,v 1.4 2001/02/06 08:57:19 borchert Exp $
+   $Id: UnixFileCon.om,v 1.4 2001/02/06 08:57:19 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: UnixFileCon.om,v $
    Revision 1.4  2001/02/06 08:57:19  borchert
@@ -43,9 +43,9 @@ MODULE UnixFileConditions;
 
    (* creation of conditions for UNIX file descriptors *)
 
-   IMPORT Conditions, Clocks, Op := Operations, RelatedEvents,
-      Scales, StreamConditions, Streams, SysSelect, SysStat,
-      SysTime, SysTypes, Times;
+   IMPORT Clocks, Conditions, Op := Operations, RelatedEvents, Scales,
+      StreamConditions, Streams, SYS := SYSTEM, SysPoll, SysStat, SysTime,
+      SysTypes, Times;
 
    CONST
       (* operations *)
@@ -62,45 +62,41 @@ MODULE UnixFileConditions;
 	    valid: BOOLEAN; (* is fd still valid? *)
 	    stream: Streams.Stream; (* stream which represents fd *)
 	    operation: SHORTINT; (* read..exception *)
+	    entry: SysPoll.Entry;
 	 END;
    VAR
       domain: Conditions.Domain;
 
-   PROCEDURE Create(VAR condition: Conditions.Condition;
-		    stream: Streams.Stream;
-		    fd: SysTypes.File; operation: SHORTINT);
-      VAR
-	 newcond: Condition;
-   BEGIN
-      NEW(newcond); Conditions.Init(newcond, domain);
-      newcond.stream := stream;
-      newcond.fd := fd; newcond.valid := TRUE; newcond.operation := operation;
-      condition := newcond;
-   END Create;
+   (* ====== private procedures ====================================== *)
 
-   PROCEDURE Test(stream: Streams.Stream;
-		  fd: SysTypes.File;
-		  operation: SHORTINT;
-		  errors: RelatedEvents.Object) : BOOLEAN;
-      VAR
-	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
-	 ready: INTEGER;
+   PROCEDURE Check(events, revents: SysPoll.Flags) : BOOLEAN;
+      CONST
+	 errorflags = SysPoll.pollErr + SysPoll.pollHup + SysPoll.pollNval;
+	 errors = SYS.VAL(SET, LONG(errorflags));
    BEGIN
-      IF (stream # NIL) &
-	    (operation = read) & Streams.InputInBuffer(stream) THEN
-	 RETURN TRUE
+      RETURN (SYS.VAL(SET, LONG(events)) + errors) *
+             SYS.VAL(SET, LONG(revents)) # {}
+   END Check;
+
+   PROCEDURE Union(events1, events2: SysPoll.Flags) : SysPoll.Flags;
+   BEGIN
+      RETURN
+	 SYS.VAL(SysPoll.Flags,
+	    SYS.VAL(INTEGER,
+	       SYS.VAL(SET, LONG(events1)) + SYS.VAL(SET, LONG(events2))))
+   END Union;
+
+   PROCEDURE Convert(operation: SHORTINT) : SysPoll.Flags;
+   BEGIN
+      CASE operation OF
+      | read:
+	    RETURN SysPoll.pollRdNorm;
+      | write:
+	    RETURN SysPoll.pollWrNorm;
+      | exception:
+	    RETURN SysPoll.pollRdBand;
       END;
-      SysSelect.CreateSet(fdsets[0]);
-      SysSelect.CreateSet(fdsets[1]);
-      SysSelect.CreateSet(fdsets[2]);
-      SysSelect.Incl(fdsets[operation], fd);
-      IF SysSelect.Poll(fdsets[read], fdsets[write], fdsets[exception],
-			ready, errors) THEN
-	 RETURN ready = 1
-      ELSE
-	 RETURN TRUE
-      END;
-   END Test;
+   END Convert;
 
    (* ====== interface procedures ==================================== *)
 
@@ -109,8 +105,10 @@ MODULE UnixFileConditions;
 			  errors: RelatedEvents.Object) : BOOLEAN;
       VAR
 	 queue: RelatedEvents.Queue;
-	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
 	 ready: INTEGER;
+	 fdset: SysPoll.FdSet;
+	 entry: SysPoll.Entry;
+	 interrupted: BOOLEAN;
    BEGIN
       WITH condition: Condition DO
 	 IF ~condition.valid THEN RETURN TRUE END;
@@ -119,13 +117,13 @@ MODULE UnixFileConditions;
 	       Streams.InputInBuffer(condition.stream) THEN
 	    RETURN TRUE
 	 END;
-	 SysSelect.CreateSet(fdsets[0]);
-	 SysSelect.CreateSet(fdsets[1]);
-	 SysSelect.CreateSet(fdsets[2]);
-	 SysSelect.Incl(fdsets[condition.operation], condition.fd);
-	 IF SysSelect.Poll(fdsets[read], fdsets[write], fdsets[exception],
-			   ready, errors) THEN
-	    RETURN ready = 1
+	 SysPoll.CreateSet(fdset);
+	 NEW(entry); entry.fd := condition.fd;
+	 entry.events := Convert(condition.operation);
+	 SysPoll.Incl(fdset, entry);
+	 IF SysPoll.Poll(fdset, 0, ready, errors, (* retry = *) TRUE,
+	       interrupted) THEN
+	    RETURN (ready = 1) & Check(entry.events, entry.revents)
 	 ELSE
 	    condition.valid := FALSE;
 	    RETURN TRUE
@@ -140,9 +138,21 @@ MODULE UnixFileConditions;
 		    errors: RelatedEvents.Object;
 		    retry: BOOLEAN;
 		    VAR interrupted: BOOLEAN) : BOOLEAN;
+      CONST
+	 hashtablen = 128;
+      TYPE
+	 Entry = POINTER TO EntryRec;
+	 EntryRec =
+	    RECORD
+	       fd: SysTypes.File;
+	       pollrec: SysPoll.Entry;
+	       next: Entry;
+	    END;
+	 HashTable = ARRAY hashtablen OF Entry;
       VAR
 	 condition: Condition;
-	 fdsets: ARRAY 3 OF SysSelect.FileDescriptorSet;
+	 fdset: SysPoll.FdSet;
+	 pollrec: SysPoll.Entry;
 	 systime: SysTime.TimeVal; (* relative timeout as needed by select(2) *)
 	 currentTime: Times.Time; (* current time as returned by the system *)
 	 relTime: Times.Time; (* relative time; derived from time *)
@@ -150,6 +160,7 @@ MODULE UnixFileConditions;
 	 ready: INTEGER; (* number of ready fds *)
 	 selectOK: BOOLEAN;
 	 cardinality: INTEGER; (* of conditionSet *)
+	 hash: HashTable; i: INTEGER; entry: Entry;
 
       PROCEDURE CheckValidity;
 	 (* SysSelect returned with EBADF -- so let's check all
@@ -170,18 +181,38 @@ MODULE UnixFileConditions;
       END CheckValidity;
 
    BEGIN (* Select *)
+      i := 0;
+      WHILE i < hashtablen DO
+	 hash[i] := NIL;
+	 INC(i);
+      END;
       Conditions.CreateSet(setOfTrueConditions);
-      SysSelect.CreateSet(fdsets[0]);
-      SysSelect.CreateSet(fdsets[1]);
-      SysSelect.CreateSet(fdsets[2]);
+      SysPoll.CreateSet(fdset);
       Conditions.ExamineConditions(conditionSet); cardinality := 0;
       WHILE Conditions.GetNextCondition(conditionSet, condition) DO
 	 IF ~condition.valid OR (condition.stream # NIL) &
 	       (condition.operation = read) &
 	       Streams.InputInBuffer(condition.stream) THEN
 	    Conditions.Incl(setOfTrueConditions, condition);
+	    condition.entry := NIL;
 	 ELSE
-	    SysSelect.Incl(fdsets[condition.operation], condition.fd);
+	    i := condition.fd MOD hashtablen; entry := hash[i];
+	    WHILE (entry # NIL) & (entry.fd # condition.fd) DO
+	       entry := entry.next;
+	    END;
+	    IF entry = NIL THEN
+	       NEW(pollrec); pollrec.fd := condition.fd;
+	       pollrec.events := Convert(condition.operation);
+	       SysPoll.Incl(fdset, pollrec);
+	       NEW(entry); entry.fd := condition.fd;
+	       entry.pollrec := pollrec;
+	       entry.next := hash[i]; hash[i] := entry;
+	    ELSE
+	       pollrec := entry.pollrec;
+	       pollrec.events :=
+		  Union(entry.pollrec.events, Convert(condition.operation));
+	    END;
+	    condition.entry := pollrec;
 	    INC(cardinality);
 	 END;
       END;
@@ -191,9 +222,7 @@ MODULE UnixFileConditions;
 	 RETURN TRUE
       END;
       IF time = NIL THEN
-	 selectOK := SysSelect.Select(fdsets[read], fdsets[write],
-			      fdsets[exception],
-			      ready, errors, retry, interrupted);
+	 selectOK := SysPoll.Poll(fdset, -1, ready, errors, retry, interrupted);
       ELSE
 	 IF Scales.IsRelative(time) THEN
 	    relTime := time;
@@ -203,13 +232,14 @@ MODULE UnixFileConditions;
 	 END;
 	 Times.GetValue(relTime, timeval);
 	 (* bad time values lead to EINVAL (see select(2)) *)
-	 ASSERT((timeval.epoch = 0) & (timeval.second <= 100000000));
-	 ASSERT(timeval.second >= 0);
-	 ASSERT((timeval.usec >= 0) & (timeval.usec < 1000000));
+	 ASSERT(
+	    (timeval.epoch = 0) & (timeval.second <= 100000000) &
+	    (timeval.second >= 0) &
+	    (timeval.usec >= 0) & (timeval.usec < 1000000)
+	 );
 	 systime.sec := timeval.second; systime.usec := timeval.usec;
-	 selectOK := SysSelect.SelectWithTimeLimit
-	    (fdsets[read], fdsets[write], fdsets[exception],
-	    systime, ready, errors, retry, interrupted);
+	 selectOK := SysPoll.Poll(fdset, SysPoll.ConvertTimeout(systime),
+	                          ready, errors, retry, interrupted);
       END;
       IF selectOK THEN
 	 IF ready = 0 THEN
@@ -217,15 +247,29 @@ MODULE UnixFileConditions;
 	 END;
 	 Conditions.ExamineConditions(conditionSet);
 	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
-	    IF SysSelect.In(fdsets[condition.operation], condition.fd) THEN
+	    IF Check(Convert(condition.operation), condition.entry.revents) THEN
 	       Conditions.Incl(setOfTrueConditions, condition);
 	    END;
+	    condition.entry := NIL;
 	 END;
 	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
 	 RETURN TRUE
       ELSE
 	 IF interrupted THEN RETURN FALSE END;
-	 CheckValidity;
+	 (* one of the fds is apparently invalid, lets check them all *)
+	 WHILE Conditions.GetNextCondition(conditionSet, condition) DO
+	    IF Check(0, condition.entry.revents) THEN
+	       condition.valid := FALSE;
+	       Conditions.Incl(setOfTrueConditions, condition);
+	    END;
+	    condition.entry := NIL;
+	 END;
+	 IF Conditions.Card(setOfTrueConditions) = 0 THEN
+	    (* hm... check them with fcntl in case poll(2) didn't
+	       update revents in case of invalid fds
+	    *)
+	    CheckValidity;
+	 END;
 	 ASSERT(Conditions.Card(setOfTrueConditions) > 0);
 	 RETURN TRUE
       END;
@@ -242,6 +286,46 @@ MODULE UnixFileConditions;
       NEW(domain);
       Conditions.InitDomain(domain, if, desc);
    END Init;
+
+   (* === exported procedures ========================================= *)
+
+   PROCEDURE Create(VAR condition: Conditions.Condition;
+		    stream: Streams.Stream;
+		    fd: SysTypes.File; operation: SHORTINT);
+      VAR
+	 newcond: Condition;
+   BEGIN
+      NEW(newcond); Conditions.Init(newcond, domain);
+      newcond.stream := stream;
+      newcond.fd := fd; newcond.valid := TRUE; newcond.operation := operation;
+      condition := newcond;
+   END Create;
+
+   PROCEDURE Test(stream: Streams.Stream;
+		  fd: SysTypes.File;
+		  operation: SHORTINT;
+		  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 fdset: SysPoll.FdSet;
+	 ready: INTEGER;
+	 entry: SysPoll.Entry;
+	 interrupted: BOOLEAN;
+   BEGIN
+      IF (stream # NIL) &
+	    (operation = read) & Streams.InputInBuffer(stream) THEN
+	 RETURN TRUE
+      END;
+      SysPoll.CreateSet(fdset);
+      NEW(entry); entry.fd := fd;
+      entry.events := Convert(operation);
+      SysPoll.Incl(fdset, entry);
+      IF SysPoll.Poll(fdset, 0, ready, errors, (* retry = *) TRUE,
+	    interrupted) THEN
+	 RETURN (ready = 1) & Check(entry.events, entry.revents)
+      ELSE
+	 RETURN TRUE
+      END;
+   END Test;
 
 BEGIN
    Init;

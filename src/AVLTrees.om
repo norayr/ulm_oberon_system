@@ -17,10 +17,16 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: AVLTrees.om,v 1.1 2000/05/25 18:30:40 lutz Exp $
+   $Id: AVLTrees.om,v 1.2 2004/07/15 13:23:33 lutz Exp borchert $
    ----------------------------------------------------------------------------
    $Log: AVLTrees.om,v $
-   Revision 1.1  2000/05/25  18:30:40  lutz
+   Revision 1.2  2004/07/15 13:23:33  lutz
+   procedure MaxHeight removed
+   (renamed to CheckImplementation and commented)
+   use of Disciplines removed
+   some minor changes to improve clarity
+
+   Revision 1.1  2000/05/25 18:30:40  lutz
    Initial revision
 
    ----------------------------------------------------------------------------
@@ -30,47 +36,33 @@ MODULE AVLTrees;
    (* implements AVLTrees (height-balanced binary trees)  *)
 
    IMPORT
-      Conclusions, Disciplines, Events, Iterators, Keys, Objects,
-      Priorities, RelatedEvents, Services;
+      Events, Iterators, Keys, Objects, Priorities, RelatedEvents, Services;
 
    CONST
       ascending = 0;  (* in ascending order *)
       descending = 1; (* in descending order *)
    
    TYPE
-      Order = Iterators.Mode;    (* ascending, descending *)
-      AVLDiscipline = POINTER TO AVLDisciplineRec;
-      AVLDisciplineRec = 
-         RECORD
-            (Disciplines.DisciplineRec)
-            from, to: Keys.Value;
-            key: Keys.Key
-         END;
-
       Node = POINTER TO NodeRec;
       NodeRec =
          RECORD
-            (Objects.ObjectRec)     (* because of PROCEDURE Iterate *)
             object: Services.Object;
             height: INTEGER; (* HEIGHT of this NodeRec *)
             left, right: Node;
                (* left and right subtree of this NodeRec *)
          END;
-      (* MEMBER(node) := {elem| THERE EXISTS
-                          {.left|.right} := seq:
-                          node.seq = elem}
-         MEMBER(node) := (* DEBUG *)
+      (* MEMBER(node) :=
             | {} iff node = NIL
-            | node + MEMBER(node.left) + MEMBER(node.right) OTHERWISE
+            | {node} u MEMBER(node.left) u MEMBER(node.right) OTHERWISE
          HEIGHT(node) :=
             | 0 iff node = NIL
             | 1 + max(HEIGHT(node.left), HEIGHT(node.right)) OTHERWISE
 
-         (1):
+         (1) vars consistent:
             node.height := HEIGHT(node);
-         (2):
+         (2) balanced:
             |HEIGHT(avlTree.left) - HEIGHT(avlTree.right)| < 2
-         (3):
+         (3) sorted inorder:
             FOR ALL elem IN MEMBER(node.left):
                Keys.Compare(avlTree.key, node.object, elem.object) > 0
             FOR ALL elem IN MEMBER(node.right):
@@ -83,14 +75,28 @@ MODULE AVLTrees;
             (Services.ObjectRec)
             (* private components *)
             key: Keys.Key;
-               (* the avlTree avlTree.root is sorted by this key *)
+               (* avlTree.root is sorted by this key *)
             card: INTEGER; (* number of members in avlTree.root *)
             root: Node; (* the root of the avlTree *)
          END;
-      (* (4): |MEMBER(avlTree.root)| = avlTree.card
-         (5): FOR ALL elem IN MEMBER(avlTree.root):
+      (* (4) cardinality: |MEMBER(avlTree.root)| = avlTree.card
+         (5) key supported: FOR ALL elem IN MEMBER(avlTree.root):
                  Keys.Supported(elem.object, avlTree.key) = TRUE
       *)
+
+      Order = Iterators.Mode;    (* ascending, descending *)
+      Iteration = POINTER TO IterationRec;
+      (* to iterate throught  the tree *)
+      IterationRec = 
+         RECORD
+            (Objects.ObjectRec)  (* Iterators.Reference *)
+            from, to: Keys.Value;
+            (* the area to iterate through. If from = NIL (resp. to = NIL,
+               iteration starts with the first (resp. ends with the last
+               element *)
+            key: Keys.Key; (* the tree to iterate is sorted with this key *)
+            node: Node (* the current node processed by the iteration *)
+         END;
 
    CONST
       keyUsed = 0; (* object with this value is already in the tree *)
@@ -113,7 +119,6 @@ MODULE AVLTrees;
 
    VAR
       avlTreeType: Services.Type;
-      avlDiscId: Disciplines.Identifier;
       error: Events.EventType;
       errormsg: ARRAY errorcodes OF Events.Message;
 
@@ -199,123 +204,118 @@ MODULE AVLTrees;
          POST: RETURN = HEIGHT(node.left) - HEIGHT(node.right)
       *)
    BEGIN
-      ASSERT(node # NIL);
       RETURN Height(node.left) - Height(node.right)
    END GetBalance;
 
-   PROCEDURE Balance(VAR node: Node);
-      (* PRE: FOR ALL elem IN MEMBER('node),
-            elem # node: (1), (2), (3)
-            AND node: (3) AND
-            |HEIGHT(node.left) - HEIGTH(node.right)| <= 2)
-         POST: MEMBER('node) = MEMBER(node') AND
-            FOR ALL elem IN MEMBER(node'): (1), (2) AND (3) AND
-            |'node.height - node'.height| <= 1
+   PROCEDURE Balance(VAR w: Node);
+      (* PRE: FOR ALL elem IN MEMBER('w) \ {'w}: (1), (2), (3)
+            AND w: (3) AND
+            |HEIGHT(w.left) - HEIGTH(w.right)| <= 2
+         POST: MEMBER('w) = MEMBER(w') AND
+            FOR ALL elem IN MEMBER(w'): (1), (2) AND (3) AND
+            |'w.height - w'.height| <= 1
       *)
       VAR
          balance: INTEGER;
-         l, r,                      (* the subtrees of node *)
-         ll, lr, rl, rr,            (* the subsubtrees of node *)
-         lrl, lrr, rll, rlr: Node;  (* the subsubsubtrees of node *)
+         l, r,                      (* the subtrees of w *)
+         ll, lr, rl, rr,            (* the subsubtrees of w *)
+         lrl, lrr, rll, rlr: Node;  (* the subsubsubtrees of w *)
    BEGIN
       (*
          Syntax used:
                  (N)     name of the node.
-                 H-1     possible heights
-                 H-2     of the node.
+               H-1,H-2   possible heights of the node
                  / \     links to left and
                 /   \    right subtree.
 
          Case 1:
-         =======                       (L)
-                 (W)                    H 
-                 H+1                   H+1
+         =======
+                 (W)                   (L)
+                 H+1                   H,H+1
                  / \                   / \
                 /   \                 /   \
               (L)   (R)             (LL)  (W)
-               H    H-2    --->     H-1   H-1 
-              / \                          H 
-             /   \                        / \
-           (LL) (LR)                     /   \
-           H-1   H-2                   (LR)  (R)
-                 H-1                   H-2   H-2
-                                       H-1
-         Case 2: symmetric in "N" to Case 1
+               H    H-2    --->     H-1  H-1,H 
+              / \                         / \
+             /   \                       /   \
+           (LL) (LR)                   (LR)  (R)
+           H-1 H-2,H-1               H-2,H-1 H-2
+                 
+                                       
+         Case 2: symmetric in "W" to Case 1
          =======
          Case 3:
-         =======                      (LR)
-                 (W)                    H
-                 H+1                   / \
-                 / \                  /   \
-                /   \                /     \
-              (L)   (R)            (L)     (W)
-               H    H-2    --->    H-1     H-1
-              / \                  / |     | \ 
-             /   \                /  |     |  \ 
-           (LL) (LR)           (LL)(LRL) (LRR)(R)
-           H-2   H-1            H-2 H-2   H-2 H-2
-                 / \                H-3   H-3 
-                /   \     
+         =======
+                 (W)                    (LR)
+                 H+1                     H
+                 / \                    / \
+                /   \                  /   \
+               /     \                /     \
+             (L)    (R)            (L)      (W)
+              H     H-2    --->    H-1       H-1
+             / \                  /  |       |  \ 
+            /   \                /   |       |   \ 
+           /     \              /    |       |    \ 
+         (LL)   (LR)         (LL)  (LRL)   (LRR)  (R)
+          H-2    H-1          H-2 H-2,H-3 H-2,H-3 H-2
+                 / \
+                /   \
              (LRL) (LRR)
-              H-2   H-2
-              H-3   H-3
-         Case 4: symmetric in "N" to Case 3
+           H-2,H-3 H-2,H-3
+
+         Case 4: symmetric in "W" to Case 3
          =======
       *)
-      IF node = NIL THEN RETURN END;
-      balance := GetBalance(node);
-      ASSERT(ABS(balance) <= 2);
-      l := node.left; r := node.right;
+      IF w = NIL THEN RETURN END;
+      balance := GetBalance(w);
+      l := w.left; r := w.right;
       IF balance > 1 THEN (* Case 1 OR Case 3, l # NIL *)
          ll := l.left; lr := l.right;
          IF (ll # NIL) & (ll.height = l.height - 1) THEN
             (* Case 1 *)
-            node.left := lr; (* node.right := r; *)
-            node.height := Height(node);
-            (* l.left := ll; *) l.right := node;
-            node := l
+            w.left := lr; (* w.right := r; *)
+            w.height := Height(w);
+            (* l.left := ll; *) l.right := w;
+            w := l
          ELSE ASSERT(lr # NIL); (* Case 3 *)
             lrl := lr.left; lrr := lr.right;
             (* l.left := ll; *) l.right := lrl; l.height := Height(l);
-            node.left := lrr; (* node.right := r; *)
-            node.height := Height(node);
-            lr.left := l; lr.right := node;
-            node := lr
+            w.left := lrr; (* w.right := r; *)
+            w.height := Height(w);
+            lr.left := l; lr.right := w;
+            w := lr
          END
       ELSIF balance < -1 THEN (* Case 2 OR Case 4, r # NIL *)
-         rl := r.left; rr := r.right;
+         rr := r.right; rl := r.left;
          IF ((rr # NIL) & (rr.height = r.height - 1)) THEN
             (* Case 2 *)
-            (* node.left := l; *) node.right := rl;
-            node.height := Height(node);
-            r.left := node; (* r.right := rr; *)
-            node := r
+            w.right := rl; (* w.left := l; *)
+            w.height := Height(w);
+            (* r.right := rr; *) r.left := w;
+            w := r
          ELSE ASSERT(rl # NIL); (* Case 4 *)
-            rll := rl.left; rlr := rl.right;
-            r.left := rlr; (* r.right := rr; *) r.height := Height(r);
-            (* node.left := l; *) node.right := rll;
-            node.height := Height(node);
-            rl.left := node; rl.right := r;
-            node := rl
+            rlr := rl.right; rll := rl.left;
+            (* r.right := rr; *) r.left := rlr; r.height := Height(r);
+            w.right := rll; (* w.left := l; *)
+            w.height := Height(w);
+            rl.right := r; rl.left := w;
+            w := rl
          END
       END;
-      node.height := Height(node);
-      RETURN
+      w.height := Height(w)
    END Balance;
 
    PROCEDURE AddObject(VAR node: Node; object: Services.Object;
                           avlTree: AVLTree): BOOLEAN;
-      (* PRE: NOT THERE IS elem in MEMBER('node):
+      (* PRE: (-) NOT THERE IS elem in MEMBER('node):
             Keys.Compare(avlTree.key, object, elem.object) = 0
-            FOR ALL elem IN MEMBER('node): (1), (2), (3); 'avlTree: (4)
+            FOR ALL elem IN MEMBER('node): (1),(2),(3); 'avlTree: (4),(5);
          POST: MEMBER(node') = MEMBER('node) + newnode,
             newnode.object = object;
-            FOR ALL elem IN MEMBER(node'): (1), (2), (3); avlTree': (4)
-         EXEP: Error(keyUsed)
+            FOR ALL elem IN MEMBER(node'): (1),(2),(3); avlTree': (4),(5);
+         EXEP: Error(keyUsed) <=> NOT (-)
       *)
       VAR
-         balance,                              (* balance of the node *)
-         heightLeft, heightRight, (* height of left and right subtree *)
          compare: INTEGER;              (* ordering of object to node *)
          success: BOOLEAN;               (* has object been inserted? *)
    BEGIN
@@ -323,7 +323,8 @@ MODULE AVLTrees;
          NEW(node);
          node.object := object;
          node.height := 1; node.left := NIL; node.right := NIL;
-         INC(avlTree.card);
+         (* (1),(2),(3) *)
+         INC(avlTree.card); (* (4),(5) *)
          RETURN TRUE
       END; (* node # NIL *)
       compare := Keys.Compare(avlTree.key, node.object, object);
@@ -343,6 +344,15 @@ MODULE AVLTrees;
       (* object is inserted in the AVLTree avlTree. If an object with
          the same key is already in the tree, an ErrorEvent (keyUsed)
          is raised.
+         PRE: (-) NOT THERE IS elem in MEMBER('avlTree.root):
+            Keys.Compare(avlTree.key, object, elem.object) = 0
+            (+) Key.Supported(object, avlTree.key)
+            FOR ALL elem IN MEMBER('node): (1),(2),(3); 'avlTree: (4),(5);
+         POST: MEMBER(node') = MEMBER('node) + newnode,
+            newnode.object = object;
+            FOR ALL elem IN MEMBER(node'): (1),(2),(3); avlTree': (4),(5);
+         EXEP: Error(keyUsed) <=> NOT (-)
+               Error(wrongKey) <=> NOT (+)
       *)
    BEGIN
       ASSERT((avlTree # NIL) & (object # NIL));
@@ -355,51 +365,50 @@ MODULE AVLTrees;
 
    PROCEDURE RemoveObject(VAR node: Node; keyval: Keys.Value;
                           avlTree: AVLTree): BOOLEAN;
-      (* PRE: THERE IS delnode in MEMBER('node):
+      (* PRE: (#) THERE IS delnode in MEMBER('node):
             Keys.Compare(avlTree.key, keyval, delnode.object) = 0
-            FOR ALL elem IN MEMBER('node): (1), (2), (3); 'avlTree: (4)
+            FOR ALL elem IN MEMBER('node): (1),(2),(3); 'avlTree: (4),(5);
          POST: MEMBER(node') = MEMBER('node) - {delnode}
-            FOR ALL elem IN MEMBER(node'): (1), (2), (3); avlTree': (4)
-         EXEP: Error(noSuchKey)
+            |HEIGHT(node') - HEIGHT('node)| <= 1
+            FOR ALL elem IN MEMBER(node'): (1),(2),(3); avlTree': (4),(5);
+         EXEP: Error(noSuchKey) <=> NOT (#)
       *)
       VAR
          help: Node;
          nodeValue: Keys.Value;
-                             (* the value of the key from node.object *)
-         balance,                              (* balance of the node *)
-         heightLeft, heightRight, (* height of left and right subtree *)
+                                    (* the value of node.object's key *)
          compare: INTEGER;              (* ordering of object to node *)
          success: BOOLEAN;               (* has object been inserted? *)
 
-      PROCEDURE GetGreatest(VAR node: Node): Node;
+      PROCEDURE CutBiggest(VAR node: Node): Node;
          (* PRE: node # NIL;
                FOR ALL elem IN MEMBER('node): (1), (2), (3);
             POST: MEMBER('node) = MEMBER(node') + {RETURN};
+               |HEIGHT(node') - HEIGHT('node)| <= 1
                FOR ALL elem IN MEMBER(node'):
                Keys.Compare(avlTree.key, elem.object, RETURN.object) < 0
                FOR ALL elem IN MEMBER(node'): (1), (2), (3);
          *)
          VAR
-            greatest: Node;
+            biggest: Node;
       BEGIN
          IF node.right # NIL THEN
-            greatest := GetGreatest(node.right)
+            biggest := CutBiggest(node.right)
          ELSE (* node.right = NIL *)
-            greatest := node;
+            biggest := node;
             node := node.left
          END;
             (* FOR ALL elem IN MEMBER(node):
-               Keys.Compare(avlTree.key, elem.object, greatest.object)
-               < 0
+               Keys.Compare(avlTree.key, elem.object, biggest.object) < 0
             *)
          Balance(node);
-         RETURN greatest
-      END GetGreatest;
+         RETURN biggest
+      END CutBiggest;
 
    BEGIN
       IF node = NIL THEN
          Error(avlTree, NIL, keyval, noSuchKey); RETURN FALSE
-      END; ASSERT(node # NIL);
+      END;
       Keys.Extract(node.object, avlTree.key, nodeValue);
       compare := Keys.CompareKeyValues(avlTree.key, nodeValue, keyval);
       IF compare = 0 THEN
@@ -407,7 +416,7 @@ MODULE AVLTrees;
          IF node.left = NIL THEN node := node.right; RETURN TRUE
          ELSIF node.right = NIL THEN node := node.left; RETURN TRUE
          ELSE (* node.left # NIL AND node.right # NIL *)
-            help := GetGreatest(node.left); (* help # NIL *)
+            help := CutBiggest(node.left); (* help # NIL *)
             help.left := node.left; help.right := node.right;
             node := help;
             Balance(node);
@@ -427,6 +436,15 @@ MODULE AVLTrees;
       (* the object with the Keys.Value keyval is removed from avlTree.
          If such an object in not in the tree, an ErrorEvent (noSuchKey)
          is raised.
+         PRE: (+) Keys.Compatible(keyval, avlTree.key);
+            (#) THERE IS delnode in MEMBER('avlTree.root):
+            Keys.Compare(avlTree.key, keyval, delnode.object) = 0
+            FOR ALL elem IN MEMBER('node): (1),(2),(3); 'avlTree: (4),(5);
+         POST: MEMBER(node') = MEMBER('node) \ {delnode}
+            |HEIGHT(node') - HEIGHT('node)| <= 1
+            FOR ALL elem IN MEMBER(node'): (1),(2),(3); avlTree': (4),(5);
+         EXEP: Error(noSuchKey) <=> NOT (#)
+               Error(wrongKey) <=> NOT (+)
       *)
    BEGIN
       ASSERT((avlTree # NIL) & (keyval # NIL));
@@ -439,11 +457,14 @@ MODULE AVLTrees;
 
    PROCEDURE GetEntry(avlTree: AVLTree; node: Node;
                          keyval: Keys.Value): Node;
-      (* PRE: FOR ALL elem IN MEMBER('node): (3);
-            THERE IS elem in MEMBER('node):
+      (* PRE: FOR ALL elem IN MEMBER(node): (3);
+            THERE IS elem in MEMBER(node):
             Keys.Compare(avlTree.key, keyval, elem.object) = 0
-         POST: RETURN = elem;
-         EXEP: RETURN = NIL;
+         POST:
+            RETURN = found <=>
+               THERE IS found in MEMBER(node):
+               Keys.Compare(avlTree.key, keyval, found.object) = 0
+            RETURN = NIL OTHERWISE
       *)
       VAR
          nodeValue: Keys.Value;
@@ -465,12 +486,22 @@ MODULE AVLTrees;
       (* retrieves the object with Keys.Value keyval from avlTree. If
          such an object does not exist, an ErrorEvent (noSuchKey) is
          raised.
+         PRE: FOR ALL elem IN MEMBER(node): (3);
+            THERE IS elem in MEMBER(node):
+            Keys.Compare(avlTree.key, keyval, elem.object) = 0
+         POST:
+            RETURN = found # NIL <=>
+               THERE IS found in MEMBER(node):
+               Keys.Compare(avlTree.key, keyval, found.object) = 0
+            RETURN = NIL OTHERWISE
       *)
       VAR elem: Node;
    BEGIN
       ASSERT((avlTree # NIL) & (keyval # NIL));
       IF ~ Keys.Compatible(keyval, avlTree.key) THEN
-         Error(avlTree, object, NIL, wrongKey); RETURN FALSE
+         object := NIL;
+         Error(avlTree, object, keyval, wrongKey);
+         RETURN FALSE
       END;
       elem := GetEntry(avlTree, avlTree.root, keyval);
       IF elem = NIL THEN
@@ -478,8 +509,7 @@ MODULE AVLTrees;
          Error(avlTree, object, keyval, noSuchKey);
          RETURN FALSE
       ELSE
-         object := elem.object;
-         RETURN TRUE
+         object := elem.object; RETURN TRUE
       END
    END Get;
 
@@ -490,61 +520,73 @@ MODULE AVLTrees;
       RETURN avlTree.card
    END Card;
 
-   PROCEDURE Iterate(it: Iterators.Iterator; node: Objects.Object;
-                     mode: Iterators.Mode);
+   PROCEDURE Iterate(it: Iterators.Iterator; iteration: Iterators.Reference;
+                        mode: Iterators.Mode);
       CONST
-         beneath = -1;
-         in = 0;
-         above = 1;
+         beneath = -1; in = 0; above = 1;
       TYPE
          Where = INTEGER; (* beneath .. above *)
       VAR
-         avlDiscipline: AVLDiscipline;
-         (* attached to it; contains additional data for iteration *)
          ok: BOOLEAN;
          nodeValue: Keys.Value;
          where: Where;
          (* is actual node beneath/in/above the specified range for
             iteration *)
+         current: Node;
    BEGIN
-      IF node = NIL THEN RETURN END;
-      WITH node: Node DO
-         ok := Disciplines.Seek(it, avlDiscId, avlDiscipline);
-         ASSERT(ok);
-         Keys.Extract(node.object, avlDiscipline.key, nodeValue);
-         IF ((avlDiscipline.from # NIL) &
-            (Keys.CompareKeyValues(avlDiscipline.key, nodeValue,
-               avlDiscipline.from) < 0))
+      WITH iteration: Iteration DO
+         current := iteration.node;
+         IF current = NIL THEN RETURN END;
+         Keys.Extract(current.object, iteration.key, nodeValue);
+         IF ((iteration.from # NIL) &
+            (Keys.CompareKeyValues(iteration.key, nodeValue, iteration.from)
+               < 0))
          THEN
             where := beneath
-            (* FOR ALL elem IN MEMBER(node):
-               Keys.Extract(elem.object, avlDiscipline.key, elemValue);
-               Keys.CompareKeyValues(avlDiscipine.key, elemValue,
-                  avlDiscipline.from) < 0
-               => nur noch node.right absuchen!
+            (* FOR ALL elem IN MEMBER(current.left) + {current}:
+               Keys.Extract(elem.object, iteration.key, elemValue);
+               Keys.CompareKeyValues(iteration.key, elemValue, iteration.from)
+               < 0
+               => only iterate through current.right!
             *)
-         ELSIF ((avlDiscipline.to # NIL) &
-            (Keys.CompareKeyValues(avlDiscipline.key, nodeValue,
-               avlDiscipline.to) > 0))
+         ELSIF ((iteration.to # NIL) &
+            (Keys.CompareKeyValues(iteration.key, nodeValue, iteration.to)
+               > 0))
          THEN
             where := above
-            (* FOR ALL elem IN MEMBER(node):
-               Keys.Extract(elem.object, avlDiscipline.key, elemValue);
-               Keys.CompareKeyValues(avlDiscipine.key, elemValue,
-                  avlDiscipline.to) > 0
-               => nur noch node.left absuchen!
+            (* FOR ALL elem IN MEMBER(current.right) + {current}:
+               Keys.Extract(elem.object, iteration.key, elemValue);
+               Keys.CompareKeyValues(iteration.key, elemValue, iteration.to)
+               > 0
+               => only iterate through current.left!
             *)
          ELSE
-            where := in;
+            where := in
          END; (* where is well defined *)
          IF mode = ascending THEN
-            IF where # beneath THEN Iterate(it, node.left, mode) END;
-            IF where = in THEN Iterators.Yield(it, node.object) END;
-            IF where # above THEN Iterate(it, node.right, mode) END
-         ELSE ASSERT(mode = descending);
-            IF where # above THEN Iterate(it, node.right, mode) END;
-            IF where = in THEN Iterators.Yield(it, node.object) END;
-            IF where # beneath THEN Iterate(it, node.left, mode) END
+            IF where # beneath THEN
+               iteration.node := current.left;
+               Iterate(it, iteration, mode)
+            END;
+            IF where = in THEN
+               Iterators.Yield(it, current.object)
+            END;
+            IF where # above THEN
+               iteration.node := current.right;
+               Iterate(it, iteration, mode)
+            END
+         ELSE
+            IF where # above THEN
+               iteration.node := current.right;
+               Iterate(it, iteration, mode)
+            END;
+            IF where = in THEN
+               Iterators.Yield(it, current.object)
+            END;
+            IF where # beneath THEN
+               iteration.node := current.left;
+               Iterate(it, iteration, mode)
+            END
          END
       END
    END Iterate;
@@ -556,19 +598,22 @@ MODULE AVLTrees;
          at the first object respectively stops at the last object in
          avlTree; iteration must not be carried on over change operations
       *)
-      VAR avlDiscipline: AVLDiscipline;
+      VAR iteration: Iteration;
    BEGIN
       ASSERT(avlTree # NIL);
-      Iterators.Create(it, Iterate, avlTree.root, order);
-      NEW(avlDiscipline); avlDiscipline.id := avlDiscId;
-      avlDiscipline.from := from; avlDiscipline.to := to;
-      avlDiscipline.key := avlTree.key;
-      Disciplines.Add(it, avlDiscipline)
+      NEW(iteration);
+      iteration.from := from; iteration.to := to;
+      iteration.key := avlTree.key;
+      iteration.node := avlTree.root;
+      IF avlTree.card < 128 THEN
+	 Iterators.CreateQuickIterator(it, Iterate, iteration, order)
+      ELSE
+	 Iterators.Create(it, Iterate, iteration, order)
+      END;
    END GetEntries;
 
    PROCEDURE Exists(avlTree: AVLTree; keyValue: Keys.Value): BOOLEAN;
-      (* is the Keys.Value keyValue already used in the AVLTree avlTree?
-      *)
+      (* is the Keys.Value keyValue already used in the AVLTree avlTree? *)
       VAR node: Node;
    BEGIN
       ASSERT((avlTree # NIL) & (keyValue # NIL));
@@ -581,9 +626,11 @@ MODULE AVLTrees;
       END
    END Exists;
 
-   PROCEDURE MaxHeight(avlTree: AVLTree): INTEGER;
-      (* returns HEIGHT(avlTree)
-      *)
+   (*
+   PROCEDURE CheckImplementation(avlTree: AVLTree): INTEGER;
+      (* returns HEIGHT(avlTree) *)
+      VAR
+         card, height: INTEGER;
       PROCEDURE RecursiveHeight(node: Node): INTEGER;
          VAR
             height, heightLeft, heightRight: INTEGER;
@@ -595,19 +642,35 @@ MODULE AVLTrees;
          END Max;
       BEGIN
          IF node = NIL THEN RETURN 0 END;
+         INC(card);
          heightLeft := RecursiveHeight(node.left);
+         (* (1), (2), (3) holds for node.left *)
          heightRight := RecursiveHeight(node.right);
-         ASSERT(ABS(heightLeft - heightRight) < 2);
+         (* (1), (2), (3) holds also for node.right *)
          height := 1 + Max(heightLeft, heightRight);
-         ASSERT(height = node.height);
+         ASSERT(height = node.height); (* (1) holds for node *)
+         ASSERT(ABS(heightLeft - heightRight) < 2);
+         (* (2) holds for node *)
+         IF node.left # NIL THEN
+            ASSERT(Keys.Compare(avlTree.key, node.object,
+                  node.left.object) > 0)
+         END;
+         IF node.right # NIL THEN
+            ASSERT(Keys.Compare(avlTree.key, node.object,
+                  node.right.object) < 0)
+         END;
+         (* (3) holds for node *)
          RETURN height
       END RecursiveHeight;
    BEGIN
-      RETURN RecursiveHeight(avlTree.root)
-   END MaxHeight;
+      card := 0;
+      height := RecursiveHeight(avlTree.root);
+      ASSERT(card = avlTree.card); (* (4) holds *)
+      RETURN height
+   END CheckImplementation;
+   *)
 
 BEGIN
    InitErrorHandling;
-   avlDiscId := Disciplines.Unique();
    Services.CreateType(avlTreeType, "AVLTrees.AVLTree", "")
 END AVLTrees.

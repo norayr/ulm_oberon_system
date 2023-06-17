@@ -1,0 +1,365 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH Compilers 3 "Last change: 24 June 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+Compilers \- general interface for two-pass compilers
+.SH SYNOPSIS
+.Pg
+TYPE Result = POINTER TO ResultRec;
+TYPE ResultRec =
+      RECORD
+         (Disciplines.ObjectRec)
+         header: CompilerObjects.Header;
+         object: CompilerObjects.Object;
+      END;
+.sp 0.7
+TYPE Compiler = POINTER TO CompilerRec;
+TYPE CompilerRec = RECORD (Services.ObjectRec) END;
+.sp 0.7
+TYPE Context = POINTER TO ContextRec;
+TYPE ContextRec =
+      RECORD
+         (Disciplines.ObjectRec)
+         keys: CompilerKeys.Set;
+         mtab: CompilerObjects.ModuleTable;
+         tab: ModularizedStructures.ObjectTable;
+         db: CompilerDatabases.Database;
+         cachemode: CompilerObjects.CacheMode;
+         log: CompilerLogs.Log;
+      END;
+.sp 0.7
+TYPE Pass1Proc = PROCEDURE (compiler: Compiler; context: Context;
+                            source: CompilerSources.Source;
+                            VAR definition, module: Result) : BOOLEAN;
+TYPE Pass2Proc = PROCEDURE (compiler: Compiler; context: Context;
+                            definition, module: CompilerObjects.Object;
+                            arch: Architectures.Architecture;
+                            updatesPermitted: BOOLEAN;
+                            VAR archdef, code: Result;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+TYPE DefineArgsProc = PROCEDURE (compiler: Compiler; args: Args.Arguments);
+TYPE Pass1Interface = POINTER TO Pass1InterfaceRec;
+TYPE Pass1InterfaceRec =
+      RECORD
+         (Objects.ObjectRec)
+         pass1: Pass1Proc;
+         defineArgs: DefineArgsProc; (* may be NIL *)
+      END;
+TYPE Pass2Interface = POINTER TO Pass2InterfaceRec;
+TYPE Pass2InterfaceRec =
+      RECORD
+         (Objects.ObjectRec)
+         pass2: Pass2Proc;
+         defineArgs: DefineArgsProc; (* may be NIL *)
+      END;
+.sp 0.7
+PROCEDURE Init(compiler: Compiler; if: Pass1Interface);
+PROCEDURE Register(compiler: Compiler; arch: Architectures.Architecture;
+                   if: Pass2Interface);
+.sp 0.7
+PROCEDURE DefineArgs(compiler: Compiler; args: Args.Arguments);
+.sp 0.7
+PROCEDURE CreateCopyOfContext(VAR newcontext: Context; orig: Context);
+PROCEDURE SynchronizeContext(context, ext: Context);
+.sp 0.7
+PROCEDURE Pass1(compiler: Compiler; context: Context;
+                source: CompilerSources.Source;
+                VAR definition, module: Result) : BOOLEAN;
+.sp 0.7
+PROCEDURE Pass2(compiler: Compiler; context: Context;
+                definition, module: CompilerObjects.Object;
+                arch: Architectures.Architecture;
+                updatesPermitted: BOOLEAN;
+                VAR archdef, code: Result;
+                errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE Supported(compiler: Compiler;
+                    arch: Architectures.Architecture) : BOOLEAN;
+.sp 0.7
+PROCEDURE GetSupportedArchitectures(compiler: Compiler;
+                                    VAR it: Iterators.Iterator);
+.Pe
+.SH DESCRIPTION
+.I Compilers
+provides a general interface for two-pass compilers. The first
+pass is strictly architecture-independent and its results may
+be passed in case of success to one of the back-ends that generate
+code for a selected architecture.
+.PP
+This interface supports the separation of interface descriptions (called
+definitions) from module implementations (called modules) as known by
+Modula-2 and classic Oberon. Variants where both, the interface and its
+implementation, are derived from one source (as in newer variants of
+Oberon) are supported as well.
+.PP
+Program texts are represented by \fICompilerSources(3)\fP. Note
+that source objects have already their compilation options associated with.
+Modules that create source objects for a particular compiler are
+obliged to include all possible compilation options into their
+set of options using \fIDefineArgs\fP.
+.PP
+A compilation process is set into a context that consists of
+.IP \(bu
+a set of keys of type \fICompilerKeys.Set\fP which is to
+be created using \fICompilerKeys.CreateSet\fP,
+.IP \(bu
+a module table of type \fICompilerObjects.ModuleTable\fP that
+collects all compilation results that are loaded or generated
+during a compilation run which is to be created using
+\fICompilerObjects.CreateModuleTable\fP,
+.IP \(bu
+an object table of type \fIModularizedStructures.ObjectTable\fP
+that keeps track of all persistent data structures loaded so far
+which is to be created using \fIModularizedStructures.CreateTable\fP,
+.IP \(bu
+a database where sources and compilation results are loaded from
+and stored to of type \fICompilerDatabases.Database\fP
+which, for example, could be opened by \fICDB(3)\fP,
+.IP \(bu
+a cache mode of type \fICompilerObjects.CacheMode\fP that
+specifies which results have to be stored back into the database
+for retrieval by other compilation runs, and
+.IP \(bu
+a log object of type \fICompilerLogs.Log\fP which may be \fBNIL\fP
+if no log is desired.
+.PP
+Contexts can be cloned using \fICreateCopyOfContext\fP and
+a branch can be synchronized back using \fISynchronizeContext\fP.
+Note, however, that synchronization requires both contexts to
+be compatible to each other. Otherwise an assertion will fail.
+Cloning and resynchronization is useful if an attempt is to be
+made to load an imported module and where in case of failures
+the original context should remain unchanged.
+.PP
+Compilation results are of type \fIResult\fP and consist
+of a header object (\fICompilerObjects.Header\fP) and
+an object that represents the entire result (\fICompilerObjects.Object\fP).
+.SS "Using a compiler"
+.I Pass1
+passes \fIsource\fP to \fIcompiler\fP, and returns in case of
+a successful compilation architecture-independent results in
+\fIdefinition\fP and/or \fImodule\fP. The to be expected results
+depend on the source kind (\fICompilerSources.SourceKind\fP)
+of \fIsource\fP:
+.Tb definition
+.Tp definition
+Just \fIdefinition\fP will be returned, \fImodule\fP is set to \fBNIL\fP.
+.Tp module
+Just \fImodule\fP will be returned, \fIdefinition\fP is set to \fBNIL\fP.
+.Tp defmod
+Both, \fIdefinition\fP and \fImodule\fP will be returned and are
+non-\fBNIL\fP.
+.Te
+.PP
+.I Pass2
+generates, if successful, compilation results for the architecture
+\fIarch\fP. If just an architecture-dependent definition object is
+to be generated, an architecture-independent \fIdefinition\fP is
+to be given and \fImodule\fP is to be set to \fBNIL\fP.
+For the generation of machine code (represented by the \fIcode\fP
+result object) \fIdefinition\fP and \fImodule\fP must be non-\fBNIL\fP
+where \fIdefinition\fP may be either architecture-independent, or,
+if it already available for \fIarch\fP, architecture-dependent.
+\fIPass2\fP is allowed to update a architecture-dependent \fIdefinition\fP
+if \fIupdatesPermitted\fP is \fBTRUE\fP. However, if updates are
+permitted, \fIdefinition\fP must neither be a member of \fIcontext.mtab\fP
+and its key must not be a member of \fIcontext.keys\fP. Note that
+\fIupdatesPermitted\fP must be set to \fBTRUE\fP if \fIdefinition\fP
+is architecture-independent.
+.PP
+.I Supported
+return \fBTRUE\fP if \fIarch\fP is supported by \fIcompiler\fP.
+The list of supported architectures by a compiler can be retrieved
+using \fIGetSupportedArchitectures\fP.
+.SS "Implementing a compiler"
+For each compiler an architecture-independent pass has to be
+implemented. Its interface is of type \fIPass1Interface\fP
+which is to be passed to \fIInit\fP. Afterwards, the architecture-dependent
+passes of a compiler can be registered by \fIRegister\fP using
+an interface of type \fIPass2Interface\fP. Both interfaces consist
+of an interface procedure similar to the signatures of \fIPass1\fP
+and \fIPass2\fP which share the same semantics. In addition,
+an optional interface procedure \fIdefineArgs\fP can be defined
+or set to \fBNIL\fP. This interface procedure, if non-\fBNIL\fP,
+can be used to register compilation flags and options to \fIargs\fP
+(see \fIArgs(3)\fP).
+.SH DIAGNOSTICS
+In case of failures, \fIPass1\fP relates all errors to \fIsource\fP
+while \fIPass2\fP related all errors to \fIerrors\fP
+(see \fIRelatedEvents(3)\fP). As long as errors are genuine
+compilation errors, they are of type \fICompilerErrors.Error\fP.
+However, occasional errors related to the compiler database or
+access to source objects may result in other error objects.
+\fIPass1\fP and \fIPass2\fP return \fBTRUE\fP in case of success and
+\fBFALSE\fP in case of failures.
+.SH "SEE ALSO"
+.Tb ModularizedStructures(3)
+.Tp Architectures(3)
+classification of hardware architectures and operating systems
+.Tp Args(3)
+general abstraction for flags and options
+.Tp CompilerDatabases(3)
+interface to a persistent database where sources and compilation
+results are found and stored to
+.Tp CompilerErrors(3)
+standardized events for compilation errors
+.Tp CompilerKeys(3)
+keys that identify dependencies of compiler-generated objects
+.Tp CompilerLogs(3)
+filter and formatting tool for logs of compilation processes
+.Tp CompilerObjects(3)
+base type for compiler objects that represent compiler results
+and header structures
+.Tp CompilerSources(3)
+objects that represent program text sources
+.Tp ModularizedStructures(3)
+modularized byte sequences of persistent objects
+.Tp OberonCompiler(3)
+implementation of this interface for Oberon
+.Tp ObjectLoader(3)
+general object loader on base of \fICompilers\fP
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: Compilers.3,v 1.1 2004/06/24 12:39:08 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: Compilers.3,v $
+.\" Revision 1.1  2004/06/24 12:39:08  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------

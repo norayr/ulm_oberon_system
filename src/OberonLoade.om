@@ -1,5 +1,5 @@
 (* Ulm's Oberon Compiler
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    This file is part of Ulm's Oberon Compiler.
 
@@ -44,18 +44,19 @@ MODULE OberonLoader;
 
    VAR
       outkeys : CompilerKeys.Set;
-      ch : CHAR;
-      key : CompilerKeys.Key;
-      i : INTEGER;
-      cs : Streams.Stream;
-      ok : BOOLEAN;
+      ch: CHAR;
+      key: CompilerKeys.Key;
+      i: INTEGER;
+      cs: Streams.Stream;
+      ok: BOOLEAN;
       intensity: INTEGER;
       errors: RelatedEvents.Object;
       module: OberonSymbols.Ident;
-      outputfilename, pattern : ARRAY 512 OF CHAR;
-      outputpattern : BOOLEAN;
-      runtime : BOOLEAN;
+      outputfilename, pattern: ARRAY 512 OF CHAR;
+      outputpattern: BOOLEAN;
+      runtime: BOOLEAN;
       output: Streams.Stream;
+      monitor: BOOLEAN;
 
       db: CompilerDatabases.Database;
       authfile, basedir: ARRAY 512 OF CHAR;
@@ -127,6 +128,7 @@ MODULE OberonLoader;
 	        Read.IntS(as, level);
 	        CompilerLogs.Create(log, Streams.stdout);
 		CompilerLogs.SetLogLevel(log, level);
+	 | "m": monitor := TRUE;
 	 | "o": Args.FetchString(outputfilename);
 	 | "O": Args.FetchString(pattern);
 	        outputpattern := TRUE;
@@ -141,69 +143,64 @@ MODULE OberonLoader;
       ConstStrings.Create(modname, filename);
    END ProcessArguments;
 
-   PROCEDURE Output (header : CompilerObjects.Header;
-                      text : PersistentTexts.Text) : BOOLEAN;
+   PROCEDURE Output(header: CompilerObjects.Header;
+                    text: PersistentTexts.Text) : BOOLEAN;
 
-      PROCEDURE DoOutput (header : CompilerObjects.Header;
-			   text : PersistentTexts.Text) : BOOLEAN;
+      PROCEDURE DoOutput(header: CompilerObjects.Header;
+			 text: PersistentTexts.Text) : BOOLEAN;
 	 VAR
-	    it : Iterators.Iterator;
-	    dummy, key : CompilerKeys.Key;
-	    ok : BOOLEAN;
-	    i,j : INTEGER;
+	    it: Iterators.Iterator;
+	    dummy, key: CompilerKeys.Key;
+	    ok: BOOLEAN;
+	    i, j: INTEGER;
       BEGIN
-         (* Write.String ("DoOutput: "); *)
-	 (* ConstStrings.Write (Streams.stdout, header.modname); *)
-	 (* Write.Ln; *)
-	 (* ASSERT (Streams.Flush (Streams.stdout)); *)
-         IF CompilerKeys.Lookup (outkeys, header.modname, dummy) THEN
+         IF CompilerKeys.Lookup(outkeys, header.modname, dummy) THEN
 	    RETURN TRUE;
 	 END;
-         (* Write.String ("Doing"); Write.Ln; *)
-	 (* ASSERT (Streams.Flush (Streams.stdout)); *)
-	 CompilerKeys.Incl (outkeys, header.key);
+	 CompilerKeys.Incl(outkeys, header.key);
 	 i := 0; j := 0;
 	 LOOP
-	    IF i >= LEN (outputfilename) THEN
+	    IF i >= LEN(outputfilename) THEN
 	       EXIT;
 	    END;
-	    IF j >= LEN (pattern) THEN
+	    IF j >= LEN(pattern) THEN
 	       EXIT
 	    END;
 	    IF pattern[j] = 0X THEN
 	       EXIT;
 	    END;
 	    IF pattern[j] = "%" THEN
-	       ConstStrings.Open (cs, header.modname);
-	       WHILE (i < LEN(outputfilename)) & Streams.Read (cs, ch) & (ch # 0X) DO
+	       ConstStrings.Open(cs, header.modname);
+	       WHILE (i < LEN(outputfilename)) &
+		     Streams.Read (cs, ch) & (ch # 0X) DO
 		  outputfilename[i] := ch;
 		  INC(i);
 	       END;
 	       Streams.Release (cs);
 	       cs := NIL;
-	       INC (j);
+	       INC(j);
 	    ELSE
 	       outputfilename[i] := pattern[j];
 	       INC(i); INC(j);
 	    END;
 	 END;
-	 IF i >= LEN (outputfilename) THEN
+	 IF i >= LEN(outputfilename) THEN
 	    i := LEN(outputfilename) - 1;
 	 END;
 	 outputfilename[i] := 0X;
-	 IF ~UnixFiles.Open (output, outputfilename,
-			     UnixFiles.write + UnixFiles.create, 
-			     Streams.onebuf, errors) THEN
+	 IF ~UnixFiles.Open(output, outputfilename,
+			    UnixFiles.write + UnixFiles.create, 
+			    Streams.onebuf, errors) THEN
 	    Conclusions.Conclude(errors, Errors.fatal, "");
 	 END;
 	 RelatedEvents.Forward(output, errors);
-	 ASSERT (text # NIL);
+	 ASSERT(text # NIL);
 	 IF ~PersistentObjects.Write(output, header) OR
 	       ~PersistentObjects.Write(output, text) THEN
 	    Conclusions.Conclude(errors, Errors.fatal, outputfilename);
 	 END;
 	 Streams.Release(output);
-         CompilerKeys.GetKeys (header.dependencies, it);
+         CompilerKeys.GetKeys(header.dependencies, it);
 	 ok := TRUE;
 	 WHILE ok & Iterators.Get (it, key) DO
 	    mod := key.modname;
@@ -211,30 +208,34 @@ MODULE OberonLoader;
 	       ok := ObjectLoader.LoadText(OberonCompiler.compiler, context,
 			     mod, type, arch, header, text, errors);
 	       IF ok THEN
-	          ok := DoOutput (header, text);
+	          ok := DoOutput(header, text);
 	       END;
 	    END;
 	 END;
 	 RETURN ok;
       END DoOutput;
 
-   BEGIN
+   BEGIN (* Output *)
       IF outkeys = NIL THEN
-         CompilerKeys.CreateSet (outkeys);
+         CompilerKeys.CreateSet(outkeys);
       END;
-      RETURN DoOutput (header, text);
+      RETURN DoOutput(header, text);
    END Output;
 
 BEGIN
-   SysMonitor.Start();
-   intensity := Storage.Intensity(7);
-   Streams.Release(Streams.stdin);
+   intensity := Storage.Intensity(8);
+   ASSERT (Streams.Close (Streams.stdin));
    NEW(errors); RelatedEvents.QueueEvents(errors);
    Services.SeekType("Shards.Lid", lidType);
    outputpattern := FALSE;
+   monitor := FALSE;
    NEW(context);
 
    ProcessArguments;
+
+   IF monitor THEN
+      SysMonitor.Start;
+   END;
 
    IF ~CDB.Open(context.db, basedir, language, auth, errors) THEN
       Conclusions.Conclude(errors, Errors.fatal, "");
@@ -268,9 +269,9 @@ BEGIN
 	 ok := ObjectLoader.LoadText(OberonCompiler.compiler, context,
 	               runmod[i], type, arch, header, text, errors);
 	 IF ok & outputpattern THEN
-	       ok := Output (header, text);
+	       ok := Output(header, text);
 	 END;
-	 INC (i);
+	 INC(i);
       END;
    END;
    IF ok & ObjectLoader.LoadText(OberonCompiler.compiler, context, modname,
@@ -284,7 +285,7 @@ BEGIN
 	    Conclusions.Conclude(errors, Errors.fatal, "");
 	 END;
 	 RelatedEvents.Forward(output, errors);
-	 ASSERT (text # NIL);
+	 ASSERT(text # NIL);
 	 IF ~PersistentObjects.Write(output, header) OR
 	       ~PersistentObjects.Write(output, text) THEN
 	    Conclusions.Conclude(errors, Errors.fatal, outputfilename);
@@ -310,7 +311,9 @@ BEGIN
    IF Terminals.console # NIL THEN
       Streams.Release(Terminals.console);
    END;
-   SysMonitor.Stop (Streams.stderr);
-   ASSERT(Streams.Flush (Streams.stderr));
+   IF monitor THEN
+      SysMonitor.Stop(Streams.stderr);
+   END;
+   Process.TerminateSoftly;
    Process.Exit(retcode);
 END OberonLoader.

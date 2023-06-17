@@ -1,0 +1,306 @@
+.\" ---------------------------------------------------------------------------
+.\" Ulm's Oberon System Documentation
+.\" Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" ---------------------------------------------------------------------------
+.\"    Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\" 
+.\"    Permission is granted to copy and distribute modified versions of
+.\" this manual under the conditions for verbatim copying, provided also
+.\" that the sections entitled "GNU General Public License" and "Protect
+.\" Your Freedom--Fight `Look And Feel'" are included exactly as in the
+.\" original, and provided that the entire resulting derived work is
+.\" distributed under the terms of a permission notice identical to this
+.\" one.
+.\" 
+.\"    Permission is granted to copy and distribute translations of this
+.\" manual into another language, under the above conditions for modified
+.\" versions, except that the sections entitled "GNU General Public
+.\" License" and "Protect Your Freedom--Fight `Look And Feel'", and this
+.\" permission notice, may be included in translations approved by the Free
+.\" Software Foundation instead of in the original English.
+.\" ---------------------------------------------------------------------------
+.de Pg
+.nf
+.ie t \{\
+.	sp 0.3v
+.	ps 9
+.	ft CW
+.\}
+.el .sp 1v
+..
+.de Pe
+.ie t \{\
+.	ps
+.	ft P
+.	sp 0.3v
+.\}
+.el .sp 1v
+.fi
+..
+'\"----------------------------------------------------------------------------
+.de Tb
+.br
+.nr Tw \w'\\$1MMM'
+.in +\\n(Twu
+..
+.de Te
+.in -\\n(Twu
+..
+.de Tp
+.br
+.ne 2v
+.in -\\n(Twu
+\fI\\$1\fP
+.br
+.in +\\n(Twu
+.sp -1
+..
+'\"----------------------------------------------------------------------------
+'\" Is [prefix]
+'\" Ic capability
+'\" If procname params [rtype]
+'\" Ef
+'\"----------------------------------------------------------------------------
+.de Is
+.br
+.ie \\n(.$=1 .ds iS \\$1
+.el .ds iS "
+.nr I1 5
+.nr I2 5
+.in +\\n(I1
+..
+.de Ic
+.sp .3
+.in -\\n(I1
+.nr I1 5
+.nr I2 2
+.in +\\n(I1
+.ti -\\n(I1
+If
+\.I \\$1
+\.B IN
+\.IR caps :
+.br
+..
+.de If
+.ne 3v
+.sp 0.3
+.ti -\\n(I2
+.ie \\n(.$=3 \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2) : \\$3;
+.el \fI\\$1\fP: \fBPROCEDURE\fP(\\*(iS\\$2);
+.br
+..
+.de Ef
+.in -\\n(I1
+.sp 0.3
+..
+'\"----------------------------------------------------------------------------
+'\"	Strings - made in Ulm (tm 8/87)
+'\"
+'\"				troff or new nroff
+'ds A \(:A
+'ds O \(:O
+'ds U \(:U
+'ds a \(:a
+'ds o \(:o
+'ds u \(:u
+'ds s \(ss
+'\"
+'\"     international character support
+.ds ' \h'\w'e'u*4/10'\z\(aa\h'-\w'e'u*4/10'
+.ds ` \h'\w'e'u*4/10'\z\(ga\h'-\w'e'u*4/10'
+.ds : \v'-0.6m'\h'(1u-(\\n(.fu%2u))*0.13m+0.06m'\z.\h'0.2m'\z.\h'-((1u-(\\n(.fu%2u))*0.13m+0.26m)'\v'0.6m'
+.ds ^ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z^\h'|\\n:u'
+.ds ~ \\k:\h'-\\n(.fu+1u/2u*2u+\\n(.fu-1u*0.13m+0.06m'\z~\h'|\\n:u'
+.ds C \\k:\\h'+\\w'e'u/4u'\\v'-0.6m'\\s6v\\s0\\v'0.6m'\\h'|\\n:u'
+.ds v \\k:\(ah\\h'|\\n:u'
+.ds , \\k:\\h'\\w'c'u*0.4u'\\z,\\h'|\\n:u'
+'\"----------------------------------------------------------------------------
+.ie t .ds St "\v'.3m'\s+2*\s-2\v'-.3m'
+.el .ds St *
+.de cC
+.IP "\fB\\$1\fP"
+..
+'\"----------------------------------------------------------------------------
+.de Op
+.TP
+.SM
+.ie \\n(.$=2 .BI (+|\-)\\$1 " \\$2"
+.el .B (+|\-)\\$1
+..
+.de Mo
+.TP
+.SM
+.BI \\$1 " \\$2"
+..
+'\"----------------------------------------------------------------------------
+.TH ObjectLoader 3 "Last change: 25 August 2004" "Release 0.5" "Ulm's Oberon System"
+.SH NAME
+ObjectLoader \- load and possibly generate compilation results from the compiler database
+.SH SYNOPSIS
+.Pg
+(* log levels *)
+CONST logLoading = 0;
+CONST logLoadingResult = 1;
+CONST logCompiling = 2; (* includes 3 and 4 *)
+CONST logStoring = 5;
+CONST logChecks = 6;
+CONST logErrors = 7;
+.sp 0.7
+CONST noSrcFound = 0;
+CONST compilationFailed = 1;
+CONST loadFailed = 2;
+CONST refCycle = 3;
+CONST errors = 4;
+TYPE ErrorCode = SHORTINT; (* noSrcFound ... *)
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+   RECORD
+      (Events.EventRec)
+      code: ErrorCode;
+      modname: ConstStrings.String;
+   END;
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+.sp 0.7
+PROCEDURE UpToDate(context: Compilers.Context;
+                   header: CompilerObjects.Header) : BOOLEAN;
+.sp 0.7
+PROCEDURE LoadObject(compiler: Compilers.Compiler;
+                     context: Compilers.Context;
+                     modname: ConstStrings.String;
+                     type: CompilerObjects.ObjectType;
+                     arch: Architectures.Architecture;
+                     VAR header: CompilerObjects.Header;
+                     VAR object: CompilerObjects.Object;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE LoadText(compiler: Compilers.Compiler;
+                   context: Compilers.Context;
+                   modname: ConstStrings.String;
+                   type: CompilerObjects.ObjectType;
+                   arch: Architectures.Architecture;
+                   VAR header: CompilerObjects.Header;
+                   VAR text: PersistentTexts.Text;
+                   errors: RelatedEvents.Object) : BOOLEAN;
+.sp 0.7
+PROCEDURE LoadHeader(compiler: Compilers.Compiler;
+                     context: Compilers.Context;
+                     modname: ConstStrings.String;
+                     type: CompilerObjects.ObjectType;
+                     arch: Architectures.Architecture;
+                     VAR header: CompilerObjects.Header;
+                     errors: RelatedEvents.Object) : BOOLEAN;
+.Pe
+.SH DESCRIPTION
+.I ObjectLoader
+attempts to load specified targets from the database associated with
+\fIcontext\fP (see \fICompilers(3)\fP and \fICompilerDatabases(3)\fP),
+and generates them using \fIcompiler\fP if they are missing or no longer
+up-to-date. Newly generated compilation results may be stored back
+into the database in dependence of the \fIcachemode\fP field of
+the \fIcontext\fP parameter.
+.PP
+Targets are specified by a module name (\fImodname\fP),
+an object type (\fICompilerObjects.public\fP
+or \fICompilerObjects.private\fP), and the architecture \fIarch\fP
+which may be \fBNIL\fP for architecture-independent targets.
+.PP
+All compilation results within the database consist of a header
+and a persistent text (see \fIPersistentTexts(3)\fP).  The latter
+encapsulates a module object that is part of a modularized
+structure (see \fIModularizedStructures(3)\fP).  The header (of type
+\fICompilerObjects.Header\fP) provides meta informations of a compilation
+result including all its dependencies (see \fICompilerKeys(3)\fP).
+.PP
+.I LoadHeader
+just loads the header of a target,
+.I LoadText
+loads both, the header and the persistent text,
+and
+.I LoadObject
+works like \fILoadText\fP but unpacks the encapsulated object out of the
+persistent text.
+.PP
+.I UpToDate
+allows to check whether a target of the database
+whose header is given is up-to-date.
+.SH DIAGNOSTICS
+All error events are related to \fIerrors\fP. This includes all
+events that are generated by the compiler (see \fICompilerErrors(3)\fP)
+and the underlying compiler database (see \fICompilerDatabases(3)\fP).
+Following error events are possibly raised by this module:
+.Tb compilationFailed
+.Tp noSrcFound
+The desired compilation result is not available and cannot be
+generated because source texts are missing. Please note that
+the name of the module whose source is missing is included in
+the event record type.
+.Tp compilationFailed
+A compilation failed. More detailed error messages may be found
+in the collected compilation error events (see \fICompilerErrors(3)\fP).
+.Tp loadFailed
+Final error event that is generated if load operations fail for
+whatever reason.
+.Tp refCycle
+A reference cycle among interfaces was detected which lead to
+conflicting compilation keys (see \fICompilerKeys(3)\fP). One
+member of the reference cycle is named by the \fImodname\fP field
+of the error event.
+.Te
+.PP
+A log object of type \fICompilerLogs.Log\fP is part of the context
+objects. The log allows to follow the recursion of the loading
+algorithm. The nesting level of the recursion is reflected by the nesting
+level of the log. The amount of log messages depends on the log levels
+which are given in ascending order:
+.Tb logLoadingResult
+.Tp logLoading
+Tells the parameters \fImodname\fP, \fItype\fP, and \fIarch\fP
+of a loading operation.
+.Tp logLoadingResult
+Tells whether a load operation was successful or not.
+.Tp logCompiling
+Tells when the compiler is invoked. Note that a log level of
+at least \fIlogCompiling+1\fP
+provides the time stamp of the source, and that beginning
+with \fIlogCompiling+2\fP the source ids are provided as well.
+.Tp logStoring
+Tells which compilation results are stored back into the database.
+.Tp logChecks
+Documents all the checks that are performed to determine the
+up-to-date status of a module object in the database.
+.Tp logErrors
+Includes all compilation errors within the log.
+.Te
+.SH "SEE ALSO"
+.Tb ModularizedStructures(3)
+.Tp Compilers(3)
+general interface for two-pass compilers
+.Tp CompilerDatabases(3)
+interface to a persistent database where sources and compilation results
+are found and stored to
+.Tp CompilerErrors(3)
+standardized events for compilation errors
+.Tp CompilerKeys(3)
+keys that identify dependencies of compiler-generated objects
+.Tp CompilerLogs(3)
+provides log about loading and compilation processes
+.Tp CompilerObjects(3)
+base type for compiler objects that represent compiler results
+and header structures
+.Tp ModularizedStructures(3)
+modularized byte sequences of persistent objects
+.Tp PersistentTexts(3)
+encapsulation of persistent objects
+.Te
+.\" ---------------------------------------------------------------------------
+.\" $Id: ObjectLoader.3,v 1.1 2004/08/25 15:02:29 borchert Exp $
+.\" ---------------------------------------------------------------------------
+.\" $Log: ObjectLoader.3,v $
+.\" Revision 1.1  2004/08/25 15:02:29  borchert
+.\" Initial revision
+.\"
+.\" ---------------------------------------------------------------------------
