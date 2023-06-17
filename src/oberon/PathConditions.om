@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,10 +17,14 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: PathConditi.om,v 1.1 1995/12/29 11:00:22 borchert Exp $
+   $Id: PathConditi.om,v 1.2 2005/09/02 15:26:58 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: PathConditi.om,v $
-   Revision 1.1  1995/12/29  11:00:22  borchert
+   Revision 1.2  2005/09/02 15:26:58  borchert
+   - moved from CRSPAWN to Jobs
+   - tasks are now terminated if the process terminates
+
+   Revision 1.1  1995/12/29 11:00:22  borchert
    Initial revision
 
    ----------------------------------------------------------------------------
@@ -28,10 +32,10 @@
 
 MODULE PathConditions;
 
-   IMPORT ASCII, Conditions, ConstStrings, Coroutines, Disciplines, Errors,
-      EventConditions, Events, Names, Paths, Priorities, RelatedEvents,
-      Resources, Shards, StreamDisciplines, Streams, Strings,
-      SYS := SYSTEM, Tasks;
+   IMPORT ASCII, Conditions, ConstStrings, Disciplines, Errors,
+      EventConditions, Events, Jobs, Names, Paths, Priorities, Process,
+      RelatedEvents, Resources, Shards, StreamDisciplines, Streams, Strings,
+      Tasks;
 
    TYPE
       Condition = POINTER TO ConditionRec;
@@ -78,7 +82,8 @@ MODULE PathConditions;
 
    CONST
       noRoot = 0; invalidPath = 1; serverFailure = 2; accessFailed = 3;
-      errors = 4;
+      termination = 4;
+      errors = 5;
    TYPE
       ErrorCode = SHORTINT;
       ErrorEvent = POINTER TO ErrorEventRec;
@@ -92,6 +97,17 @@ MODULE PathConditions;
    VAR
       error: Events.EventType;
       errormsg: ARRAY errors OF Events.Message;
+
+   TYPE
+      PathCheckerJob = POINTER TO PathCheckerJobRec;
+      PathCheckerJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    condition: Condition;
+	    root: Names.Node;
+	    path: Path;
+	    auth: Shards.Lid;
+	 END;
 
    PROCEDURE WriteErrorEvent(s: Streams.Stream; event: Events.Event);
 
@@ -167,6 +183,7 @@ MODULE PathConditions;
       errormsg[serverFailure] :=
 	 "appropriate error message of server is missing";
       errormsg[accessFailed] := "cannot access one of the components";
+      errormsg[termination] := "process terminates";
       Errors.AssignWriteProcedure(error, WriteErrorEvent);
    END InitErrorHandling;
 
@@ -241,30 +258,31 @@ MODULE PathConditions;
       path.head := head; path.tail := tail;
    END ConvertPath;
 
-   PROCEDURE PathChecker(VAR cr: Coroutines.Coroutine;
-			 condition: Condition;
-			 root: Names.Node;
-			 path: Path;
-			 auth: Shards.Lid);
+   PROCEDURE PathChecker(job: Jobs.Job);
       VAR
+	 condition: Condition;
+	 auth: Shards.Lid;
 	 comp: Component;
 	 errors: RelatedEvents.Object;
 	 errorCode: Names.ErrorCode;
 
       PROCEDURE GetErrorCode(VAR errorCode: Names.ErrorCode) : BOOLEAN;
+	 (* return most recent error code of Names in the queue of errors *)
 	 VAR
 	    queue: RelatedEvents.Queue;
+	    found: BOOLEAN;
       BEGIN
 	 RelatedEvents.GetQueue(errors, queue);
 	 RelatedEvents.AppendQueue(errors, queue);
+	 found := FALSE;
 	 WHILE queue # NIL DO
 	    IF queue.event IS Names.ErrorEvent THEN
 	       errorCode := queue.event(Names.ErrorEvent).errorcode;
-	       RETURN TRUE
+	       found := TRUE;
 	    END;
 	    queue := queue.next;
 	 END;
-	 RETURN FALSE
+	 RETURN found
       END GetErrorCode;
 
       PROCEDURE ForwardErrors;
@@ -324,6 +342,7 @@ MODULE PathConditions;
 
       PROCEDURE WaitFor(path: Path; VAR node: Names.Node);
 	 VAR
+	    termCond, softTermCond: Conditions.Condition;
 	    resourceEventType: Events.EventType;
 	    resourceEventCond: Conditions.Condition;
 	    conditions: Conditions.ConditionSet;
@@ -415,9 +434,11 @@ MODULE PathConditions;
 	 BEGIN
 	    CutCurrentPath(path.head);
 	    EventConditions.Drop(resourceEventCond);
+	    EventConditions.Drop(termCond);
+	    EventConditions.Drop(softTermCond);
 	 END Cleanup;
 
-      BEGIN
+      BEGIN (* WaitFor *)
 	 (* take interest in the life of the root of our path;
 	    we will abort if the root terminates
 	 *)
@@ -425,6 +446,12 @@ MODULE PathConditions;
 	 EventConditions.Create(resourceEventCond, resourceEventType);
 	 Conditions.CreateSet(conditions);
 	 Conditions.Incl(conditions, resourceEventCond);
+
+	 (* abort waiting in case of a process termination *)
+	 EventConditions.Create(termCond, Process.termination);
+	 Conditions.Incl(conditions, termCond);
+	 EventConditions.Create(softTermCond, Process.softTermination);
+	 Conditions.Incl(conditions, softTermCond);
 
 	 (* take interest in all member events of all domains we
 	    have examined so far; we will fall back if any of
@@ -446,6 +473,9 @@ MODULE PathConditions;
 			Error(condition.errors, noRoot, path); EXIT
 		     END;
 		  END;
+	       ELSIF (trueCondition = termCond) OR
+		     (trueCondition = softTermCond) THEN
+		  Error(condition.errors, termination, path); EXIT
 	       ELSE
 		  (* member event for one of our path components *)
 		  ok := Disciplines.Seek(trueCondition, mecdID, mecd);
@@ -470,19 +500,18 @@ MODULE PathConditions;
       END WaitFor;
 
    BEGIN (* PathChecker *)
-      SYS.CRSPAWN(cr);
-
-      NEW(errors); RelatedEvents.QueueEvents(errors);
-      IF (root = NIL) OR Resources.Terminated(root) THEN
-	 Error(condition.errors, noRoot, path);
-      ELSIF path.head = NIL THEN (* empty path *)
-	 condition.node := root;
-      ELSIF ~WalkAlongThePath(path, root, condition.node) THEN
-	 WaitFor(path, condition.node);
+      WITH job: PathCheckerJob DO
+	 condition := job.condition; auth := job.auth;
+	 NEW(errors); RelatedEvents.QueueEvents(errors);
+	 IF (job.root = NIL) OR Resources.Terminated(job.root) THEN
+	    Error(condition.errors, noRoot, job.path);
+	 ELSIF job.path.head = NIL THEN (* empty path *)
+	    condition.node := job.root;
+	 ELSIF ~WalkAlongThePath(job.path, job.root, condition.node) THEN
+	    WaitFor(job.path, condition.node);
+	 END;
+	 condition.done := TRUE;
       END;
-      condition.done := TRUE;
-
-      Tasks.Terminate;
    END PathChecker;
 
    PROCEDURE TestCondition(domain: Conditions.Domain;
@@ -509,9 +538,8 @@ MODULE PathConditions;
    PROCEDURE CreateCondition(VAR cond: Condition; path: Path;
 		             root: Names.Node; auth: Shards.Lid);
       VAR
-	 cr: Coroutines.Coroutine;
 	 condition: Condition;
-	 task: Tasks.Task;
+	 job: PathCheckerJob;
    BEGIN
       (* setup condition *)
       NEW(condition);
@@ -522,8 +550,9 @@ MODULE PathConditions;
       Conditions.Init(condition, domain);
 
       (* start associated task *)
-      PathChecker(cr, condition, root, path, auth);
-      Tasks.Create(task, cr);
+      NEW(job); job.condition := condition;
+      job.root := root; job.path := path; job.auth := auth;
+      Jobs.Submit(job, PathChecker);
 
       (* return condition *)
       cond := condition;

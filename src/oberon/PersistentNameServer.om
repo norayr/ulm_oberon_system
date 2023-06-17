@@ -28,15 +28,17 @@
 
 MODULE PersistentNameServer;
 
-   IMPORT Args := UnixArguments, CommandNodes, Conclusions, Containers,
-      ControlNodes, DNSRecords, DNSResolvers, DNSStdResolvers, Errors,
-      Events, InetTCP, IPv4Addresses, Iterators, Loader, LoaderErrors,
-      NamedObjects, Names, NamesBootService, Networks, PasswordShards, Paths,
-      PersistentNodes, PersistentObjects, PrivateShards, Process, Read,
+   IMPORT Args := UnixArguments, CommandNodes, Conclusions, Conditions,
+      Containers, ControlNodes, DNSRecords, DNSResolvers, DNSStdResolvers,
+      Errors, Events, InetTCP, IPv4Addresses, Iterators, Loader,
+      LoaderErrors, NamedObjects, Names, NamesBootService, Networks,
+      PasswordShards, PathConditions, Paths, PersistentNodes,
+      PersistentObjects, PrivateShards, Process, ProxyNodes, Read,
       RelatedEvents, RemoteCDBNames, RemoteCommandNodes, RemoteEvents,
       RemoteNames, RemoteObjects, Resources, Services, Shards,
       StandardContainers, Storage, Streams, Strings, SYS := SYSTEM, SysMain,
-      SysSignals, TransStreams, UnixFiles, VolatileShards, Write;
+      SysSignals, Tasks, TranslucentNames, TransStreams, UnixFiles,
+      UnixNames, VolatileShards, Write;
 
    TYPE
       ListOfAddresses = POINTER TO ListOfAddressesRec;
@@ -325,16 +327,6 @@ MODULE PersistentNameServer;
       END;
    END ControlObjectTerminationHandler;
 
-   PROCEDURE InsertOwnRoot(root: Names.Node);
-      VAR
-	 errors: RelatedEvents.Object;
-   BEGIN
-      NEW(errors); RelatedEvents.QueueEvents(errors);
-      IF ~Paths.Insert("/pub", root, NIL, errors) THEN
-	 Conclusions.Conclude(errors, Errors.error, "/pub");
-      END;
-   END InsertOwnRoot;
-
    PROCEDURE ExportControlObject;
       VAR
 	 auth: Shards.Lid;
@@ -342,6 +334,7 @@ MODULE PersistentNameServer;
 	 node: CommandNodes.Node;
 	 eventType: Events.EventType;
 	 key: Resources.Key;
+	 condition: PathConditions.Condition;
    BEGIN
       IF (write = NIL) OR ~Shards.Supply(write, auth) THEN
 	 auth := NIL;
@@ -349,6 +342,8 @@ MODULE PersistentNameServer;
       NEW(errors); RelatedEvents.QueueEvents(errors);
       ControlNodes.Create(node, NIL, shutdown);
       Resources.Attach(node, key);
+      PathConditions.Create(condition, "/pub", Names.root, auth);
+      Tasks.WaitFor(condition);
       IF ~Paths.Insert("/pub/pons", node, auth, errors) THEN
 	 Conclusions.Conclude(errors, Errors.error, "/pub/pons");
       END;
@@ -378,7 +373,6 @@ BEGIN
       OpenAllKindsOfPorts;
    END;
    SetupRoot(root, dbfile);
-   InsertOwnRoot(root);
    StartBootServices;
    termination := FALSE;
    Events.Handler(SysSignals.TERM, TerminationHandler);
@@ -387,7 +381,9 @@ BEGIN
    ExportControlObject;
    KeepResolverAlive;
    IF verbose THEN
+      (*
       Conclusions.CatchEvent(Loader.error, Errors.warning);
+      *)
       Write.LineS(Streams.stderr, "initialization finished");
    END;
 END PersistentNameServer.

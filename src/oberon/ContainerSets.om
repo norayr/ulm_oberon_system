@@ -1,0 +1,395 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ContainerSets;
+
+   IMPORT Arrays, AVLTrees, ContainerIdentKeys, Containers, Iterators, NetIO,
+      ObjectTransactions, PersistentDisciplines, PersistentObjects,
+      RelatedEvents, Resources, Services, Streams, SubContainers,
+      SubTransactions, Transactions;
+
+   TYPE
+      PersistentSet = POINTER TO PersistentSetRec;
+      PersistentSetRec =
+	 RECORD
+	    (PersistentDisciplines.ObjectRec)
+	    anchorDefined: BOOLEAN;
+	    anchor: Containers.Ident;
+	    idtab: AVLTrees.AVLTree;
+	 END;
+   VAR
+      psetType: Services.Type;
+
+   TYPE
+      Set = POINTER TO SetRec;
+      SetRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    id: Containers.Ident;
+	    pset: PersistentSet;
+	    host: Containers.Container;
+	    subcontab: Arrays.Array;
+	    trans: Transactions.Transaction;
+	 END;
+   VAR
+      setType: Services.Type;
+
+   (* === PersistentObjects if for PersistentSet ========================= *)
+
+   PROCEDURE CreatePersistentSet(VAR object: PersistentObjects.Object);
+      VAR
+	 pset: PersistentSet;
+   BEGIN
+      NEW(pset); PersistentObjects.Init(pset, psetType);
+      pset.anchorDefined := FALSE;
+      AVLTrees.Create(pset.idtab, ContainerIdentKeys.key);
+   END CreatePersistentSet;
+
+   PROCEDURE ReadPersistentSet(s: Streams.Stream;
+                               object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 count: LONGINT;
+	 id: Containers.Ident;
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      WITH object: PersistentSet DO
+	 IF ~NetIO.ReadBoolean(s, object.anchorDefined) OR
+	       ~NetIO.ReadLongInt(s, count) OR (count < 0) THEN
+	    RETURN FALSE
+	 END;
+	 IF object.anchorDefined & ~NetIO.ReadLongInt(s, object.anchor) THEN
+	    RETURN FALSE
+	 END;
+	 RelatedEvents.Forward(object.idtab, s);
+	 WHILE count > 0 DO
+	    IF ~NetIO.ReadLongInt(s, id) THEN RETURN FALSE END;
+	    ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+	    IF ~AVLTrees.Add(object.idtab, keyval) THEN RETURN FALSE END;
+	    DEC(count);
+	 END;
+	 RelatedEvents.Forward(object.idtab, object);
+	 RETURN TRUE
+      END;
+   END ReadPersistentSet;
+
+   PROCEDURE WritePersistentSet(s: Streams.Stream;
+                                object: PersistentObjects.Object) : BOOLEAN;
+      VAR
+	 count: LONGINT;
+	 id: Containers.Ident;
+	 keyval: ContainerIdentKeys.Value;
+	 it: Iterators.Iterator;
+   BEGIN
+      WITH object: PersistentSet DO
+	 count := AVLTrees.Card(object.idtab);
+	 IF ~NetIO.WriteBoolean(s, object.anchorDefined) OR
+	       ~NetIO.WriteLongInt(s, count) THEN
+	    RETURN FALSE
+	 END;
+	 IF object.anchorDefined & ~NetIO.WriteLongInt(s, object.anchor) THEN
+	    RETURN FALSE
+	 END;
+	 AVLTrees.GetEntries(object.idtab, AVLTrees.ascending,
+	       NIL, NIL, it);
+	 WHILE Iterators.Get(it, keyval) DO
+	    IF ~NetIO.WriteLongInt(s, keyval.id) THEN RETURN FALSE END;
+	 END;
+	 RETURN TRUE
+      END;
+   END WritePersistentSet;
+
+   (* === auxiliary procedures =========================================== *)
+
+   PROCEDURE CreateSet(VAR set: Set;
+                       pset: PersistentSet;
+		       host: Containers.Container);
+   BEGIN
+      NEW(set); Services.Init(set, setType);
+      set.pset := pset; set.host := host; set.trans := NIL;
+      Arrays.Create(set.subcontab, ContainerIdentKeys.key);
+      Resources.DependsOn(set, host);
+      RelatedEvents.QueueEvents(set);
+   END CreateSet;
+
+   PROCEDURE AddSubContainer(set: Set; id: Containers.Ident;
+                             container: Containers.Container);
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      Arrays.Set(set.subcontab, keyval, container);
+   END AddSubContainer;
+
+   PROCEDURE RemoveSubContainer(set: Set; id: Containers.Ident);
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      Arrays.Remove(set.subcontab, keyval);
+   END RemoveSubContainer;
+
+   PROCEDURE GetSubContainer(set: Set; id: Containers.Ident;
+                             VAR container: Containers.Container) : BOOLEAN;
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      RETURN Arrays.Get(set.subcontab, keyval, container)
+   END GetSubContainer;
+
+   PROCEDURE AbortTransaction(set: Set);
+   BEGIN
+      Resources.Notify(set.trans, Resources.terminated);
+      set.trans := NIL;
+   END AbortTransaction;
+
+   PROCEDURE GuardedObtain(host: Containers.Container;
+                           trans: Transactions.Transaction;
+			   id: Containers.Ident;
+			   guard: Services.Type;
+			   VAR object: PersistentDisciplines.Object;
+			   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 obj: PersistentDisciplines.Object;
+	 type: Services.Type;
+   BEGIN
+      IF ~Containers.Obtain(host, trans, id, obj) THEN
+	 RETURN FALSE
+      END;
+      Services.GetType(obj, type);
+      IF ~Services.IsExtensionOf(type, guard) THEN
+	 RETURN FALSE
+      END;
+      object := obj;
+      RETURN TRUE
+   END GuardedObtain;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+      VAR
+	 pif: PersistentObjects.Interface;
+   BEGIN
+      Services.CreateType(setType, "ContainerSets.Set", "");
+      NEW(pif);
+      pif.create := CreatePersistentSet;
+      pif.read := ReadPersistentSet;
+      pif.write := WritePersistentSet;
+      PersistentObjects.RegisterType(psetType,
+	 "ContainerSets.PersistentSet", "PersistentDisciplines.Object", pif);
+   END InitModule;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Create(VAR set: Set; container: Containers.Container;
+		    trans: Transactions.Transaction;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Set;
+	 pset: PersistentSet;
+	 ok: BOOLEAN;
+
+      PROCEDURE ZapContainer() : BOOLEAN;
+	 VAR
+	    id: Containers.Ident;
+      BEGIN
+	 WHILE Containers.Find(container, s.trans, Containers.first, id) DO
+	    IF ~Containers.Delete(container, s.trans, id) THEN
+	       RETURN FALSE
+	    END;
+	 END;
+	 RETURN TRUE
+      END ZapContainer;
+
+      PROCEDURE StorePersistentSet() : BOOLEAN;
+	 VAR
+	    id: Containers.Ident;
+      BEGIN
+	 IF Containers.Insert(container, s.trans, id, pset) &
+	       Containers.SetAnchor(container, s.trans, id) THEN
+	    s.id := id;
+	    RETURN TRUE
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END StorePersistentSet;
+
+   BEGIN (* Create *)
+      CreatePersistentSet(pset);
+      CreateSet(s, pset, container);
+      RelatedEvents.Save(s);
+      RelatedEvents.Forward(s, errors);
+      RelatedEvents.Save(container);
+      IF container # errors THEN
+	 RelatedEvents.Forward(container, s);
+      END;
+      s.trans := trans;
+      IF ~ZapContainer() OR ~StorePersistentSet() THEN
+	 AbortTransaction(s);
+	 RelatedEvents.Restore(container);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Restore(container);
+      RelatedEvents.Restore(s);
+      set := s;
+      RETURN TRUE
+   END Create;
+
+   PROCEDURE Open(VAR set: Set; container: Containers.Container;
+		  trans: Transactions.Transaction;
+                  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Set;
+   BEGIN
+      CreateSet(s, NIL, container);
+      RelatedEvents.Save(s);
+      RelatedEvents.Forward(s, errors);
+      RelatedEvents.Save(container);
+      s.trans := trans;
+      IF ~Containers.GetAnchor(container, s.trans, s.id) OR
+	    ~GuardedObtain(container, s.trans, s.id, psetType, s.pset,
+		  errors) THEN
+	 AbortTransaction(s);
+	 RelatedEvents.Restore(container);
+	 RETURN FALSE
+      END;
+      RelatedEvents.Restore(container);
+      RelatedEvents.Restore(s);
+      set := s;
+      RETURN TRUE
+   END Open;
+
+   PROCEDURE SetAnchor(set: Set;
+		       trans: Transactions.Transaction;
+                       VAR id: Containers.Ident) : BOOLEAN;
+      VAR
+	 keyval: ContainerIdentKeys.Value;
+	 oldAnchorDefined: BOOLEAN;
+	 oldAnchor: Containers.Ident;
+
+      PROCEDURE Abort;
+      BEGIN
+	 AbortTransaction(set);
+	 set.pset.anchorDefined := oldAnchorDefined;
+	 set.pset.anchor := oldAnchor;
+      END Abort;
+
+   BEGIN (* SetAnchor *)
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      IF ~AVLTrees.Exists(set.pset.idtab, keyval) THEN RETURN FALSE END;
+      set.trans := trans;
+      oldAnchorDefined := set.pset.anchorDefined;
+      oldAnchor := set.pset.anchor;
+      set.pset.anchorDefined := TRUE;
+      set.pset.anchor := id;
+      IF ~Containers.Replace(set.host, set.trans, set.id, set.pset) THEN
+	 Abort;
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END SetAnchor;
+
+   PROCEDURE GetAnchor(set: Set; VAR id: Containers.Ident) : BOOLEAN;
+   BEGIN
+      IF ~set.pset.anchorDefined THEN RETURN FALSE END;
+      id := set.pset.anchor;
+      RETURN TRUE
+   END GetAnchor;
+
+   PROCEDURE CreateSubContainer(set: Set;
+		                trans: Transactions.Transaction;
+                                VAR id: Containers.Ident;
+				VAR container: Containers.Container) : BOOLEAN;
+      VAR
+	 subid: Containers.Ident;
+	 subcont: Containers.Container;
+	 keyval: ContainerIdentKeys.Value;
+	 ok: BOOLEAN;
+   BEGIN
+      set.trans := trans;
+      IF ~SubContainers.Create(subcont, set.trans, set.host, subid, set) THEN
+	 AbortTransaction(set);
+	 RETURN FALSE
+      END;
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := subid;
+      ok := AVLTrees.Add(set.pset.idtab, keyval); ASSERT(ok);
+      IF ~Containers.Replace(container, set.trans, set.id, set.pset) THEN
+	 ok := AVLTrees.Remove(set.pset.idtab, keyval); ASSERT(ok);
+	 AbortTransaction(set);
+	 RETURN FALSE
+      END;
+      AddSubContainer(set, subid, subcont);
+      container := subcont;
+      id := subid;
+      RETURN TRUE
+   END CreateSubContainer;
+
+   PROCEDURE OpenSubContainer(set: Set; id: Containers.Ident;
+		              trans: Transactions.Transaction;
+                              VAR container: Containers.Container) : BOOLEAN;
+      VAR
+	 subcont: Containers.Container;
+	 keyval: ContainerIdentKeys.Value;
+   BEGIN
+      IF GetSubContainer(set, id, container) THEN RETURN TRUE END;
+      ContainerIdentKeys.CreateValue(keyval); keyval.id := id;
+      IF ~AVLTrees.Exists(set.pset.idtab, keyval) THEN RETURN FALSE END;
+      set.trans := trans;
+      IF ~SubContainers.Open(subcont, set.trans, set.host, id, set) THEN
+	 AbortTransaction(set);
+	 RETURN FALSE
+      END;
+      AddSubContainer(set, id, subcont);
+      container := subcont;
+      RETURN TRUE
+   END OpenSubContainer;
+
+   PROCEDURE DeleteSubContainer(set: Set; id: Containers.Ident;
+		                trans: Transactions.Transaction) : BOOLEAN;
+      VAR
+	 subcont: Containers.Container;
+	 keyval: ContainerIdentKeys.Value;
+	 ok: BOOLEAN;
+   BEGIN
+      set.trans := trans;
+      IF ~OpenSubContainer(set, id, trans, subcont) THEN RETURN FALSE END;
+      IF ~SubContainers.Dispose(subcont, set.trans) THEN
+	 AbortTransaction(set);
+	 RETURN FALSE
+      END;
+      RemoveSubContainer(set, id);
+      ok := AVLTrees.Remove(set.pset.idtab, keyval); ASSERT(ok);
+      RETURN TRUE
+   END DeleteSubContainer;
+
+   PROCEDURE GetSubContainers(set: Set; VAR it: Iterators.Iterator);
+   BEGIN
+      AVLTrees.GetEntries(set.pset.idtab, AVLTrees.ascending,
+                          NIL, NIL, it);
+   END GetSubContainers;
+
+BEGIN
+   InitModule;
+END ContainerSets.

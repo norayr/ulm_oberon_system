@@ -1,0 +1,422 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: HostPorts.om,v 1.1 2006/08/11 14:55:09 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: HostPorts.om,v $
+   Revision 1.1  2006/08/11 14:55:09  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE HostPorts;
+
+   (* scan and parse tuples consisting of a host and a port
+      (hostports) according to RFCs 2373, 2396 and 2732:
+
+      hostport      = host [ ":" port ]
+      host          = hostname | IPv4address | IPv6reference
+      hostname      = *( domainlabel "." ) toplabel [ "." ]
+      domainlabel   = alphanum | alphanum *( alphanum | "-" ) alphanum
+      toplabel      = alpha | alpha *( alphanum | "-" ) alphanum
+
+      IPv4address   = 1*digit "." 1*digit "." 1*digit "." 1*digit
+      port          = *digit
+      ipv6reference = "[" IPv6address "]"
+      IPv6address   = see RFC 2373
+   *)
+
+   IMPORT Disciplines, DNSRecords, Events, Inet6TCP, InetResolver, InetTCP,
+      IPv4Addresses, IPv6Addresses, Networks, Objects, Read, RelatedEvents,
+      Sets, StreamDisciplines, Streams, Strings, Write;
+
+   TYPE
+      HostPort = POINTER TO HostPortRec;
+      HostPortRec =
+	 RECORD
+	    (Disciplines.ObjectRec)
+	    port: INTEGER;
+	    host: DNSRecords.Name;
+	    (* private components *)
+	    domainstyle: BOOLEAN; (* was a domain name given? *)
+	 END;
+      IPv4HostPort = POINTER TO IPv4HostPortRec;
+      IPv4HostPortRec =
+	 RECORD
+	    (HostPortRec)
+	    address: IPv4Addresses.SocketAddress;
+	 END;
+      IPv6HostPort = POINTER TO IPv6HostPortRec;
+      IPv6HostPortRec =
+	 RECORD
+	    (HostPortRec)
+	    address: IPv6Addresses.SocketAddress;
+	 END;
+
+   TYPE
+      AddIPv4Address =
+	 PROCEDURE (service: Disciplines.Object;
+	            address: IPv4Addresses.SocketAddress) : BOOLEAN;
+      AddIPv6Address =
+	 PROCEDURE (service: Disciplines.Object;
+	            address: IPv6Addresses.SocketAddress) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    addIPv4Address: AddIPv4Address;
+	    addIPv6Address: AddIPv6Address;
+	 END;
+   TYPE
+      ServiceDiscipline = POINTER TO ServiceDisciplineRec;
+      ServiceDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    if: Interface;
+	 END;
+   VAR
+      sdid: Disciplines.Identifier;
+
+   TYPE
+      StreamDiscipline = POINTER TO StreamDisciplineRec;
+      StreamDisciplineRec =
+	 RECORD
+	    (Disciplines.DisciplineRec)
+	    defaultPort: INTEGER;
+	    hostpartOnly: BOOLEAN;
+	 END;
+   VAR
+      strdid: Disciplines.Identifier;
+
+   CONST
+      unexpectedEOF = 0;
+      closingBracketMissing = 1;
+      hostnameTooLong = 2;
+      tooManyDots = 3;
+      invalidPort = 4;
+      errors = 5;
+   TYPE
+      ErrorCode = SHORTINT; (* unexpectedEOF... *)
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	 END;
+   VAR
+      errormsg: ARRAY errors OF Events.Message;
+      error: Events.EventType;
+
+   (* === error handling =================================================== *)
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[unexpectedEOF] := "end of input stream detected";
+      errormsg[closingBracketMissing] := "']' is missing";
+      errormsg[hostnameTooLong] := "host name is too long";
+      errormsg[tooManyDots] := "too many dots";
+      errormsg[invalidPort] := "port specification is invalid";
+   END InitErrorHandling;
+
+   PROCEDURE Error(errors: RelatedEvents.Object;
+                   errorcode: ErrorCode);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+
+   (* === private procedures =============================================== *)
+
+   PROCEDURE GetStreamDiscipline(s: Streams.Stream;
+                                 VAR strd: StreamDiscipline);
+   BEGIN
+      IF ~Disciplines.Seek(s, strdid, strd) THEN
+	 NEW(strd); strd.id := strdid;
+	 strd.defaultPort := 0;
+	 strd.hostpartOnly := FALSE;
+	 Disciplines.Add(s, strd);
+      END;
+   END GetStreamDiscipline;
+
+   PROCEDURE GetDefaultPort(s: Streams.Stream) : INTEGER;
+      VAR
+	 strd: StreamDiscipline;
+   BEGIN
+      GetStreamDiscipline(s, strd);
+      RETURN strd.defaultPort
+   END GetDefaultPort;
+
+   (* === exported procedures ============================================== *)
+
+   PROCEDURE SetDefaultPort(s: Streams.Stream; port: INTEGER);
+      VAR
+	 strd: StreamDiscipline;
+   BEGIN
+      ASSERT((port >= 0) & (port < 10000H));
+      GetStreamDiscipline(s, strd);
+      strd.defaultPort := port;
+      strd.hostpartOnly := FALSE;
+   END SetDefaultPort;
+
+   PROCEDURE SetPort(s: Streams.Stream; port: INTEGER);
+      VAR
+	 strd: StreamDiscipline;
+   BEGIN
+      ASSERT((port >= 0) & (port < 10000H));
+      GetStreamDiscipline(s, strd);
+      strd.defaultPort := port;
+      strd.hostpartOnly := TRUE;
+   END SetPort;
+
+   PROCEDURE ReadText(s: Streams.Stream; VAR hostport: HostPort) : BOOLEAN;
+      VAR
+	 ch: CHAR;
+	 whitespace: Sets.CharSet;
+	 ipv6address: IPv6Addresses.SocketAddress;
+	 ipv4address: IPv4Addresses.SocketAddress;
+	 hostname: DNSRecords.Name; index: INTEGER;
+	 hostin, hostout: Streams.Stream;
+	 dots: INTEGER; digitsOnly: BOOLEAN; dotSeen: BOOLEAN;
+	 colons: INTEGER;
+	 errors: RelatedEvents.Object;
+	 queue: RelatedEvents.Queue;
+	 ipv6: BOOLEAN;
+	 ok: BOOLEAN;
+	 port: INTEGER;
+	 ipv4hostport: IPv4HostPort;
+	 ipv6hostport: IPv6HostPort;
+	 domainstyle: BOOLEAN;
+	 strd: StreamDiscipline;
+
+      PROCEDURE SkipWhitespace() : BOOLEAN;
+      BEGIN
+	 LOOP
+	    IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	    IF ~Sets.CharIn(whitespace, ch) THEN EXIT END;
+	 END;
+	 RETURN TRUE
+      END SkipWhitespace;
+
+   BEGIN (* ReadText *)
+      StreamDisciplines.GetWhiteSpace(s, whitespace);
+      GetStreamDiscipline(s, strd);
+      NEW(errors); RelatedEvents.QueueEvents(errors);
+      IF ~SkipWhitespace() THEN
+	 Error(s, unexpectedEOF);
+	 RETURN FALSE
+      END;
+      IF ch = "[" THEN (* IPv6 address according to RFC 2732 *)
+	 IF ~IPv6Addresses.ReadText(s, ipv6address.host) THEN RETURN FALSE END;
+	 IF ~SkipWhitespace() THEN
+	    Error(s, closingBracketMissing);
+	    RETURN FALSE
+	 END;
+	 IF ch # "]" THEN
+	    Error(s, closingBracketMissing);
+	    RETURN FALSE
+	 END;
+	 ok := Streams.ReadByte(s, ch); (* skip "]" *)
+	 ipv6 := TRUE;
+	 hostname := ""; Strings.Open(hostout, hostname);
+	 IPv6Addresses.WriteText(hostout, ipv6address.host);
+	 domainstyle := FALSE;
+      ELSE
+	 index := 0; dots := 0; digitsOnly := TRUE; dotSeen := FALSE;
+	 colons := 0;
+	 LOOP
+	    IF ((ch = "-") OR (ch = ".") OR
+	        (ch >= "0") & (ch <= "9") OR
+		strd.hostpartOnly & (ch = ":") OR (* permit IPv6 *)
+		(ch >= "A") & (ch <= "Z") OR
+		(ch >= "a") & (ch <= "z")) THEN
+	       IF index = LEN(hostname) - 1 THEN
+		  Error(s, hostnameTooLong);
+		  RETURN FALSE
+	       END;
+	       hostname[index] := ch; INC(index);
+	       IF ch = "." THEN
+		  IF dotSeen THEN
+		     Error(s, tooManyDots);
+		     RETURN FALSE
+		  END;
+		  IF index = 0 THEN
+		     Error(s, tooManyDots);
+		     RETURN FALSE
+		  END;
+		  INC(dots); dotSeen := TRUE;
+	       ELSE
+		  dotSeen := FALSE;
+		  IF ~((ch >= "0") & (ch <= "9")) THEN
+		     digitsOnly := FALSE;
+		     IF ch = ":" THEN
+			INC(colons);
+		     END;
+		  END;
+	       END;
+	    ELSE
+	       EXIT
+	    END;
+	    IF ~Streams.ReadByte(s, ch) THEN EXIT END;
+	 END;
+	 IF index = dots THEN
+	    Error(s, tooManyDots);
+	    RETURN FALSE
+	 END;
+	 hostname[index] := 0X;
+	 Strings.Open(hostin, hostname);
+	 IF colons > 0 THEN (* IPv6 address *)
+	    IF ~IPv6Addresses.ReadText(hostin, ipv6address.host) THEN
+	       RETURN FALSE
+	    END;
+	    domainstyle := FALSE;
+	    Streams.Release(hostin);
+	    ipv6 := TRUE;
+	 ELSIF digitsOnly & (dots = 3) THEN
+	    IF ~IPv4Addresses.ReadText(hostin, ipv4address.host) THEN
+	       RETURN FALSE
+	    END;
+	    domainstyle := FALSE;
+	    Streams.Release(hostin);
+	    ipv6 := FALSE;
+	 ELSIF InetResolver.AddrByHost(hostname, ipv4address, errors) THEN
+	    ipv6 := FALSE; domainstyle := TRUE;
+	 ELSIF InetResolver.IPv6AddrByHost(hostname, ipv6address, errors) THEN
+	    ipv6 := TRUE; domainstyle := TRUE;
+	 ELSE
+	    RelatedEvents.GetQueue(errors, queue);
+	    RelatedEvents.AppendQueue(s, queue);
+	    RETURN FALSE
+	 END;
+      END;
+      IF s.count > 0 THEN
+	 IF strd.hostpartOnly OR (ch # ":") THEN
+	    ok := Streams.Back(s);
+	    port := strd.defaultPort;
+	 ELSE
+	    Read.IntS(s, port);
+	    IF s.count = 0 THEN
+	       Error(s, invalidPort);
+	       RETURN FALSE
+	    END;
+	    IF (port < 0) OR (port >= 10000H) THEN
+	       Error(s, invalidPort);
+	       RETURN FALSE
+	    END;
+	 END;
+      ELSE
+	 port := strd.defaultPort;
+      END;
+      IF ipv6 THEN
+	 NEW(ipv6hostport); ipv6hostport.port := port;
+	 COPY(hostname, ipv6hostport.host);
+	 IPv6Addresses.SetPort(ipv6address, port);
+	 ipv6hostport.address := ipv6address;
+	 ipv6hostport.domainstyle := domainstyle;
+	 hostport := ipv6hostport;
+      ELSE
+	 NEW(ipv4hostport); ipv4hostport.port := port;
+	 COPY(hostname, ipv4hostport.host);
+	 IPv4Addresses.SetPort(ipv4address, port);
+	 ipv4hostport.address := ipv4address;
+	 ipv4hostport.domainstyle := domainstyle;
+	 hostport := ipv4hostport;
+      END;
+      RETURN TRUE
+   END ReadText;
+
+   PROCEDURE WriteText(s: Streams.Stream; hostport: HostPort); 
+   BEGIN
+      IF hostport.domainstyle THEN
+	 Write.StringS(s, hostport.host);
+      ELSE
+	 IF hostport IS IPv4HostPort THEN
+	    IPv4Addresses.WriteText(s, hostport(IPv4HostPort).address.host);
+	 ELSE
+	    Write.CharS(s, "[");
+	    IPv6Addresses.WriteText(s, hostport(IPv6HostPort).address.host);
+	    Write.CharS(s, "]");
+	 END;
+      END;
+      IF hostport.port # 0 THEN
+	 Write.CharS(s, ":");
+	 Write.IntS(s, hostport.port, 1);
+      END;
+   END WriteText;
+
+   PROCEDURE CreateAddress(VAR address: Networks.Address; hostport: HostPort);
+   BEGIN
+      IF hostport IS IPv4HostPort THEN
+	 InetTCP.CreateAddress(address, hostport(IPv4HostPort).address);
+      ELSE
+	 Inet6TCP.CreateAddress(address, hostport(IPv6HostPort).address);
+      END;
+   END CreateAddress;
+
+   PROCEDURE ReadAddress(s: Streams.Stream;
+                         VAR address: Networks.Address) : BOOLEAN;
+      VAR
+	 hostport: HostPort;
+   BEGIN
+      IF ~ReadText(s, hostport) THEN RETURN FALSE END;
+      CreateAddress(address, hostport);
+      RETURN TRUE
+   END ReadAddress;
+
+   PROCEDURE Init(service: Disciplines.Object; if: Interface);
+      VAR
+	 sd: ServiceDiscipline;
+   BEGIN
+      ASSERT((if # NIL) & (if.addIPv4Address # NIL) &
+	     (if.addIPv6Address # NIL));
+      NEW(sd); sd.id := sdid; sd.if := if;
+      Disciplines.Add(service, sd);
+   END Init;
+
+   PROCEDURE Add(service: Disciplines.Object; hostport: HostPort) : BOOLEAN;
+      VAR
+	 ok: BOOLEAN;
+	 sd: ServiceDiscipline;
+   BEGIN
+      ok := Disciplines.Seek(service, sdid, sd); ASSERT(ok);
+      IF hostport IS IPv4HostPort THEN
+	 RETURN sd.if.addIPv4Address(service, hostport(IPv4HostPort).address)
+      ELSE
+	 RETURN sd.if.addIPv6Address(service, hostport(IPv6HostPort).address)
+      END;
+   END Add;
+
+   PROCEDURE ReadAndAdd(s: Streams.Stream;
+                        service: Disciplines.Object) : BOOLEAN;
+      VAR
+	 hostport: HostPort;
+   BEGIN
+      RETURN ReadText(s, hostport) & Add(service, hostport)
+   END ReadAndAdd;
+
+BEGIN
+   InitErrorHandling;
+   sdid := Disciplines.Unique();
+   strdid := Disciplines.Unique();
+END HostPorts.

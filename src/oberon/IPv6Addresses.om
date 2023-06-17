@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,13 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: IPv6Address.om,v 1.2 2004/04/02 18:42:17 borchert Exp $
+   $Id: IPv6Address.om,v 1.3 2006/08/11 15:05:26 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: IPv6Address.om,v $
+   Revision 1.3  2006/08/11 15:05:26  borchert
+   - IsAnyAddr & SetAnyAddr added
+   - bug fix: conversion of port values fixed for port numbers >= 8000H
+
    Revision 1.2  2004/04/02 18:42:17  borchert
    SocketAddress is now a record and not a pointer
 
@@ -120,18 +124,31 @@ MODULE IPv6Addresses;
    (* === exported procedures ============================================ *)
 
    PROCEDURE GetPort(address: SocketAddress) : INTEGER;
+      VAR
+	 val: INTEGER;
    BEGIN
       CASE Types.byteorder OF
       | Types.bigEndian:
-	    RETURN address.portnum
+	    val := address.portnum;
       | Types.littleEndian:
-	    RETURN address.portnum DIV 256 MOD 256 +
+	    val := address.portnum DIV 256 MOD 256 +
 		   address.portnum MOD 256 * 256;
       END;
+      (* val is to be considered unsigned *)
+      IF val < 0 THEN
+	 val := 10000H + val;
+	 ASSERT(val > 0);
+      END;
+      RETURN val
    END GetPort;
 
    PROCEDURE SetPort(VAR address: SocketAddress; portnum: INTEGER);
    BEGIN
+      (* convert a 16 bit unsigned value into a 16 bit signed value *)
+      ASSERT((portnum >= 0) & (portnum < 10000H));
+      IF portnum >= 8000H THEN
+	 portnum := portnum - 10000H;
+      END;
       CASE Types.byteorder OF
       | Types.bigEndian:
 	    address.portnum := Types.ToInt16(portnum);
@@ -140,6 +157,31 @@ MODULE IPv6Addresses;
 	       Types.ToInt16(portnum DIV 256 MOD 256 + portnum MOD 256 * 256);
       END;
    END SetPort;
+
+   PROCEDURE IsAnyAddr(address: Address) : BOOLEAN;
+      (* is address.host equivalent to IN6ADDR_ANY? *)
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < nbytes DO
+	 IF address[i] # 0X THEN RETURN FALSE END;
+	 INC(i);
+      END;
+      RETURN TRUE
+   END IsAnyAddr;
+
+   PROCEDURE SetAnyAddr(VAR address: Address);
+      (* set address.host to IN6ADDR_ANY *)
+      VAR
+	 i: INTEGER;
+   BEGIN
+      i := 0;
+      WHILE i < nbytes DO
+	 address[i] := 0X;
+	 INC(i);
+      END;
+   END SetAnyAddr;
 
    PROCEDURE ConvertToSys(address: SocketAddress; VAR sysaddr: SysAddress);
       VAR

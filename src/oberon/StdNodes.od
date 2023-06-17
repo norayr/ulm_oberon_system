@@ -1,0 +1,95 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+DEFINITION StdNodes;
+
+   IMPORT ConstStrings, Names, Objects, Services, Shards;
+
+   TYPE
+      Node = POINTER TO NodeRec;
+      NodeRec = RECORD (Names.NodeRec) END;
+   TYPE
+      Link = POINTER TO LinkRec;
+      LinkRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    name: ConstStrings.String;
+	    node: Names.Node;
+	 END;
+   TYPE
+      Handle = POINTER TO HandleRec;
+      HandleRec = RECORD (Objects.ObjectRec) END;
+   TYPE
+      GetDefaultStatusProc = PROCEDURE (node: Node; VAR status: Names.Status);
+      AccessProc = PROCEDURE (node: Node; mode: Names.AccessMode;
+                              auth: Shards.Lid;
+			      authorized: BOOLEAN) : BOOLEAN;
+      GetNodeProc = PROCEDURE (node: Node; name: Names.Name;
+                               auth: Shards.Lid;
+			       VAR link: Link;
+			       VAR subnode: Names.Node) : BOOLEAN;
+      InsertProc = PROCEDURE (node: Node; subnode: Names.Node;
+                              name: Names.Name;
+			      auth: Shards.Lid;
+			      VAR link: Link) : BOOLEAN;
+      MakeSubnodeProc = PROCEDURE (node: Node; name: Names.Name;
+                                   status: Names.Status;
+				   caps: Names.CapabilitySet;
+				   auth: Shards.Lid;
+				   VAR link: Link;
+				   VAR subnode: Node) : BOOLEAN;
+      DeleteProc = PROCEDURE (node: Node; name: Names.Name;
+			      link: Link;
+                              auth: Shards.Lid) : BOOLEAN;
+      DestroyProc = PROCEDURE (node: Node; auth: Shards.Lid) : BOOLEAN;
+      TerminationHandlerProc = PROCEDURE (node: Node; link: Link) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    getDefaultStatus: GetDefaultStatusProc;
+	    access: AccessProc;
+	    getNode: GetNodeProc;
+	    insert: InsertProc;
+	    makeSubnode: MakeSubnodeProc;
+	    delete: DeleteProc;
+	    destroy: DestroyProc;
+	    terminationHandler: TerminationHandlerProc;
+	 END;
+
+   PROCEDURE Init(node: Node; if: Interface;
+		  status: Names.Status;
+                  caps: Names.CapabilitySet;
+		  VAR handle: Handle);
+
+   PROCEDURE Create(VAR node: Node; status: Names.Status;
+                    caps: Names.CapabilitySet);
+
+   PROCEDURE ResurrectLink(link: Link; subnode: Names.Node);
+
+   PROCEDURE Lock(handle: Handle);
+   PROCEDURE Unlock(handle: Handle);
+
+END StdNodes.

@@ -1,6 +1,7 @@
+'\" t
 .\" ---------------------------------------------------------------------------
 .\" Ulm's Oberon System Documentation
-.\" Copyright (C) 1989-1995 by University of Ulm, SAI, D-89069 Ulm, Germany
+.\" Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
 .\" ---------------------------------------------------------------------------
 .\"    Permission is granted to make and distribute verbatim copies of this
 .\" manual provided the copyright notice and this permission notice are
@@ -136,7 +137,7 @@ If
 .BI \\$1 " \\$2"
 ..
 '\"----------------------------------------------------------------------------
-.TH Storage 3 "Last change: 10 July 2003" "Release 0.5" "Ulm's Oberon System"
+.TH Storage 3 "Last change: 23 August 2005" "Release 0.5" "Ulm's Oberon System"
 .SH NAME
 Storage \- storage allocating interface for the compiler
 .SH SYNOPSIS
@@ -163,6 +164,8 @@ TYPE DisableProc = PROCEDURE;
 TYPE GetStatusProc = PROCEDURE (VAR status: Status);
 TYPE IntensityProc = PROCEDURE (offset: INTEGER) : INTEGER;
 TYPE ChunkSizeProc = PROCEDURE (size: Size) : Size;
+TYPE FirstStackProc = PROCEDURE;
+TYPE NextStackProc = PROCEDURE (VAR cr: Coroutines.Coroutine) : BOOLEAN;
 TYPE Interface =
    RECORD
       alloc: AllocProc;
@@ -173,9 +176,11 @@ TYPE Interface =
       intensity: IntensityProc;
       getStatus: GetStatusProc;
       chunkSize: ChunkSizeProc;
+      firstStack: FirstStackProc;
+      nextStack: NextStackProc;
    END;
 .sp 0.7
-VAR next: Address; left: Size;
+VAR end: Address; left: Size;
 .sp 0.7
 TYPE Event = POINTER TO EventRec;
 TYPE EventRec =
@@ -196,6 +201,9 @@ PROCEDURE Intensity(offset: INTEGER) : INTEGER;
 PROCEDURE GetStatus(VAR status: Status);
 PROCEDURE ChunkSize(size: Size) : Size;
 .sp 0.7
+PROCEDURE FirstStack;
+PROCEDURE NextStack(VAR cr: Coroutines.Coroutine) : BOOLEAN;
+.sp 0.7
 PROCEDURE Init(if: Interface);
 .Pe
 .SH DESCRIPTION
@@ -207,17 +215,21 @@ e.g. with or without garbage collector.
 .PP
 .I Init
 is to be called during startup by the module which is
-responsible for storage allocation.
+responsible for storage allocation (see \fISysStorage(3)\fP).
 All interface procedures have to follow the semantics described below.
 .PP
-The variables \fInext\fP and \fIleft\fP define an interval
-\fB[\fP\fInext\fP, \fInext\fP\fB+\fP\fIleft\fP\fB)\fP
-which may be consumed by the inline code of \fBNEW\fP without
-calling any of the allocation procedures.
-The runtime start sets up an initial region which should be
-sufficient to satisfy the memory requests in the early
-initialization stage.
-The module which calls \fIInit\fP is free to modify \fInext\fP
+The variables \fIend\fP and \fIleft\fP define an interval
+\fB[\fP\fIend\fP\fB-\fP\fIleft\fP\fB,\fP \fIend\fP\fB)\fP which may
+be consumed by the inline code of \fBNEW\fP and \fBSYSTEM.NEW\fP
+without calling any of
+the allocation procedures. Write accesses of these variables must be
+atomic either by using appropriate compare-and-set instructions
+of the native architecture or by blocking all asynchronous interrupts
+(see \fISysSignalOperations(3)\fP).
+.PP
+The runtime start sets up an initial region which should be sufficient
+to satisfy the memory requests in the early initialization stage.
+The module which calls \fIInit\fP is free to modify \fIend\fP
 and \fIleft\fP.
 For all other modules these variables are to be considered read-only.
 Stacks must not be allocated by use of this region,
@@ -226,7 +238,7 @@ early startup phase, i.e. before the storage allocator is initialized.
 .PP
 .I AllocateWithTag
 is to be called by the inline code of \fBNEW\fP and \fBSYSTEM.NEW\fP
-if the interval marked by \fInext\fP and \fIleft\fP is not sufficient.
+if the interval marked by \fIend\fP and \fIleft\fP is not sufficient.
 \fIsize\fP specifies the total number of bytes needed to store
 the record or array and the tag field and, if necessary, the dummy tag.
 The type tag is specified by \fItag\fP which may be zero in
@@ -260,12 +272,15 @@ will have no effect, if there was a call of \fIDisableCollection\fP
 earlier. A single call of \fIDisableCollection\fP guarantees that
 the garbage collector is switched off. More than one calls in a row
 make it necessary that \fIEnableCollection\fP must be called as many
-times as \fIDisableCollection\fP before to switch on garbage collection.
+times as \fIDisableCollection\fP before to re-enable garbage collections.
 The status record component \fIcollection\fP can be interpreted as the
 number of times \fIEnableCollection\fP must be called to enable a
 garbage collection.
 At the beginning (i.e. after the storage management is initialized),
-garbage collection is enabled and \fIcollection\fP is \fB0\fP.
+garbage collection is enabled and \fIcollection\fP is set to \fB0\fP.
+.PP
+Likewise garbage collections can be suppressed if one or more
+coroutines are in a non-tracable state (see \fISysInterrupts(3)\fP).
 .PP
 The status record component \fIintensity\fP is an indicator for the current
 garbage collection frequency. This indicator can be interpreted as a clue
@@ -324,6 +339,12 @@ needed from the operating system and increase performance.
 Using \fIChunkSize\fP normally effects the current collection
 frequency, too, because it is not only dependent on the intensity indicator but
 also on the chunk size (\fIIntensity(0)\fP is performed).
+.PP
+.I FirstStack
+and
+.I NextStack
+allow to examine all coroutines. This can be useful for debugging
+purposes (see \fISysStacks(3)\fP and \fISysStackTraces(3)\fP).
 .SH DIAGNOSTICS
 .I AllocateWithTag
 and
@@ -350,14 +371,63 @@ exports storage message events
 .Tp SysStorage(3)
 storage allocator with copying garbage collection.
 .Tp UntaggedStorage(3)
-alternative interface for storage unaffected by garbage collection
+alternative interface for storage unaffected by the garbage collection
 .Te
-.SH ADAPTATION
+.SH BUGS
+The default intensity of 0 is acceptable for very simple applications
+only. Everything else that is memory-intensive should raise this value
+significantly. Otherwise these applications would be more busy with
+garbage collection runs than their intended purpose.  Raising the
+intensity reduces CPU time as the complexity of a garbage collection
+run depends only on the amount and size of living objects. However,
+memory consumption will raise significantly for higher intensity values.
+The optimal intensity value depends on the allocation behaviour of
+the application, the available virtual address space, and the available
+physical memory.
+.PP
+However, as large intensity values can lead to intensive swapping
+activities of the operating system, things can turn significantly worse
+by rendering the application or in some cases even the entire system
+unresponsive. Large intensity values can also lead to address space
+problems which lead to a panic exit of \fISysStorage(3)\fP.
+.PP
+Here are some rough estimates for the upper limits of intensity
+values in dependence of the physical memory that is available for this
+application:
+.TS
+l l.
+memory	intensity
+_
+1 GB	9
+800 MB	8
+600 MB	7
+400 MB	6
+.TE
+.PP
+Larger values than 9 may cause address space problems
+if the application uses a considerable number of coroutines.
+This is an issue for networked applications that provide remote
+access to objects through \fIRemoteObjects(3)\fP.
+.PP
+It is recommended for memory-intensive applications to include
+an option for the command line or configuration file that allows
+to set the intensity. This has been implemented, for example, by
+\fIcdbd(1)\fP and \fIobload(1)\fP.
+.SH AUTHOR
 Hansj\*org N\*agele, University of Ulm
+.LP
+revisions are due to Andreas Borchert
 .\" ---------------------------------------------------------------------------
-.\" $Id: Storage.3,v 1.5 2003/07/10 09:21:45 borchert Exp $
+.\" $Id: Storage.3,v 1.6 2005/08/23 14:20:16 borchert Exp $
 .\" ---------------------------------------------------------------------------
 .\" $Log: Storage.3,v $
+.\" Revision 1.6  2005/08/23 14:20:16  borchert
+.\" - switched from [next, next+left) to [end-left,end) to make
+.\"   life easier on architectures without atomar instructions
+.\"   that compare and set two values simultaneously
+.\" - FirstStack & NextStack added
+.\" - BUGS section added
+.\"
 .\" Revision 1.5  2003/07/10 09:21:45  borchert
 .\" typo fixed
 .\"

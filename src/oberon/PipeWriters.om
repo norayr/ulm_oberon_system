@@ -1,0 +1,268 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE PipeWriters;
+
+   IMPORT Conditions, EventConditions, Events, Forwarders, Jobs, MemOps,
+      Process, Resources, Services, StreamConditions, Streams, SYS := SYSTEM,
+      Tasks;
+
+   CONST
+      maxbuflen = 512;
+   TYPE
+      Buffer = POINTER TO ARRAY maxbuflen OF BYTE;
+      Packet = POINTER TO PacketRec;
+      PacketRec =
+	 RECORD
+	    nbytes: Streams.Count;
+	    buffer: Buffer;
+	 END;
+   CONST
+      writeBuf = 0;
+      writeByte = 1;
+      flush = 2;
+      close = 3;
+   TYPE
+      Operation = SHORTINT; (* write, flush, or close *)
+      Event = POINTER TO EventRec;
+      EventRec =
+	 RECORD
+	    (Events.EventRec)
+	    op: Operation;
+	    packet: Packet; (* # NIL, if op = writeBuf *)
+	    byte: BYTE; (* if op = writeByte *)
+	 END;
+   CONST
+      caps = {Streams.write, Streams.bufio, Streams.flush, Streams.close,
+		  Streams.handler};
+   TYPE
+      Stream = POINTER TO StreamRec;
+      StreamRec =
+	 RECORD
+	    (Streams.StreamRec)
+	    eventType: Events.EventType;
+	    eventCondition: Conditions.Condition;
+	    out: Streams.Stream;
+	 END;
+   VAR
+      streamType: Services.Type;
+      if: Streams.Interface;
+
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    s: Stream;
+	 END;
+
+   (* === Streams if procedures ========================================== *)
+
+   PROCEDURE WriteByte(s: Streams.Stream; byte: BYTE) : BOOLEAN;
+      VAR
+	 event: Event;
+   BEGIN
+      WITH s: Stream DO
+	 NEW(event); event.type := s.eventType;
+	 event.op := writeByte; event.byte := byte;
+	 Events.Raise(event);
+	 RETURN TRUE
+      END;
+   END WriteByte;
+
+   PROCEDURE WriteBuf(s: Streams.Stream; VAR buf: ARRAY OF BYTE;
+                      off, cnt: Streams.Count) : Streams.Count;
+      VAR
+	 event: Event;
+	 packet: Packet;
+   BEGIN
+      WITH s: Stream DO
+	 CASE cnt OF
+	 | 0:  RETURN 0
+	 | 1:  IF WriteByte(s, buf[off]) THEN
+		  RETURN 1
+	       ELSE
+		  RETURN 0
+	       END;
+	 ELSE
+	    ASSERT((off >= 0) & (cnt >= 0));
+	    NEW(packet);
+	    IF cnt > maxbuflen THEN
+	       cnt := maxbuflen;
+	    END;
+	    ASSERT(off + cnt <= LEN(buf));
+	    NEW(packet.buffer);
+	    MemOps.Copy(SYS.ADR(buf[off]), SYS.ADR(packet.buffer[0]), cnt);
+	    packet.nbytes := cnt;
+	    NEW(event); event.type := s.eventType;
+	    event.op := writeBuf; event.packet := packet;
+	    Events.Raise(event);
+	    RETURN cnt
+	 END;
+      END;
+   END WriteBuf;
+
+   PROCEDURE Flush(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 event: Event;
+   BEGIN
+      WITH s: Stream DO
+	 NEW(event); event.type := s.eventType;
+	 event.op := flush;
+	 Events.Raise(event);
+	 RETURN TRUE
+      END;
+   END Flush;
+
+   PROCEDURE Close(s: Streams.Stream) : BOOLEAN;
+      VAR
+	 event: Event;
+   BEGIN
+      WITH s: Stream DO
+	 NEW(event); event.type := s.eventType;
+	 event.op := close;
+	 Events.Raise(event);
+	 RETURN TRUE
+      END;
+   END Close;
+
+   PROCEDURE Handler(s: Streams.Stream; VAR msg: Streams.Message);
+   BEGIN
+      WITH s: Stream DO
+	 IF msg IS StreamConditions.CreateConditionMessage THEN
+	    WITH msg: StreamConditions.CreateConditionMessage DO
+	       IF msg.operation = StreamConditions.write THEN
+		  msg.condition := NIL;
+		  msg.stream := s;
+		  msg.msgProcessed := TRUE;
+	       END;
+	    END;
+	 ELSIF msg IS StreamConditions.TestConditionMessage THEN
+	    WITH msg: StreamConditions.TestConditionMessage DO
+	       IF msg.operation = StreamConditions.write THEN
+		  msg.wouldblock := FALSE;
+		  msg.msgProcessed := TRUE;
+	       END;
+	    END;
+	 ELSE
+	 END;
+      END;
+   END Handler;
+
+   (* === writing task =================================================== *)
+
+   PROCEDURE Writer(job: Jobs.Job);
+      VAR
+	 s: Stream;
+	 termCond: Conditions.Condition;
+	 softTermCond: Conditions.Condition;
+	 writeCond: Conditions.Condition;
+	 conditions: Conditions.ConditionSet;
+	 termEvent: Events.Event;
+	 event: Event;
+	 waiting: BOOLEAN; (* for s.out to become ready *)
+
+      PROCEDURE PerformOp() : BOOLEAN;
+      BEGIN
+	 CASE event.op OF
+	 | writeBuf:
+	       RETURN Streams.WritePart(s.out,
+			event.packet.buffer^, 0, event.packet.nbytes)
+	 | writeByte:
+	       RETURN Streams.WriteByte(s.out, event.byte)
+	 | flush, close:
+	       RETURN Streams.Flush(s.out)
+	 END;
+      END PerformOp;
+
+   BEGIN (* Writer *)
+      s := job(Job).s;
+      EventConditions.Create(termCond, Process.termination);
+      EventConditions.Create(softTermCond, Process.softTermination);
+      StreamConditions.Create(writeCond, s.out, StreamConditions.write);
+      Conditions.CreateSet(conditions);
+      Conditions.Incl(conditions, s.eventCondition);
+      Conditions.Incl(conditions, termCond);
+      Conditions.Incl(conditions, softTermCond);
+      waiting := FALSE;
+      LOOP
+	 Tasks.WaitForOneOf(conditions);
+	 IF EventConditions.TestAndGet(termCond, termEvent) OR
+	       EventConditions.TestAndGet(softTermCond, termEvent) THEN
+	    EXIT
+	 END;
+	 IF waiting THEN
+	    IF ~PerformOp() OR (event.op = close) THEN EXIT END;
+	    Conditions.Excl(conditions, writeCond);
+	    Conditions.Incl(conditions, s.eventCondition);
+	    waiting := FALSE;
+	 END;
+	 WHILE EventConditions.TestAndGet(s.eventCondition, event) DO
+	    IF Conditions.Test(writeCond, s.out) THEN
+	       IF ~PerformOp() OR (event.op = close) THEN EXIT END;
+	    ELSE
+	       Conditions.Excl(conditions, s.eventCondition);
+	       Conditions.Incl(conditions, writeCond);
+	       waiting := TRUE;
+	    END;
+	 END;
+      END;
+      EventConditions.Drop(termCond);
+      EventConditions.Drop(softTermCond);
+      EventConditions.Drop(s.eventCondition);
+      Resources.Notify(s, Resources.terminated);
+   END Writer;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      Services.CreateType(streamType, "PipeWriters.Stream", "Streams.Stream");
+      NEW(if);
+      if.bufwrite := WriteBuf; if.write := WriteByte;
+      if.flush := Flush; if.close := Close;
+      if.handler := Handler;
+   END InitModule;
+
+   (* === exported constructor =========================================== *)
+
+   PROCEDURE Spawn(VAR s: Streams.Stream; pipe: Streams.Stream);
+      VAR
+	 job: Job;
+	 stream: Stream;
+   BEGIN
+      NEW(stream); Services.Init(stream, streamType);
+      Streams.Init(stream, if, caps, Streams.nobuf);
+      Events.Define(stream.eventType);
+      EventConditions.Create(stream.eventCondition, stream.eventType);
+      stream.out := pipe;
+      Forwarders.Forward(stream, pipe);
+      NEW(job); job.s := stream; Jobs.Submit(job, Writer);
+      s := stream;
+   END Spawn;
+
+BEGIN
+   InitModule;
+END PipeWriters.

@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: IPv4Address.om,v 1.3 2005/04/28 08:42:25 borchert Exp $
+   $Id: IPv4Address.om,v 1.4 2006/08/11 15:06:48 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: IPv4Address.om,v $
+   Revision 1.4  2006/08/11 15:06:48  borchert
+   port conversion fixed for port values >= 8000H
+
    Revision 1.3  2005/04/28 08:42:25  borchert
    accept ``0'' as representation of INADDR_ANY
 
@@ -66,18 +69,31 @@ MODULE IPv4Addresses;
       compiledAddressFmt: SysConversions.Format;
 
    PROCEDURE GetPort(address: SocketAddress) : INTEGER;
+      VAR
+	 val: INTEGER;
    BEGIN
       CASE Types.byteorder OF
       | Types.bigEndian:
-	    RETURN address.portnum MOD 10000H
+	    val := address.portnum MOD 10000H
       | Types.littleEndian:
-	    RETURN address.portnum DIV 256 MOD 256 +
+	    val := address.portnum DIV 256 MOD 256 +
 		   address.portnum MOD 256 * 256;
       END;
+      (* val is to be considered unsigned *)
+      IF val < 0 THEN
+	 val := 10000H + val;
+	 ASSERT(val > 0);
+      END;
+      RETURN val
    END GetPort;
 
    PROCEDURE SetPort(VAR address: SocketAddress; portnum: INTEGER);
    BEGIN
+      (* convert a 16 bit unsigned value into a 16 bit signed value *)
+      ASSERT((portnum >= 0) & (portnum < 10000H));
+      IF portnum >= 8000H THEN
+	 portnum := portnum - 10000H;
+      END;
       CASE Types.byteorder OF
       | Types.bigEndian:
 	    address.portnum := Types.ToInt16(portnum);

@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Translucent.om,v 1.3 2004/09/09 21:01:31 borchert Exp $
+   $Id: Translucent.om,v 1.4 2005/08/31 18:16:22 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Translucent.om,v $
+   Revision 1.4  2005/08/31 18:16:22  borchert
+   GetConditions if procedure added
+
    Revision 1.3  2004/09/09 21:01:31  borchert
    supports two sorting modes now for Names.GetMembers
    (this was necessary to support clients of CDBNames that
@@ -37,9 +40,10 @@
 
 MODULE TranslucentNames;
 
-   IMPORT ConstStrings, Disciplines, Events, Forwarders, Iterators, Names,
-      NetIO, NodeFactories, Objects, Paths, PersistentObjects, Proxies,
-      RelatedEvents, Resources, Services, Shards, Streams, SYS := SYSTEM;
+   IMPORT Conditions, ConstStrings, Disciplines, Events, Forwarders,
+      Iterators, Names, NetIO, NodeFactories, Objects, PathConditions, Paths,
+      PersistentObjects, Proxies, RelatedEvents, Resources, Services, Shards,
+      Streams, SYS := SYSTEM;
 
    CONST
       mergesort = 0;
@@ -637,7 +641,8 @@ MODULE TranslucentNames;
 	 RETURN NetIO.ReadConstString(s, object.readonly) &
 	        NetIO.ReadConstString(s, object.writable) &
 		ReadAuth(s, object.rauth) & ReadAuth(s, object.wauth) &
-		ReadStatus(s, object.status)
+		ReadStatus(s, object.status) &
+		NetIO.ReadShortInt(s, object.dirmode)
       END;
    END ReadFactory;
 
@@ -649,7 +654,8 @@ MODULE TranslucentNames;
 	        NetIO.WriteConstString(s, object.writable) &
 		PersistentObjects.WriteObjectOrNIL(s, object.rauth) &
 		PersistentObjects.WriteObjectOrNIL(s, object.wauth) &
-		WriteStatus(s, object.status)
+		WriteStatus(s, object.status) &
+		NetIO.WriteShortInt(s, object.dirmode)
       END;
    END WriteFactory;
 
@@ -682,6 +688,26 @@ MODULE TranslucentNames;
       END;
    END ConstructNode;
 
+   PROCEDURE GetConditions(factory: NodeFactories.Factory;
+                           VAR conditions: Conditions.ConditionSet);
+
+      PROCEDURE AddCondition(path: ConstStrings.String;
+                             auth: Shards.Lid);
+	 VAR
+	    condition: PathConditions.Condition;
+      BEGIN
+	 PathConditions.CreateCS(condition, path, Names.root, auth);
+	 Conditions.Incl(conditions, condition);
+      END AddCondition;
+
+   BEGIN (* GetConditions *)
+      WITH factory: Factory DO
+	 Conditions.CreateSet(conditions);
+	 AddCondition(factory.readonly, factory.rauth);
+	 AddCondition(factory.writable, factory.wauth);
+      END;
+   END GetConditions;
+
    (* === module initialization ===================================== *)
 
    PROCEDURE Init;
@@ -710,6 +736,7 @@ MODULE TranslucentNames;
 	 "TranslucentNames.Factory", "NodeFactories.Factory", persif);
       NEW(factoryInterface);
       factoryInterface.constructNode := ConstructNode;
+      factoryInterface.getConditions := GetConditions;
       Services.SeekType("Names.Node", nodeType);
    END Init;
 

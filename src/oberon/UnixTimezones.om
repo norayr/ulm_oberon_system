@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixTimezon.om,v 1.1 1999/05/30 13:50:04 borchert Exp $
+   $Id: UnixTimezon.om,v 1.1 1999/05/30 13:50:04 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: UnixTimezon.om,v $
    Revision 1.1  1999/05/30 13:50:04  borchert
@@ -28,12 +28,14 @@
 
 MODULE UnixTimezones;
 
-   IMPORT Clocks, NetIO, Op := Operations, PersistentObjects, RelatedEvents,
-      Services, Streams, Strings, SysConversions, Texts, Times, Timezones,
-      UnixEnvironment, UnixFiles;
+   IMPORT Clocks, NetIO, Op := Operations, PersistentObjects, Read,
+      RelatedEvents, Services, Streams, Strings, SysConversions, Texts,
+      Times, Timezones, UnixEnvironment, UnixFiles;
 
    CONST
       zoneinfodirDefault = "/usr/share/lib/zoneinfo";
+      defaultZoneFile = "/etc/localtime"; (* Linux *)
+      localeSettings = "/etc/default/init"; (* Solaris *)
    VAR
       zoneinfodir: ARRAY 512 OF CHAR;
 
@@ -487,17 +489,58 @@ MODULE UnixTimezones;
       RETURN TRUE
    END Find;
 
+   PROCEDURE LoadTimezoneFile(path: ARRAY OF CHAR;
+			      VAR tz: Timezone;
+			      errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+   BEGIN
+      IF ~UnixFiles.Open(s, path, UnixFiles.read, Streams.onebuf, errors) THEN
+	 RETURN FALSE
+      END;
+      ok := Create(tz, s, errors);
+      Streams.Release(s);
+      RETURN ok
+   END LoadTimezoneFile;
+
+   PROCEDURE LookupNameOfTimezone(path: ARRAY OF CHAR;
+                                  VAR tzname: ARRAY OF CHAR;
+				  errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 linebuf: ARRAY 64 OF CHAR;
+   BEGIN
+      IF ~UnixFiles.Open(s, path, UnixFiles.read, Streams.onebuf, errors) THEN
+	 RETURN FALSE
+      END;
+      LOOP
+	 Read.LineS(s, linebuf);
+	 IF s.eof OR s.error THEN EXIT END;
+	 IF (linebuf[0] = "T") & (linebuf[1] = "Z") & (linebuf[2] = "=") THEN
+	    Strings.PartCopy(tzname, 0, linebuf, 3);
+	    Streams.Release(s);
+	    RETURN TRUE
+	 END;
+      END;
+      Streams.Release(s);
+      RETURN FALSE
+   END LookupNameOfTimezone;
+
    (* === initialization ================================================== *)
 
    PROCEDURE InitLocalTimezone(tz: Timezones.Timezone) : Timezones.Interface;
       VAR
 	 local: Timezone;
 	 tzname: ARRAY 12 OF CHAR;
-	 glimpserec: GlimpseRec;
 	 glimpse: Glimpse;
+	 glimpserec: GlimpseRec;
    BEGIN
       IF ~(UnixEnvironment.String("TZ", tzname) &
-	    Find(tzname, local, glimpserec) OR
+	       Find(tzname, local, glimpserec) OR
+	    LoadTimezoneFile(defaultZoneFile, local, RelatedEvents.null) OR
+	    LookupNameOfTimezone(localeSettings, tzname, RelatedEvents.null) &
+	       Find(tzname, local, glimpserec) OR
 	    Find("GMT", local, glimpserec) OR
 	    Find("UTC", local, glimpserec)) THEN
 	 (* fall back to Timezones.utc *)

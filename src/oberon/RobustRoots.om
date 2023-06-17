@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: RobustRoots.om,v 1.1 2005/04/28 08:08:48 borchert Exp $
+   $Id: RobustRoots.om,v 1.1 2005/04/28 08:08:48 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: RobustRoots.om,v $
    Revision 1.1  2005/04/28 08:08:48  borchert
@@ -101,14 +101,29 @@ MODULE RobustRoots;
 	 root: Names.Node;
 	 rd: RootDiscipline;
 	 eventType: Events.EventType;
+	 subnode: Names.Node;
+	 nodePresent: BOOLEAN;
    BEGIN
       IF terminate THEN RETURN FALSE END;
       IF ~NamesBootService.Import(import.address, root, import.errors) THEN
 	 RETURN FALSE
       END;
-      IF ~Paths.InsertN(import.root, import.path, root,
-	    import.auth, import.errors) THEN
-	 RETURN FALSE
+      (* check if our root is already in place; in this case we
+	 avoid the insert operation
+      *)
+      nodePresent := Paths.GetNodeN(import.root, import.path, import.auth,
+	    RelatedEvents.null, subnode);
+      IF ~nodePresent OR (subnode # root) THEN
+	 (* if something else runs under the name of our root, remove it *)
+	 IF nodePresent &
+	       ~Paths.DeleteN(import.root, import.path, import.auth,
+		     import.errors) THEN
+	    RETURN FALSE
+	 END;
+	 IF ~Paths.InsertN(import.root, import.path, root,
+	       import.auth, import.errors) THEN
+	    RETURN FALSE
+	 END;
       END;
       IF ~Resources.Alive(root) THEN RETURN FALSE END;
       import.importedNode := root; Resources.Attach(root, import.key);

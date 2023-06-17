@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -42,14 +42,17 @@ MODULE NamesShell;
       PersMesgMaintenance,				(* mesg example *)
       PrivateShards, VolatileShards,			(* misc. clients *)
       InetTCP, PersistentEvents, RemoteEvents, RemoteNames, (* network *)
-      RemoteCommandNodes,
+      RemoteCommandNodes, ProxyNodes,
+      LoaderErrors,
       (* ----- explicitly used: ----- *)
-      ASCII, Cmds, Conclusions, ConstStrings, Disciplines, Errors, Events,
-      Iterators, MD5, Names, NameServerMaintenance, Objects, OneWayHashes,
-      PasswordShards, PathConditions, Paths, PersistentObjects,
-      Networks, Priorities, Process, RelatedEvents, RemoteObjects,
-      Resources, Services, Shards, Storage, Streams, Strings, Tasks,
-      UnixEnvironment, UnixFiles, UnixNames, Write;
+      ASCII, Cmds, Conclusions, ConstStrings, Disciplines,
+      Errors, Events, IPv4NameSystems, Iterators, Loader,
+      MD5, Names, NameServerMaintenance, Objects, OneWayHashes,
+      PasswordShards, PathConditions, Paths, PersistentObjects, Networks,
+      NodeConstructors, NodeFactories, Priorities, Process, RelatedEvents,
+      RemoteObjects, Resources, RootNodes, Services, Shards, Storage,
+      Streams, Strings, Tasks, TranslucentNames, UnixEnvironment,
+      UnixFiles, UnixNames, Write;
 
    CONST
       maxerr = 50;
@@ -76,7 +79,9 @@ MODULE NamesShell;
       observeC = 18;
       forgetC = 19;
       waitC = 20;
-      maxnargs = 2;
+      tfsC = 21;
+      rfsC = 22;
+      maxnargs = 3;
 
    TYPE
       String = ARRAY 1024 OF CHAR;
@@ -112,6 +117,8 @@ MODULE NamesShell;
 
       nargs: INTEGER;
       args: ARRAY maxnargs OF String;
+
+      rfsipv4if: RootNodes.Interface;
 
    PROCEDURE OpenAllKindsOfPorts;
       VAR
@@ -708,6 +715,67 @@ MODULE NamesShell;
       END;
    END WaitForPath;
 
+   PROCEDURE CreateTFS;
+      VAR
+	 writable, subnode: Names.Node;
+	 status: Names.Status;
+	 factory: NodeFactories.Factory;
+
+      PROCEDURE MakeAbsolute(VAR path: ARRAY OF CHAR);
+	 VAR
+	    abspath: String;
+      BEGIN
+	 IF path[0] # Paths.separator THEN
+	    COPY(currentpath, abspath);
+	    Strings.Concatenate(abspath, Paths.separator);
+	    Strings.Concatenate(abspath, path);
+	    COPY(abspath, path);
+	 END;
+      END MakeAbsolute;
+
+   BEGIN (* CreateTFS *)
+      IF ~FetchNode(args[1], writable) THEN
+	 RETURN
+      END;
+      NEW(status);
+      IF ~Names.GetStatus(writable, lid, status^) THEN
+	 status := NIL;
+      END;
+      MakeAbsolute(args[0]);
+      MakeAbsolute(args[1]);
+      TranslucentNames.CreateFactory(factory,
+	 args[0], args[1], lid, lid,
+	 status, TranslucentNames.unsorted);
+      IF args[2][0] = Paths.separator THEN
+	 IF ~NodeConstructors.CreateAndInsertPath(args[2],
+	       factory, lid, errors, subnode) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      ELSE
+	 IF ~NodeConstructors.CreateAndInsertPathN(current, args[2],
+	       factory, lid, errors, subnode) THEN
+	    Conclusions.Conclude(errors, Errors.error, "");
+	 END;
+      END;
+   END CreateTFS;
+
+   PROCEDURE CreateRFS;
+      VAR
+	 node: Names.Node;
+   BEGIN
+      RootNodes.Create(node, rfsipv4if, NIL);
+      IF args[0][0] = Paths.separator THEN
+	 IF Paths.Insert(args[0], node, lid, errors) THEN
+	    RETURN
+	 END;
+      ELSE
+	 IF Paths.InsertN(current, args[0], node, lid, errors) THEN
+	    RETURN
+	 END;
+      END;
+      Conclusions.Conclude(errors, Errors.error, "rfs");
+   END CreateRFS;
+
    PROCEDURE Dialog;
       VAR
 	 cmd: INTEGER;
@@ -758,6 +826,9 @@ MODULE NamesShell;
       Cmds.Add(s, forgetC,    "forget",1,1, "path",     "quit watching a node");
       Cmds.Add(s, waitC,      "wait", 1, 1, "path",
 					     "wait for path to become valid");
+      Cmds.Add(s, rfsC,       "rfs",  1, 1, "path", "create remote root space");
+      Cmds.Add(s, tfsC,       "tfs",  3, 3, "readonly writable path",
+                                             "create translucent name space");
       Cmds.Add(s, quitC,      "q",    0, 0, "",          "terminate session");
       LOOP
 	 Write.String(prompt);
@@ -788,6 +859,8 @@ MODULE NamesShell;
 	 | authC:		NewAuth;
 	 | authfileC:		NewAuthFromFile;
 	 | permC:		NewPerm;
+	 | rfsC:                CreateRFS;
+	 | tfsC:                CreateTFS;
 	 | quitC:		EXIT
 	 END;
       END; (*LOOP*)
@@ -808,8 +881,10 @@ BEGIN
    lid := NIL;
    defStatus := NIL;
    rootKey := NIL;
+   NEW(rfsipv4if); rfsipv4if.convert := IPv4NameSystems.Convert;
    Startup;
    OpenAllKindsOfPorts;
+   Conclusions.CatchEvent(Loader.error, Errors.warning);
 
    Dialog;
    Process.Exit(0);

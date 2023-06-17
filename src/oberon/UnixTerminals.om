@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-1998 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2006 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,13 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: UnixTermina.om,v 1.3 2004/10/04 20:27:04 borchert Exp borchert $
+   $Id: UnixTermina.om,v 1.4 2006/04/04 14:55:05 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: UnixTermina.om,v $
+   Revision 1.4  2006/04/04 14:55:05  borchert
+   bug fix: do not use the terminfo sequences below if we are not
+            in raw mode as CR or NL mappings could be harmful
+
    Revision 1.3  2004/10/04 20:27:04  borchert
    support of TermColors added
 
@@ -445,33 +449,40 @@ MODULE UnixTerminals; (* Ralf Beck *)
       END;
    END SetBackgroundColor;
 
-   PROCEDURE ResetColors(s: Streams.Stream);
+   PROCEDURE InternalResetColors(s: Stream);
       VAR
 	 ok: BOOLEAN;
+   BEGIN
+      IF s.colorsChanged THEN
+	 ok := TRUE;
+	 IF TermInfos.CapStringOk(s.terminfo, TermInfos.origPair) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.origPair,
+				   NIL, s.speed, 1, s.outstream);
+	 ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.origColors) THEN
+	    TermInfos.PutCapString(s.terminfo, TermInfos.origColors,
+				   NIL, s.speed, 1, s.outstream);
+	 ELSE
+	    ok := FALSE;
+	 END;
+	 IF ~ok THEN
+	    (* if the appropriate terminfo entries are missing
+	       we resort to the standard setting of black foreground
+	       and white background; we lose, of course, in case of
+	       reverse video
+	    *)
+	    SetColors(s, 0, 7);
+	 END;
+	 s.colorsChanged := FALSE;
+      END;
+   END InternalResetColors;
+
+   PROCEDURE ResetColors(s: Streams.Stream);
    BEGIN
       WITH s: Stream DO
 	 IF s.colorsChanged THEN
 	    Semaphores.P(s.semaphore);
-	    ok := TRUE;
-	    IF TermInfos.CapStringOk(s.terminfo, TermInfos.origPair) THEN
-	       TermInfos.PutCapString(s.terminfo, TermInfos.origPair,
-				      NIL, s.speed, 1, s.outstream);
-	    ELSIF TermInfos.CapStringOk(s.terminfo, TermInfos.origColors) THEN
-	       TermInfos.PutCapString(s.terminfo, TermInfos.origColors,
-				      NIL, s.speed, 1, s.outstream);
-	    ELSE
-	       ok := FALSE;
-	    END;
+	    InternalResetColors(s);
 	    Semaphores.V(s.semaphore);
-	    IF ~ok THEN
-	       (* if the appropriate terminfo entries are missing
-		  we resort to the standard setting of black foreground
-		  and white background; we lose, of course, in case of
-		  reverse video
-	       *)
-	       SetColors(s, 0, 7);
-	    END;
-	    s.colorsChanged := FALSE;
 	 END;
       END;
    END ResetColors;
@@ -481,6 +492,7 @@ MODULE UnixTerminals; (* Ralf Beck *)
 	 maxcolors, maxpairs: INTEGER;
 	 ncv: INTEGER;
    BEGIN
+      s.colorsChanged := FALSE;
       maxcolors := TermInfos.GetNumber(s.terminfo, TermInfos.maxColors);
       maxpairs := TermInfos.GetNumber(s.terminfo, TermInfos.maxPairs);
       IF (maxcolors <= 0) OR (maxpairs <= 0) OR
@@ -497,11 +509,6 @@ MODULE UnixTerminals; (* Ralf Beck *)
 	 *)
 	 RETURN
       END;
-      IF TermInfos.GetBoolean(s.terminfo, TermInfos.backColorErase) THEN
-	 (* not supported yet *)
-	 RETURN
-      END;
-      s.colorsChanged := FALSE;
       IF TermInfos.CapStringOk(s.terminfo, TermInfos.setAForeground) &
             TermInfos.CapStringOk(s.terminfo, TermInfos.setABackground) THEN
 	 s.ansiColors := TRUE;
@@ -809,6 +816,9 @@ MODULE UnixTerminals; (* Ralf Beck *)
    BEGIN
       WITH s: Stream DO
 	 Semaphores.P(s.semaphore);
+	 IF s.colorsChanged THEN
+	    InternalResetColors(s);
+	 END;
          IF TermInfos.CapStringOk(s.terminfo, TermInfos.clearScreen) THEN
 	    TermInfos.PutCapString(s.terminfo, TermInfos.clearScreen, NIL,
 				   s.speed, 1, s.outstream);

@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: XResources.om,v 1.1 2005/04/10 13:18:17 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: XResources.om,v $
+   Revision 1.1  2005/04/10 13:18:17  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -118,6 +121,17 @@ MODULE XResources;
 	 Events.Raise(event);
       END;
    END RaiseResourceEvent;
+   
+   PROCEDURE ClientMessageHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.ClientMessageEvent DO
+	 IF Lookup(event.display, event.window, win) THEN
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END ClientMessageHandler;
 
    PROCEDURE ConfigureNotifyHandler(event: Events.Event);
       VAR
@@ -159,6 +173,17 @@ MODULE XResources;
       END;
    END ExposeHandler;
 
+   PROCEDURE KeyHandler(event: Events.Event);
+      VAR
+	 win: Window;
+   BEGIN
+      WITH event: X.KeyEvent DO
+	 IF Lookup(event.display, event.event, win) THEN
+	    RaiseResourceEvent(win, event);
+	 END;
+      END;
+   END KeyHandler;
+
    PROCEDURE VisibilityNotifyHandler(event: Events.Event);
       VAR
 	 win: Window;
@@ -171,17 +196,6 @@ MODULE XResources;
       END;
    END VisibilityNotifyHandler;
 
-   PROCEDURE ClientMessageHandler(event: Events.Event);
-      VAR
-	 win: Window;
-   BEGIN
-      WITH event: X.ClientMessageEvent DO
-	 IF Lookup(event.display, event.window, win) THEN
-	    RaiseResourceEvent(win, event);
-	 END;
-      END;
-   END ClientMessageHandler;
-
    PROCEDURE InstallHandlers(xdisplay: X.Display);
 
       PROCEDURE Install(type: INTEGER; handler: Events.EventHandler);
@@ -193,11 +207,13 @@ MODULE XResources;
       END Install;
 
    BEGIN (* InstallHandlers *)
+      Install(X.clientMessageEvent, ClientMessageHandler);
       Install(X.configureNotifyEvent, ConfigureNotifyHandler);
       Install(X.destroyNotifyEvent, DestroyNotifyHandler);
       Install(X.exposeEvent, ExposeHandler);
+      Install(X.keyPressEvent, KeyHandler);
+      Install(X.keyReleaseEvent, KeyHandler);
       Install(X.visibilityNotifyEvent, VisibilityNotifyHandler);
-      Install(X.clientMessageEvent, ClientMessageHandler);
    END InstallHandlers;
 
    PROCEDURE GetAttributes(drawable: Drawable) : BOOLEAN;
@@ -708,6 +724,18 @@ MODULE XResources;
       GetGContext(drawable, gc);
       ok := X.SetDashes(drawable.xdisplay, gc.id, dashOffset, dashes);
    END SetDashes2;
+
+   PROCEDURE FillPoly(drawable: Drawable;
+		      shape: X.Shape;
+		      coordinateMode: X.CoordinateMode;
+		      points: X.ListOfPoints) : BOOLEAN;
+      VAR
+	 gc: GContext;
+   BEGIN
+      GetGContext(drawable, gc);
+      RETURN X.FillPoly(drawable.xdisplay, drawable.id, gc.id,
+                        shape, coordinateMode, points)
+   END FillPoly;
 
    PROCEDURE PolyArc(drawable: Drawable;
 		     arcs: X.ListOfArcs) : BOOLEAN;

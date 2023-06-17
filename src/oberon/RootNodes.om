@@ -1,0 +1,236 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RootNodes;
+
+   IMPORT ConstStrings, Jobs, Names, NamesBootService, Networks, Objects,
+      RelatedEvents, Resources, RobustRoots, Services, Shards, StdNodes,
+      VolatileShards;
+
+   TYPE
+      ConvertProc = PROCEDURE (source: ARRAY OF CHAR;
+                               VAR address: Networks.Address;
+			       errors: RelatedEvents.Object) : BOOLEAN;
+      Interface = POINTER TO InterfaceRec;
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    convert: ConvertProc;
+	 END;
+   TYPE
+      Node = POINTER TO NodeRec;
+      Link = POINTER TO LinkRec;
+      LinkRec =
+	 RECORD
+	    (StdNodes.LinkRec)
+	    iroot: RobustRoots.ImportedRoot;
+	    pot: Shards.Pot; lid: Shards.Lid;
+	 END;
+   VAR
+      linkType: Services.Type;
+
+   TYPE
+      NodeRec =
+	 RECORD
+	    (StdNodes.NodeRec)
+	    if: Interface;
+	    handle: StdNodes.Handle;
+	 END;
+   VAR
+      nodeType: Services.Type;
+
+   TYPE
+      RobustRootJob = POINTER TO RobustRootJobRec;
+      RobustRootJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    address: Networks.Address;
+	    parent: Node;
+	    link: Link;
+	    root: Names.Node;
+	 END;
+
+   CONST
+      caps = {Names.accessCap, Names.statusCap,
+		  Names.domainCap, Names.destroyCap};
+   VAR
+      stdif: StdNodes.Interface;
+
+   (* === auxiliary procedures =========================================== *)
+
+   PROCEDURE CreateLink(VAR link: Link);
+   BEGIN
+      NEW(link); Services.Init(link, linkType);
+      link.iroot := NIL;
+      VolatileShards.Create(link.pot, link.lid);
+   END CreateLink;
+
+   PROCEDURE MakeRootRobust(job: Jobs.Job);
+      VAR
+	 source: ARRAY 1024 OF CHAR;
+	 iroot: RobustRoots.ImportedRoot;
+	 auth: Shards.Lid;
+   BEGIN
+      WITH job: RobustRootJob DO
+	 StdNodes.Lock(job.parent.handle);
+	 IF job.root = job.link.node THEN
+	    ConstStrings.Extract(source, job.link.name);
+	    auth := job.link.lid;
+	    StdNodes.Unlock(job.parent.handle);
+	    (* we have to remove the lock to avoid a deadlock
+	       as RobustRoots.TemporaryImportR invokes Names
+	       operations on job.parent
+	    *)
+	    RobustRoots.TemporaryImportR(job.address, job.parent, source,
+	       auth, job.parent, iroot);
+	    StdNodes.Lock(job.parent.handle);
+	    IF (job.root = job.link.node) & Resources.Alive(job.link) THEN
+	       job.link.iroot := iroot;
+	       Resources.DependsOn(iroot, job.link);
+	    ELSE
+	       Resources.Notify(iroot, Resources.terminated);
+	    END;
+	 END;
+	 StdNodes.Unlock(job.parent.handle);
+      END;
+   END MakeRootRobust;
+
+   (* === StdNodes if procedures ========================================= *)
+
+   PROCEDURE GetDefaultStatus(node: StdNodes.Node; VAR status: Names.Status);
+      VAR
+	 mode: Names.AccessMode;
+   BEGIN
+      NEW(status);
+      mode := 0;
+      WHILE mode < Names.accessmodes DO
+	 CASE mode OF
+	 | Names.change, Names.delete, Names.destroy:
+	    Shards.CreateSimplePot(status.perm[mode], FALSE);
+	 ELSE
+	    status.perm[mode] := NIL;
+	 END;
+	 INC(mode);
+      END;
+   END GetDefaultStatus;
+
+   PROCEDURE Access(node: StdNodes.Node; mode: Names.AccessMode;
+                    auth: Shards.Lid; authorized: BOOLEAN) : BOOLEAN;
+   BEGIN
+      IF mode = Names.insert THEN RETURN TRUE END;
+      RETURN authorized
+   END Access;
+
+   PROCEDURE GetNode(node: StdNodes.Node; name: Names.Name;
+                     auth: Shards.Lid; VAR link: StdNodes.Link;
+		     VAR subnode: Names.Node) : BOOLEAN;
+      VAR
+	 address: Networks.Address;
+	 source: ARRAY 1024 OF CHAR;
+	 root: Names.Node;
+	 l: Link;
+	 job: RobustRootJob;
+   BEGIN
+      IF link # NIL THEN
+	 IF (link.node # NIL) & Resources.Alive(link.node) THEN
+	    subnode := link.node;
+	    RETURN TRUE
+	 ELSE
+	    (* currently unavailable but RobustRoots takes already
+	       care of this case
+	    *)
+	    RETURN FALSE
+	 END;
+      END;
+      WITH node: Node DO
+	 ConstStrings.Extract(source, name);
+	 IF (source = "") OR
+	       ~node.if.convert(source, address, node) OR
+	       ~NamesBootService.Import(address, root, node) THEN
+	    RETURN FALSE
+	 END;
+	 CreateLink(l);
+	 NEW(job); job.address := address;
+	 job.parent := node; job.root := root; job.link := l;
+	 Jobs.Submit(job, MakeRootRobust);
+	 link := l; subnode := root;
+	 RETURN TRUE
+      END;
+   END GetNode;
+
+   PROCEDURE Insert(node: StdNodes.Node; subnode: Names.Node;
+                    name: Names.Name; auth: Shards.Lid;
+		    VAR link: StdNodes.Link) : BOOLEAN;
+   BEGIN
+      (* RobustRoots is permitted to insert re-imported roots *)
+      IF (link # NIL) & Shards.Fits(link(Link).pot, auth) THEN
+	 RETURN TRUE
+      END;
+      (* other subnodes are not permitted *)
+      Names.Error(node, Names.noPermission);
+      RETURN FALSE
+   END Insert;
+
+   PROCEDURE TerminationHandler(node: StdNodes.Node;
+                                link: StdNodes.Link) : BOOLEAN;
+   BEGIN
+      WITH link: Link DO
+	 RETURN (link.iroot = NIL) OR Resources.Alive(link.iroot)
+      END;
+   END TerminationHandler;
+
+   (* === module initialization ========================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      NEW(stdif);
+      stdif.getDefaultStatus := GetDefaultStatus;
+      stdif.access := Access;
+      stdif.getNode := GetNode;
+      stdif.insert := Insert;
+      stdif.makeSubnode := NIL;
+      stdif.delete := NIL;
+      stdif.destroy := NIL;
+      stdif.terminationHandler := TerminationHandler;
+      Services.CreateType(linkType, "RootNodes.Link", "StdNodes.Link");
+      Services.CreateType(nodeType, "RootNodes.Node", "StdNodes.Node");
+   END InitModule;
+
+   (* === exported constructor =========================================== *)
+
+   PROCEDURE Create(VAR node: Names.Node; if: Interface;
+                    status: Names.Status);
+      VAR
+	 n: Node;
+   BEGIN
+      ASSERT((if # NIL) & (if.convert # NIL));
+      NEW(n); Services.Init(n, nodeType); n.if := if;
+      StdNodes.Init(n, stdif, status, caps, n.handle);
+      node := n;
+   END Create;
+
+BEGIN
+   InitModule;
+END RootNodes.

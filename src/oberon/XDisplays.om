@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2007 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: XDisplays.om,v 1.1 2005/04/20 16:08:24 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: XDisplays.om,v $
+   Revision 1.1  2005/04/20 16:08:24  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -110,6 +113,8 @@ MODULE XDisplays;
       FontableID = Types.Int32;
       GContextID = Types.Int32;
       Pixel = Types.Int32;
+      Keysym = Types.Int32;
+      Keycode = INTEGER;
 
    CONST
       (* request op codes *)
@@ -126,6 +131,8 @@ MODULE XDisplays;
       openFont = 45;
       closeFont = 46;
       queryFont = 47;
+      listFonts = 49;
+      getFontPath = 52;
       createGC = 55;
       changeGC = 56;
       copyGC = 57;
@@ -135,9 +142,12 @@ MODULE XDisplays;
       polyPoint = 64;
       polyLine = 65;
       polyArc = 68;
+      fillPoly = 69;
       polyText8 = 74;
       allocColor = 84;
       lookupColor = 92;
+      listExtensions = 99;
+      getKeyboardMapping = 101;
 
    CONST
       (* visibility *)
@@ -745,6 +755,20 @@ MODULE XDisplays;
 	    red, green, blue: INTEGER;
 	 END;
 
+   CONST
+      (* shape values; used by FillPoly *)
+      complex = 0;
+      nonconvex = 1;
+      convex = 2;
+   TYPE
+      Shape = INTEGER;
+   CONST
+      (* values for coordinate-mode: *)
+      origin = 0;
+      previous = 1;
+   TYPE
+      CoordinateMode = INTEGER;
+
    TYPE
       ListOfPoints = POINTER TO ListOfPointsRec;
       ListOfPointsRec =
@@ -778,6 +802,17 @@ MODULE XDisplays;
 	    next: ListOfArcs;
 	 END;
    CONST
+      maxkeysyms = specialKeys;
+   TYPE
+      KeyboardMapping = POINTER TO KeyboardMappingRec;
+      KeyboardMappingRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    keycode: Keycode;
+	    keysyms: ARRAY maxkeysyms OF Keysym;
+	    next: KeyboardMapping;
+	 END;
+   CONST
       (* kinds of ListOfTextItems *)
       textItem = 0;
       fontItem = 1;
@@ -793,6 +828,15 @@ MODULE XDisplays;
 	    delta: INTEGER;
 	    (* kind = fontItem *)
 	    font: FontID;
+	 END;
+
+   TYPE
+      ListOfStrings = POINTER TO ListOfStringsRec;
+      ListOfStringsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: ListOfStrings;
+	    string: ARRAY 256 OF CHAR;
 	 END;
 
    TYPE
@@ -1541,22 +1585,45 @@ MODULE XDisplays;
       VAR
 	 nbytes: LONGINT;
    BEGIN
-      IF len > LEN(buf) THEN
-	 (* actual stuff is longer than the buffer:
-	    we fill just the buffer and skip the rest
+      IF len >= LEN(buf) THEN
+	 (* actual stuff is longer than our buffer:
+	    we fill just the buffer and skip the rest;
+	    note that we will leave space for a terminating null-byte
 	 *)
-	 nbytes := LEN(buf);
+	 nbytes := LEN(buf) - 1;
 	 IF ~Streams.ReadPart(s, buf, 0, nbytes) THEN RETURN FALSE END;
 	 RETURN ReadPad(s, len - nbytes)
       ELSE
 	 IF ~Streams.ReadPart(s, buf, 0, len) THEN RETURN FALSE END;
-	 IF len < LEN(buf) THEN
-	    (* assure 0X-termination in case of strings *)
-	    buf[len] := 0X;
-	 END;
+	 (* assure 0X-termination in case of strings *)
+	 buf[len] := 0X;
 	 RETURN TRUE
       END;
    END ReadString8;
+
+   PROCEDURE ReadListOfStrings(s: Streams.Stream;
+                               VAR list: ListOfStrings;
+			       len: LONGINT) : BOOLEAN;
+      VAR
+	 strlen: INTEGER;
+	 head, tail, member: ListOfStrings;
+   BEGIN
+      head := NIL; tail := NIL;
+      WHILE len > 0 DO
+	 IF ~ReadCard8(s, strlen) THEN RETURN FALSE END;
+	 NEW(member); member.next := NIL;
+	 IF ~ReadString8(s, member.string, strlen) THEN RETURN FALSE END;
+	 IF head = NIL THEN
+	    head := member;
+	 ELSE
+	    tail.next := member;
+	 END;
+	 tail := member;
+	 DEC(len);
+      END;
+      list := head;
+      RETURN TRUE
+   END ReadListOfStrings;
 
    PROCEDURE ReadFormat(s: Streams.Stream; VAR format: Format) : BOOLEAN;
    BEGIN
@@ -3340,6 +3407,16 @@ MODULE XDisplays;
       RETURN display.screen.colormap
    END GetDefaultColormap;
 
+   PROCEDURE GetMinKeyCode(display: Display) : Keycode;
+   BEGIN
+      RETURN display.server.minKeyCode
+   END GetMinKeyCode;
+
+   PROCEDURE GetMaxKeyCode(display: Display) : Keycode;
+   BEGIN
+      RETURN display.server.maxKeyCode
+   END GetMaxKeyCode;
+
    PROCEDURE GetResourceIDRange(display: Display;
                                 VAR resourceIDbase: ResourceID;
 				VAR resourceIDmask: ResourceID);
@@ -3655,6 +3732,46 @@ MODULE XDisplays;
       RETURN TRUE
    END CreateWindow;
 
+   PROCEDURE FillPoly(display: Display;
+                      drawable: DrawableID;
+		      gc: GContextID;
+		      shape: Shape;
+		      coordinateMode: CoordinateMode;
+		      points: ListOfPoints) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 count: INTEGER;
+	 p: ListOfPoints;
+   BEGIN
+      p := points; count := 0;
+      WHILE p # NIL DO
+	 INC(count);
+	 p := p.next;
+      END;
+      Semaphores.P(display.mutex);
+      NextSequenceNumber(display);
+      s := display.s;
+      ok := WriteCard8(s, fillPoly) &
+	    WritePad(s, 1) &
+	    WriteCard16(s, 4 + count) & (* request length *)
+	    WriteCard32(s, drawable) &
+	    WriteCard32(s, gc) &
+	    WriteCard8(s, shape) &
+	    WriteCard8(s, coordinateMode) &
+	    WritePad(s, 2);
+      p := points;
+      WHILE ok & (p # NIL) DO
+	 ok := WriteInt16(s, p.x) & WriteInt16(s, p.y);
+	 p := p.next;
+      END;
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      RETURN TRUE
+   END FillPoly;
+
    PROCEDURE FreeGC(display: Display;
                     gc: GContextID) : BOOLEAN;
       VAR
@@ -3715,6 +3832,44 @@ MODULE XDisplays;
       RETURN TRUE
    END GetAtomName;
 
+   PROCEDURE GetFontPath(display: Display;
+                         VAR path: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getFontPath) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 1) & (* request length *)
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard16(s, len) &
+	    ReadPad(s, 22) &
+	    ReadListOfStrings(s, path, len);
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      RETURN TRUE
+   END GetFontPath;
+
    PROCEDURE GetGeometry(display: Display;
                          drawable: DrawableID;
 			 VAR geometry: Geometry) : BOOLEAN;
@@ -3761,6 +3916,76 @@ MODULE XDisplays;
       geometry := geo;
       RETURN TRUE
    END GetGeometry;
+
+   PROCEDURE GetKeyboardMapping(display: Display;
+                                firstKeycode: Keycode;
+				count: INTEGER;
+				VAR keysymsPerKeycode: INTEGER;
+				VAR mapping: KeyboardMapping) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: Types.Int32;
+	 head, tail, member: KeyboardMapping;
+	 keycode: Keycode; i: INTEGER;
+	 keysym: Keysym;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, getKeyboardMapping) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2) & (* request length *)
+	    WriteCard8(s, firstKeycode) &
+	    WriteCard8(s, count) &
+	    WritePad(s, 2) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+            ReadCard8(s, keysymsPerKeycode) &
+	    ReadPad(s, 2) & (* sequence number *)
+	    ReadCard32(s, len) &
+	    ReadPad(s, 24);
+      IF keysymsPerKeycode = 0 THEN RETURN FALSE END;
+      head := NIL; tail := NIL; keycode := firstKeycode;
+      WHILE ok & (len > 0) DO
+	 i := SHORT(len MOD keysymsPerKeycode);
+	 IF i = 0 THEN
+	    NEW(member);
+	    member.keycode := keycode; INC(keycode);
+	    member.next := NIL;
+	    IF tail = NIL THEN
+	       head := member;
+	    ELSE
+	       tail.next := member;
+	    END;
+	    tail := member;
+	 END;
+	 ok := ReadCard32(s, keysym);
+	 IF ok & (i < maxkeysyms) THEN
+	    member.keysyms[i] := keysym;
+	 END;
+	 DEC(len);
+      END;
+      IF ~ok THEN
+	 RETURN FALSE
+      END;
+      mapping := head;
+      RETURN TRUE
+   END GetKeyboardMapping;
 
    PROCEDURE GetProperty(display: Display;
                          window: WindowID;
@@ -3948,6 +4173,84 @@ MODULE XDisplays;
       END;
       RETURN TRUE
    END InternAtom;
+
+   PROCEDURE ListExtensions(display: Display;
+                            VAR extensions: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      ok := WriteCard8(s, listExtensions) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 1) & (* request length *)
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 1) & (* skip reply code *)
+	    ReadCard8(s, len) &
+	    ReadPad(s, 30) &
+	    ReadListOfStrings(s, extensions, len);
+      RETURN ok
+   END ListExtensions;
+
+   PROCEDURE ListFonts(display: Display;
+		       pattern: ARRAY OF CHAR;
+		       maxnames: INTEGER;
+                       VAR fonts: ListOfStrings) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 ok: BOOLEAN;
+	 request: OpenRequest;
+	 len: INTEGER;
+	 pad: INTEGER;
+   BEGIN
+      Semaphores.P(display.mutex);
+      InsertOpenRequest(display, request);
+      s := display.s;
+      len := SHORT(Strings.Len(pattern));
+      pad := Pad(len);
+      ok := WriteCard8(s, listFonts) &
+            WritePad(s, 1) &
+	    WriteCard16(s, 2 + (len + pad) DIV 4) & (* request length *)
+	    WriteCard16(s, maxnames) &
+	    WriteCard16(s, len) &
+	    WriteString8(s, pattern, len) &
+	    Streams.Flush(s);
+      Semaphores.V(display.mutex);
+      IF ~ok THEN
+	 Disconnect(display); RETURN FALSE
+      END;
+      Signals.WaitFor(request.signal);
+      IF request.xerror # NIL THEN
+	 RelatedEvents.Raise(display, request.xerror);
+	 RETURN FALSE
+      END;
+      IF request.reply = NIL THEN
+	 RETURN FALSE
+      END;
+      s := request.reply;
+      ok := ReadPad(s, 8) & (* skip reply code *)
+	    ReadCard16(s, len) &
+	    ReadPad(s, 22) &
+	    ReadListOfStrings(s, fonts, len);
+      RETURN ok
+   END ListFonts;
 
    PROCEDURE LookupColor(display: Display;
                          cmap: ColormapID;

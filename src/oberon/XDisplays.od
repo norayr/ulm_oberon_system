@@ -1,5 +1,5 @@
 (* Ulm's Oberon Library
-   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   Copyright (C) 1989-2007 by University of Ulm, SAI, D-89069 Ulm, Germany
    ----------------------------------------------------------------------------
    Ulm's Oberon Library is free software; you can redistribute it
    and/or modify it under the terms of the GNU Library General Public
@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id$
+   $Id: XDisplays.od,v 1.1 2005/04/10 17:33:20 borchert Exp borchert $
    ----------------------------------------------------------------------------
-   $Log$
+   $Log: XDisplays.od,v $
+   Revision 1.1  2005/04/10 17:33:20  borchert
+   Initial revision
+
    ----------------------------------------------------------------------------
 *)
 
@@ -43,6 +46,8 @@ DEFINITION XDisplays;
       FontableID = Types.Int32;
       GContextID = Types.Int32;
       Pixel = Types.Int32;
+      Keysym = Types.Int32;
+      Keycode = INTEGER;
 
    CONST
       gravityForget = 0;
@@ -705,6 +710,20 @@ DEFINITION XDisplays;
 	    red, green, blue: INTEGER;
 	 END;
 
+   CONST
+      (* shape values; used by FillPoly *)
+      complex = 0;
+      nonconvex = 1;
+      convex = 2;
+   TYPE
+      Shape = INTEGER;
+   CONST
+      (* values for coordinate-mode: *)
+      origin = 0;
+      previous = 1;
+   TYPE
+      CoordinateMode = INTEGER;
+
    TYPE
       ListOfFontProperties = POINTER TO ListOfFontPropertiesRec;
       ListOfFontPropertiesRec =
@@ -745,6 +764,14 @@ DEFINITION XDisplays;
 	    fontAscent: INTEGER;
 	    fontDescent: INTEGER;
 	    properties: ListOfFontProperties;
+	 END;
+   TYPE
+      ListOfStrings = POINTER TO ListOfStringsRec;
+      ListOfStringsRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    next: ListOfStrings;
+	    string: ARRAY 256 OF CHAR;
 	 END;
 
    TYPE
@@ -795,6 +822,17 @@ DEFINITION XDisplays;
 	    (* kind = fontItem *)
 	    font: FontID;
 	 END;
+   CONST
+      maxkeysyms = specialKeys;
+   TYPE
+      KeyboardMapping = POINTER TO KeyboardMappingRec;
+      KeyboardMappingRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    keycode: Keycode;
+	    keysyms: ARRAY maxkeysyms OF Keysym;
+	    next: KeyboardMapping;
+	 END;
 
    CONST
       replaceProperty = 0;
@@ -839,6 +877,8 @@ DEFINITION XDisplays;
    PROCEDURE GetWhitePixel(display: Display) : PixmapID;
    PROCEDURE GetBlackPixel(display: Display) : PixmapID;
    PROCEDURE GetDefaultColormap(display: Display) : ColormapID;
+   PROCEDURE GetMinKeyCode(display: Display) : Keycode;
+   PROCEDURE GetMaxKeyCode(display: Display) : Keycode;
    PROCEDURE GetEventType(display: Display;
                           type: INTEGER;
 			  VAR eventType: Events.EventType);
@@ -899,12 +939,22 @@ DEFINITION XDisplays;
 			  borderWidth: INTEGER;
 			  winats: WindowAttributes) : BOOLEAN;
 
+   PROCEDURE FillPoly(display: Display;
+                      drawable: DrawableID;
+		      gc: GContextID;
+		      shape: Shape;
+		      coordinateMode: CoordinateMode;
+		      points: ListOfPoints) : BOOLEAN;
+
    PROCEDURE FreeGC(display: Display;
                     gc: GContextID) : BOOLEAN;
 
    PROCEDURE GetAtomName(display: Display;
                          atom: AtomID;
 			 VAR name: ARRAY OF CHAR) : BOOLEAN;
+
+   PROCEDURE GetFontPath(display: Display;
+                         VAR path: ListOfStrings) : BOOLEAN;
 
    PROCEDURE GetGeometry(display: Display;
                          drawable: DrawableID;
@@ -919,6 +969,12 @@ DEFINITION XDisplays;
 			 VAR property: Property;
 			 VAR bytesAfter: Types.Int32) : BOOLEAN;
 
+   PROCEDURE GetKeyboardMapping(display: Display;
+                                firstKeycode: Keycode;
+				count: INTEGER;
+				VAR keysymsPerKeycode: INTEGER;
+				VAR mapping: KeyboardMapping) : BOOLEAN;
+
    PROCEDURE GetWindowAttributes(display: Display;
                                  window: WindowID;
 				 VAR winats: WindowAttributes;
@@ -928,6 +984,14 @@ DEFINITION XDisplays;
                         name: ARRAY OF CHAR;
 			onlyIfExists: BOOLEAN;
 			VAR atom: AtomID) : BOOLEAN;
+
+   PROCEDURE ListExtensions(display: Display;
+                            VAR extensions: ListOfStrings) : BOOLEAN;
+
+   PROCEDURE ListFonts(display: Display;
+		       pattern: ARRAY OF CHAR;
+		       maxnames: INTEGER;
+                       VAR fonts: ListOfStrings) : BOOLEAN;
 
    PROCEDURE LookupColor(display: Display;
                          cmap: ColormapID;

@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: Daemons.om,v 1.4 2004/09/13 21:08:44 borchert Exp $
+   $Id: Daemons.om,v 1.4 2004/09/13 21:08:44 borchert Exp borchert $
    ----------------------------------------------------------------------------
    $Log: Daemons.om,v $
    Revision 1.4  2004/09/13 21:08:44  borchert
@@ -163,15 +163,27 @@ MODULE Daemons;
    END Start;
 
    PROCEDURE Create(VAR daemon: Daemon; plugin: Networks.Address;
-                    serviceForChannel: ServiceForChannel): BOOLEAN;
+                    serviceForChannel: ServiceForChannel;
+		    errors: RelatedEvents.Object): BOOLEAN;
       (* starts a daemon that runs in a newly created task and listens to
          port plugin.
          For each connected party serviceForChannel is started as job.
       *)
+      VAR
+	 d: Daemon;
+	 ok: BOOLEAN;
    BEGIN
-      NEW(daemon);
-      Services.Init(daemon, type);
-      RETURN Start(daemon, plugin, serviceForChannel)
+      NEW(d);
+      Services.Init(d, type);
+      RelatedEvents.QueueEvents(d);
+      RelatedEvents.Save(d);
+      RelatedEvents.Forward(d, errors);
+      ok := Start(daemon, plugin, serviceForChannel);
+      RelatedEvents.Restore(d);
+      IF ok THEN
+	 daemon := d;
+      END;
+      RETURN ok
    END Create;
 
 BEGIN
