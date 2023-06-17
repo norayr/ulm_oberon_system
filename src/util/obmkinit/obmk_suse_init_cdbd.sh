@@ -15,7 +15,7 @@ cdbddir="$CDBDDIR"
 uidgidflags=""
 root="$ONS_ROOT"
 intensity="$INTENSITY"
-set -- `getopt c:d:g:u: $*`
+set -- `getopt c:d:g:u:r: $*`
 while [ $# -gt 0 ]
 do
    case $1
@@ -61,9 +61,9 @@ start_service() {
    $BINDIR/onsmkdir -p \"$cdbdir\"
    INTENSITY=\"$intensity\"
    ioptions=
-   if [ -f $INTENSITY ]
+   if [ -f \$INTENSITY ]
    then
-      ioptions="-i `cat $INTENSITY`"
+      ioptions=\"-i \`cat \$INTENSITY\`\"
    fi
    startproc $uidgidflags -l \"$cdbddir\"/cdbd.LOG \\
       $BINDIR/cdbd \\

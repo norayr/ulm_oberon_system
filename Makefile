@@ -97,7 +97,7 @@ installutil:	bindir
 
 .PHONY:	scripts
 scripts:
-	cd src/util && $(MAKE) InstallDir=$(Root) InstallBinDir=$(Root)/build/scripts DestDir=$(Root) BinDir=$(Root)/build/scripts install
+	cd src/util && $(MAKE) InstallDir=$(Root) InstallBinDir=$(Root)/build/scripts DestDir=$(Root) BinDir=$(Root)/build/scripts IntensityDir=$(IntensityDir) install
 
 .PHONY: mkoblib
 mkoblib: scripts $(Lib)
@@ -162,8 +162,8 @@ gcintensity:
 
 .PHONY:	suseinsserv
 suseinsserv:	$(InsertableInitScripts) 
-	insserv -v $(InitDir)/pons
-	insserv -v $(InitDir)/cdbd
+	insserv $(InitDir)/pons
+	insserv $(InitDir)/cdbd
 .PHONY:	suserun
 suserun:	suseinsserv
 	sh $(InitDir)/pons start
