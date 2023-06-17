@@ -284,6 +284,7 @@ MODULE TurtleGraphics;
          size: Coordinate;
 	 width: INTEGER;
 	 pxmin, pymin, pxmax, pymax: INTEGER;
+	 xmax, ymax: INTEGER;
 	 roundCorners: BOOLEAN;
 	 x, y, oldx, oldy, nextx, nexty: Coordinate; dir, nextdir: Direction;
 	 movement: Movement;
@@ -294,12 +295,12 @@ MODULE TurtleGraphics;
 
       PROCEDURE X(x: REAL) : INTEGER;
       BEGIN
-         RETURN SHORT(ENTIER((x - graphic.minx) * scale))
+         RETURN SHORT(ENTIER((x - graphic.minx) * scale)) + pxmin
       END X;
 
       PROCEDURE Y(y: REAL) : INTEGER;
       BEGIN
-         RETURN SHORT(ENTIER((y - graphic.miny) * scale))
+         RETURN SHORT(ENTIER((y - graphic.miny) * scale)) + pymin
       END Y;
 
       PROCEDURE SetLineWidth;
@@ -323,7 +324,17 @@ MODULE TurtleGraphics;
       END SetLineWidth;
 
    BEGIN (* Plot *)
-      IF graphic.head # NIL THEN
+      IF graphic.head = NIL THEN
+	 Plotters.Erase(plotter);
+      ELSE
+	 IF graphic.maxx - graphic.minx < 1 THEN
+	    graphic.minx := graphic.minx - 1;
+	    graphic.maxx := graphic.maxx + 1;
+	 END;
+	 IF graphic.maxy - graphic.miny < 1 THEN
+	    graphic.miny := graphic.miny - 1;
+	    graphic.maxy := graphic.maxy + 1;
+	 END;
 	 Plotters.GetMaxSpace(plotter, pxmin, pymin, pxmax, pymax);
 	 IF (Plotters.setspace IN Plotters.GetCapabilities(plotter)) &
 	       (graphic.maxx - graphic.minx <= pxmax - pxmin) &
@@ -335,9 +346,17 @@ MODULE TurtleGraphics;
 	    ELSE
 	       scale := xscale;
 	    END;
-	    Plotters.SetSpace(plotter, pxmin, pymin,
-	       SHORT(ENTIER((graphic.maxx - graphic.minx) * scale)),
-	       SHORT(ENTIER((graphic.maxy - graphic.miny) * scale)));
+	    xmax := pxmin +
+	       SHORT(ENTIER((graphic.maxx - graphic.minx) * scale));
+	    ymax := pymin +
+	       SHORT(ENTIER((graphic.maxy - graphic.miny) * scale));
+	    IF xmax - pxmin = 0 THEN
+	       INC(xmax);
+	    END;
+	    IF ymax - pxmin = 0 THEN
+	       INC(ymax);
+	    END;
+	    Plotters.SetSpace(plotter, pxmin, pymin, xmax, ymax);
 	 ELSE
 	    size := graphic.maxx - graphic.minx;
 	    IF graphic.maxy - graphic.miny > size THEN

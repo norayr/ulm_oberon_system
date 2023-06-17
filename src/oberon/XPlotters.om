@@ -72,6 +72,7 @@ MODULE XPlotters;
 	    head, tail: Operation;
 	    last: Operation; (* last executed operation *)
 	    signal: Signals.Signal; (* tells that list of ops was modified *)
+	    erased: BOOLEAN;
 	    width, height: INTEGER; (* virtual size *)
 	    xmin, ymin: INTEGER; (* offset of origin *)
 	    ok: BOOLEAN;
@@ -391,13 +392,15 @@ MODULE XPlotters;
 
       PROCEDURE Draw;
       BEGIN
-	 IF plotter.head = NIL THEN
+	 IF plotter.erased THEN
+	    plotter.erased := FALSE;
 	    plotter.ok := plotter.ok & XResources.Clear(plotter.win);
 	    XResources.RestoreGContext(plotter.win);
 	    XResources.SaveGContext(plotter.win);
 	 ELSE
 	    LOOP
 	       IF plotter.last = NIL THEN
+		  plotter.erased := FALSE;
 		  plotter.last := plotter.head;
 		  plotter.ok := plotter.ok & XResources.Clear(plotter.win);
 		  XResources.RestoreGContext(plotter.win);
@@ -545,7 +548,7 @@ MODULE XPlotters;
 
    BEGIN (* WindowHandler *)
       plotter := job(Job).plotter;
-      IF plotter.head = NIL THEN
+      IF ~plotter.erased & (plotter.head = NIL) THEN
 	 Signals.Create(plotter.signal);
 	 Signals.WaitFor(plotter.signal);
 	 plotter.signal := NIL;
@@ -668,6 +671,7 @@ MODULE XPlotters;
    BEGIN
       WITH plotter: Plotter DO
 	 plotter.head := NIL; plotter.tail := NIL; plotter.last := NIL;
+	 plotter.erased := TRUE;
 	 IF plotter.signal # NIL THEN
 	    Signals.Raise(plotter.signal);
 	 END;
@@ -826,7 +830,7 @@ MODULE XPlotters;
       p.head := NIL; p.tail := NIL; p.last := NIL;
       p.x := 0; p.y := 0; p.signal := NIL;
       p.width := 4096; p.height := 4096;
-      p.xmin := 0; p.ymin := 0;
+      p.xmin := 0; p.ymin := 0; p.erased := FALSE;
       Plotters.Init(p, if, caps, desc);
       Plotters.SetSpace(p, 0, 0, p.width, p.height);
       NEW(job); job.plotter := p;
