@@ -17,7 +17,7 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: I386OberonG.om,v 1.1 2004/09/06 20:43:11 borchert Exp $
+   $Id: I386OberonG.om,v 1.1 2004/09/06 20:43:11 borchert Exp ehrhardt $
    ----------------------------------------------------------------------------
    $Log: I386OberonG.om,v $
    Revision 1.1  2004/09/06 20:43:11  borchert
@@ -872,10 +872,15 @@ MODULE I386OberonGenTypes; (* Christian Ehrhardt *)
       VAR
          ident : Sym.Ident;
 	 list, off, tmp : Offset;
+	 min, max : LONGINT;
+	 count : INTEGER;
 	 base : LONGINT;
 	 it : Iterators.Iterator;
 	 reg, bp : Regs.Value;
 	 own : Regs.Owner;
+	 block : BOOLEAN;
+	 cx, edi : Regs.Value;
+	 ops : ARRAY 2 OF Op.Operand;
       
       PROCEDURE TypeOff (type : Sym.Type) : Offset;
          VAR
@@ -941,6 +946,9 @@ MODULE I386OberonGenTypes; (* Christian Ehrhardt *)
       ASSERT (pident.class = Sym.procedureC);
       list := NIL;
       Scopes.GetIterator (pident.scope, it);
+      min := 0;
+      max := 0;
+      count := 0;
       WHILE Iterators.Get (it, ident) DO
          IF ident.varkind = Sym.noParam THEN
 	    base := I386OberonAnalyzer.VarOffset (ident);
@@ -950,29 +958,71 @@ MODULE I386OberonGenTypes; (* Christian Ehrhardt *)
 	       INC (off.off, base);
 	       off.next := list;
 	       list := off;
+	       INC (count);
+	       IF min = max THEN
+	          min := list.off;
+		  max := list.off + list.len;
+	       ELSE
+		  IF list.off < min THEN
+		     min := list.off;
+		  END;
+		  IF list.off + list.len > max THEN
+		     max := list.off + list.len
+		  END;
+	       END;
 	    END;
 	 END;
+      END;
+      IF count > 20 THEN
+         list.off := min;
+	 list.len := max - min;
+	 list.next := NIL;
       END;
       IF list # NIL THEN
          own := Regs.GetOwner (proc.regs);
          Regs.CreateValue (reg, proc.regs, own, Regs.stdM);
-	 Regs.LoadReg (reg, Gen.StdRegs);
+	 Regs.LoadReg (reg, {Gen.genax});
+	 Regs.AddConstraint (reg, {Gen.genax});
 	 Emit.Instr2 (proc.s, Pentium.XOR, Op.RegOp (reg, 4),
 	              Op.RegOp (reg, 4));
+
 	 Regs.UntracedValue (bp, Gen.genbp);
       END;
+      block := FALSE;
       WHILE list # NIL DO
-         WHILE list.len > 0 DO
-	    Emit.Instr2 (proc.s, Pentium.MOV, Op.MemOp1 (bp, 4, list.off, 4),
-	                 Op.RegOp (reg, 4));
-	    INC (list.off, 4);
-	    DEC (list.len, 4);
+         IF list.len <= 20 THEN
+	    WHILE list.len > 0 DO
+	       Emit.Instr2 (proc.s, Pentium.MOV, Op.MemOp1 (bp, 4, list.off, 4),
+			    Op.RegOp (reg, 4));
+	       INC (list.off, 4);
+	       DEC (list.len, 4);
+	    END;
+	 ELSE
+	    IF ~block THEN
+	       Regs.CreateValue (cx, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg (cx, {Gen.gencx});
+	       Regs.AddConstraint (cx, {Gen.gencx});
+	       Regs.CreateValue (edi, proc.regs, own, Regs.stdM);
+	       Regs.LoadReg (edi, {Gen.gendi});
+	       Regs.AddConstraint (edi, {Gen.gendi});
+	       block := TRUE;
+	    END;
+	    Emit.Instr2 (proc.s, Pentium.LEA, Op.RegOp (edi, 4),
+	                 Op.MemOp1 (bp, 4, list.off, 4));
+	    Emit.Instr2 (proc.s, Pentium.MOV, Op.RegOp (cx, 4), Op.ImmInt (list.len DIV 4));
+	    ops[0] := Op.MemOp1 (edi, 4, 0, 0);
+	    ops[1] := Op.RegOp (reg, 4);
+	    Emit.InstrMode (proc.s, Pentium.STOS, 2, ops, {Gen.rep}, cx);
 	 END;
 	 list := list.next;
       END;
       (* Only then did we allocate an owner. *)
       IF reg # NIL THEN
 	 Regs.DestroyOwnedValue (reg, own);
+      END;
+      IF block THEN
+         Regs.DestroyOwnedValue (cx, own);
+         Regs.DestroyOwnedValue (edi, own);
       END;
    END InitLocalPointers;
 
