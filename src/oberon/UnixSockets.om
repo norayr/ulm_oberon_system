@@ -54,8 +54,8 @@ MODULE UnixSockets;
    (* common parts of Internet, UnixDomainSockets and other socket types *)
 
    IMPORT Conditions, Events, Networks, RelatedEvents, Resources,
-      StreamConditions, Streams, Sys, SysErrors, SysIO, SysSockets, SysTypes,
-      Tasks, UnixFileConditions, UnixFiles;
+      StreamConditions, Streams, Sys, SYS := SYSTEM, SysErrors, SysIO,
+      SysSockets, SysTypes, Tasks, UnixFileConditions, UnixFiles;
 
    TYPE
       Socket = POINTER TO SocketRec;
@@ -328,6 +328,18 @@ MODULE UnixSockets;
 				 UnixFiles.rdwr, bufmode, errors)
       END;
    END TestAndOpen;
+
+   PROCEDURE Drop(condition: Conditions.Condition);
+   BEGIN
+      IF condition IS OpenCondition THEN
+	 WITH condition: OpenCondition DO
+	    IF (condition.socket >= 0) & ~SYS.TAS(condition.failed) THEN
+	       ReleaseSysSocket(condition.socket);
+	       condition.failed := TRUE;
+	    END;
+	 END;
+      END;
+   END Drop;
 
    PROCEDURE OpenL(VAR s: Streams.Stream;
 		   addressFamily: INTEGER;

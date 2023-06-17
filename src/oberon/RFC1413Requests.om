@@ -1,0 +1,432 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RFC1413Requ.om,v 1.1 2005/01/24 09:27:12 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RFC1413Requ.om,v $
+   Revision 1.1  2005/01/24 09:27:12  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RFC1413Requests;
+
+   IMPORT ASCII, Clocks, Conditions, Errors, Events, IPv4Addresses,
+      IPv4TCPSockets, Jobs, Op := Operations, Read, RelatedEvents, Scales,
+      StreamDisciplines, Streams, Strings, Tasks, TimeConditions, Times,
+      Write;
+
+   CONST
+      timeoutDefault = 5;
+	 (* timeout that is taken if timelimit is NIL *)
+      identPort = 113;
+	 (* port of RFC1413 protocol *)
+
+   TYPE
+      ReadLineJob = POINTER TO ReadLineJobRec;
+      ReadLineJobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    in: Streams.Stream;
+	    line: ARRAY 512 OF CHAR;
+	 END;
+
+   CONST
+      connectFailed = 0;
+      sendFailed = 1;
+      gotNoResponse = 2;
+      invalidResponse = 3;
+      invalidPort = 4;
+      noUser = 5;
+      unknownError = 6;
+      hiddenUser = 7;
+      otherError = 8;
+      timeoutConnect = 9;
+      timeoutResponse = 10;
+      errors = 11;
+   TYPE
+      ErrorCode = SHORTINT;
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+	 RECORD
+	    (Events.EventRec)
+	    errorcode: ErrorCode;
+	    foreignAddress: IPv4Addresses.SocketAddress;
+	    localAddress: IPv4Addresses.SocketAddress;
+	    response: ARRAY 512 OF CHAR;
+	 END;
+   VAR
+      error: Events.EventType;
+      errormsg: ARRAY errors OF Events.Message;
+
+   VAR
+      crlf: StreamDisciplines.LineTerminator;
+
+   PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+      VAR
+	 foreignPort: INTEGER;
+	 localPort: INTEGER;
+   BEGIN
+      WITH event: ErrorEvent DO
+	 IF event.errorcode = otherError THEN
+	    Write.StringS(s, "RFC 1413 error indication: ");
+	    Write.StringS(s, event.response);
+	    Write.StringS(s, " from the IDENT server at ");
+	    IPv4Addresses.WriteText(s, event.foreignAddress.host);
+	 ELSE
+	    Write.StringS(s, errormsg[event.errorcode]);
+	    IF event.errorcode IN {invalidPort..hiddenUser} THEN
+	       Write.StringS(s, " from the IDENT server at ");
+	    ELSE
+	       Write.StringS(s, " at ");
+	    END;
+	    IPv4Addresses.WriteText(s, event.foreignAddress.host);
+	    IF event.response # "" THEN
+	       Write.StringS(s, ": ");
+	       Write.StringS(s, event.response);
+	    END;
+	 END;
+	 foreignPort := IPv4Addresses.GetPort(event.foreignAddress);
+	 localPort := IPv4Addresses.GetPort(event.localAddress);
+	 Write.StringS(s, " for ports ");
+	 Write.IntS(s, foreignPort, 1);
+	 Write.StringS(s, ", ");
+	 Write.IntS(s, localPort, 1);
+      END;
+   END WriteError;
+
+   PROCEDURE InitErrorHandling;
+   BEGIN
+      Events.Define(error);
+      errormsg[connectFailed] :=
+	 "unable to connect to the IDENT server";
+      errormsg[sendFailed] :=
+	 "unable to send request to the IDENT server";
+      errormsg[invalidResponse] :=
+	 "got syntactically invalid response from the IDENT server";
+      errormsg[gotNoResponse] :=
+	 "got no response from the IDENT server";
+      errormsg[invalidPort] :=
+	 "RFC 1413 error indication: INVALID-PORT";
+      errormsg[noUser] :=
+	 "RFC 1413 error indication: NO-USER";
+      errormsg[unknownError] :=
+	 "RFC 1413 error indication: UNKNOWN-ERROR";
+      errormsg[hiddenUser] :=
+	 "RFC 1413 error indication: HIDDEN-USER";
+      errormsg[otherError] :=
+	 "RFC 1413 error indication: non-standard error code";
+      errormsg[timeoutConnect] :=
+	 "timeout while connecting to the IDENT server";
+      errormsg[timeoutResponse] :=
+	 "timeout while waiting for the response from the IDENT server";
+      Errors.AssignWriteProcedure(error, WriteError);
+   END InitErrorHandling;
+
+   PROCEDURE RaiseError(errors: RelatedEvents.Object;
+                        errorcode: SHORTINT;
+		        foreignAddress: IPv4Addresses.SocketAddress;
+		        localAddress: IPv4Addresses.SocketAddress;
+		        response: ARRAY OF CHAR);
+      VAR
+	 event: ErrorEvent;
+   BEGIN
+      NEW(event); event.type := error;
+      event.message := errormsg[errorcode];
+      event.errorcode := errorcode;
+      event.foreignAddress := foreignAddress;
+      event.localAddress := localAddress;
+      COPY(response, event.response);
+      RelatedEvents.Raise(errors, event);
+   END RaiseError;
+
+   PROCEDURE RunReadLineJob(job: Jobs.Job);
+   BEGIN
+      WITH job: ReadLineJob DO
+	 Read.LineS(job.in, job.line);
+      END;
+   END RunReadLineJob;
+
+   PROCEDURE GetIdent(foreignAddress: IPv4Addresses.SocketAddress;
+		      localAddress: IPv4Addresses.SocketAddress;
+		      timelimit: Times.Time;
+		      VAR opsys, charset: ARRAY OF CHAR;
+                      VAR ident: ARRAY OF CHAR;
+		      VAR errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 s: Streams.Stream;
+	 response: ARRAY 512 OF CHAR;
+	 resps: Streams.Stream;
+	 timeCondition: Conditions.Condition;
+
+      PROCEDURE MakeTimeLimitAbsolute(VAR timelimit: Times.Time);
+	 VAR
+	    now: Times.Time;
+      BEGIN
+	 IF Scales.IsRelative(timelimit) THEN
+	    Clocks.GetTime(Clocks.system, now);
+	    Op.Add3(timelimit, now, timelimit);
+	 END;
+      END MakeTimeLimitAbsolute;
+
+      PROCEDURE Error(code: ErrorCode);
+      BEGIN
+	 RaiseError(errors, code, foreignAddress, localAddress, response);
+      END Error;
+
+      PROCEDURE ConnectToIdentServer(VAR s: Streams.Stream) : BOOLEAN;
+	 VAR
+	    identAddress: IPv4Addresses.SocketAddress;
+	    socketaddr: IPv4Addresses.SocketAddress;
+	    openCondition: Conditions.Condition;
+	    conditions: Conditions.ConditionSet;
+      BEGIN
+	 identAddress.host := foreignAddress.host;
+	 IPv4Addresses.SetPort(identAddress, identPort);
+	 socketaddr.host := localAddress.host;
+	 IPv4Addresses.SetPort(socketaddr, 0);
+	 IPv4TCPSockets.CreateOpenConditionAs(openCondition,
+	    identAddress, socketaddr);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, openCondition);
+	 Conditions.Incl(conditions, timeCondition);
+	 Tasks.WaitForOneOf(conditions);
+	 IF ~IPv4TCPSockets.TestAndOpen(s,
+	       openCondition, Streams.linebuf, errors) THEN
+	    IPv4TCPSockets.Drop(openCondition);
+	    Error(timeoutConnect);
+	    RETURN FALSE
+	 END;
+	 StreamDisciplines.SetLineTerm(s, crlf);
+	 RETURN TRUE
+      END ConnectToIdentServer;
+
+      PROCEDURE SendRequest() : BOOLEAN;
+	 VAR
+	    foreignPort: INTEGER;
+	    localPort: INTEGER;
+      BEGIN
+	 foreignPort := IPv4Addresses.GetPort(foreignAddress);
+	 localPort := IPv4Addresses.GetPort(localAddress);
+	 Write.IntS(s, foreignPort, 1);
+	 IF s.error THEN RETURN FALSE END;
+	 Write.CharS(s, ",");
+	 IF s.error THEN RETURN FALSE END;
+	 Write.IntS(s, localPort, 1);
+	 IF s.error THEN RETURN FALSE END;
+	 Write.LnS(s);
+	 IF s.error THEN RETURN FALSE END;
+	 RETURN TRUE
+      END SendRequest;
+
+      PROCEDURE ReceiveResponse(VAR response: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    job: ReadLineJob;
+	    jobCondition: Conditions.Condition;
+	    conditions: Conditions.ConditionSet;
+	    timelimit: Times.Time;
+      BEGIN
+	 NEW(job); job.in := s; job.line := "";
+	 Jobs.Submit(job, RunReadLineJob);
+	 Jobs.CreateCondition(jobCondition, job);
+	 Conditions.CreateSet(conditions);
+	 Conditions.Incl(conditions, jobCondition);
+	 Conditions.Incl(conditions, timeCondition);
+	 Tasks.WaitForOneOf(conditions);
+	 IF Conditions.Test(jobCondition, errors) THEN
+	    COPY(job.line, response);
+	    IF response = "" THEN
+	       Error(gotNoResponse);
+	       RETURN FALSE
+	    ELSE
+	       RETURN TRUE
+	    END;
+	 ELSE
+	    Error(timeoutResponse);
+	    RETURN FALSE
+	 END;
+      END ReceiveResponse;
+
+      PROCEDURE ParseResponse(s: Streams.Stream;
+                              VAR ident: ARRAY OF CHAR) : BOOLEAN;
+	 VAR
+	    ch: CHAR;
+	    eof, error: BOOLEAN;
+	    port1, port2: INTEGER;
+	    token: ARRAY 65 OF CHAR;
+
+	 PROCEDURE NextCh;
+	 BEGIN
+	    IF eof OR error THEN
+	       ch := 0X;
+	    ELSIF ~Streams.ReadByte(s, ch) THEN
+	       eof := TRUE;
+	    ELSIF ch = 0X THEN
+	       error := TRUE;
+	    END;
+	 END NextCh;
+
+	 PROCEDURE SkipWhiteSpace;
+	 BEGIN
+	    WHILE (ch = " ") OR (ch = ASCII.tab) DO
+	       NextCh;
+	    END;
+	 END SkipWhiteSpace;
+
+	 PROCEDURE ReadInteger(VAR intval: INTEGER) : BOOLEAN;
+	    VAR
+	       digit: INTEGER;
+	 BEGIN
+	    SkipWhiteSpace;
+	    IF eof OR error THEN RETURN FALSE END;
+	    IF (ch >= "0") & (ch <= "9") THEN
+	       intval := 0;
+	       REPEAT
+		  digit := ORD(ch) - ORD("0");
+		  intval := intval * 10 + digit;
+		  NextCh;
+	       UNTIL (ch < "0") OR (ch > "9");
+	       RETURN TRUE
+	    ELSE
+	       error := TRUE;
+	       RETURN FALSE
+	    END;
+	 END ReadInteger;
+
+	 PROCEDURE ReadDelimiter(delim: CHAR) : BOOLEAN;
+	 BEGIN
+	    SkipWhiteSpace;
+	    IF ch # delim THEN RETURN FALSE END;
+	    NextCh;
+	    RETURN TRUE
+	 END ReadDelimiter;
+
+	 PROCEDURE ReadPortPair(VAR port1, port2: INTEGER) : BOOLEAN;
+	 BEGIN
+	    RETURN ReadInteger(port1) & ReadDelimiter(",") & ReadInteger(port2)
+	 END ReadPortPair;
+
+	 PROCEDURE ReadToken(VAR token: ARRAY OF CHAR;
+	                     stopch1, stopch2: CHAR) : BOOLEAN;
+	    VAR
+	       index: INTEGER;
+	       lastnw: INTEGER; (* position of last non-whitespace *)
+	 BEGIN
+	    SkipWhiteSpace;
+	    lastnw := -1; index := 0;
+	    WHILE ~eof & ~error & (ch # stopch1) & (ch # stopch2) DO
+	       IF index < LEN(token) THEN
+		  IF (ch # " ") & (ch # ASCII.tab) THEN
+		     lastnw := index;
+		  END;
+		  token[index] := ch; INC(index);
+	       END;
+	       NextCh;
+	    END;
+	    IF lastnw >= 0 THEN
+	       index := lastnw + 1;
+	    END;
+	    token[index] := 0X;
+	    RETURN index > 0
+	 END ReadToken;
+
+	 PROCEDURE ReadOpsys(VAR opsys: ARRAY OF CHAR;
+	                     VAR charset: ARRAY OF CHAR) : BOOLEAN;
+	 BEGIN
+	    IF ~ReadToken(opsys, ",", ":") THEN RETURN FALSE END;
+	    IF ch = "," THEN
+	       (* charset follows *)
+	       NextCh;
+	       IF ~ReadToken(charset, ":", ":") THEN RETURN FALSE END;
+	    ELSE
+	       COPY("US-ASCII", charset);
+	    END;
+	    RETURN TRUE
+	 END ReadOpsys;
+
+      BEGIN (* ParseResponse *)
+	 eof := FALSE; error := FALSE; NextCh;
+	 IF ~ReadPortPair(port1, port2) OR
+	       ~ReadDelimiter(":") OR
+	       ~ReadToken(token, ":", ":") OR
+	       ~ReadDelimiter(":") THEN
+	    Error(invalidResponse); RETURN FALSE
+	 END;
+	 IF token = "USERID" THEN
+	    IF ~ReadOpsys(opsys, charset) OR ~ReadDelimiter(":") OR
+		  ~ReadToken(ident, 0X, 0X) THEN
+	       Error(invalidResponse); RETURN FALSE
+	    END;
+	    RETURN TRUE
+	 ELSIF token = "ERROR" THEN
+	    IF ~ReadToken(token, 0X, 0X) THEN
+	       Error(invalidResponse); RETURN FALSE
+	    END;
+	    COPY(token, response);
+	    IF token = "INVALID-PORT" THEN
+	       Error(invalidPort);
+	    ELSIF token = "NO-USER" THEN
+	       Error(noUser);
+	    ELSIF token = "UNKNOWN-ERROR" THEN
+	       Error(unknownError);
+	    ELSIF token = "HIDDEN-USER" THEN
+	       Error(hiddenUser);
+	    ELSE
+	       Error(otherError);
+	    END;
+	    RETURN FALSE
+	 ELSE
+	    Error(invalidResponse); RETURN FALSE
+	 END;
+      END ParseResponse;
+
+   BEGIN (* GetIdent *)
+      (* setup time limit *)
+      IF timelimit = NIL THEN
+	 Times.CreateAndSet(timelimit, Times.relative, 0, timeoutDefault, 0);
+      END;
+      MakeTimeLimitAbsolute(timelimit);
+      TimeConditions.Create(timeCondition, Clocks.system, timelimit);
+
+      response := ""; (* initialize it because of RaiseError *)
+      IF ~ConnectToIdentServer(s) THEN
+	 Error(connectFailed); RETURN FALSE
+      END;
+      IF ~SendRequest() THEN
+	 Streams.Release(s);
+	 Error(sendFailed); RETURN FALSE
+      END;
+      IF ~ReceiveResponse(response) THEN
+	 Streams.Release(s);
+	 RETURN FALSE
+      END;
+      IF ~Streams.Close(s) THEN
+	 RETURN FALSE
+      END;
+      Strings.Open(resps, response);
+      RETURN ParseResponse(resps, ident)
+   END GetIdent;
+
+BEGIN
+   crlf[0] := ASCII.cr;
+   crlf[1] := ASCII.nl;
+   crlf[2] := 0X;
+   InitErrorHandling;
+END RFC1413Requests.
