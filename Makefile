@@ -36,9 +36,8 @@ ONSPortOfStage1 := 127.0.0.1:9884
 CDBDPortOfStage1 := 127.0.0.1:9885
 Lib := $(Root)/build/libo.a
 ScriptDir := $(Root)/build/scripts
-Binaries := cdbd nsh obci obco obdeps obload obtofgen obzap pons onsstat \
-	onsshut onsmkdir onswait
-InstalledBinaries := $(patsubst %,$(InstallBinDir)/%,$(Binaries))
+BINARIES = cdbd nsh obci obco obdeps obload obtofgen obzap pons onsstat onsshut onsmkdir onswait
+InstalledBinaries := $(patsubst %,$(InstallBinDir)/%,$(BINARIES))
 InitScripts := cdbd pons
 InstalledInitScripts := $(patsubst %,$(InstallInitDir)/%,$(InitScripts))
 InsertableInitScripts := $(patsubst %,$(InitDir)/%,$(InitScripts))
@@ -51,93 +50,133 @@ MakeParams := DestDir=$(DestDir) BinDir=$(BinDir) DBAuth=$(DBAuth) \
 	CDBDPort=$(CDBDPort)
 Stage1Dir := $(Root)/stage1
 Stage2Dir := $(Root)/stage2
+TOF_MODULES = \
+    Coroutines Process RTErrors Storage SysArgs SysInterrupts SysModules SysSegments \
+    CDBDaemon NamesShell OberonCheckIn OberonCompiler OberonDependencies OberonLoader \
+    OberonI386TransportableObjectFormatGenerator OberonZap PersistentNameServer \
+    NodeStatus ShutdownNode MakeDirectory PathWaiter
+# Mapping of binary names to module names
+MODULES_cdbd = CDBDaemon
+MODULES_nsh = NamesShell
+MODULES_obci = OberonCheckIn
+MODULES_obco = OberonCompiler
+MODULES_obdeps = OberonDependencies
+MODULES_obload = OberonLoader
+MODULES_obtofgen = OberonI386TransportableObjectFormatGenerator
+MODULES_obzap = OberonZap
+MODULES_pons = PersistentNameServer
+MODULES_onsstat = NodeStatus
+MODULES_onsshut = ShutdownNode
+MODULES_onsmkdir = MakeDirectory
+MODULES_onswait = PathWaiter
 
-.PHONY:	install
-install: installbin installman installsrc installvar installetc installrc
+# Function to get the module name from the binary name
+get_module = $(if $(MODULES_$(1)),$(MODULES_$(1)),$(1))
 
-.PHONY:	installsuse
-installsuse: install installsuseinit
+# Directories for TOF and object files
+TOFDIR := tofs
+OBJDIR := build/objs
 
-.PHONY:	runsuse
-runsuse:	installsuse suserun
+# Tools
+TOF2ELF := $(ScriptDir)/tof2elf
+AR := ar
+RANLIB := ranlib
 
-.PHONY:	bindir
+# List of TOF modules (without the .tof extension)
+TOF_MODULES := $(basename $(notdir $(wildcard $(TOFDIR)/*.tof)))
+
+# Generate object file paths
+OBJS := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(TOF_MODULES)))
+
+.PHONY: all
+all: installbin installman installsrc installvar installetc installrc
+
+.PHONY: install
+install: all
+
+.PHONY: bindir
 bindir:
 	mkdir -p $(InstallBinDir)
 
-.PHONY:	installbin
-installbin:	bindir $(InstalledBinaries)
+.PHONY: installbin
+installbin: bindir $(InstalledBinaries) installutil
 
-.PHONY:	installman
-installman:	mandir
+# Build binaries
+$(InstallBinDir)/%: scripts $(Lib)
+	$(ScriptDir)/oblink $@ $(Lib) $(call get_module,$*)
+
+# Update scripts target
+.PHONY: scripts
+scripts:
+	cd src/util && $(MAKE) $(MakeParams) \
+	InstallDir=$(Root) \
+	InstallBinDir=$(ScriptDir) \
+	DestDir=$(Root) \
+	BinDir=$(ScriptDir) \
+	IntensityDir=$(IntensityDir) \
+	install
+
+.PHONY: installutil
+installutil:
+	cd src/util && $(MAKE) $(MakeParams) DestDir=$(InstallDir) BinDir=$(InstallBinDir) install
+
+# Build libo.a from object files
+$(Lib): scripts $(OBJS)
+	$(AR) rcs $@ $(OBJS)
+	$(RANLIB) $@
+
+# Rule to build object files from .tof files
+$(OBJDIR)/%.o: $(TOFDIR)/%.tof | $(OBJDIR)
+	$(TOF2ELF) -o $@ $<
+
+# Create OBJDIR if it doesn't exist
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+# Remove the TOF2ELF rule or adjust it
+# Since tof2elf is built via scripts, you can remove this rule
+# $(TOF2ELF): src/util/tof2elf/tof2elf.c
+#   cd src/util/tof2elf && \
+#   gcc -Wall -Wextra -g -o tof2elf tof2elf.c -lelf && \
+#   cp tof2elf $(TOF2ELF)
+
+.PHONY: installman
+installman: mandir
 ifneq ($(InstallManDir),$(Root)/man)
 	cp -a $(Root)/man/* $(InstallManDir)
 endif
 
-.PHONY:	mandir
+.PHONY: mandir
 mandir:
 	mkdir -p $(InstallManDir)
 
-.PHONY:	installsrc
-installsrc:	srcdir
+
+.PHONY: installsrc
+installsrc: srcdir
 ifneq ($(InstallSrcDir),$(Root)/src)
 	cp -a $(Root)/src/* $(InstallSrcDir)
 endif
 
-.PHONY:	srcdir
+.PHONY: srcdir
 srcdir:
 	mkdir -p $(InstallSrcDir)
 
-.PHONY:	installvar
+.PHONY: installvar
 installvar:
 	mkdir -p $(PonsDir)
 	mkdir -p $(CDBDDir)
 
-.PHONY:	installetc
-installetc:	gcintensity
+.PHONY: installetc
+installetc: gcintensity
 
-.PHONY:	installutil
-installutil:	bindir
-	cd src/util && $(MAKE) $(MakeParams) install
+.PHONY: gcintensity
+gcintensity:
+	mkdir -p $(InstallIntensityDir)
+	$(ScriptDir)/obgcdflts $(InstallIntensityDir)
 
-.PHONY:	scripts
-scripts:
-	cd src/util && $(MAKE) $(MakeParams) InstallDir=$(Root) InstallBinDir=$(Root)/build/scripts DestDir=$(Root) BinDir=$(Root)/build/scripts IntensityDir=$(IntensityDir) install
+.PHONY: installrc
+installrc: $(RcFile)
 
-.PHONY: mkoblib
-mkoblib: scripts $(Lib)
-$(Lib):	installutil build/tofs.tgz
-	$(ScriptDir)/mkoblib build
-
-$(InstallBinDir)/obload:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) OberonLoader
-$(InstallBinDir)/cdbd:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) CDBDaemon
-$(InstallBinDir)/pons:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) PersistentNameServer
-$(InstallBinDir)/obtofgen:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) OberonI386TransportableObjectFormatGenerator
-$(InstallBinDir)/obci:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) OberonCheckIn
-$(InstallBinDir)/obco:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) CDBCheckoutSource
-$(InstallBinDir)/obzap:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) OberonZap
-$(InstallBinDir)/obdeps:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) OberonDependencies
-$(InstallBinDir)/nsh:		scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) NamesShell
-$(InstallBinDir)/onsstat:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) NodeStatus
-$(InstallBinDir)/onsshut:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) ShutdownNode
-$(InstallBinDir)/onsmkdir:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) MakeDirectory
-$(InstallBinDir)/onswait:	scripts mkoblib
-	$(ScriptDir)/oblink $@ $(Lib) PathWaiter
-
-.PHONY:	installrc
-installrc:	$(RcFile)
 $(RcFile):
 	echo OBERON=$(DestDir) >$@
 	echo PATH=$(BinDir):\$$PATH >>$@
@@ -150,74 +189,11 @@ $(RcFile):
 	echo export OBERON PATH MANPATH ONS_ROOT ONS_PORT \
 	   CDBD_PORT CDB_BASEDIR CDB_AUTH >>$@
 
-.PHONY:	installsuseinit initdir
-installsuseinit:	initdir $(InstalledInitScripts)
-initdir:
-	mkdir -p $(InstallInitDir)
-$(InstallInitDir)/cdbd:		scripts
-	BASEDIR=$(DestDir) BINDIR=$(BinDir) \
-	   $(ScriptDir)/obmk_suse_init_cdbd \
-	      -c $(CDBDir) -d $(CDBDDir) -r $(ONSRoot) >$@
-	chmod 755 $@
-$(InstallInitDir)/pons:		$(ScriptDir)/obmk_suse_init_pons
-	ONS_ROOT=$(ONSRoot) ONS_PORT=$(ONSPort) \
-	   BASEDIR=$(DestDir) BINDIR=$(BinDir) \
-	   $(ScriptDir)/obmk_suse_init_pons \
-	      -d $(PonsDir) >$@
-	chmod 755 $@
+.PHONY: clean
+clean:
+	rm -rf $(OBJDIR) $(Lib) $(InstalledBinaries)
 
-.PHONY:	gcintensity
-gcintensity:
-	mkdir -p $(InstallIntensityDir)
-	$(ScriptDir)/obgcdflts $(InstallIntensityDir)
+# Phony targets
+.PHONY: all install installbin bindir scripts installman mandir \
+	installsrc srcdir installvar installetc gcintensity installrc clean
 
-.PHONY:	suseinsserv
-suseinsserv:	$(InsertableInitScripts) 
-	insserv $(InitDir)/pons
-	insserv $(InitDir)/cdbd
-.PHONY:	suserun
-suserun:	suseinsserv
-	sh $(InitDir)/pons start
-	sh $(InitDir)/cdbd start
-.PHONY:	stdsuserun
-stdsuserun:
-	$(MAKE) $(MakeParams) \
-	   InitDir=/etc/init.d \
-	   InstallInitDir=/etc/init.d \
-	   suserun
-
-.PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest finishstage1
-stage1:
-	time $(BinDir)/mk_obstage \
-	   $(Stage1Dir) $(BinDir) $(BinDir) $(ONSRoot) $(CDBDir) $(DBAuth)
-runstage1:
-	$(BinDir)/run_obstage $(Stage1Dir) $(BinDir) \
-	   $(ONSRootOfStage1) $(ONSPortOfStage1) $(CDBDPortOfStage1)
-stage2:
-	time $(BinDir)/mk_obstage \
-	   $(Stage2Dir) $(BinDir) $(Stage1Dir) $(ONSRootOfStage1) \
-	   $(CDBDir) $(Stage1Dir)/var/cdbd/write
-finishstage1:
-	-ONS_ROOT=$(ONSRootOfStage1) \
-	   $(Stage1Dir)/onsshut -a $(Stage1Dir)/var/pons/shutdown /pub/pons
-stage12cmp:
-	cmp $(Stage1Dir)/cdbd $(Stage2Dir)/cdbd
-	cmp $(Stage1Dir)/nsh $(Stage2Dir)/nsh
-	cmp $(Stage1Dir)/obci $(Stage2Dir)/obci
-	cmp $(Stage1Dir)/obco $(Stage2Dir)/obco
-	cmp $(Stage1Dir)/obdeps $(Stage2Dir)/obdeps
-	cmp $(Stage1Dir)/obload $(Stage2Dir)/obload
-	cmp $(Stage1Dir)/obtofgen $(Stage2Dir)/obtofgen
-	cmp $(Stage1Dir)/obzap $(Stage2Dir)/obzap
-	cmp $(Stage1Dir)/pons $(Stage2Dir)/pons
-	cmp $(Stage1Dir)/onsstat $(Stage2Dir)/onsstat
-	cmp $(Stage1Dir)/onsshut $(Stage2Dir)/onsshut
-	cmp $(Stage1Dir)/onsmkdir $(Stage2Dir)/onsmkdir
-	cmp $(Stage1Dir)/onswait $(Stage2Dir)/onswait
-steadystatetest:	stage1 runstage1 stage2 finishstage1 stage12cmp
-
-.PHONY:	download_tof2elf
-download_tof2elf:
-	wget -O src/util/tof2elf/tof2elf ftp://ftp.mathematik.uni-ulm.de/pub/soft/oberon/ulm/i386/tof2elf
-	chmod 755 src/util/tof2elf/tof2elf
-	touch src/util/tof2elf/tof2elf

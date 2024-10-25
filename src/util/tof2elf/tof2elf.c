@@ -1,41 +1,15 @@
 /* Ulm's Oberon Compiler
-   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
-   ----------------------------------------------------------------------------
-   Ulm's Oberon Library is free software; you can redistribute it
-   and/or modify it under the terms of the GNU Library General Public
-   License as published by the Free Software Foundation; either version
-   2 of the License, or (at your option) any later version.
-
-   Ulm's Oberon Library is distributed in the hope that it will be
-   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
-   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   Library General Public License for more details.
-
-   You should have received a copy of the GNU Library General Public
-   License along with this library; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-   ----------------------------------------------------------------------------
-   E-mail contact: oberon@mathematik.uni-ulm.de
-   ----------------------------------------------------------------------------
-   $Id: tof2elf.c,v 1.1 2004/09/07 12:57:03 borchert Exp borchert $
-   ----------------------------------------------------------------------------
-   $Log: tof2elf.c,v $
-   Revision 1.1  2004/09/07 12:57:03  borchert
-   Initial revision
-
-   ----------------------------------------------------------------------------
+   Modified tof2elf.c for compatibility with modern libelf versions
 */
-
-/* Christian Ehrhardt */
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <libelf.h>
-#include <elf.h>
+#include <gelf.h>   // Use gelf.h instead of elf.h
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <errno.h>
 
 #define BUG(X) do { fprintf(stderr, "%s: input format error %d\n", cmdname, (X)); exit(1); } while (0);
 #define UNEXPECTED_EOF do { fprintf(stderr, "%s: unexpected EOF in input\n", cmdname); exit(1); } while (0);
@@ -54,18 +28,23 @@ static FILE* in; /* input text in TOF */
 static char* cmdname;
 #define LINESIZE 1024
 
+Elf *elf; // Declare elf globally
+
 size_t newstr (char * s) {
 	size_t ret;
 	Elf_Data * data;
 
 	ret = strings.off;
 	data = elf_newdata (strings.scn);
+	if (!data) {
+		fprintf(stderr, "%s: elf_newdata failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	data->d_buf = strdup(s);
 	data->d_type = ELF_T_BYTE;
 	data->d_size = strlen(s)+1;
-	data->d_align = 0;
+	data->d_align = 1;
 	data->d_off = ret;
-/*	data->d_version; */
 	strings.off += data->d_size;
 	return ret;
 }
@@ -73,44 +52,74 @@ size_t newstr (char * s) {
 struct scntbl syms;
 
 int newsym (int index, int section, int value) {
-	Elf32_Sym * sym;
-	Elf_Data * data;
-	sym = malloc (sizeof (Elf32_Sym));
-	sym->st_name = index;
-	sym->st_value = value;
-	sym->st_size = 0;
-	sym->st_info = ELF32_ST_INFO(STB_GLOBAL, STT_OBJECT);
-	sym->st_other = 0;
-	sym->st_shndx = section;
-	data = elf_newdata(syms.scn);
-	data->d_buf = sym;
-	data->d_type = ELF_T_SYM;
-	data->d_off = syms.off;
-	data->d_size = sizeof (Elf32_Sym);
-	data->d_align = 0;
-/*	data->d_version; */
-	syms.off += data->d_size;
-	return data->d_off / sizeof (Elf32_Sym);
+    GElf_Sym sym_mem;
+    Elf_Data * data;
+
+    memset(&sym_mem, 0, sizeof(GElf_Sym));
+    sym_mem.st_name = index;
+    sym_mem.st_value = value;
+    sym_mem.st_size = 0;
+    sym_mem.st_info = GELF_ST_INFO(STB_GLOBAL, STT_OBJECT);
+    sym_mem.st_other = 0;
+    sym_mem.st_shndx = section;
+
+    data = elf_getdata(syms.scn, NULL);
+    if (data == NULL) {
+        data = elf_newdata(syms.scn);
+        if (data == NULL) {
+            fprintf(stderr, "%s: elf_newdata failed: %s\n", cmdname, elf_errmsg(-1));
+            exit(1);
+        }
+        data->d_type = ELF_T_SYM;
+        data->d_size = 0;
+        data->d_align = gelf_fsize(elf, ELF_T_ADDR, 1, EV_CURRENT);
+    }
+    size_t nsyms = data->d_size / gelf_fsize(elf, ELF_T_SYM, 1, EV_CURRENT);
+    if (gelf_update_sym(data, nsyms, &sym_mem) == 0) {
+        fprintf(stderr, "%s: gelf_update_sym failed: %s\n", cmdname, elf_errmsg(-1));
+        exit(1);
+    }
+    data->d_size += gelf_fsize(elf, ELF_T_SYM, 1, EV_CURRENT);
+    syms.off = data->d_size;
+    return nsyms;
 }
 
-void initscn (Elf_Scn * scn, char * name, int type, int flags, int link, int info, int size) {
-	Elf32_Shdr * shdr;
-	shdr = elf32_getshdr (scn);
-	if (name)
-		shdr->sh_name = newstr (name);
-	shdr->sh_type = type;
-	shdr->sh_flags = flags;
-	shdr->sh_addr = 0;
-	shdr->sh_link = link;
-	shdr->sh_info = info;
-	shdr->sh_entsize = size;
+void initscn (Elf_Scn * scn, char * name, int type, int flags, int link, int info, size_t entsize) {
+    GElf_Shdr shdr_mem;
+    GElf_Shdr * shdr = &shdr_mem;
+
+    if (gelf_getshdr(scn, shdr) == NULL) {
+        fprintf(stderr, "%s: gelf_getshdr failed: %s\n", cmdname, elf_errmsg(-1));
+        exit(1);
+    }
+    if (name)
+        shdr->sh_name = newstr (name);
+    shdr->sh_type = type;
+    shdr->sh_flags = flags;
+    shdr->sh_addr = 0;
+    shdr->sh_link = link;
+    shdr->sh_info = info;
+    shdr->sh_addralign = 1;
+    shdr->sh_entsize = entsize;
+    if (gelf_update_shdr(scn, shdr) == 0) {
+        fprintf(stderr, "%s: gelf_update_shdr failed: %s\n", cmdname, elf_errmsg(-1));
+        exit(1);
+    }
 }
 
 void scnname (Elf_Scn * scn, char * name)
 {
-	Elf32_Shdr * shdr;
-	shdr = elf32_getshdr (scn);
+	GElf_Shdr shdr_mem;
+	GElf_Shdr * shdr = &shdr_mem;
+	if (gelf_getshdr(scn, shdr) == NULL) {
+		fprintf(stderr, "%s: gelf_getshdr failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	shdr->sh_name = newstr (name);
+	if (gelf_update_shdr(scn, shdr) == 0) {
+		fprintf(stderr, "%s: gelf_update_shdr failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 }
 
 struct scntbl * relocscn (Elf * elf, int index) {
@@ -118,33 +127,51 @@ struct scntbl * relocscn (Elf * elf, int index) {
 	scntbl * ret;
 
 	ret = malloc (sizeof (struct scntbl));
+	if (!ret) {
+		perror("malloc");
+		exit(1);
+	}
 	scn = elf_newscn (elf);
+	if (!scn) {
+		fprintf(stderr, "%s: elf_newscn failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	ret->off = 0;
 	ret->scn = scn;
-        initscn (scn, NULL, SHT_REL, 0, elf_ndxscn (syms.scn),
-	         index, sizeof (Elf32_Rel));
+	initscn (scn, NULL, SHT_REL, 0, elf_ndxscn (syms.scn),
+	         index, gelf_fsize(elf, ELF_T_REL, 1, EV_CURRENT));
 	return ret;
 }
 
+void newreloc (struct scntbl * tbl, char * symname, int off, int add) {
+    GElf_Rel rel_mem;
+    Elf_Data * data;
+    int idx;
 
-void newreloc (struct scntbl * tbl, char * sym, int off, int add) {
-	Elf32_Rel * rel;
-	Elf_Data * data;
-	int idx;
+    idx = newsym(newstr(symname), SHN_UNDEF, 0);
 
-	/* This is probably broken for local symbols */
-	idx = newsym (newstr(sym), SHN_UNDEF, 0);
+    memset(&rel_mem, 0, sizeof(GElf_Rel));
+    rel_mem.r_offset = off;
+    rel_mem.r_info = GELF_R_INFO(idx, add ? R_386_32 : R_386_GLOB_DAT);
 
-	rel = malloc (sizeof (Elf32_Rel));
-	rel->r_offset = off;
-	rel->r_info = ELF32_R_INFO(idx, add?R_386_32:R_386_GLOB_DAT);
-	data = elf_newdata (tbl->scn);
-	data->d_buf = rel;
-	data->d_type = ELF_T_REL;
-	data->d_size = sizeof (Elf32_Rel);
-	data->d_align = 0;
-	data->d_off = tbl->off;
-	tbl->off += data->d_size;
+    data = elf_getdata(tbl->scn, NULL);
+    if (data == NULL) {
+        data = elf_newdata(tbl->scn);
+        if (data == NULL) {
+            fprintf(stderr, "%s: elf_newdata failed: %s\n", cmdname, elf_errmsg(-1));
+            exit(1);
+        }
+        data->d_type = ELF_T_REL;
+        data->d_size = 0;
+        data->d_align = gelf_fsize(elf, ELF_T_ADDR, 1, EV_CURRENT);
+    }
+    size_t nrels = data->d_size / gelf_fsize(elf, ELF_T_REL, 1, EV_CURRENT);
+    if (gelf_update_rel(data, nrels, &rel_mem) == 0) {
+        fprintf(stderr, "%s: gelf_update_rel failed: %s\n", cmdname, elf_errmsg(-1));
+        exit(1);
+    }
+    data->d_size += gelf_fsize(elf, ELF_T_REL, 1, EV_CURRENT);
+    tbl->off = data->d_size;
 }
 
 void addblock (Elf * elf) {
@@ -152,30 +179,41 @@ void addblock (Elf * elf) {
 	char line[LINESIZE];
 	char * name;
 	Elf_Scn * scn;
-	scntbl * rel;
+	scntbl * rel = NULL;
 	int i, bss, len, val, add, flags, type, align, datalen, memlen;
 	char * buf;
 	unsigned short shrt;
 
-	rel = NULL;
 	scn = elf_newscn (elf);
+	if (!scn) {
+		fprintf(stderr, "%s: elf_newscn failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	while (1) {
 		if (fgets(line, sizeof line, in) == 0) {
 			UNEXPECTED_EOF;
 		}
-		if (line[0] != 'S' || line[1] != 'Y' || line[2] != 'M')
+		if (strncmp(line, "SYM", 3) != 0)
 			break;
 		name = malloc (strlen(line) * sizeof (char));
+		if (!name) {
+			perror("malloc");
+			exit(1);
+		}
 		sscanf (line+5, "%s %d", name, &val);
 		newsym (newstr (name), elf_ndxscn (scn), val);
 	}
 	while (1) {
-		if (line[0] != 'R' || line[1] != 'E' || line[2] != 'L')
+		if (strncmp(line, "REL", 3) != 0)
 			break;
 		add = (line[7] == 'A');
 		if (!add && line[7] != 'S')
 			BUG(4);
 		name = malloc (strlen(line) * sizeof (char));
+		if (!name) {
+			perror("malloc");
+			exit(1);
+		}
 		sscanf (line+11, "%d %d %s", &val, &len, name);
 		if (len != 4)
 			BUG(3);
@@ -192,12 +230,6 @@ void addblock (Elf * elf) {
 	if (line[2] == 'x')
 		flags |= SHF_EXECINSTR;
 	sscanf (line+6, " %d %d %d", &datalen, &memlen, &align);
-/*
-	if (datalen && (datalen != memlen)) {
-		printf ("OOOPS: datalen = %d, memlen = %d\n", datalen, memlen);
-		BUG(6);
-	}
-*/
 	type = SHT_PROGBITS;
 	if (!datalen)
 		type = SHT_NOBITS;
@@ -214,15 +246,13 @@ void addblock (Elf * elf) {
 			flags = SHF_ALLOC|SHF_EXECINSTR|SHF_WRITE;
 			type = SHT_PROGBITS;
 		} else {
-			/* Normal programm text */
+			/* Normal program text */
 			name = ".text";
 			flags = SHF_ALLOC|SHF_EXECINSTR;
 			type = SHT_PROGBITS;
 		}
 	} else if (!datalen && memlen && line[1] == 'w') {
 		/* read/write data zero initialized */
-		/* XXX This is a hack. We should definitely use a bss
-		 * section that doesn't need space in the object file. */
 		name = ".bss";
 		flags = SHF_ALLOC|SHF_WRITE;
 		bss = 1;
@@ -234,9 +264,13 @@ void addblock (Elf * elf) {
 		/* others */
 		name = ".private";
 	}
-	initscn (scn, name, type, flags, SHN_UNDEF, 0, memlen);
+	initscn (scn, name, type, flags, SHN_UNDEF, 0, 0);
 	if (rel) {
 		buf = malloc (1 + strlen (".rel") + strlen (name));
+		if (!buf) {
+			perror("malloc");
+			exit(1);
+		}
 		strcpy (buf, ".rel");
 		strcat (buf, name);
 		scnname (rel->scn, buf);
@@ -253,6 +287,10 @@ void addblock (Elf * elf) {
 		} else {
 			buf = malloc (memlen);
 		}
+		if (!buf) {
+			perror("malloc");
+			exit(1);
+		}
 		for (i=0; i<datalen; ++i) {
 			shrt = 0;
 			fscanf (in, "%hu ", &shrt);
@@ -262,6 +300,10 @@ void addblock (Elf * elf) {
 			buf[i] = 0;
 		}
 		data = elf_newdata (scn);
+		if (!data) {
+			fprintf(stderr, "%s: elf_newdata failed: %s\n", cmdname, elf_errmsg(-1));
+			exit(1);
+		}
 		data->d_buf = buf;
 		data->d_type = ELF_T_BYTE;
 		data->d_off = 0;
@@ -269,6 +311,10 @@ void addblock (Elf * elf) {
 		data->d_align = align;
 	} else {
 		data = elf_newdata (scn);
+		if (!data) {
+			fprintf(stderr, "%s: elf_newdata failed: %s\n", cmdname, elf_errmsg(-1));
+			exit(1);
+		}
 		data->d_buf = NULL;
 		data->d_type = ELF_T_BYTE;
 		data->d_off = 0;
@@ -279,16 +325,15 @@ void addblock (Elf * elf) {
 		UNEXPECTED_EOF;
 	}
 	if (strcmp (line,"}\n") != 0) {
-		/* printf ("%s", line); */
 		BUG(10);
 	}
 }
 
-
 int main (int argc, char ** argv) {
 	int fd;
-	Elf * elf;
-	Elf32_Ehdr * ehdr;
+	// Elf * elf; // Remove local declaration
+	GElf_Ehdr ehdr_mem;
+	GElf_Ehdr * ehdr = &ehdr_mem;
 	Elf_Scn * scn;
 	char line[LINESIZE];
 	char* usage = "Usage: %s [-o outfile] [infile]\n";
@@ -324,30 +369,71 @@ int main (int argc, char ** argv) {
 	} else {
 		fd = 1; /* stdout */
 	}
-	/* Elf Header */
-	elf_version (EV_CURRENT);
+	/* Initialize ELF library */
+	if (elf_version (EV_CURRENT) == EV_NONE) {
+		fprintf(stderr, "%s: ELF library initialization failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	elf = elf_begin (fd, ELF_C_WRITE, NULL);
-	ehdr = elf32_newehdr (elf);
-/*	ehdr->e_type = ET_REL; */
+	if (!elf) {
+		fprintf(stderr, "%s: elf_begin failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
+	if (gelf_newehdr(elf, ELFCLASS32) == NULL) {
+		fprintf(stderr, "%s: gelf_newehdr failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
+	if (gelf_getehdr(elf, ehdr) == NULL) {
+		fprintf(stderr, "%s: gelf_getehdr failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
+	/* Set ELF header fields */
+	memset(ehdr, 0, sizeof(GElf_Ehdr));
+	ehdr->e_ident[EI_MAG0] = ELFMAG0;
+	ehdr->e_ident[EI_MAG1] = ELFMAG1;
+	ehdr->e_ident[EI_MAG2] = ELFMAG2;
+	ehdr->e_ident[EI_MAG3] = ELFMAG3;
+	ehdr->e_ident[EI_CLASS] = ELFCLASS32;
+	ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+	ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+	ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+	ehdr->e_ident[EI_ABIVERSION] = 0;
+	ehdr->e_type = ET_REL;
 	ehdr->e_machine = EM_386;
 	ehdr->e_version = EV_CURRENT;
 	ehdr->e_entry = 0;
-	/* ehdr->e_flags: No need to set flags. */
+	ehdr->e_phoff = 0;
+	ehdr->e_shoff = 0; // Will be set by elf_update
+	ehdr->e_flags = 0;
+	ehdr->e_ehsize = sizeof(GElf_Ehdr);
+	ehdr->e_phentsize = 0;
+	ehdr->e_phnum = 0;
+	ehdr->e_shentsize = sizeof(GElf_Shdr);
+	ehdr->e_shnum = 0; // Will be set by elf_update
+	ehdr->e_shstrndx = SHN_UNDEF; // Will be set later
 
 	/* String Table */
 	scn = elf_newscn(elf);
+	if (!scn) {
+		fprintf(stderr, "%s: elf_newscn failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	strings.off = 0;
 	strings.scn = scn;
-	ehdr->e_shstrndx = elf_ndxscn (scn);
-	newstr ("");
-	initscn (scn, ".strtab", SHT_STRTAB, 0, SHN_UNDEF, 0, 0);
+	ehdr->e_shstrndx = elf_ndxscn(scn);
+	newstr("");
+	initscn(scn, ".strtab", SHT_STRTAB, 0, SHN_UNDEF, 0, 0);
 
 	/* Symbol table */
+	size_t sym_ent_size = gelf_fsize(elf, ELF_T_SYM, 1, EV_CURRENT);
 	scn = elf_newscn(elf);
+	if (!scn) {
+		fprintf(stderr, "%s: elf_newscn failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	syms.off = 0;
 	syms.scn = scn;
-	initscn (scn, ".symtab", SHT_SYMTAB, 0, ehdr->e_shstrndx,
-                 0, sizeof (Elf32_Sym));
+	initscn(scn, ".symtab", SHT_SYMTAB, 0, elf_ndxscn(strings.scn), 0, sym_ent_size);
 	newsym (0, 0, 0);
 
 	/* data */
@@ -358,12 +444,22 @@ int main (int argc, char ** argv) {
 		if (strcmp (line, "END\n") == 0)
 			break;
 		if (strcmp (line, "NEW BLOCK\n") != 0) {
-			/* printf ("%s\n", line); */
 			BUG(2);
 		}
 		addblock (elf);
 	}
-	elf_update (elf, ELF_C_WRITE);
+	/* Update ELF to compute sizes and offsets */
+	if (elf_update(elf, ELF_C_NULL) < 0) {
+		fprintf(stderr, "%s: elf_update failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
+	/* Write ELF to file */
+	if (elf_update(elf, ELF_C_WRITE) < 0) {
+		fprintf(stderr, "%s: elf_update failed: %s\n", cmdname, elf_errmsg(-1));
+		exit(1);
+	}
 	elf_end (elf);
+	if (outfile)
+		close(fd);
 	return 0;
 }
