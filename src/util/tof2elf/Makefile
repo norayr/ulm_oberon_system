@@ -3,7 +3,7 @@ InstallBinDir :=	$(BinDir)
 Targets :=		tof2elf
 InstalledTargets :=	$(patsubst %,$(InstallBinDir)/%,$(Targets))
 LDLIBS :=		-lelf
-LDFLAGS :=		-static
+LDFLAGS :=
 CFLAGS :=		-I/usr/include/libelf
 
 .PHONY:			all
@@ -14,3 +14,4 @@ install:		$(InstalledTargets)
 $(InstalledTargets):	$(InstallBinDir)/%: %
 			mkdir -p $(InstallBinDir)
 			cp $< $@
+			chmod 755 $@

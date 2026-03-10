@@ -188,15 +188,15 @@ stdsuserun:
 
 .PHONY:	stage1 runstage1 stage2 stage12cmp steadystatetest finishstage1
 stage1:
-	time $(BinDir)/mk_obstage \
-	   $(Stage1Dir) $(BinDir) $(BinDir) $(ONSRoot) $(CDBDir) $(DBAuth)
+	$(SHELL) -c 'time $(BinDir)/mk_obstage \
+	   $(Stage1Dir) $(BinDir) $(BinDir) $(ONSRoot) $(CDBDir) $(DBAuth)'
 runstage1:
 	$(BinDir)/run_obstage $(Stage1Dir) $(BinDir) \
 	   $(ONSRootOfStage1) $(ONSPortOfStage1) $(CDBDPortOfStage1)
 stage2:
-	time $(BinDir)/mk_obstage \
+	$(SHELL) -c 'time $(BinDir)/mk_obstage \
 	   $(Stage2Dir) $(BinDir) $(Stage1Dir) $(ONSRootOfStage1) \
-	   $(CDBDir) $(Stage1Dir)/var/cdbd/write
+	   $(CDBDir) $(Stage1Dir)/var/cdbd/write'
 finishstage1:
 	-ONS_ROOT=$(ONSRootOfStage1) \
 	   $(Stage1Dir)/onsshut -a $(Stage1Dir)/var/pons/shutdown /pub/pons

@@ -17,7 +17,7 @@ trap "rm -f $start; exit 1" 1 2 15
 
 if $BINDIR/genobrts "$@" | as -32 -o $start
 then
-   ld -o $outfile -e _entry -m elf_i386 $start $lib || exit 1
+   ld -T $BINDIR/oberon-i386.ld -m elf_i386 -o $outfile $start $lib || exit 1
 else
    exit 1
 fi

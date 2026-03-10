@@ -50,7 +50,7 @@ build() {
    output="$2"
    $ibindir/genobrts -o start.s $module &&
    as -32 -o start.o start.s &&
-   ld -m elf_i386 -e _entry -o $output start.o libo.a &&
+   ld -T $ibindir/oberon-i386.ld -m elf_i386 -o $output start.o libo.a &&
    rm -f start.[os]
 }
 
