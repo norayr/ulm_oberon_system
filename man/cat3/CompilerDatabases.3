@@ -1,0 +1,155 @@
+CompilerDatabases(3)          Ulm's Oberon System         CompilerDatabases(3)
+
+
+
+[1mNAME[0m
+       CompilerDatabases  - general interface for the retrieval and storage of
+       program text sources and results of compilation runs
+
+[1mSYNOPSIS[0m
+       TYPE Database = POINTER TO DatabaseRec;
+       TYPE DatabaseRec = RECORD (Services.ObjectRec) END;
+
+       TYPE LookupProc = PROCEDURE (
+                db: Database;
+                modname: ConstStrings.String;
+                type: CompilerObjects.ObjectType;
+                arch: Architectures.Architecture;
+                keys: CompilerKeys.Set;
+                VAR header: CompilerObjects.Header;
+                VAR text: PersistentTexts.Text;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE LookupHeaderProc = PROCEDURE (
+                db: Database;
+                modname: ConstStrings.String;
+                type: CompilerObjects.ObjectType;
+                arch: Architectures.Architecture;
+                keys: CompilerKeys.Set;
+                VAR header: CompilerObjects.Header;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE StoreProc = PROCEDURE (
+                db: Database;
+                header: CompilerObjects.Header;
+                text: PersistentTexts.Text;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE LookupSrcProc = PROCEDURE (
+                db: Database;
+                modname: ConstStrings.String;
+                kind: CompilerSources.SourceKind;
+                VAR src: CompilerSources.Source;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE StoreSrcProc = PROCEDURE (
+                db: Database;
+                src: CompilerSources.Source;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             lookup: LookupProc;
+             lookupHeader: LookupHeaderProc;
+             store: StoreProc;
+             lookupSrc: LookupSrcProc;
+             storeSrc: StoreSrcProc;
+          END;
+
+       PROCEDURE Init(db: Database; if: Interface);
+
+       PROCEDURE LookupSrc(db: Database; modname: ConstStrings.String;
+                           kind: CompilerSources.SourceKind;
+                           VAR src: CompilerSources.Source;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE StoreSrc(db: Database; src: CompilerSources.Source;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Lookup(db: Database; modname: ConstStrings.String;
+                        type: CompilerObjects.ObjectType;
+                        arch: Architectures.Architecture;
+                        keys: CompilerKeys.Set;
+                        VAR header: CompilerObjects.Header;
+                        VAR text: PersistentTexts.Text;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE LookupHeader(db: Database; modname: ConstStrings.String;
+                              type: CompilerObjects.ObjectType;
+                              arch: Architectures.Architecture;
+                              keys: CompilerKeys.Set;
+                              VAR header: CompilerObjects.Header;
+                              errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Store(db: Database; header: CompilerObjects.Header;
+                       text: PersistentTexts.Text;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mCompilerDatabases[24m provides a general interface for databases that allow
+       to store and to retrieve program sources and the results of compilation
+       runs.
+
+       This interface  does  not  provide  authorization  parameters  for  the
+       retrieval and the storage of database objects. Instead, implementations
+       like [4mCDB(3)[24m accept these parameters through their constructors and  use
+       them  internally subsequently.  Consequently, this interface should not
+       be supported for [4mRemoteObjects(3)[24m.  Access to remote  databases  should
+       be  supported on lower abstraction levels as it is has been implemented
+       by [4mCDBNames(3)[24m and [4mRemoteCDBNames(3)[24m.
+
+       Only insertion and retrieval are supported. Database objects cannot  be
+       deleted  through  this  interface. Instead, implementations are free to
+       garbage collect objects following their criterias or to support  delete
+       operations  through  other  channels  (e.g. through the [4mNames(3)[24m inter-
+       face). This interface provides just the view  to  a  compiler  database
+       that is needed by compilers and their associated tools.  Hence only the
+       retrieval of the most current sources and compilation results that ful-
+       fil  the  given  criterias  are  supported. There are no iterators that
+       allow to examine the entire database.
+
+       Two types of objects are supported: source  objects  and  objects  that
+       represent the result of a compilation run.
+
+       Sources are persistent objects of type [4mCompilerSources.Source[24m that pro-
+       vide a [4mStreams(3)[24m access to the  program  text  and  meta  informations
+       including a module name, source type, a time stamp, and the compilation
+       parameters. New sources can be uploaded to the database using [4mStoreSrc[24m.
+       Retrieval  of  the  most  current  source of a module is possible using
+       [4mLookupSrc[24m.
+
+       Results of compilation runs are represented by two  objects:  a  header
+       object  of  type [4mCompilerObjects.Header[24m that contains all meta informa-
+       tions and an object of type [4mCompilerObjects.Object[24m that is enclosed  by
+       a [4mPersistentTexts.Text[24m object.
+
+       This  interface supports a two-phase compilation architecture where the
+       first pass creates architecture-independent results and a  second  pass
+       delivers  architecture-dependent  code  together  with all informations
+       that are required to link it to an executable or  to  load  it  dynami-
+       cally. On retrievals, [1mNIL [22mmay be passed to [4march[24m to select the architec-
+       ture-independent result.  Otherwise, if [4march[24m is non-[1mNIL[22m, the  architec-
+       ture  of  the  result, if any, is guaranteed to match [4march[24m according to
+       [4mArchitectures.Compatible[24m. In addition, compilation results returned, if
+       any, conform to the set of compilation keys given through [4mkeys[24m.
+
+       [4mLookupHeader[24m  returns  on  success  just the header while the result of
+       [4mLookup[24m includes the entire (possibly huge) compilation result.
+
+       [4mStoreSrc[24m and [4mStore[24m  allow  to  insert  source  and  compilation  result
+       objects into the database.
+
+       The  interface  that is passed to [4mInit[24m is expected to follow the seman-
+       tics of the client procedures described above.
+
+[1mDIAGNOSTICS[0m
+       All procedures return [1mFALSE [22min case of failures and  relate  associated
+       error events to [4merrors[24m.
+
+[1mSEE ALSO[0m
+       [4mCDB(3)[24m               standard implementation of this interface
+       [4mCompilerObjects(3)[24m   general base type of persistent compiler objects
+       [4mCompilerSources(3)[24m   persistent  source texts and related meta informa-
+                            tion
+       [4mPersistentTexts(3)[24m   enclosure of persistent objects
+
+
+
+Release 0.5                Last change: 3 June 2004       CompilerDatabases(3)

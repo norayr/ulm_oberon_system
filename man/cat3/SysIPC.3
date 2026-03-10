@@ -1,0 +1,858 @@
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+NNAAMMEE
+       SysIPC - System V interprocess communication
+
+SSYYNNOOPPSSIISS
+       CONST private = 0;              (* private key *)
+
+       (* mode bits *)
+       CONST alloc = { 16 };           (* entry currently allocated *)
+       CONST creat = { 22 };           (* create entry if key doesn't exist *)
+       CONST excl = { 21 };            (* fail if key exists *)
+       CONST nowait = { 20 };          (* error if request must wait *)
+
+       (* control commands *)
+       CONST rmid = 0;                 (* remove identifier *)
+       CONST set = 1;                  (* set options *)
+       CONST stat = 2;                 (* get options *)
+
+       (* permission definitions *)
+       CONST read = { 23 };            (* read permission for owner *)
+       CONST write = { 24 };           (* write permission for owner *)
+
+       (* shared memory: operation flags *)
+       CONST readwrite = {};           (* attach read/write *)
+       CONST rdonly = { 19 };          (* attach read-only (else read-write) *)
+       CONST rnd = { 18 };             (* round attach address to shmlba *)
+
+       (* messages: operation flags *)
+       CONST noerror = { 19 };         (* no error if big message *)
+
+       (* semaphore operation flags *)
+       CONST undo = { 19 };            (* set up adjust on exit entry *)
+
+       TYPE Key = LONGINT;             (* corresponds to key_t from sys/types.h *)
+       TYPE Size = SysTypes.Count;
+       TYPE Modes = SET;
+       TYPE Identifier = LONGINT;
+       TYPE Address = SysTypes.Address;
+       TYPE ProcessId = SysProcess.ProcessId;
+       TYPE Time = SysTypes.Time;
+       TYPE MessageType = LONGINT;
+       TYPE SemVal = INTEGER;
+
+       (* common IPC access structure *)
+       TYPE Access =
+          RECORD
+             uid: INTEGER;     (* owner's user id *)
+             gid: INTEGER;     (* owner's group id *)
+             cuid: INTEGER;    (* creator's user id *)
+             cgid: INTEGER;    (* creator's group id *)
+             mode: Modes;      (* access modes *)
+             seq: INTEGER;     (* slot usage sequence number *)
+             key: Key;
+          END;
+
+
+
+
+Release 0.5         Last change: 13 June 1993                   1
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       TYPE SharedMemRec =     (* struct shmid_ds *)
+          RECORD
+             perm: Access;     (* operation permission struct *)
+             segsz: Size;      (* segment size in bytes *)
+             lpid: ProcessId;  (* pid of last shmop *)
+             cpid: ProcessId;  (* pid of creator *)
+             nattach: INTEGER; (* current # attached *)
+             atime: Time;      (* last shmat time *)
+             dtime: Time;      (* last shmdt time *)
+             ctime: Time;      (* last change time *)
+          END;
+
+       TYPE QueueRec =         (* struct msqid_ds *)
+          RECORD
+             perm: Access;     (* operation permission struct *)
+             first: Address;   (* ptr to first message on q *)
+             last: Address;    (* ptr to last message on q *)
+             cbytes: INTEGER;  (* current # bytes on q *)
+             qnum: INTEGER;    (* # of messages on q *)
+             qbytes: INTEGER;  (* max # of bytes on q *)
+             lspid: ProcessId; (* pid of last msgsnd *)
+             lrpid: ProcessId; (* pid of last msgrcv *)
+             stime: Time;      (* last msgsnd time *)
+             rtime: Time;      (* last msgrcv time *)
+             ctime: Time;      (* last change time *)
+          END;
+
+       TYPE SemaphoreRec =     (* struct semid_ds *)
+          RECORD
+             perm: Access;     (* operation permission struct *)
+             base: Address;    (* ptr to first semaphore in set *)
+             nsems: INTEGER;   (* # of semaphores in set *)
+             otime: Time;      (* last semop time *)
+             ctime: Time;      (* last change time *)
+          END;
+
+       TYPE SemOperation =     (* struct sembuf *)
+          RECORD
+             num: INTEGER;     (* semaphore # *)
+             op: INTEGER;      (* semaphore operation *)
+             flags: SET;       (* operation flags *)
+          END;
+
+       VAR conferror: Events.EventType;
+
+       CONST noSharedSegment = 0;
+       CONST errorcodes = 1;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+
+
+
+Release 0.5         Last change: 13 June 1993                   2
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE ShmGet(VAR shmid: Identifier; key: Key; size: Size; shmflg: Modes;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ShmCtl(shmid: Identifier; cmd: INTEGER; VAR buf: SharedMemRec;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ShmRemove(shmid: Identifier;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ShmAttach(shmid: Identifier; VAR shmaddr: Address; shmflg: Modes;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ShmDetach(shmaddr: Address;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE MsgGet(VAR msqid: Identifier; key: Key; msgflg: Modes;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE MsgCtl(msqid: Identifier;
+                        cmd: INTEGER; VAR buf: QueueRec;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE MsgRemove(msgqid: Identifier;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE MsgSend(msgqid: Identifier;
+                         msg: ARRAY OF BYTE; msgsz: Size; msgflg: Modes;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE MsgReceive(msgqid: Identifier;
+                            VAR msg: ARRAY OF BYTE; msgtype: MessageType;
+                            msgflg: Modes;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE SemGet(VAR semid: Identifier; key: Key;
+                        nsems: INTEGER; semflg: Modes;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemStat(semid: Identifier; VAR buf: SemaphoreRec;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemSet(semid: Identifier; buf: SemaphoreRec;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemRemove(semid: Identifier;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemGetNCnt(semid: Identifier; semnum: INTEGER;
+                            VAR ncnt: INTEGER;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemGetPid(semid: Identifier; semnum: INTEGER;
+                           VAR pid: ProcessId;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemGetVal(semid: Identifier; semnum: INTEGER;
+                           VAR semval: SemVal;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemGetAll(semid: Identifier;
+                           VAR semvals: ARRAY OF SemVal;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemGetZCnt(semid: Identifier; semnum: INTEGER;
+                            VAR zcnt: INTEGER;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemSetVal(semid: Identifier; semnum: INTEGER;
+
+
+
+Release 0.5         Last change: 13 June 1993                   3
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+                           semval: SemVal;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemSetAll(semid: Identifier; semvals: ARRAY OF SemVal;
+                           errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE SemOp(semid: Identifier;
+                       sops: ARRAY OF SemOperation; nsops: INTEGER;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_y_s_I_P_C  interfaces the System V interprocess communication
+       facilities.
+
+       Shared memory  segments,  message  queues,  and  semaphore
+       arrays are identified by a key and an identifier.  The key
+       depends on the application, i.e. if two  independent  pro­
+       cesses  wants to share the same ipc facility then they use
+       the same key.  The identifier is determined by the operat­
+       ing system and is only valid while the associated facility
+       exists.  _S_h_m_G_e_t, _M_s_g_G_e_t, and _S_e_m_G_e_t convert a  key  to  an
+       identifier.
+
+       _S_y_s_I_P_C_._p_r_i_v_a_t_e  may  be  used  as key to get an identifier
+       which does not depend on a special key.   This  is  conve­
+       nient  if the identifier is shared via process inheritence
+       or other sorts of communications (e.g. file i/o).
+
+       Conversion of a key to an identifier either tries to  cre­
+       ate  an ipc facility or to get the identifier of an exist­
+       ing ipc facility.  This is controlled in detail by the _f_l_g
+       parameter  of  type  _M_o_d_e_s_.  Beside usual protection modes
+       (read/write for owner, group, and other)  following  flags
+       are included:
+
+       +-----------------------------------------------------------------+
+       |_c_r_e_a_t   Create  new  ipc facility if the key does not exist.  If |
+       |        _c_r_e_a_t is not given  then  the  conversion  returns  with |
+       |        _S_y_s_E_r_r_o_r_s_._n_o_e_n_t if there is no such key.                 |
+       |_e_x_c_l    Causes the conversion to fail if the key already exists. |
+       +-----------------------------------------------------------------+
+       Further  flags are of internal use or are needed for other
+       operations  only  (e.g.  _n_o_w_a_i_t  for  message  queue   and
+       semaphore operations).
+
+       Control commands (_S_h_m_C_t_l, _M_s_g_C_t_l, and _S_e_m_C_t_l) allow to get
+       or to modify the current  status.   _S_h_m_R_e_m_o_v_e,  _M_s_g_R_e_m_o_v_e,
+       and  _S_e_m_R_e_m_o_v_e  remove ipc facilities.  Ipc facilities may
+       be modified or removed by the creator or the owner of  the
+       ipc  facility.   The owner is initially the creator of the
+       ipc facility and may be modified.
+
+       Ipc facilities are not released if the  number  of  refer­
+
+
+
+
+
+Release 0.5         Last change: 13 June 1993                   4
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       ences equals 0.  They must be removed explicitely.
+
+       The  number  of ipc facilities is very limited and depends
+       on following configuration parameters:
+
+       +--------------------------------------------------+
+       |SSHHMMMMNNII   maximal number of shared memory segments |
+       |MMSSGGMMNNII   maximal number of messages queues        |
+       |SSEEMMMMNNII   maximal number of semaphore arrays       |
+       +--------------------------------------------------+
+       There are various other limits which apply to the  differ­
+       ent sorts of ipc facilities.
+
+   SShhaarreedd MMeemmoorryy
+       A shared memory segments is a piece of memory which can be
+       shared between several processes.  A segment is always  of
+       the  same size but not necessarily at the same position in
+       the virtual address space.  Multiple maps of the same seg­
+       ment  into  the address space of one process are possible.
+       Segments are inherited thru _S_y_s_P_r_o_c_e_s_s_._F_o_r_k but  not  thru
+       _S_y_s_P_r_o_c_e_s_s_._E_x_e_c.
+
+       _S_h_m_G_e_t  creates  a  segment  or converts a given key.  The
+       size of the segment is given by _s_i_z_e.  If  _s_i_z_e  does  not
+       match  the  size  of an already existing segment (i.e. the
+       given size is greater than the size of the segment) _S_y_s_E_r_­
+       _r_o_r_s_._i_n_v_a_l  is  returned as error.  The size must range in
+       [SSHHMMMMIINN..SSHHMMMMAAXX].
+
+       _S_h_m_A_t_t_a_c_h maps a shared memory segment  into  the  virtual
+       address   space  of  the  calling  process  and  _S_h_m_D_e_t_a_c_h
+       detaches it.  Shared memory segments must not overlap  any
+       valid  regions  of the address space.  The original system
+       call allows either to give a valid address or NNIILL.  In the
+       last  case  the  address is chosen by the operating system
+       and returned to the calling process.  In some  implementa­
+       tions  the  operation  system choses addresses just behind
+       the _b_r_e_a_k (see _b_r_k_(_2_)) which is a very bad choice  because
+       no  dynamic storage is available afterwards.  On the other
+       side, giving own addresses is extremely  unportable.   The
+       decision  where  to attach shared memory segments has been
+       given into the responsibility of _S_h_m_A_t_t_a_c_h which relies on
+       _M_e_m_o_r_y_(_3_) to allow portable usage of shared memory.  Thus,
+       _S_h_m_A_t_t_a_c_h returns _s_h_m_a_d_d_r as an _o_u_t-parameter.
+
+       The access protection of the shared memory segment depends
+       on  the  general  protection and the modes given to _S_h_m_A_t_­
+       _t_a_c_h.  Following flags are available:
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 13 June 1993                   5
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       +--------------------------------------------------------------------+
+       |_r_e_a_d_w_r_i_t_e   attach the segment with read/write permission (default) |
+       |_r_d_o_n_l_y      attach the segment read-only                            |
+       |_r_n_d         round attach address to SSHHMMLLBBAA; this flag does not make |
+       |            sense  because  the  attach  address  is  determined by |
+       |            _S_h_m_A_t_t_a_c_h.                                              |
+       +--------------------------------------------------------------------+
+       _S_h_m_D_e_t_a_c_h takes _s_h_m_a_d_d_r as argument.   The  identifier  is
+       not  sufficient because the same shared memory segment may
+       be mapped multiple times into the  address  space  of  the
+       same  process.   Shared memory segments are detached auto­
+       matically on _S_y_s_P_r_o_c_e_s_s_._E_x_e_c and _S_y_s_P_r_o_c_e_s_s_._E_x_i_t.
+
+       Shared memory segments may be created, attached, and imme­
+       diately  after  setup  removed.  This does not disturb the
+       segments currently attached but causes the segment to van­
+       ish  automatically  if  the  number  of  attached segments
+       equals 0.  Valid operations after  removal  are  _S_h_m_D_e_t_a_c_h
+       and  _S_h_m_C_t_l  with  _c_m_d set to _s_t_a_t.  The key is changed to
+       _p_r_i_v_a_t_e so the old key can be reused without  waiting  for
+       the last detach.
+
+       Configuration parameters related to shared memory:
+
+       +-----------------------------------------------------------------------+
+       |SSHHMMMMAAXX   maximal size of a shared memory segment in bytes              |
+       |SSHHMMMMIINN   minimal size of a shared memory segment in bytes              |
+       |SSHHMMMMNNII   maximal number of shared memory identifiers                   |
+       |SSHHMMSSEEGG   maximal number of attached shared memory segments per process |
+       |SSHHMMAALLLL   maximal total shared memory system wide (in clicks)           |
+       +-----------------------------------------------------------------------+
+       Some  implementations  have  an additional parameter named
+       SSHHMMBBRRKK which specifies the gap in clicks used between data
+       and  shared memory if the mapping of shared memory is left
+       up to the  operating  system.   As  mentioned  above  this
+       implementation does not rely on this parameter.
+
+   MMeessssaaggee QQuueeuueess
+       A  message  consists  of a type (_M_e_s_s_a_g_e_T_y_p_e) and an arbi­
+       trary number of bytes.  Records  of  different  types  and
+       sizes may be put into one message queue.
+
+       _M_s_g_G_e_t  creates a message queue or converts a given key to
+       an identifier.  Messages are appended to the queue by call
+       of  _M_s_g_S_e_n_d.   The  message _m_s_g consists of a leading type
+       field (of type _M_e_s_s_a_g_e_T_y_p_e)  and  additional  information.
+       The size of the information in bytes is given by _m_s_g_s_z and
+       defaults to the size of _m_s_g minus the size of the  message
+       type.  The default is taken if _m_s_g_s_z equals 0.
+
+       If  there  is  currently  not enough space to allocate the
+       message in kernel memory the process is either blocked  or
+       the  system  call  returns with _S_y_s_E_r_r_o_r_s_._a_g_a_i_n.  The last
+       case applies if _n_o_w_a_i_t is given as flag to _m_s_g_f_l_g.
+
+
+
+Release 0.5         Last change: 13 June 1993                   6
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       Messages  are  retrieved  by  _M_s_g_R_e_c_e_i_v_e.    The   maximal
+       accepted  message  size  is determined by the size of _m_s_g.
+       The acceptable message types are specified by _m_s_g_t_y_p_e:
+
+       +-----------------------------------------------------------------+
+       |_m_s_g_t_y_p_e > 0   the given message type must be matched             |
+       |_m_s_g_t_y_p_e = 0   all message types are accepted                     |
+       |_m_s_g_t_y_p_e < 0   requests the message with the lowest message  type |
+       |              which is less than AABBSS(_m_s_g_t_y_p_e) to be returned     |
+       +-----------------------------------------------------------------+
+       If  there  is  no appropiate message the process is either
+       blocked or the system call  returns  with  _S_y_s_E_r_r_o_r_s_._n_o_m_s_g
+       (if _n_o_w_a_i_t is set in _m_s_g_f_l_g).
+
+       In  normal  case _M_s_g_R_e_c_e_i_v_e would return with EE22BBIIGG if the
+       message does not fit into _m_s_g.  Setting _n_o_e_r_r_o_r in  _m_s_g_f_l_g
+       causes the message to be truncated in this case.
+
+       Processes  blocked  due  to  _M_s_g_S_e_n_d  or _M_s_g_R_e_c_e_i_v_e may be
+       interrupted.  In this case _S_y_s_E_r_r_o_r_s_._i_n_t_r is returned.
+
+       If the removal of  the  message  queue  identifier  causes
+       wakeup   of   blocked  processes  then  _S_y_s_E_r_r_o_r_s_._i_d_r_m  is
+       returned.
+
+       Beside setting owner and  protection  it  is  possible  to
+       change the maximal number of bytes which may be used up by
+       a given queue.  The field _q_b_y_t_e_s in _Q_u_e_u_e_R_e_c is  initially
+       set to MMSSGGMMNNBB and may be decreased by the owner or creator
+       and increased by the super-user.
+
+       Configuration parameters related to message queues:
+
+       +------------------------------------------------------------+
+       |MMSSGGMMAAPP   size of the memory control map used to manage mes­ |
+       |         sage segments                                      |
+       |MMSSGGMMAAXX   maximum size in bytes of a message                 |
+       |MMSSGGMMNNBB   see above                                          |
+       |MMSSGGMMNNII   maximal number of message queue identifiers        |
+       |MMSSGGSSSSZZ   size  of a message segment: messages are stored in |
+       |         kernel memory in a sequence of  message  segments. |
+       |         The  larger  the  segments  are,  the  greater the |
+       |         chance of having wasted memory at  the  end  of  a |
+       |         message.                                           |
+       |MMSSGGSSEEGG   number  of message segments; the maximal size used |
+       |         up by all messages is given by MMSSGGSSEEGG * MMSSGGSSSSZZ     |
+       |MMSSGGTTQQLL   maximal number of messages of all  message  queues |
+       |         systemwide,  and  thus,  the number of outstanding |
+       |         messages                                           |
+       +------------------------------------------------------------+
+
+
+
+
+
+
+
+Release 0.5         Last change: 13 June 1993                   7
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+   SSeemmaapphhoorreess
+       Semaphores are organized in arrays of integer  semaphores.
+       A  set  of  operations  on one semaphore array is executed
+       atomically.  Semaphores are small integers (a configurable
+       subset of 2-byte-integers is taken).  Semaphore values are
+       set initially to 0.  Typically, positive semaphore  values
+       indicate  a  free ressource, and negative semaphore values
+       indicate a locked  ressource.   Semaphore  operations  are
+       given  as  small  integers  which  are  to be added to the
+       semaphore value:
+
+       +--------------------+-----------------------------------------------+
+       |semaphore operation | effect                                        |
+       +--------------------+-----------------------------------------------+
+       |> 0                 | releases  the  ressource:  if  the  semaphore |
+       |                    | value  becomes  greater  than  zero then pro­ |
+       |                    | cesses waiting for a free ressource are waked |
+       |                    | up.                                           |
+       |< 0                 | locks  the  ressource: if the semaphore value |
+       |                    | gets  negative  after  adding  the  semaphore |
+       |                    | operation  to  it then the process is blocked |
+       |                    | until the semaphore value becomes positive.   |
+       |= 0                 | causes the process to be  blocked  until  the |
+       |                    | semaphore value becomes zero.                 |
+       +--------------------+-----------------------------------------------+
+       Processes are not blocked if _n_o_w_a_i_t is member of the oper­
+       ation flags.  Blocked processes may  be  interrupted.   In
+       this case _S_y_s_E_r_r_o_r_s_._i_n_t_r is returned.
+
+       _S_e_m_G_e_t  converts  a  key  into  a semaphore identifier and
+       potentially creates a semaphore array of length _n_s_e_m_s.  If
+       the  semaphore  array  already  exists  then _n_s_e_m_s must be
+       either zero or must not exceed the length of the semaphore
+       array.
+
+       _S_e_m_O_p  tries  to  execute  a  list of semaphore operations
+       given by _s_o_p_s atomically.  The number of semaphore  opera­
+       tions  equals  by  default  the  length  of the open array
+       parameter (_n_s_o_p_s = 0) or may be specified  (_n_s_o_p_s  >  0  &
+       _n_s_o_p_s  <=  LLEENN(_s_o_p_s)).   Semaphore operations are given as
+       records of type _S_e_m_O_p_e_r_a_t_i_o_n:
+
+       +-----------------------------------------------------------+
+       |_n_u_m     is taken as index  to  the  semaphore  array;  the |
+       |        semaphore array is indexed from 0 to _n_s_e_m_s - 1.    |
+       |_o_p      semaphore  operation:  a small integer which is to |
+       |        be added to the semaphore value                    |
+       |_f_l_a_g_s   _n_o_w_a_i_t and _u_n_d_o may  be  given  as  flags;  _n_o_w_a_i_t |
+       |        requests  the  process  not  to be blocked on this |
+       |        operation and _u_n_d_o  causes  the  operation  to  be |
+       |        undone on process exit.                            |
+       +-----------------------------------------------------------+
+       _S_e_m_S_t_a_t  returns  the  current  semaphore array status and
+       _S_e_m_S_e_t allows to change owner and  protection.   _S_e_m_R_e_m_o_v_e
+
+
+
+Release 0.5         Last change: 13 June 1993                   8
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+       removes  the  given  semaphore.   All  processes which are
+       blocked due to semaphore operations are  awakened.   Their
+       calls return with _S_y_s_E_r_r_o_r_s_._r_m_i_d.
+
+       Various   procedures   allow   to  examine  or  to  modify
+       semaphores.  _S_e_m_G_e_t_A_l_l returns the semaphore values of all
+       semaphores  in the array.  _S_e_m_G_e_t_V_a_l returns the semaphore
+       value of the semaphore indexed by _s_e_m_n_u_m.  _S_e_m_S_e_t_A_l_l  sets
+       the  semaphore  values  of all semaphores.  _S_e_m_S_e_t_V_a_l sets
+       the semaphore value of the semaphore  indexed  by  _s_e_m_n_u_m.
+       Processes  which  are  blocked due to semaphore operations
+       either awaits the semaphore value to  become  zero  or  to
+       become  greater  or equal than the absolute value of their
+       semaphore operation.  _S_e_m_G_e_t_Z_c_n_t  returns  the  number  of
+       processes sleeping for the given semaphore value to become
+       zero.  _S_e_m_G_e_t_N_C_n_t returns the number of processes  waiting
+       for  the  given  semaphore value to become positive.  Fur­
+       ther, _S_e_m_G_e_t_P_i_d returns the process id of the last process
+       operating on the given semaphore.
+
+       Configuration parameters related to semaphores:
+
+       +------------------------------------------------------------+
+       |SSEEMMMMAAPP   specifies  the size of the memory control map used |
+       |         to manage semaphores.                              |
+       |SSEEMMMMNNII   maximal number of semaphore identifiers            |
+       |SSEEMMMMNNSS   maximal number of semaphores in the system         |
+       |SSEEMMMMNNUU   maximal number of undo structures in the system    |
+       |SSEEMMMMSSLL   maximal length of a semaphore array                |
+       |SSEEMMOOPPMM   maximal number of operations per _S_e_m_O_p call        |
+       |SSEEMMUUMMEE   maximal number of undo structures per process      |
+       |SSEEMMUUSSZZ   size in bytes of undo structure                    |
+       |SSEEMMVVMMXX   maximum value of a semaphore                       |
+       |SSEEMMAAEEMM   maximul value of exit adjusts                      |
+       +------------------------------------------------------------+
+EEXXAAMMPPLLEESS
+   SShhaarreedd MMeemmoorryy
+       Following example illustrates sharing of a record  between
+       related processes:
+
+       TYPE
+          SharedRecPtr = POINTER TO SharedRec;
+          SharedRec =
+             RECORD
+                (* be sure that the size of SharedRec exceeds SHMMIN *)
+             END;
+
+       PROCEDURE Setup(VAR sharedp: SharedRecPtr;
+                       VAR pid: SysProcess.ProcessId) : BOOLEAN;
+          (* create a shared memory region and fork;
+             if successful then sharedp points to the shared memory region
+             containing a record of type SharedRec and
+             pid contains the result of SysProcess.Fork
+          *)
+
+
+
+Release 0.5         Last change: 13 June 1993                   9
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+          VAR
+             shmid: SysIPC.Identifier; (* shared memory identifier *)
+             shmaddr: SysIPC.Address;  (* address of attached segment *)
+             forkok: BOOLEAN;          (* result of SysProcess.Fork *)
+
+       BEGIN
+          IF ~SysIPC.ShmGet(shmid, SysIPC.private, SYSTEM.SIZE(SharedRec),
+                            SysIPC.read + SysIPC.write, NIL) THEN
+             RETURN FALSE
+          END;
+          IF ~SysIPC.ShmAttach(shmid, shmaddr, SysIPC.readwrite, NIL) THEN
+             IF ~SysIPC.ShmRemove(shmid, NIL) THEN END;
+             RETURN FALSE
+          END;
+          forkok := SysProcess.Fork(pid, NIL);
+          (* if SysProcess.Fork succeeds then the attached segment
+             is inherited to the child process
+          *)
+          IF ~forkok THEN
+             IF ~SysIPC.ShmDetach(shmdaddr, NIL) THEN END;
+          END;
+          IF ~forkok OR (pid # 0) THEN
+             (* cleanup identifier in each case;
+                if SysProcess.Fork was successful cleanup is done
+                by the parent process
+             *)
+             IF ~SysIPC.ShmRemove(shmid, NIL) THEN END;
+          END;
+          sharedp := SYSTEM.VAL(SharedRecPtr, shmaddr);
+          RETURN forkok
+       END Setup;
+
+
+   MMeessssaaggee QQuueeuueess
+       The  example  following  illustrates  the  use  of message
+       between unrelated processes.  One process serves as  demon
+       which waits for messages sent by clients.
+
+       Common definitions:
+
+       CONST
+          messageType = 1;
+          key = "demo";
+             (* keys are per convention short strings (1-4 characters) *)
+       TYPE
+          Message =
+             RECORD
+                type: SysIPC.MessageType;
+                (* further components *)
+             END;
+
+       PROCEDURE ConvertKey(key: ARRAY OF CHAR) : SysIPC.Key;
+          VAR
+             val: SysIPC.Key;
+
+
+
+Release 0.5         Last change: 13 June 1993                  10
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+             index: INTEGER;
+       BEGIN
+          val := 0;
+          index := 0;
+          WHILE (index < SYSTEM.SIZE(SysIPC.Key)) & (index < LEN(key)) &
+                (key[index] # 0X) DO
+             val := val * 100H + ORD(key[index]);
+             INC(index);
+          END;
+          RETURN val
+       END ConvertKey;
+
+
+       The demon:
+
+       VAR
+          msqid: SysIPC.Identifier;
+
+       PROCEDURE Cleanup(event: Event.Events);
+       BEGIN
+          IF ~SysIPC.MsgRemove(msqid, NIL) THEN END;
+       END Cleanup;
+
+       PROCEDURE IdentifierRemoved(event: Event.Events);
+          (* called if identifier has been removed externally *)
+       BEGIN
+          SysProcess.Exit(0);
+       END IdentifierRemoved;
+
+       PROCEDURE Demon;
+          VAR
+             msg: Message;
+       BEGIN
+          IF ~SysIPC.MsgGet(msqid, ConvertKey(key),
+                         (* protection: rw--w--w- *)
+                         SysStat.uread + SysStat.write, NIL) THEN
+             SysProcess.Exit(1);
+          END;
+          Events.Handler(SysEvents.termination, Cleanup);
+          Events.Handler(SysErrors.syserror[SysErrors.idrm], IdentifierRemoved);
+          LOOP
+             IF SysIPC.MsgReceive(msqid, msg, messageType, {}, NIL) THEN
+                (* evaluate the message *)
+             END;
+          END;
+       END Demon;
+
+
+       The client:
+
+       PROCEDURE SendMessage(msg: Message) : BOOLEAN;
+          VAR
+             msgqid: SysIPC.Identifier;
+       BEGIN
+
+
+
+Release 0.5         Last change: 13 June 1993                  11
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+          RETURN SysIPC.MsgGet(msqid, ConvertKey(key), NIL) &
+                 SysIPC.MsgSend(msqid, msg, 0, {}, NIL)
+       END SendMessage;
+
+
+   SSeemmaapphhoorreess
+       Following  example  shows how to realize Dijkstras PP and VV
+       operations:
+
+       TYPE
+          Semaphore = SysIPC.Identifier;
+
+          (* semaphore value
+
+             > 1  more than one ressource is available; the semaphore value
+                  equals the number of free ressources
+             = 1  free ressource
+             = 0  ressource is locked but nobody waits for it
+             < 0  ressource is locked and the absolute value of
+                  the semaphore value equals the number of processes
+                  waiting for the ressource to become free
+          *)
+
+       PROCEDURE Init(VAR s: Semaphore; key: SysIPC.Key) : BOOLEAN;
+       BEGIN
+          IF ~SysIPC.SemGet(s, key, 1, SysIPC.read + SysIPC.write, NIL) THEN
+             RETURN FALSE
+          END;
+          IF ~SysIPC.SemSetVal(s, 0, 1, NIL) THEN
+             IF ~SysIPC.SemRemove(s, NIL) THEN END;
+             RETURN FALSE
+          END;
+          RETURN TRUE
+       END Init;
+
+       PROCEDURE Remove(s: Semaphore) : BOOLEAN;
+       BEGIN
+          RETURN SysIPC.SemRemove(s, NIL)
+       END Remove;
+
+       PROCEDURE P(s: Semaphore) : BOOLEAN;
+          VAR
+             sops: ARRAY 1 OF SysIPC.SemOperation;
+       BEGIN
+          sops[0].num := 0;
+          sops[0].op := -1;
+          sops[0].flags := SysIPC.undo;
+          RETURN SysIPC.SemOp(s, sops, 0, NIL)
+       END P;
+
+       PROCEDURE V(s: Semaphore) : BOOLEAN;
+          VAR
+             sops: ARRAY 1 OF SysIPC.SemOperation;
+       BEGIN
+
+
+
+Release 0.5         Last change: 13 June 1993                  12
+
+
+
+
+
+SysIPC(3)              Ulm's Oberon System              SysIPC(3)
+
+
+          sops[0].num := 0;
+          sops[0].op := 1;
+          sops[0].flags := {};
+          RETURN SysIPC.SemOp(s, sops, 0, NIL)
+       END V;
+
+
+DDIIAAGGNNOOSSTTIICCSS
+       System call failures lead to events of _S_y_s_E_r_r_o_r_s_(_3_).   The
+       _e_r_r_o_r_s  parameter  is passed to _S_y_s_E_r_r_o_r_s_._R_a_i_s_e.  All rou­
+       tines return FFAALLSSEE in error case.
+
+       Following errors are detected by _S_y_s_I_P_C itself:
+       _n_o_S_h_a_r_e_d_S_e_g_m_e_n_t   is raised  by  _S_h_m_D_e_t_a_c_h  if  the  given
+                         address does not belong to a shared mem­
+                         ory segment.
+
+       The event _c_o_n_f_e_r_r_o_r is passed to  _A_s_s_e_r_t_i_o_n_s_._R_a_i_s_e  during
+       initialisation time in case of configuration errors.
+
+SSEEEE AALLSSOO
+       _i_p_c_s_(_1_)         prints status information of current ipc facilities
+       _i_p_c_r_m_(_1_)        removes ipc facilities
+       _s_h_m_g_e_t_(_2_)       _S_h_m_G_e_t
+       _s_h_m_c_t_l_(_2_)       _S_h_m_C_t_l and _S_h_m_R_e_m_o_v_e
+       _s_h_m_a_t_(_2_)        _S_h_m_A_t_t_a_c_h and _S_h_m_D_e_t_a_c_h
+       _m_s_g_g_e_t_(_2_)       _M_s_g_G_e_t
+       _m_s_g_c_t_l_(_2_)       _M_s_g_C_t_l and _M_s_g_R_e_m_o_v_e
+       _m_s_g_s_e_n_d_(_2_)      _M_s_g_S_e_n_d and _M_s_g_R_e_c_e_i_v_e
+       _s_e_m_g_e_t_(_2_)       _S_e_m_G_e_t
+       _s_e_m_c_t_l_(_2_)       _S_e_m_C_t_l and _S_e_m_R_e_m_o_v_e
+       _s_e_m_o_p_(_2_)        _S_e_m_O_p and all other semaphore operations
+       _A_s_s_e_r_t_i_o_n_s_(_3_)   error handling in case of configuration errors
+       _M_e_m_o_r_y_(_3_)       address space management
+       _S_y_s_E_r_r_o_r_s_(_3_)    handling of failed system calls
+       _S_y_s_P_r_o_c_e_s_s_(_3_)   system calls related to process management
+       _S_y_s_S_t_a_t_(_3_)      protection modes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 13 June 1993                  13
+
+

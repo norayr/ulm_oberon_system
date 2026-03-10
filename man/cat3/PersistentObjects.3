@@ -1,0 +1,346 @@
+PersistentObjects(3)          Ulm's Oberon System         PersistentObjects(3)
+
+
+
+[1mNAME[0m
+       PersistentObjects - abstraction for persistent objects
+
+[1mSYNOPSIS[0m
+       CONST fullTypeName = 1; typeCode = 2; incrTypeCode = 3;
+       CONST withSize = 4; withoutSize = 0;
+       CONST withHier = 8; withoutHier = 0;
+       TYPE Mode = SHORTINT;
+
+       TYPE Object = POINTER TO ObjectRec;
+       TYPE ObjectRec = RECORD (Services.ObjectRec) END;
+
+       TYPE ReadProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+       TYPE WriteProc = PROCEDURE (s: Streams.Stream; o: Object) : BOOLEAN;
+       TYPE CreateProc = PROCEDURE (VAR o: Object);
+       TYPE CreateAndReadProc = PROCEDURE (s: Streams.Stream;
+                                           create: BOOLEAN;
+                                           VAR o: Object) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             create: CreateProc;  (* create object *)
+             read: ReadProc;      (* read data from stream *)
+             write: WriteProc;    (* write data to stream  *)
+             createAndRead: CreateAndReadProc; (* replaces create & read *)
+          END;
+
+       CONST cannotReadData = 0;
+       CONST cannotWriteData = 1;
+       CONST cannotReadType = 2;
+       CONST cannotWriteType = 3;
+       CONST invalidType = 4;
+       CONST unknownType = 5;
+       CONST otherTypeHier = 6;
+       CONST eofReached = 7;
+       CONST cannotSkip = 8;
+       CONST typeGuardFailure = 9;
+       CONST errorcodes = 10;
+       TYPE ErrorCode = SHORTINT;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Streams.Stream;
+             errorcode: ErrorCode;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE RegisterType(VAR type: Services.Type;
+                              name, baseName: ARRAY OF CHAR;
+                              if: Interface);
+       PROCEDURE Init(object: Object; type: Services.Type);
+       PROCEDURE SetMode(s: Streams.Stream; mode: Mode);
+       PROCEDURE GetMode(s: Streams.Stream; VAR mode: Mode);
+       PROCEDURE IsProjected(object: Object) : BOOLEAN;
+
+       PROCEDURE Read(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+       PROCEDURE Write(s: Streams.Stream; object: Object) : BOOLEAN;
+       PROCEDURE ReadObjectOrNIL(s: Streams.Stream; VAR object: Object) : BOOLEAN;
+       PROCEDURE WriteObjectOrNIL(s: Streams.Stream; object: Object) : BOOLEAN;
+       PROCEDURE ReadInto(s: Streams.Stream; object: Object) : BOOLEAN;
+       PROCEDURE GuardedRead(s: Streams.Stream; guard: Services.Type;
+                             VAR object: Object) : BOOLEAN;
+       PROCEDURE GuardedReadObjectOrNIL(s: Streams.Stream; guard: Services.Type;
+                                        VAR object: Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mPersistentObjects[24m  defines  an  extensible  abstraction  for persistent
+       objects and implements input  and  output  operations  for  them  (i.e.
+       transforming  the  object  into a sequence of bytes and vice versa).  A
+       persistent object is a data structure whose existence  transcends  time
+       (i.e.  the object continues to exist after its creator ceases to exist)
+       and/or space (i.e. the object's location moves from the  address  space
+       in which it was created).
+
+   [1mDefining persistent objects[0m
+       An interface defines a set of procedures which implement a [4mPersistentO-[0m
+       [4mbjects[24m-abstraction  for   a   specific   extension   of   [4mPersistentOb-[0m
+       [4mjects.Object[24m.  Not all interface procedures must be given, some of them
+       may be set to [1mNIL[22m:
+
+       ·      The whole interface may be passed as  [1mNIL  [22mto  [4mRegisterType[24m  for
+              abstract  objects which are never instantiated, do not carry any
+              data to be saved and restored, and serve only as base  type  for
+              other extensions.
+
+       ·      Empty  extensions  which may be instantiated but don't carry any
+              data need just [4mcreate[24m, all other interface procedures  are  then
+              to be set to [1mNIL[22m.
+
+       ·      The  most  common variant is to provide [4mcreate[24m, [4mread[24m, and [4mwrite[24m.
+              In this case, [4mcreateAndRead[24m must be passed as [1mNIL[22m.
+
+       ·      Abstract extensions that are never instantiated may  set  [4mcreate[0m
+              and [4mcreateAndRead[24m to [1mNIL [22mwhile defining [4mread[24m and [4mwrite[24m.
+
+       ·      Modules  which  filter all operations of [4mPersistentObjects[24m for a
+              specific type need to implement [4mcreate[24m  and  [4mread[24m  as  a  joined
+              operation which allows the creation to be delayed to the reading
+              time.  This allows the read object to be  of  a  different  type
+              than  the object written.  This technique is for example used by
+              [4mRemotePersistentObjects(3)[24m which causes written proxy objects to
+              be  read  as  original objects.  In this case, [4mcreateAndRead[24m and
+              [4mwrite[24m are to be provided with [4mcreate[24m and [4mread[24m set to [1mNIL[22m.  Types
+              which  support [4mcreateAndRead[24m must not be extended and are better
+              kept private for this reason.
+
+       The interface procedures should meet following specification:
+       [4mcreate[24m: [1mPROCEDURE[22m([1mVAR [4m[22mo[24m: [4mObject[24m);
+            create (via [1mNEW[22m) a new object of the specific type and perform the
+            type-specific  initializations  for that object which includes the
+            call of [4mInit[24m for it.  Note that [4mServices.Init[24m is  called  by  [4mInit[0m
+            and  that  initializations  of  extensions  between  [4mPersistentOb-[0m
+            [4mjects.Object[24m and the specific extension  should  be  done  in  the
+            extension order after calling [4mInit[24m.
+       [4mread[24m: [1mPROCEDURE[22m([4ms[24m: [4mStreams.Stream[24m; [4mo[24m: [4mObject[24m) : [1mBOOLEAN[22m;
+            read  the extension-specific data of [4mo[24m from [4ms[24m.  Note that one call
+            of [4mPersistentObjects.Read[24m causes [4mread[24m to be called for  each  non-
+            abstract  extension  between [4mPersistentObjects.Object[24m and the type
+            of the object.
+       [4mwrite[24m: [1mPROCEDURE[22m([4ms[24m: [4mStreams.Stream[24m; [4mo[24m: [4mObject[24m) : [1mBOOLEAN[22m;
+            write the extension-specific data of [4mo[24m to [4ms[24m.  Note that if [4mcreate-[0m
+            [4mAndRead[24m  is specified instead of [4mcreate[24m and [4mread[24m, [4mwrite[24m must write
+            the data of all extensions and  not  only  that  of  the  specific
+            extension.
+       [4mcreateAndRead[24m:  [1mPROCEDURE[22m([4ms[24m:  [4mStreams.Stream[24m;  [4mcreate[24m:  [1mBOOLEAN[22m; [1mVAR [4m[22mo[24m:
+            [4mObject[24m) : [1mBOOLEAN[22m;
+            perform the operations of [4mcreate[24m (if requested)  and  [4mread[24m.   Note
+            that  in  difference to [4mread[24m the interface procedure [4mcreateAndRead[0m
+            is responsible for reading the whole object  covering  all  exten-
+            sions.
+
+       In some cases there exist several variants for the interface procedures
+       [4mwrite[24m and [4mread[24m to save and load extension-specific data,  e.g.  a  deep
+       copy with all depending objects, or a copy of the object only with fur-
+       ther references exported (see [4mRemoteObjects(3)[24m).  Additional parameter-
+       ization  may  be achieved by attaching disciplines (see [4mDisciplines(3)[24m)
+       to the output stream and by examining them in the [4mwrite[24m interface  pro-
+       cedure.   But please note that [4mPersistentObjects[24m is free to pass tempo-
+       rary in-memory streams to the interface procedures.   To  allow  disci-
+       pline  access in this case [4mPersistentObjects[24m links the temporary stream
+       via [4mIndirectDisciplines.Forward[24m to the original  stream.   Thus,  [4mIndi-[0m
+       [4mrectDisciplines.Seek[24m has to be used instead of [4mDisciplines.Seek[24m to find
+       additional parameters inside of the interface procedures.
+
+       The interface procedures should read and write Oberon base types by the
+       use  of [4mNetIO(3)[24m.  This assures that the exchange of persistent objects
+       is even possible between different hardware architectures.  The  inter-
+       face  procedures  are free to call [4mRead[24m and [4mWrite[24m for persistent subob-
+       jects.  In case of deep copies of possibly circular data structures the
+       use of [4mLinearizedStructures(3)[24m is recommended.
+
+       [4mRegisterType[24m  is to be called during the initialization time by modules
+       which extend [4mPersistentObjects.Object[24m.  The  type  names  to  be  given
+       should  be  of  the form "[4mModuleName.TypeName[24m" (where [4mModuleName[24m is the
+       name of the module the data type is defined in,  and  [4mTypeName[24m  is  the
+       name  of  the  data  type)  to assure uniqueness and to support dynamic
+       loading.  If the data type of an object is a direct extension  of  [4mPer-[0m
+       [4msistentObjects.Object[24m, "" is to be given as [4mbaseName[24m.  Types which have
+       [4mcreateAndRead[24m as interface procedure must not be given as base type.
+
+       [4mInit[24m connects a newly created object with its data type given by  [4mtype[24m.
+       Note that [4mInit[24m calls [4mServices.Init[24m for [4mobject[24m.
+
+   [1mUsing persistent objects[0m
+       Persistent  objects  may be saved and loaded in dependence of a stream-
+       specific mode.  By default, each object saved is accompanied by a  full
+       type  description  which  includes  the  whole  type  hierarchy of that
+       object.  This allows each object to be read in independently from  oth-
+       ers  and  makes projections possible.  Projections are necessary if one
+       of the modules which belongs to the type hierarchy is not  present  and
+       cannot be loaded dynamically.
+
+       For  many  applications,  however, this full type information takes too
+       much space and needs too long to be read  in.   [4mPersistentObjects[24m  sup-
+       ports  an incremental type coding mode which leads to very compact cod-
+       ing for object sequences with repeating types.  But this requires  that
+       objects  are  read  in the same sequence as they have been written ear-
+       lier.
+
+       Modes are to be given as the  sum  of  three  integer  constants  which
+       select three different submodes:
+
+       ·      [4mfullTypeName[24m, [4mtypeCode[24m, or [4mincrTypeCode[24m specify how types are to
+              be encoded.  [4mfullTypeName[24m encodes types by giving the type names
+              which  has  been  earlier  given to [4mRegisterType[24m, [4mtypeCode[24m emits
+              just type numbers which are not compatible  to  other  programs,
+              and  [4mincrTypeCode[24m  enables an efficient incremental encoding (as
+              described above) which preserves  compatibility  to  other  pro-
+              grams.
+
+       ·      [4mwithSize[24m  or  [4mwithoutSize[24m  specify whether the size of the whole
+              object saved will be stored (at  the  beginning)  or  not.   The
+              reading party is able to skip unsupported parts of the object in
+              case of projections if the size is part of the  encoding.   Note
+              that  size informations are expensive to generate if a stream is
+              used which does not support seek operations.
+
+       ·      [4mwithHier[24m or [4mwithoutHier[24m specify whether the whole type hierarchy
+              is  to  be  encoded  or  just the exact type of the object only.
+              Projections are only possible if  the  type  hierarchy  is  sup-
+              ported.
+
+       The  default  mode  is [4mfullTypeName[24m + [4mwithSize[24m + [4mwithHier[24m, a more effi-
+       cient variant for sequential access is [4mincrTypeCode[24m + [4mwithSize[24m +  [4mwith-[0m
+       [4mHier[24m, and the most efficient variant which still supports exchangeabil-
+       ity with other programs but prohibits  projections  is  [4mincrTypeCode[24m  +
+       [4mwithoutSize[24m + [4mwithoutHier[24m.
+
+       [4mSetMode[24m  sets the mode for [4ms[24m and [4mGetMode[24m returns the mode of [4ms[24m which is
+       currently in use.  Note that the mode affects  write  operations  only.
+       [4mIsProjected[24m allows to test whether [4mobject[24m was projected during its read
+       operation or not.
+
+       [4mWrite[24m converts [4mobject[24m into a sequence of bytes which is  written  to  [4ms[0m
+       which may be later read in by [4mRead[24m.  Note that [4mWrite[24m requires [4mobject[24m to
+       be non-[1mNIL [22mand that [4mRead[24m guarantees [4mobject[24m to be non-[1mNIL [22mon success.
+
+       [4mGuardedRead[24m works like [4mRead[24m but applies a type guard to the object read
+       in  and  returns [1mFALSE [22mif the read object is not an extension of [4mguard[24m.
+       Note that in case of  type  guard  failures  the  read  object  is  not
+       assigned  to [4mobject[24m to avoid hard type guard failures (i.e. those which
+       would lead to runtime errors which at least abort  the  current  corou-
+       tine).   To  differentiate between type guard failures (which leave the
+       stream at a defined position) and I/O errors (which possibly leave  the
+       stream  at an undefined position) it may be useful to examine the error
+       events which have been passed to [4ms[24m.
+
+       [4mWriteObjectOrNIL[24m and [4mReadObjectOrNIL[24m work like [4mWrite[24m and [4mRead[24m but allow
+       [1mNIL [22mto be passed and to be returned.  Note that [4mReadObjectOrNIL[24m returns
+       [1mTRUE [22meven when [1mNIL [22mhas  been  successfully  passed.   [4mGuardedReadObjec-[0m
+       [4mtOrNIL[24m works like [4mGuardedRead[24m but allows like [4mReadObjectOrNIL[24m [1mNIL [22mto be
+       returned.  Because [1mNIL [22mmay always be assigned to an  object  reference,
+       the  type  test  is  skipped in case of [1mNIL [22mand [1mTRUE [22mis returned.  Note
+       that read and write operations  must  be  properly  paired,  i.e.   the
+       [4mXXXOrNIL[24m operations are [1mnot [22mcompatible to the other operations.
+
+       [4mReadInto[24m  allows  to avoid the creation of a new object by reading into
+       an already existing object.  This requires the type of the object to be
+       read  in to be an extension of [4mobject[24m.  [4mReadInto[24m is compatible to [4mWrite[0m
+       only.
+
+[1mDIAGNOSTICS[0m
+       All read and write operations return [1mFALSE [22min case of errors and gener-
+       ate  an  error event in that case which is related to the given stream.
+       Following error codes are implemented:
+       [4mcannotReadData[24m     while it was possible to read and decode the type, a
+                          read  error  occurred  during  reading of the object
+                          data, i.e. one  of  the  [4mread[24m  interface  procedures
+                          returned  [1mFALSE[22m.   Note  that reading is immediately
+                          aborted in such a case which leaves the stream at an
+                          undefined position (possibly inside of an object).
+       [4mcannotWriteData[24m    while  it  was possible to encode and write the type
+                          information, a write error occurred  during  writing
+                          of  the object data, i.e. one of the [4mwrite[24m interface
+                          procedures returned [1mFALSE[22m.   Note  that  writing  is
+                          immediately  aborted in such a case which leaves the
+                          stream at an undefined position.
+       [4mcannotReadType[24m     is returned in case of failed stream operations only
+                          during reading the type information.
+       [4mcannotWriteType[24m    a  write operation for the underlying stream failed.
+       [4minvalidType[24m        bogus input was found which does not  conform  to  a
+                          valid  type  information.   This  may  happen due to
+                          undefined stream positions or  due  to  incompatible
+                          versions   of   [4mPersistentObjects[24m.   Another  common
+                          source of this problem are unpaired read  and  write
+                          operations  (e.g. writing an object with [4mWriteObjec-[0m
+                          [4mtOrNIL[24m but trying to read it with [4mRead[24m).
+       [4munknownType[24m        a valid type information was found  which,  however,
+                          is not known or supported by the reading program and
+                          does not permit projections.  This leaves the stream
+                          at  a defined position only if [4mwithSize[24m was given at
+                          the time of writing.
+       [4motherTypeHier[24m      is returned in case of incremental type informations
+                          which  include  type  hierarchies if inconsistencies
+                          have been found.  Inconsistencies  may  result  from
+                          non-sequential  write  or  read  operations, or from
+                          different writing sources.
+       [4meofReached[24m         end of file was unexpectedly encountered.  This  may
+                          be  returned  during reading of the type information
+                          or during the reading of the object data.
+       [4mcannotSkip[24m         a projection was attempted  and  failed  projections
+                          were prohibited (due to missing size information) or
+                          the non-supported data parts could not  be  skipped.
+                          Nevertheless,  the so far created and read object is
+                          returned in  [4mobject[24m  despite  the  return  value  of
+                          [1mFALSE[22m.
+       [4mtypeGuardFailure[24m   is returned by [4mGuardedRead[24m or [4mGuardedReadObjectOrNIL[0m
+                          if the read object is not an extension of [4mguard[24m,  or
+                          by  [4mReadInto[24m if the object to be read has not a type
+                          which is an extension of that of [4mobject[24m.
+
+       Several errors which result from programming mistakes  are  covered  by
+       assertions:
+
+       ·      [4mRegisterType[24m and [4mServices.InitType[24m (which is called by [4mRegister-[0m
+              [4mType[24m) check all parameters for validity, i.e. [4mname[24m must be  non-
+              empty  and  unique,  [4mbaseName[24m  must be empty or an already known
+              name of a type which has been passed  to  [4mRegisterType[24m  (not  to
+              [4mService.CreateType[24m),  and [4mif[24m must be [1mNIL [22m(for abstract types) or
+              contain a valid combination of supported interface procedures as
+              described  above.   Types  which have [4mcreateAndRead[24m as interface
+              procedure must not be given as base type.
+
+       ·      [4mInit[24m must not be called for  objects  of  abstract  types  (i.e.
+              those  which  must  not be instantiated) and [4mtype[24m must be one of
+              type which has been earlier returned by [4mRegisterType[24m.
+
+       ·      Invalid mode values which are passed to [4mSetMode[24m lead to failures
+              on subsequent write operations.
+
+[1mSEE ALSO[0m
+       [4mConstantObjects(3)[24m           simplified  support  of  [4mPersistentObjects[0m
+                                    for constant objects
+       [4mContainers(3)[24m                collections of persistent objects
+       [4mDisciplines(3)[24m               attachment of non-persistent  data  struc-
+                                    tures
+       [4mIndirectDisciplines(3)[24m       shared disciplines
+       [4mLinearizedStructures(3)[24m      I/O of possibly circular data structures
+       [4mModularizedStructures(3)[24m     distribution   of   graphs  of  persistent
+                                    objects across multiple byte sequences
+       [4mNetIO(3)[24m                     I/O of Oberon base types
+       [4mPersistentDisciplines(3)[24m     persistent disciplines
+       [4mPersistentEvents(3)[24m          support of persistent events
+       [4mPersistentTexts(3)[24m           persistent objects representing texts
+       [4mRelatedEvents(3)[24m             error handling
+       [4mRemotePersistentObjects(3)[24m   support  of  [4mPersistentObjects[24m  for  proxy
+                                    objects  which have been returned by [4mRemo-[0m
+                                    [4mteObjects(3)[0m
+       [4mServices(3)[24m                  type system of the library
+       [4mStreams(3)[24m                   stream operations
+
+[1mAUTHORS[0m
+       The original implementation and manual page was written 1993 by  Detlef
+       Birkholz.  The revisions are due to Andreas Borchert.
+
+
+
+Release 0.5                Last change: 10 July 2003      PersistentObjects(3)

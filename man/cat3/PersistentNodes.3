@@ -1,0 +1,99 @@
+PersistentNodes(3)            Ulm's Oberon System           PersistentNodes(3)
+
+
+
+[1mNAME[0m
+       PersistentNodes - persistent hierarchy of nodes
+
+[1mSYNOPSIS[0m
+       CONST dbfailure = 0;
+       CONST dbinconsistent = 1;
+       CONST transfailure = 2;
+       CONST noroot = 3;
+       CONST linkwithoutparent = 4;
+       CONST nonunique = 5;
+       CONST badlink = 6;
+       CONST errors = 7;
+       TYPE ErrorCode = SHORTINT; (* dbfailure ... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+                (Events.EventRec)
+                errorcode: ErrorCode;
+             END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Init(container: Containers.Container;
+                      permissions: Names.Permissions) : BOOLEAN;
+
+       PROCEDURE Open(VAR root: Names.Node;
+                      container: Containers.Container) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mPersistentNodes[24m  provides an implementation of [4mNames(3)[24m where the nodes
+       remain persistent thanks to a persistent container.   All  capabilities
+       of [4mNames(3)[24m are supported. Some notes regarding this implementation:
+
+       ·      [4mNames.Insert[24m  accepts  nodes from other implementations or other
+              containers.  However, these connections are not  persistent  and
+              are lost as soon as the container is re-opened. [4mRobustObjects(3)[0m
+              is recommended to let such  objects  reappear  automatically  as
+              soon as the persistent nodes reappear.
+
+       ·      [4mNames.Destroy[24m  does  not permit the root object to be destroyed.
+              This is rejected independent from the configured  [4mShards(3)[24m  pot
+              for  the  [4mNames.destroy[24m  access  mode.  In case of an attempt to
+              destroy a node by terminating  it  using  [4mResources.Notify[24m,  all
+              subsequent  operations on any persistent node from the same con-
+              tainer will fail until the container is re-opened again.
+
+       ·      Nodes that become unreachable by [4mNames.Delete[24m  or  [4mNames.Destroy[0m
+              operations will be garbage collected by the next [4mOpen[24m operation.
+
+       [4mInit[24m prepares a container for subsequent  use  of  this  module.   This
+       causes  all present objects in the container to be deleted and an empty
+       root node to be inserted with the given set of access permissions.
+
+       [4mOpen[24m opens [4mcontainer[24m and, if successful, makes its root node available.
+       Some notes:
+
+       ·      Containers that are passed to [4mOpen[24m are for exclusive use of [4mPer-[0m
+              [4msistentNodes[24m only.
+
+       ·      [4mPersistentNodes[24m  maintains  a  transaction  (see  [4mObjectTransac-[0m
+              [4mtions(3)[24m)  for  each  opened container which does not permit any
+              operations on [4mcontainer[24m in parallel.
+
+       ·      All nodes that are retrieved from  the  container  terminate  as
+              soon as the container terminates.
+
+[1mDIAGNOSTICS[0m
+       [4mPersistentNodes[24m generates various standard error events of [4mNames(3)[24m and
+       following in addition:
+       [4mdbfailure[24m           an operation on the underlying container failed.
+       [4mdbinconsistent[24m      inconsistencies were found by [4mOpen[24m within the  con-
+                           tainer
+       [4mtransfailure[24m        the  transaction  object  of  [4mObjectTransactions(3)[0m
+                           which is used for the container generated an error
+       [4mnoroot[24m              no root object was found within the container (spe-
+                           cial case of a database inconsistency)
+       [4mlinkwithoutparent[24m   a link without a valid parent node was found within
+                           the container (special case of a database inconsis-
+                           tency)
+       [4mnonunique[24m           two  links shared the same name and belonged to the
+                           same parent node (special case of a database incon-
+                           sistency)
+       [4mbadlink[24m             a  link  with an invalid reference was found within
+                           the container (special case of a database inconsis-
+                           tency)
+
+[1mSEE ALSO[0m
+       [4mContainers(3)[24m   abstraction for persistent object databases
+       [4mNames(3)[24m        Oberon name spaces
+       [4mShards(3)[24m       general abstraction for authorizations
+
+
+
+Release 0.5                Last change: 25 June 2004        PersistentNodes(3)

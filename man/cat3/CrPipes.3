@@ -1,0 +1,132 @@
+
+
+
+CrPipes(3)             Ulm's Oberon System             CrPipes(3)
+
+
+NNAAMMEE
+       CrPipes - coroutine pipes
+
+SSYYNNOOPPSSIISS
+       TYPE Filter = PROCEDURE (in, out: Streams.Stream);
+       TYPE CrPipe = POINTER TO CrPipeRec;
+       TYPE CrPipeRec = RECORD (Streams.StreamRec) END;
+
+       PROCEDURE Open(VAR out, in: Streams.Stream; bufmode: Streams.BufMode);
+       PROCEDURE Spawn(filter: Filter; in, out: Streams.Stream);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _C_r_P_i_p_e_s realizes pipelines of arbitrary length on a corou­
+       tine base.  Each coroutine is represented by a filter.   A
+       filter  is  defined  to be a procedure which reads from an
+       input stream, does some processing, and writes to an  out­
+       put  stream.   The  streams  are of type _C_r_P_i_p_e inside the
+       pipeline and may be of any stream type at the two ends  of
+       the pipeline.
+
+       _O_p_e_n  creates  a  pipeline  with  two  streams (similar to
+       _p_i_p_e_(_2_)).  Both streams remain unconnected until they  are
+       connected to filters by _S_p_a_w_n.  Input/output operations to
+       unconnected pipeline streams  are  illegal.   Transfer  of
+       control  mainly depends on the buffering mode of the inner
+       streams:
+       _S_t_r_e_a_m_s_._o_n_e_b_u_f    is  useful  for  byte-oriented  filters,
+                         else     every    _S_t_r_e_a_m_s_._R_e_a_d_B_y_t_e    or
+                         _S_t_r_e_a_m_s_._W_r_i_t_e_B_y_t_e    would    cause    a
+                         CCRRSSWWIITTCCHH-operation.
+       _S_t_r_e_a_m_s_._n_o_b_u_f     is  useful  for record-oriented filters,
+                         especially  if  the  calculation  of   a
+                         record  needs  a  long  time and not all
+                         records are  needed,  e.g.  backtracking
+                         algorithms
+       _S_t_r_e_a_m_s_._l_i_n_e_b_u_f   should  be taken if line oriented output
+                         to a terminal device is filtered.
+       _o_u_t  is  opened  for   writing   and   _i_n   for   reading.
+       _S_t_r_e_a_m_s_._S_e_e_k  and  _S_t_r_e_a_m_s_._T_e_l_l  are  illegal  for  _C_r_P_i_p_e
+       streams.
+
+       _S_p_a_w_n passes _i_n and _o_u_t to _f_i_l_t_e_r and starts the procedure
+       as coroutine.  At least one of the two streams should be a
+       pipeline stream.  Pipeline streams  which  are  passed  to
+       _S_p_a_w_n  are  connected  to  _f_i_l_t_e_r.  Pipeline constructions
+       must be linear: cycles would cause deadlocks.
+
+       The pipeline starts working either by reading from the end
+       or  by writing to the start of the pipeline.  A filter has
+       three ways of returning/closing:
+
+       (1)    calling _S_t_r_e_a_m_s_._C_l_o_s_e(_o_u_t).  If _o_u_t is a pipe  this
+              is  an  operation  of  no  return;  (2) can be used
+
+
+
+Release 0.5         Last change: 15 April 1999                  1
+
+
+
+
+
+CrPipes(3)             Ulm's Oberon System             CrPipes(3)
+
+
+              instead of (1) to be sure about returning.
+
+       (2)    executing RREETTUURRNN; this causes  _o_u_t  and  _i_n  to  be
+              closed automatically if they are of type _C_r_P_i_p_e.
+
+       (3)    implicitly if the consumer calls _S_t_r_e_a_m_s_._C_l_o_s_e.
+
+EEXXAAMMPPLLEE
+       The   example  following  causes  any  output  written  to
+       _S_t_r_e_a_m_s_._s_t_d_o_u_t to be filtered by _U_p_p_e_r_T_o_L_o_w_e_r.
+
+       PROCEDURE UpperToLower(in, out: Streams.Stream);
+          CONST diff = ORD("a") - ORD("A");
+          VAR ch: CHAR;
+       BEGIN
+          WHILE Streams.ReadByte(in, ch) DO
+             IF (ch >= "A") & (ch <= "Z") THEN
+                ch := CHR(ORD(ch) - diff);
+             END;
+             IF ~Streams.WriteByte(out, ch) THEN
+                RETURN
+             END;
+          END;
+       END UpperToLower;
+
+       PROCEDURE Setup;
+          VAR
+             out, in: Streams.Stream;
+             oldstdout: Streams.Stream;
+       BEGIN
+          CrPipes.Open(out, in, Streams.linebuf);
+          oldstdout := Streams.stdout;
+          Streams.stdout := out;
+          CrPipes.Spawn(UpperToLower, in, oldstdout);
+       END Setup;
+
+
+SSEEEE AALLSSOO
+       _C_o_r_o_u_t_i_n_e_s_(_3_)   global  variables  _C_o_r_o_u_t_i_n_e_s_._c_u_r_r_e_n_t  and
+                       _C_o_r_o_u_t_i_n_e_s_._s_o_u_r_c_e
+       _S_t_r_e_a_m_s_(_3_)      stream operations
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 15 April 1999                  2
+
+

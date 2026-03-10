@@ -1,0 +1,132 @@
+
+
+
+PersistentDisciplines(3)Ulm's Oberon SystemPersistentDisciplines(3)
+
+
+NNAAMMEE
+       PersistentDisciplines  - attach additional data structures
+       to persistent objects
+
+SSYYNNOOPPSSIISS
+       TYPE Identifier = LONGINT;
+       TYPE Discipline = POINTER TO DisciplineRec;
+       TYPE DisciplineRec =
+          RECORD
+             (PersistentObjects.ObjectRec)
+             id: Identifier;
+          END;
+       TYPE Object = POINTER TO ObjectRec;
+       TYPE ObjectRec =
+          RECORD
+             (PersistentObjects.ObjectRec)
+          END;
+       TYPE AddProc = PROCEDURE (object: Disciplines.Object; discipline: Discipline);
+       TYPE RemoveProc = PROCEDURE (object: Disciplines.Object; id: Identifier);
+       TYPE SeekProc = PROCEDURE (object: Disciplines.Object; id: Identifier;
+                                  VAR discipline: Discipline) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             add: AddProc;
+             remove: RemoveProc;
+             seek: SeekProc;
+          END;
+
+       PROCEDURE Unique(sample: Discipline) : Identifier;
+       PROCEDURE GetSample(id: Identifier) : Discipline;
+       PROCEDURE AttachInterface(object: Disciplines.Object; if: Interface);
+       PROCEDURE UseInterfaceOf(object, host: Disciplines.Object);
+       PROCEDURE Add(object: Disciplines.Object; discipline: Discipline);
+       PROCEDURE Remove(object: Disciplines.Object; id: Identifier);
+       PROCEDURE Seek(object: Disciplines.Object; id: Identifier;
+                      VAR discipline: Discipline) : BOOLEAN;
+       PROCEDURE CreateObject(VAR object: Object);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _P_e_r_s_i_s_t_e_n_t_D_i_s_c_i_p_l_i_n_e_s allows  to  attach  additional  data
+       structures to persistent objects.  These added data struc­
+       tures  are  also  persistent  and  they  are  written/read
+       to/from  a  stream  together  with  the  object  they  are
+       attached to.
+
+       Every module which implements  a  discipline  should  call
+       _U_n_i_q_u_e during its initialization.  The returned identifier
+       is needed later to locate the data structures  contributed
+       by  a  specific  module.  Note that identifiers are always
+       local to the current process environment.   Thus,  identi­
+       fiers  must  not  be  marshalled  by  the  _r_e_a_d  or  _w_r_i_t_e
+
+
+
+Release 0.5       Last change: 16 September 1996                1
+
+
+
+
+
+PersistentDisciplines(3)Ulm's Oberon SystemPersistentDisciplines(3)
+
+
+       interface procedure for _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s.  Instead, iden­
+       tifiers are to be assigned by the _c_r_e_a_t_e procedure.
+
+       _U_n_i_q_u_e requires a sample of the discipline to be provided.
+       This technique allows to map local identifiers  to  remote
+       identifiers  in case of remote objects.  For this to work,
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_._I_n_i_t must have been called for the  sam­
+       ple.  _G_e_t_S_a_m_p_l_e returns the sample for a given identifier.
+       Invalid identifiers cause NNIILL to be returned.
+
+       _A_d_d attaches _d_i_s_c_i_p_l_i_n_e  to  _o_b_j_e_c_t.   The  identifier  is
+       given  by the _i_d component of _d_i_s_c_i_p_l_i_n_e.  Adding a disci­
+       pline with the same identifier twice to  the  same  object
+       causes the discipline to be replaced.
+
+       _R_e_m_o_v_e  removes  the  discipline  with  the  given _i_d from
+       _o_b_j_e_c_t, if it exists.
+
+       _S_e_e_k seeks for a discipline with the given _i_d and  returns
+       it  in  _d_i_s_c_i_p_l_i_n_e,  if  it  exists.   Otherwise, FFAALLSSEE is
+       returned.
+
+       Usually, _P_e_r_s_i_s_t_e_n_t_D_i_s_c_i_p_l_i_n_e_s  uses  builtin  implementa­
+       tions of _A_d_d, _R_e_m_o_v_e, and _S_e_e_k.  These default implementa­
+       tions may be overridden by calling _A_t_t_a_c_h_I_n_t_e_r_f_a_c_e.  Calls
+       of  _A_t_t_a_c_h_I_n_t_e_r_f_a_c_e  are  ignored  if  the list of already
+       attached disciplines  is  non-empty.   _A_t_t_a_c_h_I_n_t_e_r_f_a_c_e  is
+       mainly intended for proxy objects, i.e. objects which for­
+       ward all messages to the  original  object  which  may  be
+       located elsewhere.
+
+       _U_s_e_I_n_t_e_r_f_a_c_e_O_f causes all _A_d_d, _R_e_m_o_v_e, and _S_e_e_k operations
+       to be forwarded from _o_b_j_e_c_t to _h_o_s_t.   Note  that  _P_e_r_s_i_s_­
+       _t_e_n_t_D_i_s_c_i_p_l_i_n_e_s    supports   _F_o_r_w_a_r_d_e_r_s_(_3_),   i.e.   _F_o_r_­
+       _w_a_r_d_e_r_s_._F_o_r_w_a_r_d calls _U_s_e_I_n_t_e_r_f_a_c_e_O_f implicitly.
+
+       _C_r_e_a_t_e_O_b_j_e_c_t creates a new object. This  procedure  should
+       be used instead of NNEEWW, if you want to create an object of
+       type _O_b_j_e_c_t.
+
+SSEEEE AALLSSOO
+       _D_i_s_c_i_p_l_i_n_e_s_(_3_)         attachments of non-persistent addi­
+                              tional data structures
+       _F_o_r_w_a_r_d_e_r_s_(_3_)          general forwarding operation
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)   input   and  output  of  persistent
+                              objects
+
+AAUUTTHHOORRSS
+       The original implementation and manual  page  was  written
+       1993 by Detlef Birkholz.  The revisions are due to Andreas
+       Borchert.
+
+
+
+
+
+
+Release 0.5       Last change: 16 September 1996                2
+
+

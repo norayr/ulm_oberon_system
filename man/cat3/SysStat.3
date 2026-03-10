@@ -1,0 +1,198 @@
+
+
+
+SysStat(3)             Ulm's Oberon System             SysStat(3)
+
+
+NNAAMMEE
+       SysStat - examine inode structure
+
+SSYYNNOOPPSSIISS
+       CONST type = {16..19};
+       CONST prot = {23..31};
+
+       (* file types *)
+       CONST reg = {16};               (* regular *)
+       CONST dir = {17};               (* directory *)
+       CONST chr = {18};               (* character special *)
+       CONST fifo = {19};              (* fifo *)
+       CONST blk = {17..18};           (* block special *)
+       CONST symlink = {16, 18};       (* symbolic link *)
+       CONST socket = {16, 17};        (* socket *)
+       CONST door = {16, 17, 19};      (* door *)
+
+       (* special *)
+       CONST setuid = 20;              (* set user id on execution *)
+       CONST setgid = 21;              (* set group id on execution *)
+       CONST savetext = 22;            (* save swapped text even after use *)
+
+       (* protection *)
+       CONST uread = 23;               (* read permission owner *)
+       CONST uwrite = 24;              (* write permission owner *)
+       CONST uexec = 25;               (* execute/search permission owner *)
+       CONST gread = 26;               (* read permission group *)
+       CONST gwrite = 27;              (* write permission group *)
+       CONST gexec = 28;               (* execute/search permission group *)
+       CONST oread = 29;               (* read permission other *)
+       CONST owrite = 30;              (* write permission other *)
+       CONST oexec = 31;               (* execute/search permission other *)
+
+       CONST owner = {23..25};
+       CONST group = {26..28};
+       CONST other = {29..31};
+       CONST read = {23, 26, 29};
+       CONST write = {24, 27, 30};
+       CONST exec = {25, 28, 31};
+       CONST rwx = {23..31};
+
+       TYPE StatRec =
+          RECORD
+             device: SysTypes.Device; (* ID of device containing
+                                         a directory entry for this file *)
+             inode: SysTypes.Inode;   (* inode number *)
+             mode: SET;               (* file mode; see mknod(2) *)
+             nlinks: INTEGER;         (* number of links *)
+             uid: INTEGER;            (* user id of the file's owner *)
+             gid: INTEGER;            (* group id of the file's group *)
+             rdev: SysTypes.Device;   (* ID of device
+                                         this entry is defined only for
+                                         character special or block
+                                         special files
+
+
+
+Release 0.5       Last change: 12 November 2000                 1
+
+
+
+
+
+SysStat(3)             Ulm's Oberon System             SysStat(3)
+
+
+                                      *)
+             size: SysTypes.Offset;   (* file size in bytes *)
+             atime: SysTypes.Time;    (* time of last access *)
+             mtime: SysTypes.Time;    (* time of last data modification *)
+             ctime: SysTypes.Time;    (* time of last file status change *)
+             blksize: LONGINT;        (* preferred blocksize *)
+             blocks: LONGINT;         (* # of blocks allocated *)
+          END;
+
+       PROCEDURE Stat(path: ARRAY OF CHAR; VAR buf: StatRec;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Lstat(path: ARRAY OF CHAR; VAR buf: StatRec;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Fstat(fd: SysTypes.File; VAR buf: StatRec;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_t_a_t,  _L_s_t_a_t,  and  _F_s_t_a_t  interface  the _s_t_a_t, _l_s_t_a_t, and
+       _f_s_t_a_t UNIX system calls.  All return the  status  informa­
+       tion in _b_u_f, a record of type _S_t_a_t_R_e_c_.
+
+       The protection bits are defined for Oberon in a convenient
+       manner.  The low-order 2-byte-word of _m_o_d_e determines  the
+       type  and protection of the file.  _t_y_p_e specifies the mask
+       for the file type and _p_r_o_t the mask for the protection.
+
+       Possible file types are:
+       _r_e_g       regular file
+       _d_i_r       directory
+       _c_h_r       character special
+       _f_i_f_o      named pipe
+       _b_l_k       block special
+       _s_y_m_l_i_n_k   link
+       _s_o_c_k_e_t    socket file
+       Example: Check _s_t_a_t to represent a directory: _s_t_a_t_._m_o_d_e  *
+       _S_y_s_S_t_a_t_._t_y_p_e = _S_y_s_S_t_a_t_._d_i_r.
+
+       The file protection includes some special bits:
+       _s_e_t_u_i_d     set user id on execution
+       _s_e_t_g_i_d     set group id on execution
+       _s_a_v_e_t_e_x_t   save swapped text even after use
+       and  regular protection bits: _u_r_e_a_d, _u_w_r_i_t_e, _u_e_x_e_c, _g_r_e_a_d,
+       _g_w_r_i_t_e, _g_e_x_e_c, _o_r_e_a_d, _o_w_r_i_t_e, and _o_e_x_e_c.  These  bits  are
+       given  by  their  bit  number.   Example  for "rw-r--r--":
+       {_u_r_e_a_d, _u_w_r_i_t_e, _g_r_e_a_d, _o_r_e_a_d}.
+
+       Additional masks are given for _o_w_n_e_r, _g_r_o_u_p, _o_t_h_e_r,  _r_e_a_d,
+       _w_r_i_t_e,  _e_x_e_c,  and _r_w_x.  _o_w_n_e_r includes all bits dedicated
+       to the owner,  _r_e_a_d  includes  bits  for  reading  (owner,
+       group,  and  others),  _r_w_x contains all regular protection
+       bits.    Example   for   "rw-r--r--":   (_S_y_s_S_t_a_t_._r_e_a_d+_S_y_s_­
+       _S_t_a_t_._w_r_i_t_e)*_S_y_s_S_t_a_t_._o_w_n_e_r       +       _S_y_s_S_t_a_t_._r_e_a_d*(_S_y_s_­
+       _S_t_a_t_._g_r_o_u_p+_S_y_s_S_t_a_t_._o_t_h_e_r).
+
+
+
+Release 0.5       Last change: 12 November 2000                 2
+
+
+
+
+
+SysStat(3)             Ulm's Oberon System             SysStat(3)
+
+
+DDIIAAGGNNOOSSTTIICCSS
+       System call failures lead to events of _S_y_s_E_r_r_o_r_s_(_3_).   The
+       _e_r_r_o_r_s  parameter is passed to _S_y_s_E_r_r_o_r_s_._R_a_i_s_e.  Both pro­
+       cedures return FFAALLSSEE in error case.
+
+SSEEEE AALLSSOO
+       _s_t_a_t_(_2_)       _s_t_a_t and _f_s_t_a_t system call
+       _S_y_s_E_r_r_o_r_s_(_3_)  handling of system call failures
+       _S_y_s_T_y_p_e_s_(_3_)   types needed for system calls
+
+BBUUGGSS
+       Some UNIX versions have less file types (e.g. _s_y_m_l_i_n_k  and
+       _s_o_c_k_e_t)  and no additional meanings for special bits (i.e.
+       for directories).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 12 November 2000                 3
+
+

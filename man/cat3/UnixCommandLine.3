@@ -1,0 +1,85 @@
+UnixCommandLine(3)            Ulm's Oberon System           UnixCommandLine(3)
+
+
+
+[1mNAME[0m
+       UnixCommandLine - [4mArgs(3)[24m scanner for the UNIX command line
+
+[1mSYNOPSIS[0m
+       CONST missingValue = 0;
+       CONST invalidValue = 1;
+       CONST unknownOption = 2;
+       CONST unexpectedArgs = 3;
+       CONST helpRequested = 4;
+       CONST errors = 5;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+             (Events.EventRec)
+             args: Args.Arguments;
+             code: SHORTINT; (* missingValue..unexpectedArgs *)
+             name: ARRAY 80 OF CHAR;
+             END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Include(scanners: Args.ScannerList; priority: Args.Priority);
+
+
+[1mDESCRIPTION[0m
+       [4mUnixCommandLine[24m  provides  a  scanner  for the [4mArgs(3)[24m module that pro-
+       cesses the UNIX command line on base of [4mUnixArguments(3)[24m.
+
+       [4mInclude[24m adds the scanner of this module to [4mscanners[24m with the given pri-
+       ority.  Multiple invocations of [4mInclude[24m for different scanner lists are
+       permitted. Actual scans by this module are later on triggered by  invo-
+       cations of [4mArgs.Scan[24m with a scanner list that includes this implementa-
+       tion.
+
+       During its initialization, [4mUnixCommandLine[24m includes itself to [4mArgs.sys-[0m
+       [4mtemScanners[24m at [4mArgs.highPriority[24m.
+
+[1mDIAGNOSTICS[0m
+       A  command  line  that does not match the specification associated with
+       [4margs[24m passed to [4mArgs.Scan[24m leads to error  events  that  are  related  to
+       [4margs[24m:
+       [4mmissingValue[24m     An option was given without an associated value.
+       [4minvalidValue[24m     An invalid value was given for an option.
+       [4munknownOption[24m    An unknown flag or option name was used.
+       [4munexpectedArgs[24m   More arguments than expected were found.
+       [4mhelpRequested[24m    Explicit usage help is requested.
+
+[1mEXAMPLE[0m
+       MODULE ArgsDemo;
+
+          IMPORT Args, Conclusions, Errors, IntArgs, RelatedEvents, StringArgs,
+             UnixCommandLine;
+
+          VAR
+             args: Args.Arguments;
+
+          PROCEDURE FetchArgs(VAR args: Args.Arguments);
+          BEGIN
+             Args.Create(args);
+             RelatedEvents.QueueEvents(args);
+             Args.Define(args, "copies",  "#", IntArgs.type,    "number of copies");
+             Args.Define(args, "file",    "f", StringArgs.type, "file to be printed");
+             Args.Define(args, "printer", "p", StringArgs.type, "name of the printer");
+             Args.Scan(args, Args.systemScanners);
+             IF RelatedEvents.EventsPending(args) THEN
+                Conclusions.Conclude(args, Errors.fatal, "");
+             END;
+          END FetchArgs;
+
+       BEGIN
+          FetchArgs(args);
+       END ArgsDemo.
+
+
+[1mSEE ALSO[0m
+       [4mArgs(3)[24m            general abstraction for arguments and options
+       [4mUnixArguments(3)[24m   interface to the UNIX command line
+
+
+
+Release 0.5               Last change: 23 August 2005       UnixCommandLine(3)

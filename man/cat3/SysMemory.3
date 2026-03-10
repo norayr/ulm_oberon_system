@@ -1,0 +1,150 @@
+SysMemory(3)                  Ulm's Oberon System                 SysMemory(3)
+
+
+
+[1mNAME[0m
+       SysMemory - interface to memory related system calls
+
+[1mSYNOPSIS[0m
+       (* prot parameter of Map and Protect *)
+       CONST read = { 31 };         (* page can be read *)
+       CONST write = { 30 };        (* page can be written *)
+       CONST exec = { 29 };         (* page can be executed *)
+       CONST none = {};             (* page cannot be accessed *)
+       (* flags parameter of Map *)
+       CONST shared = { 31 };       (* share changes *)
+       CONST private = { 30 };      (* changes are private *)
+       CONST typeMask = { 28..31 }; (* allows comparisons against shared or private *)
+       CONST fixed = { 27 };        (* interpret address exactly *)
+       (* flags parameter of Sync *)
+       CONST async = { 31 };        (* return immediately *)
+       CONST invalidate = { 30 };   (* invalidate mappings *)
+       (* advise parameter of Advise *)
+       CONST normal = 0;            (* no further special treatment *)
+       CONST random = 1;            (* expect random page references *)
+       CONST sequential = 2;        (* expect sequential page references *)
+       CONST willneed = 3;          (* will need these pages *)
+       CONST dontneed = 4;          (* don't need these pages *)
+       (* mode of LockAll *)
+       CONST current = 1;           (* lock all current mappings *)
+       CONST future = 2;            (* lock all future mappings *)
+
+       PROCEDURE GetPageSize() : SysTypes.Size;
+       PROCEDURE Map(address: SysTypes.Address; len: SysTypes.Size;
+                     prot: SET; flags: SET;
+                     fd: SysTypes.File; off: SysTypes.Offset;
+                     VAR mapaddress: SysTypes.Address;
+                     VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Unmap(address: SysTypes.Address; len: SysTypes.Size;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Protect(addr: SysTypes.Address; len: SysTypes.Size; prot: SET;
+                         VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Sync(addr: SysTypes.Address; len: SysTypes.Size;
+                      flags: SET;
+                      VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Advise(addr: SysTypes.Address; len: SysTypes.Size;
+                        advise: INTEGER;
+                        VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Lock(addr: SysTypes.Address; len: SysTypes.Size;
+                      VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Unlock(addr: SysTypes.Address; len: SysTypes.Size;
+                        VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Lockall(mode: INTEGER;
+                         VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE UnlockAll(VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE InCore(addr: SysTypes.Address; len: SysTypes.Size;
+                        VAR vector: SysTypes.Address;
+                        VAR errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mSysMemory[24m  interfaces  all  system  calls which are related to [4mmmap(2)[24m.
+       These system calls allow to map regular and  some  special  files  into
+       arbritrary  positions  (on page boundaries) in the address space of the
+       current process.  They allow to replace the traditional  [4mbrk(2)[24m  system
+       call.
+
+       [4mGetPageSize[24m  returns  the  page  size of the system.  All addresses and
+       sizes given to one of the other procedures should be multiples  of  the
+       page size.  The page size may differ on different kernel architectures:
+       while it is safe to regard a page size constant during the lifetime  of
+       a  process  it  is  unsafe  to assume a constant page size for multiple
+       runs.
+
+       [4mMap[24m maps the range [1m[[4m[22moff[24m, [4moff[24m[1m+[4m[22mlen[24m[1m) [22mof the file referenced by [4mfd[24m into the
+       address  space  at [1m[[4m[22maddress[24m, [4maddress[24m[1m+[4m[22mlen[24m[1m)[22m.  Unless [4mfixed[24m has been given
+       in [4mflags[24m, the system is free  to  choose  another  address  instead  of
+       [4maddress[24m which is returned in [4mmapaddress[24m.  [4mprot[24m specifies the protection
+       mode of the affected memory region. [4mread[24m, [4mwrite[24m and [4mexec[24m may  be  given
+       in any combination.  Following flags may be given to [4mflags[24m:
+       [4mshared[24m    requests the mapped file to be changed on write operations.
+       [4mprivate[24m   causes  a copy to created on the first write operation onto a
+                 mapped page which is referenced on further operations.
+       [4mfixed[24m     requests the given address to  be  interpreted  exactly  (see
+                 above).
+
+       [4mUnmap[24m  removes  the mappings for pages in the given memory range.  [4mPro-[0m
+       [4mtect[24m changes the protections of the mappings  specified  by  the  given
+       range.  [4mSync[24m writes dirty pages of the given memory range to their per-
+       manent storage locations.  Following options may be specified in [4mflags[24m:
+       [4masync[24m        requests  [4mSync[24m  to  return  immediately.  By default, [4mSync[0m
+                    returns after all write operations are completed.
+       [4minvalidate[24m   causes all cached copies of the mapped  range  to  be  re-
+                    obtained upon the next reference.
+
+       [4mAdvise[24m  allows  to  tell  the  kernel the indicated access pattern of a
+       given memory range.  This allows the kernel to parameterize its  paging
+       algorithm to achieve better performance.  Following access patterns are
+       supported:
+       [4mnormal[24m       return to default behaviour.
+       [4mrandom[24m       requests the kernel to expect random page references.
+       [4msequential[24m   sequential page references are to be assumed.
+       [4mwillneed[24m     tells that the given pages are needed and to  be  kept  in
+                    memory, if possible.
+       [4mdontneed[24m     allows  the kernel to swap out the pages immediately with-
+                    out performance penalties.
+
+       [4mLock[24m requests the given memory range to be locked into physical memory.
+       Because  the  possible  impact on system resources, this system call is
+       restricted to the  super-user.   Alternatively,  [4mAdvise[24m  may  be  used.
+       [4mUnlock[24m  undoes  the effect of [4mlock[24m for the given memory range.  [4mLockall[0m
+       requests all pages (or optionally all pages  which  are  added  to  the
+       address  pages or replaced by new mappings) to be locked up into physi-
+       cal memory.  The operational mode is determined by [4mmode[24m:
+       [4mcurrent[24m   lock all pages which are currently allocated.
+       [4mfuture[24m    lock all pages which are allocated in the future or  replaced
+                 by new mappings.
+       [4mUnlockall[24m removes all locks.
+
+       [4mInCore[24m tells which pages of the given memory range are currently cached
+       into physical memory.  The status is returned as a byte-per-page  array
+       which  is  stored into area pointed to by [4mvector[24m.  Bytes set to [1m1 [22mindi-
+       cate that the corresponding page is in physical memory.
+
+[1mDIAGNOSTICS[0m
+       System call failures lead to events of [4mSysErrors(3)[24m.  The [4merrors[24m param-
+       eter  is passed to [4mSysErrors.Raise[24m.  All routines return [1mFALSE [22min error
+       case.
+
+[1mFILES[0m
+       [4m/dev/zero[24m   a special file of zeroes which may be mapped into memory.
+
+[1mSEE ALSO[0m
+       [4mbrk(2)[24m           traditional memory allocation
+       [4mgetpagesize(2)[24m   [4mGetPageSize[0m
+       [4mmadvise(3)[24m       [4mAdvise[0m
+       [4mmctl(2)[24m          [4mAdvise[24m, [4mLock[24m, [4mLockall[24m, [4mSync[24m, [4mUnlock[24m, [4mUnlockAll[0m
+       [4mmincore(2)[24m       [4mInCore[0m
+       [4mmlock(3)[24m         [4mLock[24m, [4mUnlock[0m
+       [4mmlockall(3)[24m      [4mLockall[24m, [4mUnlockall[0m
+       [4mmmap(2)[24m          [4mMap[0m
+       [4mmprotect(2)[24m      [4mProtect[0m
+       [4mmsync(2)[24m         [4mSync[0m
+       [4mmunmap(2)[24m        [4mUnmap[0m
+       [4mzero(4)[24m          special file with zeroes for [4mMap[0m
+       [4mSysErrors(3)[24m     error handling
+       [4mSysIPC(3)[24m        shared memory operations of System V
+
+
+
+Release 0.5                Last change: 10 July 2003              SysMemory(3)

@@ -1,0 +1,198 @@
+
+
+
+ModularizedStructures(3)Ulm's Oberon SystemModularizedStructures(3)
+
+
+NNAAMMEE
+       ModularizedStructures  -  distribute  graphs of persistent
+       objects across multiple byte sequences
+
+SSYYNNOOPPSSIISS
+       TYPE ObjectTable = POINTER TO ObjectTableRec;
+       TYPE ObjectTableRec = RECORD (Disciplines.ObjectRec) END;
+
+       CONST corruptedInput = 0; readFailed = 1;
+       CONST typeGuardFailure = 2; unknownObject = 3;
+       CONST writeFailed = 4; errors = 5;
+       TYPE ErrorCode = SHORTINT; (* corruptedInput ... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             s: Streams.Stream;
+             code: ErrorCode;
+             otype, guard: Services.Type;
+             modname, name: ConstStrings.String;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE CreateTable(VAR table: ObjectTable);
+       PROCEDURE Add(table: ObjectTable;
+                     object: PersistentObjects.Object;
+                     modname, name: ConstStrings.String);
+       PROCEDURE Insert(table: ObjectTable;
+                        object: PersistentObjects.Object;
+                        modname: ConstStrings.String;
+                        VAR name: ConstStrings.String);
+       PROCEDURE Lookup(table: ObjectTable;
+                        modname, name: ConstStrings.String;
+                        VAR object: PersistentObjects.Object) : BOOLEAN;
+       PROCEDURE GetObjects(table: ObjectTable; it: Iterators.Iterator);
+       PROCEDURE InTab(table: ObjectTable; modname: ConstStrings.String) : BOOLEAN;
+
+       PROCEDURE Init(s: Streams.Stream;
+                      modname: ConstStrings.String;
+                      table: ObjectTable);
+       PROCEDURE GetParams(s: Streams.Stream;
+                           VAR modname: ConstStrings.String;
+                           VAR table: ObjectTable);
+
+       PROCEDURE Read(s: Streams.Stream;
+                      VAR object: PersistentObjects.Object) : BOOLEAN;
+       PROCEDURE GuardedRead(s: Streams.Stream;
+                             guard: Services.Type;
+                             VAR object: PersistentObjects.Object) : BOOLEAN;
+       PROCEDURE Write(s: Streams.Stream;
+                       object: PersistentObjects.Object;
+                       modname, name: ConstStrings.String) : BOOLEAN;
+
+
+
+
+Release 0.5         Last change: 27 April 2000                  1
+
+
+
+
+
+ModularizedStructures(3)Ulm's Oberon SystemModularizedStructures(3)
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s allows to store and  restore  graphs
+       of persistent objects across multiple byte sequences. This
+       works by associating objects with modules that  correspond
+       to  separate  byte sequences and giving objects names that
+       may be used  to  reference  objects  in  foreign  modules.
+       These  graphs  may contain cycles as _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s
+       is based upon _L_i_n_e_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s_(_3_).
+
+       Graphs are written module-wise: Open an individual  stream
+       for  each module, call _I_n_i_t for it, and invoke _W_r_i_t_e for a
+       root object of that module. Root objects have the property
+       that  all other objects of that module can be reached from
+       them without crossing module boundaries.
+
+       On reading, modules have to be read in  topological  order
+       by  invoking  _R_e_a_d  or  _G_u_a_r_d_e_d_R_e_a_d  for  each of the root
+       objects on each individual stream representing  a  module.
+       An object table allows to resolve references across module
+       boundaries by storing all objects read  so  far  by  their
+       module and object names.
+
+       Note  that _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s does nnoott store any infor­
+       mation (using _P_e_r_s_i_s_t_e_n_t_D_i_s_c_i_p_l_i_n_e_s_(_3_) or whatever)  about
+       module and/or object names at the objects itself.  Instead
+       these names must be explicitly passed to  _W_r_i_t_e,  and  the
+       reading marshalling procedures are expected to add objects
+       to the object table.  This  avoids  redundancy  and  gives
+       more  flexibility  in  allowing objects to be used in more
+       than one context of _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s.  It  is  recom­
+       mended to put support for this in an application-dependent
+       persistent object type. An example for this is _C_o_m_p_i_l_e_r_O_b_­
+       _j_e_c_t_s_(_3_).
+
+       Not  all  objects belonging to a modularized graph need to
+       be named and read or written using  _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s.
+       This  is necessary only for objects that are possibly ref­
+       erenced across module boundaries.  Objects that are refer­
+       enced by multiple modules but not saved and restored using
+       _M_o_d_u_l_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s will be duplicated.
+
+       _C_r_e_a_t_e_T_a_b_l_e creates an object table that stores persistent
+       objects by their module and object name. Object tables are
+       later associated by _I_n_i_t with a stream that  represents  a
+       module,  and used (but not maintained) by _R_e_a_d and _G_u_a_r_d_e_­
+       _d_R_e_a_d.
+
+       _A_d_d adds _o_b_j_e_c_t to _t_a_b_l_e with the given module and  object
+       name.   Module  names do not have to be registered before,
+       they come into existence when they  are  mentioned  first.
+       _I_n_s_e_r_t works like _A_d_d but generates an unique name for it.
+       _L_o_o_k_u_p allows to access objects of a table by their module
+       and  object  name.   _G_e_t_O_b_j_e_c_t_s  returns  an iterator that
+       allows to iterate through all objects of an object  table.
+
+
+
+Release 0.5         Last change: 27 April 2000                  2
+
+
+
+
+
+ModularizedStructures(3)Ulm's Oberon SystemModularizedStructures(3)
+
+
+       _I_n_T_a_b  returns  TTRRUUEE  if  objects  of  module  _m_o_d_n_a_m_e are
+       included in the table.
+
+       _I_n_i_t associates a stream with a module name and  a  table.
+       There is only one such association active for a stream and
+       multiple calls of _I_n_i_t allow  to  change  an  association.
+       Note that the object table parameter may be NNIILL if neither
+       _R_e_a_d nor _G_u_a_r_d_e_d_R_e_a_d will be called for that stream.  _G_e_t_­
+       _P_a_r_a_m_s returns the parameters passed earlier to _I_n_i_t. Note
+       that _G_e_t_P_a_r_a_m_s must not be called if  _I_n_i_t  has  not  been
+       called before.
+
+       _R_e_a_d  and _G_u_a_r_d_e_d_R_e_a_d work like their counterparts in _L_i_n_­
+       _e_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s_(_3_) but support references across modules
+       if  referenced objects are to be found in the object table
+       associated with _s.  _W_r_i_t_e writes a reference of _o_b_j_e_c_t (if
+       _m_o_d_n_a_m_e  is non-NNIILL and not equal to the module associated
+       with _s),  or  the  object  itself  using  _L_i_n_e_a_r_i_z_e_d_S_t_r_u_c_­
+       _t_u_r_e_s_(_3_) otherwise.
+
+DDIIAAGGNNOOSSTTIICCSS
+       In  addition  to the error events generated by _L_i_n_e_a_r_i_z_e_d_­
+       _S_t_r_u_c_t_u_r_e_s_(_3_), _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_), the marshalling  pro­
+       cedures  in  use,  and the underlying stream, _M_o_d_u_l_a_r_i_z_e_d_­
+       _S_t_r_u_c_t_u_r_e_s may return following error codes for its  error
+       events:
+       _c_o_r_r_u_p_t_e_d_I_n_p_u_t     _R_e_a_d  or  _G_u_a_r_d_e_d_R_e_a_d  found input that
+                          was not generated by _W_r_i_t_e.
+       _r_e_a_d_F_a_i_l_e_d         One  of  the  reading   operations   of
+                          _N_e_t_I_O_(_3_)  failed  (most probably due to
+                          an unexpected end of input).
+       _t_y_p_e_G_u_a_r_d_F_a_i_l_u_r_e   The type guard of _G_u_a_r_d_e_d_R_e_a_d failed.
+       _u_n_k_n_o_w_n_O_b_j_e_c_t      An object reference was found  that  is
+                          not included in the object table.
+       _w_r_i_t_e_F_a_i_l_e_d        The  write  operation  failed  due to a
+                          failure returned by  _N_e_t_I_O_(_3_)  or  _L_i_n_­
+                          _e_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s_(_3_).
+
+SSEEEE AALLSSOO
+       _L_i_n_e_a_r_i_z_e_d_S_t_r_u_c_t_u_r_e_s_(_3_)   support  of graphs of persistent
+                                 objects
+       _P_e_r_s_i_s_t_e_n_t_O_b_j_e_c_t_s_(_3_)      interface of persistent objects
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 27 April 2000                  3
+
+

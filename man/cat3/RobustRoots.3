@@ -1,0 +1,96 @@
+RobustRoots(3)                Ulm's Oberon System               RobustRoots(3)
+
+
+
+[1mNAME[0m
+       RobustRoots - robust root nodes
+
+[1mSYNOPSIS[0m
+       TYPE ImportedRoot = POINTER TO ImportedRootRec;
+       TYPE ImportedRootRec = RECORD (Disciplines.ObjectRec) END;
+
+       PROCEDURE Import(address: Networks.Address;
+                        path: ARRAY OF CHAR;
+                        auth: Shards.Lid;
+                        errors: RelatedEvents.Object);
+       PROCEDURE ImportR(address: Networks.Address;
+                         root: Names.Node;
+                         path: ARRAY OF CHAR;
+                         auth: Shards.Lid;
+                         errors: RelatedEvents.Object);
+       PROCEDURE TemporaryImport(address: Networks.Address;
+                                 path: ARRAY OF CHAR;
+                                 auth: Shards.Lid;
+                                 errors: RelatedEvents.Object;
+                                 VAR import: ImportedRoot);
+       PROCEDURE TemporaryImportR(address: Networks.Address;
+                                  root: Names.Node;
+                                  path: ARRAY OF CHAR;
+                                  auth: Shards.Lid;
+                                  errors: RelatedEvents.Object;
+                                  VAR import: ImportedRoot);
+
+
+[1mDESCRIPTION[0m
+       Root  nodes  are  the  roots of a particular Oberon name space. A local
+       root node is provided by [4mNames.root[24m, representing ``/''. The root  node
+       of  a  public  name  space  served  by an Oberon name server is usually
+       accessible through a service following the  protocol  of  [4mNamesBootSer-[0m
+       [4mvice(3)[24m. During its initialization, [4mUnixNames(3)[24m attempts to import the
+       root node of the local Oberon name space as ``/pub''. Likewise,  Oberon
+       name  servers  may  maintain  links to each other.  These links to root
+       nodes are, however, fragile and cannot survive through [4mRobustObjects(3)[0m
+       as [4mRobustObjects(3)[24m requires a working name space that depends on these
+       links.
+
+       Robustness, as defined by [4mRobustObjects(3)[24m, is the ability of  a  proxy
+       object  of  [4mRemoteObjects(3)[24m  to survive a broken network connection or
+       the termination of the original object.  [4mRobustRoots[24m, in contrast, does
+       not  preserve the proxy objects of imported roots. Instead, [4mRobustRoots[0m
+       just attempts to re-import a terminated root object through  [4mNamesBoot-[0m
+       [4mService(3)[24m  and,  if this is successful, [4mRobustRoots[24m attempts to insert
+       the new proxy object under the given path name. If re-imports fail, new
+       attempts are scheduled after some delay.
+
+       Hence,  [4mRobustRoots[24m does not replace [4mRobustObjects(3)[24m but allows to tie
+       separate name spaces reliably such that the  techniques  of  [4mPathCondi-[0m
+       [4mtions(3)[24m  and  [4mRobustObjects(3)[24m  work over name spaces that extend over
+       multiple Oberon name servers.
+
+       A robust import relation can be easily terminated for objects  imported
+       by  [4mRobustObjects(3)[24m  by  terminating the proxy object.  This, however,
+       does not work for root nodes imported  by  [4mRobustRoots[24m  as  [4mRobustRoots[0m
+       would  immediately  attempt to re-import the root node again.  The per-
+       sistence of [4mRobustRoots[24m to re-import a root node can be stopped by fol-
+       lowing two methods only:
+
+       ·      A  process  termination  is initiated through [4mProcess.Terminate[24m,
+              [4mProcess.TerminateSoftly[24m, or [4mProcess.Abort[24m.
+
+       ·      The referential import object  returned  by  [4mTemporaryImport[24m  or
+              [4mTemporaryImportR[24m is terminated using [4mResources.Notify[24m.
+
+       All  four  import procedures take an [4maddress[24m parameter that is directly
+       passed to [4mNamesBootService.Import[24m. The [4mpath[24m is interpreted by  [4mPaths(3)[0m
+       relatively  to  [4mNames.root[24m ([4mImport[24m and [4mTemporaryImport[24m) or to the given
+       root ([4mImportR[24m and [4mTemporaryImportR[24m). The authorization  shard  [4mauth[24m  is
+       passed  to [4mNames.Insert[24m.  [4mTemporaryImport[24m and [4mTemporaryImportR[24m return a
+       reference object which upon termination stops all further  attempts  to
+       re-import the root node.
+
+[1mDIAGNOSTICS[0m
+       All error events during attempts to import the root node are related to
+       [4merrors[24m.
+
+[1mSEE ALSO[0m
+       [4mNamesBootService(3)[24m   service  which  exports  root  nodes   at   known
+                             addresses
+       [4mNames(3)[24m              Oberon name spaces
+       [4mPath(3)[24m               interpretation of paths within Oberon name spaces
+       [4mRobustObjects(3)[24m      proxy objects that survive their original objects
+       [4mUnixNames(3)[24m          imports  the  root  node of the local Oberon name
+                             server
+
+
+
+Release 0.5               Last change: 28 April 2005            RobustRoots(3)

@@ -1,0 +1,398 @@
+Streams(3)                    Ulm's Oberon System                   Streams(3)
+
+
+
+[1mNAME[0m
+       Streams - abstraction for byte oriented input and output
+
+[1mSYNOPSIS[0m
+       (* Whence = (fromStart, fromPos, fromEnd); *)
+       CONST fromStart = 0; fromPos = 1; fromEnd = 2;
+       (* capabilities of a stream *)
+       CONST read = 0; write = 1; addrio = 2; bufio = 3; seek = 4; tell = 5;
+       CONST trunc = 6; flush = 7; close = 8; holes = 9; handler = 10;
+       (* BufMode = (nobuf, linebuf, onebuf, bufpool); *)
+       CONST nobuf = 0; linebuf = 1; onebuf = 2; bufpool = 3;
+
+       TYPE Address = LONGINT;
+       TYPE Count = LONGINT;
+       TYPE Whence = SHORTINT;
+       TYPE CapabilitySet = SET; (* OF Capability *)
+       TYPE Modes = SET; (* OF Mode; *)
+       TYPE BufMode = SHORTINT;
+       TYPE ErrorCode = SHORTINT; (* see below *)
+       TYPE Stream = POINTER TO StreamRec;
+       TYPE Message = RECORD (Objects.ObjectRec) END;
+
+       TYPE AddrIOProc = PROCEDURE (s: Stream; ptr: Address; cnt: Count) : Count;
+       TYPE BufIOProc = PROCEDURE (s: Stream; VAR buf: ARRAY OF BYTE;
+                                   off, cnt: Count) : Count;
+       TYPE SeekProc = PROCEDURE (s: Stream; cnt: Count; whence: Whence) : BOOLEAN;
+       TYPE TellProc = PROCEDURE (s: Stream; VAR cnt: Count) : BOOLEAN;
+       TYPE ReadProc = PROCEDURE (s: Stream; VAR byte: BYTE) : BOOLEAN;
+       TYPE WriteProc = PROCEDURE (s: Stream; byte: BYTE) : BOOLEAN;
+       TYPE TruncProc = PROCEDURE (s: Stream; cnt: Count) : BOOLEAN;
+       TYPE FlushProc = PROCEDURE (s: Stream) : BOOLEAN;
+       TYPE CloseProc = PROCEDURE (s: Stream) : BOOLEAN;
+       TYPE HandlerProc = PROCEDURE (s: Stream; VAR msg: Message);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             addrread: AddrIOProc;     (* read, addrio *)
+             addrwrite: AddrIOProc;    (* write, addrio *)
+             bufread: BufIOProc;       (* read, bufio *)
+             bufwrite: BufIOProc;      (* write, bufio *)
+             read: ReadProc;           (* read *)
+             write: WriteProc;         (* write *)
+             seek: SeekProc;           (* seek *)
+             tell: TellProc;           (* tell *)
+             trunc: TruncProc;         (* trunc *)
+             flush: FlushProc;         (* flush *)
+             close: CloseProc;         (* close *)
+             handler: HandlerProc;     (* handler *)
+          END;
+       TYPE StreamRec =
+          RECORD
+             (Services.ObjectRec)
+             (* following components are set after i/o-operations *)
+             count: Count; (* resulting count of last operation *)
+             errors: INTEGER; (* incremented for each error; may be set to 0 *)
+             error: BOOLEAN; (* last operation successful? *)
+             lasterror: ErrorCode; (* error code of last error *)
+             eof: BOOLEAN; (* last read-operation with count=0 returned *)
+          END;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             stream: Stream;
+             errorcode: ErrorCode;
+          END;
+       VAR null: Stream; (* accepts any output; does not return input *)
+       VAR stdin, stdout, stderr: Stream;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+       PROCEDURE Init(s: Stream; if: Interface; caps: CapabilitySet;
+                      bufmode: BufMode);
+       PROCEDURE GetBufMode(s: Stream) : BufMode;
+       PROCEDURE LineTerm(s: Stream; termch: BYTE);
+       PROCEDURE Tie(in, out: Stream);
+       PROCEDURE SetBufferPoolSize(s: Stream; nbuf: INTEGER);
+       PROCEDURE GetBufferPoolSize(s: Stream; VAR nbuf: INTEGER);
+       PROCEDURE Capabilities(s: Stream) : CapabilitySet;
+       PROCEDURE GetFlushEvent(s: Stream; VAR type: Events.EventType);
+       PROCEDURE GetCloseEvent(s: Stream; VAR type: Events.EventType);
+       PROCEDURE Close(s: Stream) : BOOLEAN;
+       PROCEDURE Release(s: Stream);
+       PROCEDURE CloseAll;
+       PROCEDURE ReadByte(s: Stream; VAR byte: BYTE) : BOOLEAN;
+       PROCEDURE ReadPart(s: Stream; VAR buf: ARRAY OF BYTE;
+                          off, cnt: Count) : BOOLEAN;
+       PROCEDURE Read(s: Stream; VAR buf: ARRAY OF BYTE) : BOOLEAN;
+       PROCEDURE ReadPacket(s: Stream; VAR buf: ARRAY OF BYTE;
+                            off, maxcnt: Count) : Count;
+       PROCEDURE WriteByte(s: Stream; byte: BYTE) : BOOLEAN;
+       PROCEDURE WritePart(s: Stream;
+                           (* read-only *) VAR buf: ARRAY OF Byte;
+                           off, cnt: Count) : BOOLEAN;
+       PROCEDURE Write(s: Stream;
+                       (* read-only *) VAR buf: ARRAY OF Byte) : BOOLEAN;
+       PROCEDURE WritePartC(s: Stream; buf: ARRAY OF Byte;
+                            off, cnt: Count) : BOOLEAN;
+       PROCEDURE WriteC(s: Stream; buf: ARRAY OF Byte) : BOOLEAN;
+       PROCEDURE Seek(s: Stream; offset: Count; whence: Whence) : BOOLEAN;
+       PROCEDURE Tell(s: Stream; VAR offset: Count) : BOOLEAN;
+       PROCEDURE GetPos(s: Stream; VAR offset: Count);
+       PROCEDURE SetPos(s: Stream; offset: Count);
+       PROCEDURE Trunc(s: Stream; length: Count) : BOOLEAN;
+       PROCEDURE Back(s: Stream) : BOOLEAN;
+       PROCEDURE Insert(s: Stream; byte: BYTE) : BOOLEAN;
+       PROCEDURE Flush(s: Stream) : BOOLEAN;
+       PROCEDURE InputInBuffer(s: Stream) : BOOLEAN;
+       PROCEDURE OutputInBuffer(s: Stream) : BOOLEAN;
+       PROCEDURE OutputWillBeBuffered(s: Stream) : BOOLEAN;
+       PROCEDURE Touch(s: Stream);
+       PROCEDURE Send(s: Stream; VAR message: Message);
+       PROCEDURE Copy(source, dest: Stream; maxcnt: Count) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       The  [4mStreams[24m module defines an extensible abstraction for byte oriented
+       I/O-operations and implements an efficient buffering mechanism.
+
+       A stream is  a  data  structure  which  references  two  components:  a
+       sequence  of  bytes  and  a  position.   Each byte of a sequence has an
+       address: the first byte of a stream has address 0, the second  byte  1,
+       etc.  The current position is the address of the byte to be affected by
+       the next read or write operation.  Thus the current position cannot  be
+       negative.  Read and write requests cause the position to advance by the
+       returned byte count which is less or  equal  to  the  requested  count.
+       Failures  of  read or write operations (count value equals zero) do not
+       modify the current position.
+
+       The length of a stream is defined to be the highest byte  address  plus
+       one.  The length is infinite if the highest byte address is not defined
+       (in case of infinite streams).  In normal case a  current  position  is
+       valid  if  and  only if it ranges from 0 to the stream length.  Streams
+       with holes may invalidate positions within this range  or  allow  posi-
+       tions beyond the stream length.
+
+       Bidirectional  streams  reference  a  communication  channel and do not
+       maintain a current position.  Instead, reading a character  removes  it
+       from  the  input queue and writing a character appends it to the output
+       queue.  Streams are bidirectional if they support read and write opera-
+       tions but neither seek nor tell operations.
+
+       An  interface  defines  a  set of procedures which implement a [4mStreams[24m-
+       abstraction for a specific form of  input  and/or  output.   Not  every
+       interface  procedure  needs  to be implemented.  The set of implemented
+       procedures is given by the [4mcaps[24m parameter of [4mInit[24m.  At  least  [4mread[24m  or
+       [4mwrite[24m  must  be provided.  Note that the byte-wise read or write opera-
+       tion must always be given even if additional read/write-operations  are
+       supported  ([4mbufio[24m or [4maddrio[24m).  All other operations ([4mseek[24m, [4mtell[24m, [4mtrunc[24m,
+       [4mclose[24m, and [4mhandler[24m) are optional.  The interface procedures should meet
+       following specifications:
+       [4mread[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [1mVAR [4m[22mbyte[24m: [1mBYTE[22m) : [1mBOOLEAN[22m;
+            assign  the byte at the current position to [4mbyte[24m and increment the
+            current position by 1.  Return of [1mFALSE [22mindicates read  errors  or
+            end of stream.
+       [4mwrite[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [4mbyte[24m: [1mBYTE[22m) : [1mBOOLEAN[22m;
+            replace the byte at the current position by [4mbyte[24m and increment the
+            current position by 1.  Return of [1mFALSE [22mindicates write errors.
+       [4mseek[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [4mcnt[24m: [4mCount[24m; [4mwhence[24m: [4mWhence[24m) : [1mBOOLEAN[22m;
+            sets the current position in dependence of [4mwhence[24m and [4mcnt[24m to:
+            [4mfromStart[24m   new position at [4mcnt[0m
+            [4mfromPos[24m     new position at the current position + [4mcnt[0m
+            [4mfromEnd[24m     new position at the length of the stream + [4mcnt[0m
+       [4mtell[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [1mVAR [4m[22mcount[24m: [4mCount[24m) : [1mBOOLEAN[22m;
+            stores the current position into [4mcount[24m.  This operation should not
+            fail  in  normal  case.   [4mStreams[24m  calls [4mtell[24m for buffered streams
+            after opening.  In case of failures  [4mStreams[24m  assumes  a  starting
+            position  of 0.  In normal case [4mStreams[24m keeps track of the current
+            position.  This interface procedure is  called  only  in  case  of
+            unbuffered  streams,  or  if [4mSeek[24m is called relative to the stream
+            length ([4mfromEnd[24m) or if [4mTouch[24m is called.
+       [4mflush[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m) : [1mBOOLEAN[22m;
+            is called by [4mFlush[24m after  having  performed  the  necessary  write
+            operations.  This interface procedure allows the implementation to
+            propagate [4mFlush[24m operations to an underlying stream.
+       [4mtrunc[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [4mcnt[24m: [4mCount[24m) : [1mBOOLEAN[22m;
+            truncate the length of the stream to [4mcnt[24m.   Thus  all  bytes  with
+            addresses  greater  or  equal to [4mcnt[24m are to be deleted.  This call
+            must not modify the current position.
+       [4mclose[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m) : [1mBOOLEAN[22m;
+            is called by [4mClose[24m and allows  final  cleanup.   Return  of  [1mFALSE[0m
+            indicates  errors  on cleanup but does not prevent the stream from
+            being closed.
+       [4mhandler[24m: [1mPROCEDURE[22m([4ms[24m: [4mStream[24m; [1mVAR [4m[22mmsg[24m: [4mMessage[24m);
+            allows the implementation of extended operations which are identi-
+            fied and parameterized by extensions of [4mMessage[24m.
+
+       The  interface  procedures  of  type  [4mAddrIOProc[24m  and [4mBufIOProc[24m must be
+       equivalent to multiple calls of [4mread[24m or [4mwrite[24m (until the first failure)
+       for  buffered  streams.  Positive counts returned by reading procedures
+       which are less than the requested count are not interpreted as failure.
+       If  necessary,  [4mStreams[24m  repeats  reading until all requested bytes are
+       read or a zero count is returned.
+
+       [4mInit[24m initializes the stream [4ms[24m for the interface  specified  by  [4mif[24m  and
+       [4mcaps[24m  with buffering mode [4mbufmode[24m.  Note that [4mInit[24m does not allocate [4ms[24m.
+       Buffering mode is one of
+       [4mnobuf[24m     All operations are translated to  the  appropriate  interface
+                 procedures.
+       [4monebuf[24m    One  buffer of a system dependent size is allocated to reduce
+                 the number of interface procedure calls.
+       [4mlinebuf[24m   Like [4monebuf[24m but an automatic flush occurs if a line  termina-
+                 tor  is  written  (default 0AX; can be modified by [4mLineTerm[24m).
+                 Line buffered streams may be tied together.  In case of  read
+                 operations  from line buffered streams the line buffered out-
+                 put of the associated stream gets  flushed.   This  buffering
+                 mode  is  intended  for  interactive line oriented I/O and is
+                 much more efficient than [4mnobuf[24m.
+       [4mbufpool[24m   A set of buffers serves as cache of the underlying  implemen-
+                 tation.   The  number  of buffers may be retrieved and set by
+                 [4mGetBufferPoolSize[24m and [4mSetBufferPoolSize[24m.
+       This procedure is called by  modules  which  implement  a  abstraction.
+       Normal  user  programs  call open procedures of abstraction implementa-
+       tions (e.g. [4mUnixFiles.Open[24m).
+
+       [4mGetBufMode[24m returns the buffering mode associated with [4ms[24m.
+
+       [4mLineTerm[24m allows  to  change  the  line  terminator  for  line  buffered
+       streams.  The default line terminator is newline (0AX).
+
+       [4mTie[24m ties the line buffered stream [4min[24m to the stream [4mout[24m, i.e. read oper-
+       ations on [4min[24m cause [4mout[24m to  be  flushed.   Bidirectional  line  buffered
+       streams  are always tied to themselves, so [4mTie[24m must not be called if [4min[0m
+       is equal to [4mout[24m.  Streams may be untied by calling [4mTie[24m with [4mout[24m set  to
+       [1mNIL[22m.
+
+       [4mGetBufferPoolSize[24m  and  [4mSetBufferPoolSize[24m  return and set the number of
+       buffers.  The number of buffers may only be  modified  if  [4mbufpool[24m  has
+       been taken as buffering mode.
+
+       [4mCapabilities[24m returns the capabilities of the given stream.
+
+       [4mGetFlushEvent[24m returns an event type which will be raised [4mbefore[24m execut-
+       ing any flush operations (either call [4mFlush[24m or  internal  flush  opera-
+       tions).   This  event  type  is  suitable for bidirectional streams and
+       allows to empty the input queue before the output queue gets flushed.
+
+       [4mGetCloseEvent[24m returns like [4mGetFlushEvent[24m an event type  which  will  be
+       raised  [4mbefore[24m  the  stream  is  shut  by the close operation.  [4mStreams[0m
+       assures that this event will be raised with a priority which is greater
+       than the current priority (see [4mEvents(3)[24m).  This event type allows some
+       final operations to be called.   Note  that  [4mStreams[24m  protects  against
+       recursive  calls  of  [4mClose[24m or [4mRelease[24m (in this case a [4mNestedCall[24m error
+       would be returned for the first call).
+
+       [4mClose[24m closes [4ms[24m.  The value of [4ms[24m remains unchanged to allow  examination
+       of  the  public components (this is useful in case of errors).  [4mRelease[0m
+       works like [4mClose[24m but does  not  return  a  [1mBOOLEAN  [22mvalue.   Note  that
+       [4mStreams[24m maintains a list of open streams which may need some cleanup on
+       termination (i.e. streams which have a close interface procedure or are
+       buffered).  These streams are therefore not subject to the garbage col-
+       lection as long as [4mClose[24m has not been called for them.
+
+       [4mStreams[24m supports the mechanisms of [4mResources(3)[24m:
+
+       ·      [4mRelease[24m is called automatically for unreferenced streams.
+
+       ·      [4mClose[24m and [4mRelease[24m cause the stream to terminate.
+
+       [4mReadByte[24m  assigns  the  byte  at  the  current  position  to  [4mbyte[24m  and
+       increments the current position by one.  [4mReadByte[24m returns [1mFALSE [22min case
+       of end of stream (current position equals the stream length) or errors.
+       [4mWriteByte[24m  assigns  [4mbyte[24m to the byte at the current position and incre-
+       ments the current position by one.  [4mReadByte[24m  and  [4mWriteByte[24m  are  much
+       faster than [4mRead[24m and [4mWrite[24m for single bytes.
+
+       [4mReadPart[24m and [4mWritePart[24m allow to read and write parts of [4mbuf[24m: [4moff[24m speci-
+       fies the start position and [4mcnt[24m the number of bytes to be read or writ-
+       ten.  [4mRead[24m and [4mWrite[24m call [4mReadPart[24m and [4mWritePart[24m with [4moff[24m = 0 and [4mcnt[24m =
+       [1mLEN[22m([4mbuf[24m).
+
+       Note that [4mWritePart[24m and [4mWrite[24m take [4mbuf[24m as [1mVAR [22mparameter  to  avoid  the
+       overhead  of  an  unnecessary copy.  Neither [4mWritePart[24m nor [4mWrite[24m modify
+       [4mbuf[24m. If an arbitrary expression is to be passed, [4mWritePartC[24m and  [4mWriteC[0m
+       may be used instead.
+
+       [4mReadPart[24m  tries  to  read  the given number of bytes even when multiple
+       calls of the read interface procedure are necessary.  This may  not  be
+       appropriate  in cases where the first read operation wouldn't block but
+       subsequent ones.  [4mReadPacket[24m returns available input from  the  associ-
+       ated buffer or, in case of unbuffered streams or empty buffers, invokes
+       one read operation.  [4mmaxcnt[24m specifies the maximal number of bytes to be
+       read and [4mReadPart[24m returns the number of bytes actually copied into [4mbuf[24m.
+
+       [4mSeek[24m sets the current position in dependence of [4mwhence[24m and [4mcnt[24m to:
+       [4mfromStart[24m   new position at [4mcnt[0m
+       [4mfromPos[24m     new position at the current position + [4mcnt[0m
+       [4mfromEnd[24m     new position at the length of the stream + [4mcnt[0m
+       If [4ms[24m is buffered then the seek-operation is  possibly  delayed  to  the
+       next  read  or write operation.  This can result in seek-related errors
+       on subsequent read or write operations.
+
+       [4mTell[24m returns the current position.  This position can differ  from  the
+       real  position  of  the  underlying  implementation in case of buffered
+       streams.  [4mTouch[24m allows to synchronize both positions.
+
+       [4mGetPos[24m and [4mSetPos[24m work like [4mTell[24m and [4mSeek[24m ([4mwhence[24m [1m= [4m[22mfromStart[24m)  without
+       returning a [1mBOOLEAN [22mvalue.
+
+       [4mTrunc[24m  truncates  the length of the stream to [4mcnt[24m.  Thus all bytes with
+       addresses greater or equal to [4mcnt[24m are deleted.  This call does not mod-
+       ify the current position.
+
+       Stream buffering allows to undo read operations.  At least one success-
+       ful undo operation is guaranteed.  Further undo operations require seek
+       ability.   [4mBack[24m  decrements  the current position by one.  [4mInsert[24m works
+       like [4mBack[24m but causes [4mbyte[24m to be returned on next read operation.
+
+       [4mFlush[24m and [4mTouch[24m synchronize buffered streams with the underlying imple-
+       mentation.  [4mFlush[24m is useful for output streams and causes the buffer to
+       be flushed.  The  current  position  remains  unchanged.   [4mTouch[24m  calls
+       [4mFlush[24m, causes any buffer contents to be forgotten, and sets the current
+       position to that of the underlying implementation.
+
+       [4mInputInBuffer[24m and [4mOutputInBuffer[24m return [1mTRUE [22mif any bytes are  buffered
+       for  reading or writing resp.  [4mOutputWillBeBuffered[24m returns [1mTRUE [22mif the
+       next byte passed to one of the writing procedures will be buffered.
+
+       [4mSend[24m passes the given message to the handler associated with [4ms[24m.
+
+       [4mCopy[24m copies from the current position of [4msource[24m to the current position
+       of  [4mdest[24m  until  end  of file is reached or [4mmaxcnt[24m bytes are copied (if
+       [4mmaxcnt[24m is non-negative).
+
+       Some streams are predefined.  The [4mnull[24m-stream accepts  any  output  and
+       returns  read  requests  with zero counts.  The standard streams [4mstdin[24m,
+       [4mstdout[24m, and [4mstderr[24m are initialized to [4mnull[24m but are possibly  reinitial-
+       ized  by  other modules (e.g. [4mUnixFiles(3)[24m initializes them to the UNIX
+       standard files).
+
+[1mDIAGNOSTICS[0m
+       Error indications besides success or failure can be read from the  pub-
+       lic components of the stream record:
+       [4mcount[24m       gives the count of the last read or write operation.
+       [4merrors[24m      is incremented for each error.  A typical application is to
+                   set [4merrors[24m to 0, then to call some  stream  operations  and
+                   finally to check [4merrors[24m for being positive.
+       [4merror[24m       represents the success of the last operation.
+       [4mlasterror[24m   is set to the error code of the last failure.
+       [4meof[24m         is [1mTRUE [22mif read operations return zero counts.
+
+       Note  that  [4mRead[24m,  [4mReadPart[24m,  [4mWrite[24m,  [4mWritePart[24m, [4mWriteC[24m, and [4mWritePartC[0m
+       return [1mTRUE [22monly if they were able to read or write the full amount  of
+       bytes  as requested.  In case of partial read or writes, the [4mcount[24m com-
+       ponent tells how many bytes were actually read or written.
+
+       Following error codes are currently implemented:
+       [4mNoHandlerDefined[24m   [4mSend[24m was called but no handler is defined.
+       [4mNotLineBuffered[24m    [4mLineTerm[24m must not be called for  streams  which  are
+                          not line buffered.
+       [4mUnbuffered[24m         Operation must not be called for unbuffered streams,
+                          e.g. [4mBack[24m or [4mInsert[24m.
+       [4mBadParameters[24m      Bad parameter values, e.g. wrong counts or  offsets.
+       [4mWriteFailed[24m        write  error:  less  bytes  than requested have been
+                          written.
+       [4mCannotWrite[24m        stream is read-only.
+       [4mReadFailed[24m         read error: less  bytes  than  requested  have  been
+                          read.
+       [4mCannotRead[24m         stream is write-only.
+       [4mSeekFailed[24m         failed  seek  operation:  e.g.  seek  beyond  stream
+                          length.
+       [4mCannotSeek[24m         stream is not capable of seeking.
+       [4mBadWhence[24m          [4mwhence[24m value is outside of [[4mfromStart[24m..[4mfromEnd[24m].
+       [4mTellFailed[24m         tell operation failed.
+       [4mCannotTell[24m         the underlying implementation does  not  maintain  a
+                          current position.
+       [4mCannotTrunc[24m        stream is not capable of truncating.
+       [4mTruncFailed[24m        trunc  operation  failed,  e.g.  current position is
+                          beyond the given length.
+       [4mCloseFailed[24m        close operation  of  the  underlying  implementation
+                          ended with errors.
+       [4mNestedCall[24m         the given stream is locked.
+       [4mFlushFailed[24m        flush operation failed.
+
+       Valid  error  numbers range from 0 to [4merrorcodes[24m-1.  The array [4merrormsg[0m
+       contains readable error messages for all valid error numbers.
+
+       All stream related errors lead to events of type [4merror[24m which are passed
+       to  [4mRelatedEvents(3)[24m  for  further  handling.  Modules calling [4mInit[24m are
+       expected to decide whether stream related events are to be queued or to
+       be  forwarded  to another object.  By default, events of type [4merror[24m are
+       ignored.
+
+       An assertion of [4mInit[24m fails in case of invalid  interfaces  (e.g.  empty
+       set of capabilities).
+
+[1mSEE ALSO[0m
+       [4mRelatedEvents(3)[24m       error handling
+       [4mStreamConditions(3)[24m    allow nonblocking I/O operations
+       [4mStreamDisciplines(3)[24m   standard disciplines for streams
+
+
+
+Release 0.5                Last change: 22 May 2004                 Streams(3)

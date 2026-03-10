@@ -1,0 +1,117 @@
+Iterators(3)                  Ulm's Oberon System                 Iterators(3)
+
+
+
+[1mNAME[0m
+       Iterators - sequential access of data structures
+
+[1mSYNOPSIS[0m
+       TYPE Reference = Objects.Object; Mode = SHORTINT;
+       TYPE Iterator = POINTER TO IteratorRec;
+       TYPE IteratorRec = RECORD (Services.ObjectRec) END;
+       TYPE IteratorProc = PROCEDURE (it: Iterator; ref: Reference; mode: Mode);
+
+       PROCEDURE Create(VAR it: Iterator; itproc: IteratorProc;
+                        ref: Reference; mode: Mode);
+       PROCEDURE CreateQuickIterator(VAR it: Iterator;
+                                     itproc: IteratorProc;
+                                     ref: Reference; mode: Mode);
+
+       PROCEDURE Yield(it: Iterator; object: Objects.Object);
+       PROCEDURE Get(it: Iterator; VAR object: Objects.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mIterators[24m  offers  a convenient interface for iterators and is based on
+       coroutines.  An iterator allows to  access  a  complex  data  structure
+       sequentially  object  for  object.   Once an iterator has been created,
+       there is only one pass through all objects. I.e. it is not possible  to
+       rewind an iterator.
+
+       Two parties belong to an iterator: a producer and a consumer.  The pro-
+       ducer examines all objects of a data structure and ``produces'' them by
+       [4mYield[24m.   The  consumer retrieves these objects by [4mGet[24m.  The consumer is
+       free to ``consume'' all objects (i.e. until [4mGet[24m returns  [1mFALSE[22m)  or  to
+       stop  calling [4mGet[24m at any time.  For this reason, the producer cannot be
+       sure to be continued after calling [4mYield[24m.
+
+       [4mCreate[24m creates an iterator and is usually called by  the  module  which
+       owns  the data structure which is to be visited.  [4mitproc[24m is a procedure
+       which will be called by a newly  created  coroutine.   In  contrast  to
+       ordinary  coroutine  procedures, [4mitproc[24m is free to execute [1mRETURN [22mwhich
+       causes a subsequent [4mGet[24m to return [1mFALSE[22m.  [4mref[24m and [4mmode[24m will  be  passed
+       to  [4mitproc[24m  and  not interpreted by [4mIterators[24m.  [4mref[24m is intended to be a
+       reference to the data structure and [4mmode[24m may be convenient  to  specify
+       directions or keys.
+
+       Alternatively,  an  iterator  can  be created using [4mCreateQuickIterator[0m
+       that does not cause a coroutine to  be  created.   Instead,  the  first
+       invocation of [4mGet[24m causes all available objects to be generated. This is
+       useful for small sequences or in cases where  no  significant  computa-
+       tional overhead is required in generating the objects.
+
+[1mEXAMPLE[0m
+       A  binary tree is given on the producer side.  [4mIterateTree[24m would remain
+       private while [4mCreateIterator[24m may be exported.
+
+       (* excerpt of module Trees *)
+
+       CONST
+          preorder = 0; inorder = 1; postorder = 2;
+       TYPE
+          Tree = POINTER TO TreeRec;
+          TreeRec =
+             RECORD
+                (Objects.ObjectRec)
+                object: Objects.Object;
+                left, right: Tree;
+             END;
+
+       PROCEDURE IterateTree(it: Iterators.Iterator;
+                             ref: Objects.Object;
+                             mode: SHORTINT);
+       BEGIN
+          IF ref = NIL THEN RETURN END;
+          WITH ref: Tree DO
+             IF mode = preorder THEN
+                Iterators.Yield(it, ref.object);
+             END;
+             IterateTree(it, ref.left, mode);
+             IF mode = inorder THEN
+                Iterators.Yield(it, ref.object);
+             END;
+             IterateTree(it, ref.right, mode);
+             IF mode = postorder THEN
+                Iterators.Yield(it, ref.object);
+             END;
+          END;
+       END IterateTree;
+
+       PROCEDURE CreateIterator(VAR it: Iterator; tree: Tree; order: SHORTINT);
+       BEGIN
+          Iterators.Create(it, IterateTree, tree, order);
+       END CreateIterator;
+
+
+       A consumer is easily written. After creating an iterator by  [4mTrees.Cre-[0m
+       [4mateIterator[24m, a tree may be examined by [4mIterators.Get[24m:
+
+          VAR
+             iterator: Iterators.Iterator;
+             tree: Trees.Tree;
+             object: Objects.Object;
+
+       (* ... *)
+
+       Trees.CreateIterator(iterator, tree, Trees.inorder);
+       WHILE Iterators.Get(iterator, object) DO
+          (* examine object *)
+       END;
+
+
+[1mSEE ALSO[0m
+       [4mRemoteIterators(3)[24m   supports import and export of iterators
+
+
+
+Release 0.5               Last change: 25 August 2005             Iterators(3)

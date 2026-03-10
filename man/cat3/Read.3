@@ -1,0 +1,116 @@
+Read(3)                       Ulm's Oberon System                      Read(3)
+
+
+
+[1mNAME[0m
+       Read - formatted input
+
+[1mSYNOPSIS[0m
+       PROCEDURE ShortInt(VAR shortint: SHORTINT);
+       PROCEDURE Int(VAR int: INTEGER);
+       PROCEDURE LongInt(VAR longint: LONGINT);
+       PROCEDURE Real(VAR real: REAL);
+       PROCEDURE LongReal(VAR longreal: LONGREAL);
+       PROCEDURE Char(VAR ch: CHAR);
+       PROCEDURE Byte(VAR byte: BYTE);
+       PROCEDURE Line(VAR line: ARRAY OF CHAR);
+       PROCEDURE Ln;
+       PROCEDURE String(VAR string: ARRAY OF CHAR);
+       PROCEDURE Field(VAR string: ARRAY OF CHAR) : BOOLEAN;
+       PROCEDURE ShortIntS(s: Streams.Stream; VAR shortint: SHORTINT);
+       PROCEDURE IntS(s: Streams.Stream; VAR int: INTEGER);
+       PROCEDURE LongIntS(s: Streams.Stream; VAR longint: LONGINT);
+       PROCEDURE RealS(s: Streams.Stream; VAR real: REAL);
+       PROCEDURE LongRealS(s: Streams.Stream; VAR longreal: LONGREAL);
+       PROCEDURE CharS(s: Streams.Stream; VAR ch: CHAR);
+       PROCEDURE ByteS(s: Streams.Stream; VAR byte: BYTE);
+       PROCEDURE LineS(s: Streams.Stream; VAR line: ARRAY OF CHAR);
+       PROCEDURE LnS(s: Streams.Stream);
+       PROCEDURE StringS(s: Streams.Stream; VAR string: ARRAY OF CHAR);
+       PROCEDURE FieldS(s: Streams.Stream; VAR string: ARRAY OF CHAR) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mRead[24m  implements  formatted  input  for  streams.   All procedures read
+       either from the given stream [4ms[24m  (procedures  ending  in  "S")  or  from
+       [4mStreams.stdin[24m (all other procedures).  All termination characters (e.g.
+       first non-digit after [4mRead.Int[24m)  are  pushed  back  to  the  stream  by
+       [4mStreams.Back[24m.  The definition what constitutes white space, a line ter-
+       minator, or a field separator is provided by [4mStreamDisciplines(3)[24m.
+
+       [4mShortInt[24m, [4mInt[24m, and [4mLongInt[24m read integer values in  decimal  representa-
+       tion.    Integers   must   conform  to  following  regular  expression:
+       "[+-][0-9]+".  Preceding white space is skipped.
+
+       [4mReal[24m and [4mLongReal[24m read real values according to following syntax:
+
+       "[+-]?[0-9]+(.[0-9]*)?([eEdD][+-]?[0-9]+)?"
+
+       Leading white space is skipped.  [4mChar[24m and [4mByte[24m read the next  character
+       or byte, respectively.
+
+       [4mLine[24m  reads  a complete line (termination either by the line terminator
+       or by the end of stream).  The input line without  terminating  charac-
+       ters is copied to [4mline[24m.  [4mLine[24m skips the rest of the line if it does not
+       fit   into   [4mline[24m   and   guarantees   [4mline[24m   to   be    0X-terminated.
+       [4mStreams.stdin.count[24m  (resp.  [4ms.count[24m  for  [4mLineS[24m)  equals the number of
+       characters read including the line terminator.  Note that the  termina-
+       tion  character is not pushed back to the input stream.  [4mLn[24m skips input
+       until the next line termination or end of stream.  Like [4mLine[24m,  [4mLn[24m  does
+       not  push  back  the  line  termination character.  [4mStreams.stdin.count[0m
+       (resp. [4ms.count[24m for [4mLnS[24m) equals the number of characters read  including
+       the line terminator.
+
+       [4mString[24m  skips  input  to  the first non-white space character.  Further
+       input is copied into [4mstring[24m until [4mstring[24m is filled or  white  space  is
+       read.   [4mstring[24m  is  guaranteed to be 0X-terminated and does not contain
+       white space characters.  [4mStreams.stdin.count[24m (resp. [4ms.count[24m) equals the
+       number of characters copied into [4mstring[24m.
+
+       [4mField[24m  returns  the  next  input field into [4mstring[24m.  Following the UNIX
+       convention of small databases, records are separated by  line  termina-
+       tors and fields are delimited either by field separators or line termi-
+       nators.  In normal case, each field separator  separates  two  adjacent
+       fields  which  allows possibly empty fields.  However, field separators
+       that are also whitespace are skipped at the beginning of a field.   The
+       resulting [4mstring[24m is trimmed in respect to surrounding white space.  The
+       terminating field separator is consumed.  [4mField[24m returns [1mFALSE [22mif  there
+       are  no  more fields on the line, i.e. line terminators must be skipped
+       explicitely.  The resulting count ([4mStreams.stdin.count[24m resp.   [4ms.count[24m)
+       equals  the  number  of  characters  read.  [4mField[24m skips the rest of the
+       field if it does not fit into [4mstring[24m.
+
+[1mDIAGNOSTICS[0m
+       If not defined otherwise [4mStreams.stdin.count[24m (resp. [4ms.count[24m)  equals  1
+       on success and 0 on failure.
+
+[1mEXAMPLE[0m
+       Following code snippet shows how to parse small databases:
+
+       LOOP
+          WHILE Read.FieldS(in, field) DO
+             (* process field *)
+          END;
+          IF in.eof OR in.error THEN EXIT END;
+          Read.LnS(in);
+          IF in.count = 0 THEN EXIT END;
+       END;
+
+
+[1mSEE ALSO[0m
+       [4mReals(3)[24m               real conversions
+       [4mStreamDisciplines(3)[24m   line  terminator,  white space and field separa-
+                              tors
+       [4mStreams(3)[24m             stream operations
+       [4mWrite(3)[24m               formatted output
+
+[1mBUGS[0m
+       [4mStreams[24m does not support [4mStreams.Back[24m  for  unbuffered  streams.   Thus
+       termination  characters are lost by reading from streams with buffering
+       mode [4mStreams.nobuf[24m.  This, for example, causes [4mField[24m and [4mFieldS[24m to con-
+       sume  the  entire  line  terminator that terminates the last field on a
+       line.
+
+
+
+Release 0.5             Last change: 24 September 2004                 Read(3)

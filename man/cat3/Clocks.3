@@ -1,0 +1,135 @@
+Clocks(3)                     Ulm's Oberon System                    Clocks(3)
+
+
+
+[1mNAME[0m
+       Clocks - general interface for clocks and timers
+
+[1mSYNOPSIS[0m
+       TYPE Clock = POINTER TO ClockRec;
+       TYPE ClockRec = RECORD (Services.ObjectRec) END;
+       CONST settime = 0; timer = 1; passed = 2;
+       TYPE CapabilitySet = SET; (* OF [settime..passed] *)
+       TYPE GetTimeProc = PROCEDURE (clock: Clock; VAR time: Times.Time);
+       TYPE SetTimeProc = PROCEDURE (clock: Clock; time: Times.Time);
+       TYPE PassedProc = PROCEDURE (clock: Clock; time: Times.Time) : BOOLEAN;
+       TYPE TimerOnProc = PROCEDURE (clock: Clock; time: Times.Time;
+                                     event: Events.Event);
+       TYPE TimerOffProc = PROCEDURE (clock: Clock);
+       TYPE GetPriorityProc = PROCEDURE (clock: Clock;
+                                         VAR priority: Priorities.Priority);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             gettime: GetTimeProc;
+             settime: SetTimeProc;
+             passed: PassedProc;
+             timeron: TimerOnProc;
+             timeroff: TimerOffProc;
+             getpriority: GetPriorityProc;
+          END;
+
+       VAR system: Clock; (* the clock of the operating system *)
+
+       CONST cannotSetTime = 0; (* SetTime not implemented *)
+       CONST cannotSetTimer = 1; (* timer not implemented *)
+       CONST errorcodes = 2;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE Init(clock: Clock; if: Interface; caps: CapabilitySet);
+       PROCEDURE Capabilities(clock: Clock) : CapabilitySet;
+       PROCEDURE CreateStaticClock(VAR clock: Clock);
+       PROCEDURE GetTime(clock: Clock; VAR time: Times.Time);
+       PROCEDURE SetTime(clock: Clock; time: Times.Time);
+       PROCEDURE Passed(clock: Clock; time: Times.Time) : BOOLEAN;
+       PROCEDURE TimerOn(clock: Clock; time: Times.Time; event: Events.Event);
+       PROCEDURE TimerOff(clock: Clock);
+       PROCEDURE GetPriority(clock: Clock; VAR priority: Priorities.Priority);
+
+
+[1mDESCRIPTION[0m
+       [4mClocks[24m provides an interface for clocks and associated timers.  A clock
+       is a source which returns a current time.
+
+       [4mInit[24m initializes a newly created clock and associates it with the given
+       interface  [4mif[24m  and [4mcaps[24m.  The interface procedures are expected to meet
+       the specifications following:
+       [4mgettime[24m: [1mPROCEDURE[22m([4mclock[24m: [4mClock[24m; [1mVAR [4m[22mtime[24m: [4mTimes.Time[24m);
+            return the current time.
+       [4msettime[24m: [1mPROCEDURE[22m([4mclock[24m: [4mClock[24m; [4mtime[24m: [4mTimes.Time[24m);
+            set the current time to [4mtime[24m.  This procedure  needs  only  to  be
+            provided if [4msettime[24m is given in the set of capabilities.
+       [4mpassed[24m: [1mPROCEDURE[22m([4mclock[24m: [4mClock[24m; [4mtime[24m: [4mTimes.Time[24m) : [1mBOOLEAN[22m;
+            returns  [1mTRUE  [22mif  [4mtime[24m  has  already  passed.   This procedure is
+            optional and needs only to be provided if [4mpassed[24m is given  in  the
+            set of capabilities. This interface procedure allows to reduce the
+            number of [4mgettime[24m invocations if the last time returned by [4mgettime[0m
+            is  compared first against [4mtime[24m before the current time is consid-
+            ered.  This is useful if invocations of [4mgettime[24m are more expensive
+            than ordinary procedure calls.
+       [4mtimeron[24m:    [1mPROCEDURE[22m([4mclock[24m:    [4mClock[24m;    [4mtime[24m:    [4mTimes.Time[24m;   [4mevent[24m:
+            [4mEvents.Event[24m);
+            cause [4mevent[24m to be raised if the given time is reached.   Only  one
+            alarm time and one event has to be maintained.  New settings over-
+            ride older calls to [4mtimeron[24m if [4mtimeron[24m is called  multiple  times.
+            [4mtimeron[24m is expected to raise [4mevent[24m immediately if [4mtime[24m lies in the
+            past.  This procedure needs only to be provided if [4mtimer[24m is  given
+            in the set of capabilities.
+       [4mtimeroff[24m: [1mPROCEDURE[22m([4mclock[24m: [4mClock[24m);
+            switch off the timer.
+       [4mgetpriority[24m:  [1mPROCEDURE[22m([4mclock[24m:  [4mClock[24m;  [1mVAR [4m[22mpriority[24m: [4mPriorities.Prior-[0m
+            [4mity[24m);
+            return the priority of the timer.  This is defined to be the mini-
+            mal  priority  during  the processing of events passed to [4mtimeron[24m.
+            [4mPriorities.base[24m is to be returned if there is no minimal  priority
+            (e.g. for static clocks).
+
+       [4mCapabilities[24m  returns  the  set  of  capabilities  of [4mclock[24m.  Note that
+       [4mPassed[24m can be called in any case whether [4mpassed[24m is set or not.
+
+       [4mCreateStaticClock[24m creates  and  initializes  a  static  clock.   Static
+       clocks return the last time setting of [4mSetTime[24m.
+
+       [4mGetTime[24m  returns  the  current time of [4mclock[24m.  [4mSetTime[24m sets the current
+       time of [4mclock[24m to [4mtime[24m.  [4mPassed[24m returns [1mTRUE [22mif [4mtime[24m  has  already  been
+       passed.
+
+       [4mTimerOn[24m causes [4mclock[24m to raise [4mevent[24m if [4mtime[24m is reached.  Multiple calls
+       override previous settings.  [4mTimerOff[24m switches off the timer.   [4mGetPri-[0m
+       [4mority[24m  returns the priority of the associated timer.  This is the mini-
+       mal priority when events which has been passed to [4mTimerOn[24m are raised.
+
+       [4mClocks[24m exports [4msystem[24m which is expected to be initialized by  a  system
+       dependent  module to represent the clock of the operating system.  Ini-
+       tially, [4msystem[24m is initialized as a static clock.
+
+[1mDIAGNOSTICS[0m
+       Errors lead to events which are passed to [4mRelatedEvents(3)[24m and  related
+       to  the  clock.   By default, error events are queued.  Following error
+       codes are implemented:
+       [4mcannotSetTime[24m    [4mSetTime[24m is not implemented for the given clock.
+       [4mcannotSetTimer[24m   The given clock does not support a timer.
+
+       An assertion of [4mInit[24m fails if the given clock has not been  initialized
+       by  [4mServices.Init[24m.   Various  assertions  that verify that all required
+       interface procedures passed to [4mInit[24m are non-[1mNIL[22m.
+
+[1mSEE ALSO[0m
+       [4mEvents(3)[24m          event handling
+       [4mRelatedEvents(3)[24m   handling of error events
+       [4mServices(3)[24m        definition of type-independent extensions
+       [4mTimeConditions(3)[24m  conditions which allow to wait for a given time
+       [4mTimes(3)[24m           representations of time values
+       [4mUnixClock(3)[24m       reinitializes [4msystem[24m (if imported)
+
+
+
+Release 0.5               Last change: 23 April 2004                 Clocks(3)

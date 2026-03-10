@@ -17,9 +17,12 @@
    ----------------------------------------------------------------------------
    E-mail contact: oberon@mathematik.uni-ulm.de
    ----------------------------------------------------------------------------
-   $Id: DNSStdResol.om,v 1.2 2005/03/15 07:28:36 borchert Exp $
+   $Id: DNSStdResol.om,v 1.3 2009/02/05 14:15:17 borchert Exp $
    ----------------------------------------------------------------------------
    $Log: DNSStdResol.om,v $
+   Revision 1.3  2009/02/05 14:15:17  borchert
+   bug fix: accept all records if rrtype = DNSRecords.all
+
    Revision 1.2  2005/03/15 07:28:36  borchert
    do no longer generate all possible suffixes from the local domain
 
@@ -273,19 +276,24 @@ MODULE DNSStdResolvers;
 	       (rcode = DNSHeaders.nameError));
 	    IF rcode = DNSHeaders.noError THEN
 	       followingCNAME := FALSE;
-	       WHILE LookForCNAME(name, answerRecs) DO
-		  INC(cnamecnt);
-		  IF cnamecnt > maxCNAME THEN
-		     Error(errors, toomanyCNAMEs, rrtype, hostname);
-		     RETURN FALSE
+	       IF (rrtype # DNSRecords.all) & (rrtype # DNSRecords.cname) THEN
+		  (* follow CNAME chains unless all records are requested *)
+		  WHILE LookForCNAME(name, answerRecs) DO
+		     INC(cnamecnt);
+		     IF cnamecnt > maxCNAME THEN
+			Error(errors, toomanyCNAMEs, rrtype, hostname);
+			RETURN FALSE
+		     END;
+		     followingCNAME := TRUE;
 		  END;
-		  followingCNAME := TRUE;
 	       END;
 	       head := NIL; tail := NIL;
 	       record := answerRecs;
 	       WHILE record # NIL DO
 		  entry := record; record := record.next;
-		  IF (entry.name = name) & (entry.type = rrtype) THEN
+		  IF (entry.name = name) &
+			((rrtype = DNSRecords.all) OR
+			   (entry.type = rrtype)) THEN
 		     entry.next := NIL;
 		     IF head = NIL THEN
 			head := entry;

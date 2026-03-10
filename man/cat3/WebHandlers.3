@@ -1,0 +1,132 @@
+
+
+
+WebHandlers(3)         Ulm's Oberon System         WebHandlers(3)
+
+
+NNAAMMEE
+       WebHandlers - HTTP request processing
+
+SSYYNNOOPPSSIISS
+       TYPE Handler = POINTER TO HandlerRec;
+       TYPE HandlerRec =
+          RECORD
+          END;
+
+       TYPE Request = POINTER TO RequestRec;
+       TYPE RequestRec =
+          RECORD
+             serverAddress: Networks.Address; (* To distinguish clients on
+                different ports *)
+             clientAddress: Networks.Address; (* address of the client *)
+             method: Streams.Stream; (* requested Method *)
+             url: InetURLs.URL; (* requested resource *)
+             versionMajor: SHORTINT; (* of Client *)
+             versionMinor: SHORTINT; (* of Client *)
+             headers: HTTPHeaders.HeaderSet;
+             body: Streams.Stream; (* NIL, if there is no body *)
+             response: Streams.Stream; (* where to send the response *)
+          END;
+
+       HandleRequestProc = PROCEDURE (handler: Handler; request: Request;
+                                      errors: RelatedEvents.Object);
+       Interface = POINTER TO InterfaceRec;
+       InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             handleRequest: HandleRequestProc;
+          END;
+
+       PROCEDURE Init(handler: Handler; if: Interface);
+       PROCEDURE HandleRequest(handler: Handler; request: Request;
+                               errors: RelatedEvents.Object);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       The module _W_e_b_H_a_n_d_l_e_r_s defines an abstraction to processes
+       a HTTP request of a client. It searches for the web object
+       identified  by  the  URL  and  creates  a response. _W_e_b_O_b_≠
+       _j_e_c_t_s_(_3_) is used to obtain the data, to create the  status
+       line, the headers of the response and the body.
+
+   RReeqquueesstt ssttrruuccttuurree
+       The _R_e_q_u_e_s_t-record provides all necessary information of a
+       client request.  It contains the message method,  the  URL
+       to  determine the web object, information about the client
+       used HTTP version, all request headers and if supplied the
+       body of the client request.
+
+       In  _s_e_r_v_e_r_A_d_d_r_e_s_s you can find the port of the daemon pro≠
+       viding the request. So you can  use  one  web  handler  to
+
+
+
+Release 0.5         Last change: 24 April 1998                  1
+
+
+
+
+
+WebHandlers(3)         Ulm's Oberon System         WebHandlers(3)
+
+
+       maintain  different  ports.   _c_l_i_e_n_t_A_d_d_r_e_s_s  provides  the
+       address of the client (not yet implemented;  _c_l_i_e_n_t_A_d_d_r_e_s_s
+       is always NNIILL).
+
+       The  _r_e_s_p_o_n_s_e-stream ist the network stream to the client.
+       A web handler must send his responses to that stream.
+
+   PPrroovviiddiinngg WWeebb--hhaannddlleerrss
+       Implementations must initialize new instances of web  han≠
+       dlers using _I_n_i_t, specifying an interface _i_f. _i_f only con≠
+       tains the _H_a_n_d_l_e_R_e_q_u_e_s_t procedure.
+       _h_a_n_d_l_e_R_e_q_u_e_s_t:   PPRROOCCEEDDUURREE(_h_a_n_d_l_e_r:   _H_a_n_d_l_e_r;    _r_e_q_u_e_s_t:
+            _R_e_q_u_e_s_t; _e_r_r_o_r_s: _R_e_l_a_t_e_d_E_v_e_n_t_s_._O_b_j_e_c_t);
+            is normally called by a Daemon wenn a request occurs.
+            _r_e_q_u_e_s_t contains all necessary information about  the
+            request. This request has to be processed by the Han≠
+            dler   and   the   response   must   be    sent    to
+            _r_e_q_u_e_s_t_._r_e_s_p_o_n_s_e.   _r_e_q_u_e_s_t_._r_e_s_p_o_n_s_e will remain open
+            if it isn't explicitly closed by _H_a_n_d_l_e_R_e_q_u_e_s_t (so  a
+            client  can make repeated request on the same connec≠
+            tion). Because of simultaneous requests,  the  Imple≠
+            mentor  must  be aware of creating a reentrant proce≠
+            dure.
+
+   UUssiinngg WWeebb--hhaannddlleerrss..
+       _H_a_n_d_l_e_R_e_q_u_e_s_t is normally called  by  a  HTTP  daemon.  In
+       _r_e_q_u_e_s_t  the  caller  provides  the  split response of the
+       client. If there is an error during  the  work  it  should
+       raised related to _e_r_r_o_r_s.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _W_e_b_H_a_n_d_l_e_r itself does not generate error events. Only the
+       underlying implementations of _H_a_n_d_l_e_R_e_q_u_e_s_t  raise  errors
+       as _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_) to the given _e_r_r_o_r_s parameter.
+
+SSEEEE AALLSSOO
+       _I_n_e_t_U_R_L_s_(_3_)         addresses for web pages
+       _H_T_T_P_H_e_a_d_e_r_s_(_3_)      manage HTTP-header fields
+       _H_T_T_P_R_e_s_p_o_n_s_e_(_3_)     write HTTP-structures to client stream
+       _I_n_e_t_H_T_T_P_D_a_e_m_o_n_(_3_)   receiving a request from a client
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)    error handling
+       _S_t_r_e_a_m_s_(_3_)          stream operations
+       _W_e_b_O_b_j_e_c_t_s_(_3_)       abstraction for world wide web objects
+
+AAUUTTHHOORR
+       Manfred Rueﬂ, University of Ulm
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 24 April 1998                  2
+
+

@@ -1,0 +1,264 @@
+
+
+
+IntOperations(3)       Ulm's Oberon System       IntOperations(3)
+
+
+NNAAMMEE
+       IntOperations  -  generic interface for arithmetic integer
+       operations
+
+SSYYNNOOPPSSIISS
+       CONST mod = 5; pow = 6; inc = 7; dec = 8; mmul = 9; mpow = 10;
+       CONST odd = 11; shift = 12;
+       TYPE Operation = Operations.Operation;  (* Operations.add..mpow *)
+       TYPE Operand = POINTER TO OperandRec;
+       TYPE OperandRec = RECORD (Operations.OperandRec) END;
+       TYPE CapabilitySet = Operations.CapabilitySet;
+          (* SET of [Operations.add..shift] *)
+       TYPE IsLargeEnoughForProc = PROCEDURE (op: Operations.Operand
+                                              n: LONGINT): BOOLEAN;
+       TYPE UnsignedProc = PROCEDURE (op: Operations.Operand): BOOLEAN;
+       TYPE IntToOpProc = PROCEDURE (int32: Types.Int32; VAR op: Operations.Operand);
+       TYPE OpToIntProc = PROCEDURE (op: Operations.Operand; VAR int32: Types.Int32);
+       TYPE Log2Proc = PROCEDURE (op: Operations.Operand): LONGINT;
+       TYPE OddProc = PROCEDURE (op: Operations.Operand): BOOLEAN;
+       TYPE ShiftProc = PROCEDURE (op: Operations.Operand;
+                                   n: INTEGER): Operations.Operand;
+       TYPE IntOperatorProc = PROCEDURE(op: Operation;
+                                        op1, op2, op3: Operations.Operand;
+                                        VAR result: Operations.Operand);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Operations.InterfaceRec)
+             isLargeEnoughFor: IsLargeEnoughForProc;
+             unsigned: UnsignedProc;
+             intToOp: IntToOpProc;
+             opToInt: OpToIntProc;
+             log2: Log2Proc;
+             odd: OddProc;
+             shift: ShiftProc;
+             intOp: IntOperatorProc;
+          END;
+
+       PROCEDURE Init(op: Operand; if: Interface; caps: CapabilitySet);
+       PROCEDURE Capabilities(op: Operand): CapabilitySet;
+       PROCEDURE IsLargeEnoughFor(op: Operations.Operand; n: LONGINT): BOOLEAN;
+       PROCEDURE Unsigned(op: Operations.Operand): BOOLEAN;
+       PROCEDURE IntToOp(int32: Types.Int32; VAR op: Operations.Operand);
+       PROCEDURE OpToInt(op: Operations.Operand; VAR int32: Types.Int32);
+       PROCEDURE Log2(op: Operations.Operand): LONGINT;
+       PROCEDURE Odd(op: Operations.Operand): BOOLEAN;
+       PROCEDURE Shift(op1: Operations.Operand; n: INTEGER): Operations.Operand;
+       PROCEDURE Shift2(VAR op1: Operations.Operand; n: INTEGER);
+       PROCEDURE Shift3(VAR result: Operations.Operand;
+                        op1: Operations.Operand; n: INTEGER);
+       PROCEDURE Inc(op1: Operations.Operand): Operations.Operand;
+       PROCEDURE Inc2(VAR op1: Operations.Operand);
+       PROCEDURE Inc3(VAR result: Operations.Operand; op1: Operations.Operand);
+       PROCEDURE Dec(op1: Operations.Operand): Operations.Operand;
+
+
+
+Release 0.5         Last change: 3 April 1997                   1
+
+
+
+
+
+IntOperations(3)       Ulm's Oberon System       IntOperations(3)
+
+
+       PROCEDURE Dec2(VAR op1: Operations.Operand);
+       PROCEDURE Dec3(VAR result: Operations.Operand; op1: Operations.Operand);
+       PROCEDURE Mod(op1, op2: Operations.Operand) : Operations.Operand;
+       PROCEDURE Mod2(VAR op1: Operations.Operand; op2: Operations.Operand);
+       PROCEDURE Mod3(VAR result: Operations.Operand; op1, op2: Operations.Operand);
+       PROCEDURE Pow(op1, op2: Operations.Operand): Operations.Operand;
+       PROCEDURE Pow2(VAR op1: Operations.Operand; op2: Operations.Operand);
+       PROCEDURE Pow3(VAR result: Operations.Operand; op1, op2: Operations.Operand);
+       PROCEDURE MMul(op1, op2, op3: Operations.Operand): Operations.Operand;
+       PROCEDURE MMul2(VAR op1: Operations.Operand; op2, op3: Operations.Operand);
+       PROCEDURE MMul3(VAR result: Operations.Operand;
+                       op1, op2, op3: Operations.Operand);
+       PROCEDURE MPow(op1, op2, op3: Operations.Operand): Operations.Operand;
+       PROCEDURE MPow2(VAR op1: Operations.Operand; op2, op3: Operations.Operand);
+       PROCEDURE MPow3(VAR result: Operations.Operand;
+                       op1, op2, op3: Operations.Operand);
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _I_n_t_O_p_e_r_a_t_i_o_n_s is an extension of  Operations(3)  and  pro­
+       vides  a generic interface for arithmetic operators cover­
+       ing additional operations  for  integers:  logical  shift,
+       increment,  decrement, modulo and power. Residue of multi­
+       plication and power, the conversion from _I_n_t_3_2 to _O_p_e_r_a_n_d,
+       the conversion from _O_p_e_r_a_n_d to _I_n_t_3_2, and the test whether
+       an operand is odd or not are also supported.
+
+       The interface describes the set  of  available  operations
+       and  contains the necessary procedures. The type _I_n_t_e_r_f_a_c_e
+       is an extension of _O_p_e_r_a_t_i_o_n_s._I_n_t_e_r_f_a_c_e and  therefore  an
+       explicit  call of _O_p_e_r_a_t_i_o_n_s._I_n_i_t is not necessary because
+       it is automatically called by _I_n_i_t. The  interface  proce­
+       dures should meet the following specifications:
+
+       _i_s_L_a_r_g_e_E_n_o_u_g_h_F_o_r:   PPRROOCCEEDDUURREE(_o_p:  _O_p_e_r_a_t_i_o_n_s._O_p_e_r_a_n_d;  _n:
+            LLOONNGGIINNTT) :  BBOOOOLLEEAANN;
+            return TTRRUUEE if the type of _o_p is large enough for 2^_n
+            - 1 and return FFAALLSSEE if not.
+       _u_n_s_i_g_n_e_d: PPRROOCCEEDDUURREE(_o_p: _O_p_e_r_a_t_i_o_n_s._O_p_e_r_a_n_d) :  BBOOOOLLEEAANN;
+            return  TTRRUUEE  if  the operand type of _o_p is unsigned,
+            else return FFAALLSSEE.
+       _i_n_t_T_o_O_p:  PPRROOCCEEDDUURREE(_i_n_t_3_2:  _T_y_p_e_s._I_n_t_3_2;  VVAARR  _o_p:  _O_p_e_r_a_­
+            _t_i_o_n_s._O_p_e_r_a_n_d);
+            convert  given  _i_n_t_3_2  into  a  value  of type _O_p_e_r_a_­
+            _t_i_o_n_s._O_p_e_r_a_n_d and store it in already initialized _o_p.
+       _o_p_T_o_I_n_t:   PPRROOCCEEDDUURREE(_o_p:  _O_p_e_r_a_t_i_o_n_s._O_p_e_r_a_n_d;  VVAARR  _i_n_t_3_2:
+            _T_y_p_e_s._I_n_t_3_2);
+            convert given _o_p into _i_n_t_3_2 if possible and use  mod­
+            ulo operation if _o_p does not fit into a 32 bit value.
+       _l_o_g_2: PPRROOCCEEDDUURREE(_o_p: _O_p_e_r_a_t_i_o_n_s._O_p_e_r_a_n_d) : LLOONNGGIINNTT;
+            compute log2(_o_p) and return the rounded up result.
+       _o_d_d: PPRROOCCEEDDUURREE(_o_p: _O_p_e_r_a_t_i_o_n_s._O_p_e_r_a_n_d) : BBOOOOLLEEAANN;
+            check whether _o_p is odd or not and return TTRRUUEE if  _o_p
+            is odd and FFAALLSSEE if not. This procedure needs only to
+
+
+
+Release 0.5         Last change: 3 April 1997                   2
+
+
+
+
+
+IntOperations(3)       Ulm's Oberon System       IntOperations(3)
+
+
+            be provided if _o_d_d is given in the set  of  capabili­
+            ties.
+       _s_h_i_f_t: PPRROOCCEEDDUURREE(_o_p: _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d; _n: IINNTTEEGGEERR);
+            logically  shift _o_p _n bits to the left and return the
+            shifted value, if _n is positive.  Else  shift  _o_p  -_n
+            bits to the right.
+       _i_n_t_O_p:  PPRROOCCEEDDUURREE(_o_p:  _O_p_e_r_a_t_i_o_n;  _o_p_1,  _o_p_2,  _o_p_3: _O_p_e_r_a_­
+            _t_i_o_n_s_._O_p_e_r_a_n_d; VVAARR _r_e_s_u_l_t: _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d);
+            execute the given operator  for  the  given  operands
+            _o_p_1,  _o_p_2 and _o_p_3 and store the result in the already
+            initialized _r_e_s_u_l_t.  _o_p_2 and _o_p_3 are NNIILL  if  unused.
+            So  far  as  _o_p_2  and  _o_p_3 are used, the operands are
+            already checked for type equality and  _r_e_s_u_l_t  is  of
+            the  appropriate  type.  This procedure is not called
+            with _o_p values outside  the  capability  set  of  the
+            associated interface.  _r_e_s_u_l_t is guaranteed to be not
+            an alias of _o_p_1, _o_p_2 or _o_p_3.
+
+       _I_n_i_t is to be called by modules implementing an arithmetic
+       data  type  to connect the interface _i_f to the operand _o_p.
+       _C_a_p_a_b_i_l_i_t_i_e_s  returns  the  set  of  capabilities  of  _o_p.
+       _I_s_L_a_r_g_e_E_n_o_u_g_h_F_o_r  returns TTRRUUEE if the type specified by _o_p
+       is large enough for 2_n-1,  else  returns  FFAALLSSEE.  _U_n_s_i_g_n_e_d
+       returns  TTRRUUEE  if  the  type of _o_p is unsigned and returns
+       FFAALLSSEE if the type is signed.
+
+       _I_n_t_T_o_O_p converts a given integer _i_n_t_3_2 into the type _O_p_e_r_­
+       _a_t_i_o_n_s._O_p_e_r_a_n_d and stores the result into the already ini­
+       tialized variable _o_p. _O_p_T_o_I_n_t converts _o_p into an  integer
+       of  type _T_y_p_e_s._I_n_t_3_2 and stores the result in the variable
+       _i_n_t_3_2. If _o_p does not fit into a 32 bit variable, then the
+       modulo operation is used for adaption.
+
+       _L_o_g_2 returns the rounded up result of log2(_o_p). _O_d_d checks
+       a given operand _o_p if it is odd and returns TTRRUUEE  if  odd,
+       else the procedure returns FFAALLSSEE.
+
+       Arithmetic operations are implemented in three forms:
+
+       _X_X_X(_o_p_1: _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d; (* ... *)) : _O_p_e_r_a_­
+       _t_i_o_n_s_._O_p_e_r_a_n_d
+              Executes the named  operations  with  the  required
+              parameters and returns the newly created operand.
+
+       _X_X_X_2(VVAARR _o_p_1: _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d; (* ... *))
+              Operates  on _o_p_1 and, depending on the named opera­
+              tion, on further operands  and  stores  the  result
+              into _o_p_1.
+
+       _X_X_X_3(VVAARR  _r_e_s_u_l_t: _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d; _o_p_1:
+       _O_p_e_r_a_t_i_o_n_s_._O_p_e_r_a_n_d; (* ... *))
+              Operates  on _o_p_1 and, depending on the named opera­
+              tion, on further operands  and  stores  the  result
+              into _r_e_s_u_l_t.
+
+
+
+Release 0.5         Last change: 3 April 1997                   3
+
+
+
+
+
+IntOperations(3)       Ulm's Oberon System       IntOperations(3)
+
+
+       If more than one parameter is used in _X_X_X resp. in _X_X_X_2 or
+       in _X_X_X_3 then type equality is necessary.  These procedures
+       are provided for _X_X_X equal to _I_n_c, _D_e_c, _M_o_d, _P_o_w, _M_M_u_l and
+       _M_P_o_w. _X_X_X_2 and _X_X_X_3 allow _r_e_s_u_l_t to be equal to  _o_p_1,  _o_p_2
+       or _o_p_3.
+
+       _S_h_i_f_t  works  like  SSYYSSTTEEMM..LLSSHH  and logically shifts _o_p_1 _n
+       bits to the left, provided that _n is positive. Else _o_p_1 is
+       shifted  _n  bits to the right. _I_n_c and _D_e_c increment resp.
+       decrement _o_p_1 by 1. _M_o_d calculates _o_p_1  MMOODD  _o_p_2  and  _P_o_w
+       returns  _o_p_1  to the power of _o_p_2. _M_M_u_l multiplies _o_p_1 and
+       _o_p_2 and assures that the result is less  than  _o_p_3.   Like
+       _M_M_u_l, _M_P_o_w computes the residue of power.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _I_n_t_O_p_e_r_a_t_i_o_n_s  checks  for  some  errors which may lead to
+       failed assertions:
+
+       ·      In _I_n_t_T_o_O_p the operand must be already initialized.
+
+       ·      The interfaces of the given operands must match.
+
+       ·      Operations  which  are  not supported for the given
+              operand must not be called.
+
+AAUUTTHHOORR
+       Frank B.J. Fischer
+
+SSEEEE AALLSSOO
+       _O_p_e_r_a_t_i_o_n_s_(_3_)   generic interface  for  arithmetic  opera­
+                       tions
+       _C_a_r_d_1_0_2_4_s_(_3_)    implementation  of  _I_n_t_O_p_e_r_a_t_i_o_n_s for 1024
+                       bit cardinal
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 3 April 1997                   4
+
+

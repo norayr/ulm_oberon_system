@@ -1,0 +1,198 @@
+
+
+
+FTPUnixPaths(3)        Ulm's Oberon System        FTPUnixPaths(3)
+
+
+NNAAMMEE
+       FTPUnixPaths - path-based pseudo chroot jails
+
+SSYYNNOOPPSSIISS
+       TYPE Path = POINTER TO PathRec;
+       TYPE PathRec = RECORD (Disciplines.ObjectRec) END;
+
+       PROCEDURE CreatePath(VAR path: Path;
+                            root, pathname: ARRAY OF CHAR);
+       PROCEDURE CreateDerivedPath(VAR path: Path; oldpath: Path;
+                                   pathname: ARRAY OF CHAR);
+       PROCEDURE GetRelPath(path: Path; VAR pathname: ARRAY OF CHAR);
+       PROCEDURE GetAbsPath(path: Path; VAR pathname: ARRAY OF CHAR);
+       PROCEDURE Upward(path: Path);
+       PROCEDURE ChangeDir(path: Path; dirname: ARRAY OF CHAR);
+
+       PROCEDURE CheckAndProcessSymLinks(path: Path;
+                                         newfile: BOOLEAN;
+                                         VAR expandedPath: ARRAY OF CHAR;
+                                         errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _F_T_P_U_n_i_x_P_a_t_h_s  offers  path  name  operations that allow to
+       realize pseudo chroot jails for FTP server processes  that
+       do  not  run  with root privileges which would be required
+       for _c_h_r_o_o_t_(_2_).  To avoid accesses  outside  a  given  root
+       directory,  care  has  to  be  taken regarding uplinks via
+       ``..''  and of symbolic links that may point  outside  the
+       chosen file hierarchy.
+
+       _C_r_e_a_t_e_P_a_t_h  and _C_r_e_a_t_e_D_e_r_i_v_e_d_P_a_t_h create paths that may be
+       later  manipulated  using  _U_p_w_a_r_d  and  _C_h_a_n_g_e_D_i_r.  Before
+       accessing  a file or directory, _C_h_e_c_k_A_n_d_P_r_o_c_e_s_s_S_y_m_L_i_n_k_s is
+       to be used to convert a path into a pathname free of  sym­
+       bolic links and uplinks which resides inside the simulated
+       chroot jail.
+
+       _C_r_e_a_t_e_P_a_t_h creates _p_a_t_h out of  _p_a_t_h_n_a_m_e  that  is  to  be
+       taken relative to _r_o_o_t, the assumed pseudo root.  _C_r_e_a_t_e_D_­
+       _e_r_i_v_e_d_P_a_t_h creates a new path out of _o_l_d_p_a_t_h with relative
+       path  _p_a_t_h_n_a_m_e.  The new path shares its root with the old
+       path.
+
+       _G_e_t_R_e_l_P_a_t_h returns the relative  uplink-free  pathname  of
+       _p_a_t_h  as  string,  while  _G_e_t_A_b_s_P_a_t_h  returns the absolute
+       uplink-free pathname including its root.  Neither  _G_e_t_R_e_l_­
+       _P_a_t_h nor _G_e_t_A_b_s_P_a_t_h check for symlinks.
+
+       _C_h_a_n_g_e_D_i_r  appends  _d_i_r_n_a_m_e  to  _p_a_t_h.  References  to the
+       upward  directory  (``..'')  and  to  the  same  directory
+       (``.'')  are  processed  as  by  the constructors _C_r_e_a_t_e_D_­
+       _e_r_i_v_e_d_P_a_t_h and _C_h_e_c_k_A_n_d_P_r_o_c_e_s_s_S_y_m_L_i_n_k_s.  Likewise  is  the
+       upward  link of the pseudo root is interpreted to point to
+
+
+
+Release 0.5         Last change: 24 April 2001                  1
+
+
+
+
+
+FTPUnixPaths(3)        Ulm's Oberon System        FTPUnixPaths(3)
+
+
+       the pseudo root itself.  _U_p_w_a_r_d is equivalent to _C_h_a_n_g_e_D_i_r
+       with ``..'' as _d_i_r_n_a_m_e.
+
+       _C_h_e_c_k_A_n_d_P_r_o_c_e_s_s_S_y_m_L_i_n_k_s  should  be used to extract a path
+       name  usable  for  _U_n_i_x_F_i_l_e_s  or  similar  modules  before
+       accessing  files or directories. It checks the entire path
+       for symbolic links and interpretes them  relative  to  the
+       pseudo  root  of  _p_a_t_h.  The last component of _p_a_t_h may be
+       non-existant if _n_e_w_f_i_l_e is set to  TTRRUUEE.   On  success,  a
+       symlink-free  absolute  path  that  points  inside  of the
+       pseudo root is returned in _e_x_p_a_n_d_e_d_P_a_t_h. Access errors, if
+       any, are related to _e_r_r_o_r_s.
+
+DDIIAAGGNNOOSSTTIICCSS
+       _F_T_P_U_n_i_x_P_a_t_h_s  does  not  generate  any error events on its
+       own.
+
+SSEECCUURRIITTYY CCOONNSSIIDDEERRAATTIIOONNSS
+       Pseudo chroot jails are less safe  than  chroot  jails  on
+       base of _c_h_r_o_o_t_(_2_):
+
+       ·      The  process  is  still  free  to  access files and
+              directories outside the  pseudo  root.  That  means
+              that  if  an  attacker  is able to execute supplied
+              code inside a FTP server process he or she  is  not
+              bound  to  the  restrictions of _C_h_e_c_k_A_n_d_P_r_o_c_e_s_s_S_y_m_­
+              _L_i_n_k_s.
+
+       ·      In the time frame between the check using _C_h_e_c_k_A_n_d_­
+              _P_r_o_c_e_s_s_S_y_m_L_i_n_k_s  and  the actual access of the path
+              found in  _e_x_p_a_n_d_e_d_P_a_t_h,  symbolic  links  could  be
+              added  that  would direct the access outside of the
+              pseudo chroot jail.
+
+       In summary, _F_T_P_U_n_i_x_P_a_t_h_s helps to restrict FTP accesses to
+       a  particular  directory  and below (a home directory, for
+       example) while running  not  with  super-user  privileges.
+       This  is an improvement in comparison to FTP servers that,
+       if not logged in anonymously, provide unrestricted  access
+       to  the  whole  file  system  including shared spaces like
+       _/_t_m_p.  But it is far  from  offering  the  security  of  a
+       chroot jail based on _c_h_r_o_o_t_(_2_).
+
+SSEEEE AALLSSOO
+       _F_T_P_U_n_i_x_F_i_l_e_S_y_s_t_e_m_s_(_3_)   FTP  command  handler  that imple­
+                               ments file and directory  accesses
+                               on base of this module.
+
+BBUUGGSS
+       Following limits are silently imposed on all pathnames:
+
+       ·      An  entire path that is extracted as string is lim­
+              ited to 8192 bytes.  This limit applies  to  pseudo
+              roots as well.
+
+
+
+Release 0.5         Last change: 24 April 2001                  2
+
+
+
+
+
+FTPUnixPaths(3)        Ulm's Oberon System        FTPUnixPaths(3)
+
+
+       ·      Path components are limited to 512 bytes.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 24 April 2001                  3
+
+

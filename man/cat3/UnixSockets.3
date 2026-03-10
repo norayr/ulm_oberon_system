@@ -1,0 +1,160 @@
+UnixSockets(3)                Ulm's Oberon System               UnixSockets(3)
+
+
+
+[1mNAME[0m
+       UnixSockets - general interface for UNIX sockets
+
+[1mSYNOPSIS[0m
+       TYPE Socket = POINTER TO SocketRec;
+       TYPE SocketRec = RECORD (Networks.SocketRec) END;
+
+       PROCEDURE Open(VAR s: Streams.Stream;
+                      addressFamily: INTEGER;
+                      type: INTEGER;
+                      address: ARRAY OF BYTE;
+                      bind: BOOLEAN; bindto: ARRAY OF BYTE;
+                      bufmode: Streams.BufMode;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE OpenL(VAR s: Streams.Stream;
+                       addressFamily: INTEGER;
+                       type: INTEGER;
+                       address: ARRAY OF BYTE;
+                       len: SysTypes.Size;
+                       bind: BOOLEAN; bindto: ARRAY OF BYTE;
+                       bindtolen: SysTypes.Size;
+                       bufmode: Streams.BufMode;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+                                     addressFamily: INTEGER;
+                                     type: INTEGER;
+                                     address: ARRAY OF BYTE;
+                                     bind: BOOLEAN; bindto: ARRAY OF BYTE);
+       PROCEDURE CreateOpenConditionL(VAR condition: Conditions.Condition;
+                                      addressFamily: INTEGER;
+                                      type: INTEGER;
+                                      address: ARRAY OF BYTE;
+                                      len: SysTypes.Size;
+                                      bind: BOOLEAN; bindto: ARRAY OF BYTE;
+                                      bindtolen: SysTypes.Size);
+       PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+                             condition: Conditions.Condition;
+                             bufmode: Streams.BufMode;
+                             errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Drop(condition: Conditions.Condition);
+
+       PROCEDURE Listen(VAR socket: Socket;
+                        addressFamily: INTEGER;
+                        type: INTEGER;
+                        port: ARRAY OF BYTE;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE ListenL(VAR socket: Socket;
+                         addressFamily: INTEGER;
+                         type: INTEGER;
+                         port: ARRAY OF BYTE;
+                         len: SysTypes.Size;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Accept(socket: Socket;
+                        VAR s: Streams.Stream; bufmode: Streams.BufMode;
+                        VAR peer: ARRAY OF BYTE) : BOOLEAN;
+       PROCEDURE Release(socket: Socket);
+
+       PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+                                       socket: Socket);
+
+       PROCEDURE GetName(socket: Socket; VAR address: ARRAY OF BYTE;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mUnixSockets[24m  provides  an  interface for [4mSysSockets(3)[24m which is used by
+       socket-specific extensions (e.g. [4mIPv4TCPSockets(3)[24m and  [4mUnixDomainSock-[0m
+       [4mets(3)[24m).
+
+       Socket  streams  are opened either by connecting to an already existing
+       socket or by accepting a new connection on a port where  other  sockets
+       may connect to.  Both variants of opening a socket stream are supported
+       in blocking ([4mOpen[24m and [4mAccept[24m) and non-blocking  form  ([4mCreateOpenCondi-[0m
+       [4mtion[24m/[4mTestAndOpen[24m and [4mCreateAcceptCondition[24m).
+
+       Address  families  are  enumerated  in  [4mSysSockets(3)[24m.   Usually, three
+       address families supported only:
+       [4mSysSockets.afUNIX[24m   UNIX domain sockets -- supported by [4mUnixDomainSock-[0m
+                           [4mets(3)[0m
+       [4mSysSockets.afINET[24m   IPv4 sockets -- supported by [4mIPv4TCPSockets(3)[0m
+       [4mSysSockets.afINET6[24m  IPv6 sockets
+       The  underlying system calls which get address parameters have an addi-
+       tional parameter that specifies the exact  length  of  the  address  in
+       bytes.  This length is constant for IPv4 or IPv6 domain sockets but not
+       for UNIX domain sockets where it depends on the length of the path.
+
+       The [4mtype[24m parameter specifies the socket type.  [4mSysSockets.stream[24m is  to
+       be used for stream sockets.  Other possible types are [4mSysSockets.dgram[24m,
+       [4mSysSockets.rdm[24m, and [4mSysSockets.seqpacket[24m.
+
+       All procedures which accept an address as [1mARRAY OF BYTE [22mare offered  in
+       two  variants:  one  which implicitly takes [1mLEN [22mof the dynamic array to
+       calculate the length ([4mOpen[24m, [4mCreateOpenCondition[24m, and  [4mListen[24m)  and  one
+       which  has  an  explicit length parameter ([4mOpenL[24m, [4mCreateOpenConditionL[24m,
+       and [4mListenL[24m).
+
+       All connecting procedures ([4mOpen[24m, [4mOpenL[24m, [4mCreateOpenCondition[24m,  and  [4mCre-[0m
+       [4mateOpenConditionL[24m)  accept  an  optional  address  in  [4mbindto[24m where the
+       socket is to be bound locally. The [4mbind[24m parameter is to be set to  [1mTRUE[0m
+       to  take the address of [4mbindto[24m, otherwise a default address selected by
+       the underlying operating system is taken. This specification is  mainly
+       useful  for services running on virtual IP addresses.  In case of [4mOpenL[0m
+       and [4mCreateOpenConditionL[24m, the parameter [4mbindtolen[24m specifies the  length
+       of [4mbindto[24m.
+
+       [4mDrop[24m  may  be used to get rid of conditions created by [4mCreateOpenCondi-[0m
+       [4mtion[24m or [4mCreateOpenConditionL[24m  which  have  not  yet  been  successfully
+       opened using [4mTestAndOpen[24m.
+
+       Some  socket  options are set that override less useful defaults of the
+       underlying operating system:
+
+       ·      [4mSysSockets.optKeepAlive[24m and [4mSysSockets.optOOBinline[24m are set  for
+              all  connections to get notified when a communication partner no
+              longer responds and to receive out-of-band-data  in  the  normal
+              communication  channel.  The  latter option is mainly useful for
+              protocols that still use telnet codes (telnet and FTP).
+
+       ·      [4mSysSockets.optReuseAddr[24m is set  for  all  listening  sockets  to
+              avoid the trouble with the otherwise enforced time period within
+              a formerly used port must not be used again. This is painful  in
+              case of network services that are to be restarted.
+
+       [4mCreateOpenCondition[24m  creates  a  condition which allows to wait for the
+       connection to [4maddress[24m to be established or until  the  try  to  connect
+       fails.  When the condition returned by [4mCreateOpenCondition[24m evaluates to
+       [1mTRUE[22m, [4mTestAndOpen[24m is to be used to test for success, and if successful,
+       to open the established connection as stream.  [4mOpen[24m serves as shorthand
+       notation for [4mCreateOpenCondition[24m, followed by [4mTasks.WaitFor[24m,  and  [4mTes-[0m
+       [4mtAndOpen[24m.
+
+       [4mListen[24m  creates  a  port where other parties may connect to.  [4mCreateAc-[0m
+       [4mceptCondition[24m allows to wait for  incoming  connections  which  may  be
+       opened  by  [4mAccept[24m.   [4mRelease[24m allows to close a port if no more connec-
+       tions are to be accepted.
+
+       [4mGetName[24m returns the address of a socket.  This is useful when a special
+       address was used which asked the UNIX kernel to choose an address.
+
+[1mDIAGNOSTICS[0m
+       Creating  a condition is always successful, [4mRelease[24m ignores any errors,
+       and all other operations return [1mFALSE [22min case of  errors.   [4mUnixSockets[0m
+       does  not generate itself error events but propagates those of [4mSysSock-[0m
+       [4mets(3)[24m.  [4mAccept[24m relates its error events to  [4msocket[24m,  all  other  error
+       events are related to [4merrors[24m.
+
+[1mSEE ALSO[0m
+       [4mIPv4TCPSockets(3)[24m      high-level interface for IPv4 TCP sockets
+       [4mNetworks(3)[24m            general abstraction for network connections
+       [4mSysSockets(3)[24m          interfaces socket related system calls
+       [4mUnixDomainSockets(3)[24m   high-level interface for UNIX domain sockets
+
+
+
+Release 0.5              Last change: 21 January 2005           UnixSockets(3)

@@ -1,0 +1,132 @@
+
+
+
+Schedulers(3)          Ulm's Oberon System          Schedulers(3)
+
+
+NNAAMMEE
+       Schedulers - general scheduler interface
+
+SSYYNNOOPPSSIISS
+       TYPE TaskGroup = POINTER TO TaskGroupRec;
+       TYPE TaskGroupRec = RECORD (Tasks.TaskGroupRec) END;
+       TYPE Task = POINTER TO TaskRec;
+       TYPE TaskRec = RECORD (Tasks.TaskRec) END;
+
+       TYPE DispatchProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+       TYPE CreateProc = PROCEDURE (tg: TaskGroup; VAR task: Task);
+       TYPE RemoveProc = PROCEDURE (tg: TaskGroup; task: Task);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             dispatch: DispatchProc;
+             create: CreateProc;
+             remove: RemoveProc;
+          END;
+
+       CONST badTask = 0;
+       CONST failureOfWaitFor = 1;
+       CONST errorcodes = 2;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE InitGroup(tg: TaskGroup; if: Interface);
+       PROCEDURE StartScheduler(tg: TaskGroup);
+       PROCEDURE AddTask(tg: TaskGroup; cr: Coroutines.Coroutine;
+                         VAR task: Tasks.Task);
+       PROCEDURE Ready(task: Task) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _S_c_h_e_d_u_l_e_r_s realizes an interface for schedulers.  The main
+       work (condition processing and error handling)  of  sched­
+       ulers is already done by _S_c_h_e_d_u_l_e_r_s -- the only task which
+       is left open to an implementor is the selection of one  of
+       the ready tasks.
+
+       _I_n_i_t_G_r_o_u_p  initializes  a new task group and associates it
+       with the given interface _i_f.  The interface procedures are
+       expected to meet following specifications:
+       _d_i_s_p_a_t_c_h: PPRROOCCEEDDUURREE(_t_g: _T_a_s_k_G_r_o_u_p; VVAARR _t_a_s_k: _T_a_s_k);
+            select  one of the ready tasks of _t_g and return it in
+            _t_a_s_k.  _S_c_h_e_d_u_l_e_r_s guarantees that at least  one  task
+
+
+
+
+
+Release 0.5          Last change: 17 May 2001                   1
+
+
+
+
+
+Schedulers(3)          Ulm's Oberon System          Schedulers(3)
+
+
+            is ready for execution.
+       _c_r_e_a_t_e: PPRROOCCEEDDUURREE(_t_g: _T_a_s_k_G_r_o_u_p; VVAARR _t_a_s_k: _T_a_s_k);
+            create  and  initialize _t_a_s_k and add _t_a_s_k to the list
+            of tasks which belong to _t_g.  This  interface  proce­
+            dure  allows  to  get  track  of  the current list of
+            tasks.
+       _r_e_m_o_v_e: PPRROOCCEEDDUURREE(_t_g: _T_a_s_k_G_r_o_u_p; _t_a_s_k: _T_a_s_k);
+            remove _t_a_s_k from the list of tasks.
+
+       _S_t_a_r_t_S_c_h_e_d_u_l_e_r starts the scheduling algorithm and returns
+       in case of fatal errors or if all tasks which belong to _t_g
+       are terminated.  _S_t_a_r_t_S_c_h_e_d_u_l_e_r calls  _T_a_s_k_s_._W_a_i_t_F_o_r  with
+       the union of all waiting conditions if all tasks are wait­
+       ing.  This causes the current process  to  be  blocked  if
+       _S_t_a_r_t_S_c_h_e_d_u_l_e_r  has  been  called  by the main task.  Note
+       that _S_t_a_r_t_S_c_h_e_d_u_l_e_r may be called even if the initial task
+       group  is  empty.   In this case, _S_t_a_r_t_S_c_h_e_d_u_l_e_r waits for
+       the first task being added by _A_d_d_T_a_s_k  and  starts  after­
+       wards the scheduling algorithm.
+
+       _A_d_d_T_a_s_k  creates  a  new  task  which  represents  _c_r  and
+       includes it in the set of tasks which belong to _t_g.   Fur­
+       ther, every task is free to call _A_d_d_T_a_s_k while _S_t_a_r_t_S_c_h_e_d_­
+       _u_l_e_r is running.
+
+       _R_e_a_d_y returns TTRRUUEE if _t_a_s_k is currently not waiting.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Following errors lead to events which are related  to  the
+       task   group   and   passed  to  _R_e_l_a_t_e_d_E_v_e_n_t_s.   Further,
+       _S_t_a_r_t_S_c_h_e_d_u_l_e_r returns immediately in case of such errors.
+       _b_a_d_T_a_s_k            The  task  which  has  been selected by
+                          _d_i_s_p_a_t_c_h  is  not  ready  or  does  not
+                          belong to the task group.
+       _f_a_i_l_u_r_e_O_f_W_a_i_t_F_o_r   Indicates  that  _T_a_s_k_s_._W_a_i_t_F_o_r returned
+                          too early, i.e. none of the  conditions
+                          evaluates  to TTRRUUEE or causes a failure.
+       Errors which result from failures to evaluate a  condition
+       are  forwarded to the _e_r_r_o_r_s components of all tasks which
+       waits for the given condition.
+
+SSEEEE AALLSSOO
+       _C_o_n_d_i_t_i_o_n_s_(_3_)      interface for conditions
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)   error handling
+       _S_y_s_M_a_i_n_(_3_)         creates the main task group
+       _R_o_u_n_d_R_o_b_i_n_(_3_)      popular scheduler on top of this module
+       _T_a_s_k_s_(_3_)           general task management
+
+
+
+
+
+
+
+
+
+
+Release 0.5          Last change: 17 May 2001                   2
+
+

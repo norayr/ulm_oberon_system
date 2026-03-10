@@ -1,0 +1,198 @@
+
+
+
+FTPUnixDirLister(3)    Ulm's Oberon System    FTPUnixDirLister(3)
+
+
+NNAAMMEE
+       FTPUnixDirLister - list UNIX directories for FTP
+
+SSYYNNOOPPSSIISS
+       CONST regular = 0; directory = 1; symlink = 2; other = 3;
+
+       PROCEDURE GetFileType(pathname: ARRAY OF CHAR;
+                             VAR ftype: SHORTINT;
+                             errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetSize(pathname: ARRAY OF CHAR;
+                         VAR size: LONGINT;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetTimestamp(pathname: ARRAY OF CHAR;
+                              VAR timestamp: ARRAY OF CHAR;
+                              errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE List(s: Streams.Stream;
+                      pathname, relpath, pattern: ARRAY OF CHAR;
+                      long: BOOLEAN;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _F_T_P_U_n_i_x_D_i_r_L_i_s_t_e_r  offers some auxiliary functions for han­
+       dlers of some FTP commands that list  the  contents  of  a
+       directory or retrieve file properties.
+
+       _G_e_t_F_i_l_e_T_y_p_e  returns  a  simplified file type of _p_a_t_h_n_a_m_e.
+       Files of type _o_t_h_e_r should usually neither be accessed nor
+       shown by FTP services.
+
+       _G_e_t_S_i_z_e  returns  the  size of _p_a_t_h_n_a_m_e in bytes under the
+       assumption  of  a  binary  transfer  mode.    _G_e_t_T_i_m_e_s_t_a_m_p
+       returns,  in  conformance to _F_T_P_C_o_m_m_a_n_d_s_._m_d_t_m, the time of
+       the last modification of _p_a_t_h_n_a_m_e in the form  YYYYYYYYMMMMDDDDHHHH­­
+       MMMMSSSS.
+
+       _L_i_s_t prints to _s,
+
+       ·      if  _p_a_t_h_n_a_m_e  is  a  directory,  a filtered list of
+              filenames contained in it, or,
+
+       ·      if _p_a_t_h_n_a_m_e is a regular file, a  single  line  for
+              it.
+
+       Lines  output  resemble that of ``/bin/ls -la'' if _l_o_n_g is
+       set to TTRRUUEE, and to ``/bin/ls'' otherwise. However,
+
+       ·      directory entries other than  directories,  regular
+              files, and symbolic links are suppressed,
+
+       ·      file  protection  modes  are always given as ``-rw-
+              r--r--'' (for regular files),  ``drwxr-xr-x''  (for
+              directories),   and  ``lrwxrwxrwx''  (for  symbolic
+
+
+
+Release 0.5          Last change: 7 May 2001                    1
+
+
+
+
+
+FTPUnixDirLister(3)    Ulm's Oberon System    FTPUnixDirLister(3)
+
+
+              links), and
+
+       ·      the file owner is given as 00 (root). A  column  for
+              group owner is not given.
+
+       The  original  pathname  in  _p_a_t_h_n_a_m_e  is  never revealed.
+       Instead _r_e_l_p_a_t_h is printed, if given, and, in  case  of  a
+       directory listing, the filename inside a directory is pro­
+       vided.  The wildcard pattern _p_a_t_t_e_r_n is, if  given  for  a
+       directory, matched against filenames inside of directories
+       and works as filter.  Wildcard patterns are interpreted by
+       _S_c_a_n_D_i_r_(_3_) but locally only against filenames found inside
+       the directory specified by _p_a_t_h_n_a_m_e. Multi-level  patterns
+       like ``*/*'' do not work.
+
+       All  occurences  of  newlines  in  directory  entries  are
+       replaced by null bytes when being output to _s.
+
+EEXXAAMMPPLLEE
+       A directory containing a regular file called  _t_e_x_t_f_i_l_e,  a
+       sub-directory  called  _s_u_b_d_i_r  and a symbolic link _l_i_n_k to
+       _t_e_x_t_f_i_l_e would be shown as:
+
+       drwxr-xr-x   3 0            512 May  7 13:51 .
+       drwxr-xr-x   3 0            512 May  7 13:51 ..
+       -rw-r--r--   1 0              7 May  7 13:51 textfile
+       drwxr-xr-x   2 0            512 May  7 13:51 subdir
+       lrwxrwxrwx   1 0              8 May  7 13:51 link -> textfile
+
+       The same directory as shown by //bbiinn//llss --llaa:
+
+       total 10
+       drwxrwxr-x   3 afb      sai          512 May  7 15:51 .
+       drwxrwxr-x   3 root     root         512 May  7 15:51 ..
+       lrwxrwxrwx   1 afb      sai            8 May  7 15:51 link -> textfile
+       drwxrwxr-x   2 afb      sai          512 May  7 15:51 subdir
+       -rw-rw-r--   1 afb      sai            7 May  7 15:51 textfile
+
+
+DDIIAAGGNNOOSSTTIICCSS
+       All procedures return FFAALLSSEE in case of errors  and  relate
+       all  error  events to _e_r_r_o_r_s but do not generate any error
+       events on themselves.   _G_e_t_S_i_z_e  and  _G_e_t_T_i_m_e_s_t_a_m_p  return
+       results for valid regular files only.
+
+SSEECCUURRIITTYY CCOONNSSIIDDEERRAATTIIOONNSS
+       All  path  names  coming  from  the  FTP  client should be
+       checked  by  _F_T_P_U_n_i_x_P_a_t_h_s_._C_h_e_c_k_A_n_d_P_r_o_c_e_s_s_S_y_m_L_i_n_k_s   before
+       passing  them  directly to any of these operations. Other­
+       wise,  the  pseudo  chroot  jail  is  not  effective,  see
+       _F_T_P_U_n_i_x_P_a_t_h_s_(_3_).
+
+       The  directory  listings by this module do not rely on any
+       external programs (like  _/_b_i_n_/_l_s)  but  provide,  to  stay
+
+
+
+Release 0.5          Last change: 7 May 2001                    2
+
+
+
+
+
+FTPUnixDirLister(3)    Ulm's Oberon System    FTPUnixDirLister(3)
+
+
+       compatible  with  a  large number of FTP clients, listings
+       that look like those generated by _/_b_i_n_/_l_s except that
+
+       ·      multi-level globbing  is  not  supported  to  avoid
+              denial-of-service attacks as otherwise triggered by
+              patterns like ``*/../*/../*/../*/../*'',
+
+       ·      entries other than that of regular files,  directo­
+              ries and symbolic links are suppressed,
+
+       ·      entries  are  not  suppressed because of their name
+              beginning with ``.'',
+
+       ·      ownership is reported as 00 (super-user)  regardless
+              of the real ownership,
+
+       ·      file  protection  is  reported  as writable for the
+              owner, readable/executable for all  others  regard­
+              less of the true file protection, and
+
+       ·      options like ``-la'' are neither supported nor even
+              recognized.  The  pathname   is   taken   literally
+              instead.
+
+SSEEEE AALLSSOO
+       _F_T_P_U_n_i_x_F_i_l_e_S_y_s_t_e_m_s_(_3_)   uses  this module to implement the
+                               related FTP commands.
+
+BBUUGGSS
+       The directory listings are not sorted. Unicode is not sup­
+       ported yet.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5          Last change: 7 May 2001                    3
+
+

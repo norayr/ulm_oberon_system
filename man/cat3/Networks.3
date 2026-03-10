@@ -1,0 +1,203 @@
+Networks(3)                   Ulm's Oberon System                  Networks(3)
+
+
+
+[1mNAME[0m
+       Networks - general abstraction for bidirectional network connections
+
+[1mSYNOPSIS[0m
+       TYPE Network = POINTER TO NetworkRec;
+       TYPE NetworkRec = RECORD (PersistentDisciplines.ObjectRec) END;
+       TYPE Address = POINTER TO AddressRec;
+       TYPE AddressRec =
+          RECORD
+             (PersistentDisciplines.ObjectRec)
+             network: Network;
+          END;
+       TYPE Socket = POINTER TO SocketRec;
+       TYPE SocketRec = RECORD (Disciplines.ObjectRec) END;
+
+       TYPE OpenProc = PROCEDURE (VAR s: Streams.Stream; address: Address;
+                                  bufmode: Streams.BufMode;
+                                  errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE CreateOpenConditionProc = PROCEDURE(VAR condition: Conditions.Condition;
+                                                address: Address);
+       TYPE TestAndOpenProc = PROCEDURE (VAR s: Streams.Stream;
+                                         condition: Conditions.Condition;
+                                         bufmode: Streams.BufMode;
+                                         errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE CreateSomeSocketProc = PROCEDURE (VAR socket: Socket;
+                                              VAR address: Address;
+                                              errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE ListenProc = PROCEDURE (VAR socket: Socket; address: Address;
+                                    errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE ReleaseProc = PROCEDURE (socket: Socket);
+       TYPE AcceptProc = PROCEDURE (socket: Socket; VAR s: Streams.Stream;
+                                    bufmode: Streams.BufMode) : BOOLEAN;
+       TYPE AcceptConditionProc = PROCEDURE (VAR condition: Conditions.Condition;
+                                             socket: Socket);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             open: OpenProc;
+             createOpenCondition: CreateOpenConditionProc;
+             testAndOpen: TestAndOpenProc;
+             createSomeSocket: CreateSomeSocketProc;
+             listen: ListenProc;
+             release: ReleaseProc;
+             accept: AcceptProc;
+             acceptCondition: AcceptConditionProc;
+          END;
+
+       CONST unknownNetwork = 0;
+       CONST corruptedInput = 1;
+       CONST errors = 2;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Register(VAR network: Network;
+                          name: ARRAY OF CHAR; if: Interface);
+       PROCEDURE GetNetwork(name: ARRAY OF CHAR; VAR network: Network;
+                            VAR errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetName(network: Network; VAR name: ARRAY OF CHAR);
+       PROCEDURE GetNetworks(VAR iterator: Iterators.Iterator);
+
+       PROCEDURE Open(VAR s: Streams.Stream;
+                      address: Address;
+                      bufmode: Streams.BufMode;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE CreateOpenCondition(VAR condition: Conditions.Condition;
+                                     address: Address);
+       PROCEDURE TestAndOpen(VAR s: Streams.Stream;
+                             address: Address;
+                             condition: Conditions.Condition;
+                             bufmode: Streams.BufMode;
+                             errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE CreateSomeSocket(VAR socket: Socket;
+                                  network: Network;
+                                  VAR address: Address;
+                                  errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Listen(VAR socket: Socket; address: Address;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE Release(socket: Socket);
+       PROCEDURE Accept(socket: Socket;
+                        VAR s: Streams.Stream;
+                        bufmode: Streams.BufMode) : BOOLEAN;
+       PROCEDURE CreateAcceptCondition(VAR condition: Conditions.Condition;
+                                       socket: Socket);
+
+
+[1mDESCRIPTION[0m
+       [4mNetworks[24m  provides a general abstraction for bidirectional network con-
+       nections which is independent from a particular network.  Each  network
+       is  supported  by  a module which registers its network during its ini-
+       tialization time together with its module name.  Network addresses con-
+       sist of a network reference (which points to the associated module) and
+       a network specific part which is  covered  by  extensions  of  [4mAddress[24m.
+       Networks  and  addresses  are  persistent  objects  (see  [4mPersistentOb-[0m
+       [4mjects(3)[24m).  Sockets represent access points where other  processes  may
+       plug  in.   Note that one socket allows multiple connections simultane-
+       ously.
+
+   [1mProviding a Network[0m
+       [4mRegisterNetwork[24m is to be called by modules  which  exports  a  specific
+       network.   The [4mname[24m of a network should be its associated module.  This
+       assures that the name remains unique and that the associated module may
+       be  loaded  at runtime by the network name (see [4mLoader(3)[24m).  The inter-
+       face [4mif[24m is expected to meet following specification:
+       [4mopen[24m:  [1mPROCEDURE[22m([1mVAR  [4m[22ms[24m:  [4mStreams.Stream[24m;  [4maddress[24m:  [4mAddress[24m;  [4mbufmode[24m:
+            [4mStreams.BufMode[24m; [4merrors[24m: [4mRelatedEvents.Object[24m) : [1mBOOLEAN[22m;
+            try to establish a network connection to the given address and, if
+            successful, open a bidirectional stream with the  given  buffering
+            mode  [4mbufmode[24m  for  the  connection.  This procedure may block the
+            calling task (see [4mTasks(3)[24m).
+       [4mcreateOpenCondition[24m:  [1mPROCEDURE[22m([1mVAR  [4m[22mcondition[24m:   [4mConditions.Condition[24m;
+            [4maddress[24m: [4mAddress[24m);
+            initiate  a  connection  to  [4maddress[24m  and return a condition which
+            allows to wait for the connection to be  established.   Note  that
+            the  condition must return [1mTRUE [22meven if a connection cannot be set
+            up.
+       [4mtestAndOpen[24m:  [1mPROCEDURE[22m([1mVAR  [4m[22ms[24m:   [4mStreams.Stream[24m;   [4mcondition[24m:   [4mCondi-[0m
+            [4mtions.Condition[24m;   [4mbufmode[24m:   [4mStreams.BufMode[24m;  [4merrors[24m:  [4mRelatedE-[0m
+            [4mvents.Object[24m) : [1mBOOLEAN[22m;
+            test a connection which has been initiated by [4mcreateOpenCondition[24m,
+            and  return,  if successful, a bidirectional stream with the given
+            buffering mode.
+       [4mcreateSomeSocket[24m: [1mPROCEDURE[22m([1mVAR [4m[22msocket[24m: [4mSocket[24m; [1mVAR  [4m[22maddress[24m:  [4mAddress[24m;
+            [4merrors[24m: [4mRelatedEvents.Object[24m) : [1mBOOLEAN[22m;
+            create  a  socket for an arbitrary address which is to be returned
+            in [4maddress[24m.
+       [4mlisten[24m: [1mPROCEDURE[22m([1mVAR [4m[22msocket[24m: [4mSocket[24m; [4maddress[24m: [4mAddress[24m; [4merrors[24m:  [4mRelat-[0m
+            [4medEvents.Object[24m) : [1mBOOLEAN[22m;
+            create a socket for the given address.
+       [4mrelease[24m: [1mPROCEDURE[22m([4msocket[24m: [4mSocket[24m);
+            release the socket and its associated resources.
+       [4maccept[24m:  [1mPROCEDURE[22m([4msocket[24m:  [4mSocket[24m;  [1mVAR  [4m[22ms[24m:  [4mStreams.Stream[24m;  [4mbufmode[24m:
+            [4mStreams.BufMode[24m) : [1mBOOLEAN[22m;
+            wait until another process plugs into the socket (by calling [4mOpen[24m)
+            and,  if successfully, open a bidirectional stream for the connec-
+            tion with the given buffering mode.  Errors are to be  related  to
+            [4msocket[24m.   The streams returned by [4mopen[24m, [4mtestAndOpen[24m and [4maccept[24m are
+            expected to support the messages of [4mStreamConditions(3)[24m.
+       [4macceptCondition[24m: [1mPROCEDURE[22m([1mVAR [4m[22mcondition[24m: [4mConditions.Condition[24m; [4msocket[24m:
+            [4mSocket[24m);
+            create  a  condition  which  evaluates  to  [1mTRUE [22mwhen a subsequent
+            [4maccept[24m will return immediately.
+
+       [4mGetNetwork[24m returns the network for the given network name which is usu-
+       ally  the  name  of the supporting module.  [4mGetName[24m returns the name of
+       the given network.  [4mGetNetworks[24m returns an  iterator  which  allows  to
+       iterate  through  all networks which are currently supported by already
+       loaded modules.
+
+   [1mUsing a network[0m
+       [4mOpen[24m tries to establish a network connection to the given  address  and
+       returns,  if successful, an opened bidirectional stream.  While [4mOpen[24m is
+       free to block the calling task, [4mCreateOpenCondition[24m returns a condition
+       which returns [1mTRUE [22meither if a connection to [4maddress[24m is established, or
+       if a connection cannot be set up.  [4mTestAndOpen[24m allows then to check for
+       a successful connection, and (like [4mOpen[24m) to open a bidirectional stream
+       (if successful).
+
+       [4mListen[24m creates a socket for the given address which may be  later  used
+       to  wait  for incoming connections.  [4mCreateSomeSocket[24m works like [4mListen[0m
+       but chooses an address itself which  is  returned.   [4mAccept[24m  waits  for
+       incoming  connections  for  [4msocket[24m and opens a bidirectional stream for
+       it.  [4mCreateAcceptCondition[24m creates a condition which evaluates to  [1mTRUE[0m
+       if a subsequent [4mAccept[24m would not block for [4msocket[24m.
+
+[1mDIAGNOSTICS[0m
+       All  procedures  (except [4mCreateOpenCondition[24m and [4mCreateAcceptCondition[24m)
+       return [1mFALSE [22mand relate their error events to [4merrors[24m (or to  [4msocket[24m  in
+       case  of  [4mAccept[24m)  in  error case.  Usually, the error events which are
+       related to [4msocket[24m will be queued.
+
+       Additionally, following error events may be generated on  reading  per-
+       sistent objects of [4mNetworks[24m:
+       [4munknownNetwork[24m   The  network or address references a unknown or unsup-
+                        ported network name.
+       [4mcorruptedInput[24m   An object couldn't be read  because  of  corrupted  or
+                        badly formatted input.
+
+[1mSEE ALSO[0m
+       [4mInetTCP(3)[24m             implementation that supports IPv4 TCP sockets
+       [4mLoader(3)[24m              interfaces the runtime module loader
+       [4mPersistentObjects(3)[24m   input and output of persistent objects
+       [4mSMStreams(3)[24m           implements  bidirectional  communication streams
+                              which are based upon shared memory
+       [4mStreamConditions(3)[24m    conditions which allow to wait  until  a  stream
+                              becomes ready for input or output
+       [4mUnixDomainSockets(3)[24m   interfaces UNIX domain sockets
+
+
+
+Release 0.5              Last change: 24 February 2005             Networks(3)

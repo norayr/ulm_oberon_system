@@ -1,0 +1,330 @@
+
+
+
+Transactions(3)        Ulm's Oberon System        Transactions(3)
+
+
+NNAAMMEE
+       Transactions  -  an  abstraction  for transactions in dis­
+       tributed systems
+
+SSYYNNOOPPSSIISS
+       TYPE Transaction = POINTER TO TransactionRec;
+       TYPE TransactionRec = RECORD (Services.ObjectRec) END;
+       TYPE Object = Services.Object;
+
+       TYPE AccessSpecification = PersistentDisciplines.Object;
+
+       CONST defined = 0; begun = 1; committed = 2; aborted = 3;
+       TYPE State = SHORTINT; (* defined..aborted *)
+
+       TYPE AttachProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                                    obj: Object; aspec: AccessSpecification) : BOOLEAN;
+       TYPE AttachedProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                                      obj: Object) : BOOLEAN;
+       TYPE GetAttachedProc = PROCEDURE (trans: Transaction;
+                                         auth: Shards.Lid;
+                                         VAR it: Iterators.Iterator) : BOOLEAN;
+       TYPE TransProc = PROCEDURE (trans: Transaction;
+                                   auth: Shards.Lid) : BOOLEAN;
+       TYPE GetStateProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                                       VAR state: State) : BOOLEAN;
+       TYPE GetNameProc = PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                                     VAR name: ConstStrings.String) : BOOLEAN;
+       TYPE TakeInterestProc =
+                PROCEDURE (trans: Transaction; auth: Shards.Lid;
+                           VAR eventType: Events.EventType) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec);
+             attach: AttachProc;
+             attachable: AttachProc;
+             attached: AttachedProc;
+             getAttached: GetAttachedProc;
+             begin: TransProc;
+             commit: TransProc;
+             abort: TransProc;
+             release: TransProc;
+             getState: GetStateProc;
+             getName: GetNameProc;
+             takeInterest: TakeInterestProc;
+          END;
+
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Events.EventRec)
+             state: State; (* begun, committed, or aborted *)
+             trans: Transaction;
+          END;
+
+
+
+Release 0.5       Last change: 28 November 1996                 1
+
+
+
+
+
+Transactions(3)        Ulm's Oberon System        Transactions(3)
+
+
+       CONST beginFailed = 0; commitFailed = 1; abortFailed = 2;
+       CONST attachFailed = 4; releaseFailed = 5;
+       TYPE ErrorCode = SHORTINT; (* beginFailed..releaseFailed *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec);
+             errcode: ErrorCode;
+             trans: Transaction;
+          END;
+       VAR error: Events.EventType;
+
+       PROCEDURE Init(trans: Transaction; if: Interface);
+       PROCEDURE Release(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+
+       (* defining and examining the set of attached objects *)
+       PROCEDURE Attach(trans: Transaction; auth: Shards.Lid;
+                        obj: Object; aspec: AccessSpecification) : BOOLEAN;
+       PROCEDURE Attached(trans: Transaction; auth: Shards.Lid;
+                          obj: Object) : BOOLEAN;
+       PROCEDURE Attachable(trans: Transaction; auth: Shards.Lid;
+                            obj: Object; aspec: AccessSpecification) : BOOLEAN;
+       PROCEDURE GetAttached(trans: Transaction; auth: Shards.Lid;
+                             VAR it: Iterators.Iterator) : BOOLEAN;
+
+       (* transaction primitives *)
+       PROCEDURE Begin(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+       PROCEDURE Commit(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+       PROCEDURE Abort(trans: Transaction; auth: Shards.Lid) : BOOLEAN;
+
+       (* further requests *)
+       PROCEDURE GetName(trans: Transaction; auth: Shards.Lid;
+                         VAR name: ConstStrings.String) : BOOLEAN;
+       PROCEDURE GetState(trans: Transaction; auth: Shards.Lid;
+                           VAR state: State) : BOOLEAN;
+       PROCEDURE TakeInterest(trans: Transaction;
+                              auth: Shards.Lid;
+                              VAR eventType: Events.EventType) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _T_r_a_n_s_a_c_t_i_o_n_s defines an  extensible  abstraction  for  the
+       execution  of  transactions in a distributed system.  This
+       module represents the application's view of a  transaction
+       which  regards  a transaction as a frame for the execution
+       of an arbitrary number of operations  on  various  objects
+       attached  to  it.   From this point of view, a transaction
+       fulfills the following properties:
+       _A_t_o_m_i_c_i_t_y     Either all operations and state changes exe­
+                     cuted  on  the objects within the scope of a
+                     transaction become valid permanently or none
+                     of them.
+       _D_u_r_a_b_i_l_i_t_y    If   once   successfully  ended,  all  state
+                     changes  and  operations  on  the   attached
+
+
+
+Release 0.5       Last change: 28 November 1996                 2
+
+
+
+
+
+Transactions(3)        Ulm's Oberon System        Transactions(3)
+
+
+                     objects  remain  valid  regardless of subse­
+                     quent hard- or software failures.
+       _I_s_o_l_a_t_i_o_n     Parallel executed transactions run  indepen­
+                     dently from each other, meaning that none of
+                     the operations executed within the scope  of
+                     one  of  them  may be visible outside before
+                     the transaction successfully ended.
+       _C_o_n_s_i_s_t_e_n_c_y   Transactions guarantee  a  consistent  state
+                     for  all  attached  objects even in cases of
+                     unpredictable  termination  of  programs  or
+                     tasks.  This  includes  that all constraints
+                     defined for the objects  hold  true  when  a
+                     transaction  has finished, regardless of its
+                     particular result.
+
+       Implementors of transactions must guarantee these  proper­
+       ties  and provide a set of interface procedures to control
+       the execution of a transaction. The  interface  procedures
+       passed to _I_n_i_t are expected to meet the following specifi­
+       cations:
+       _a_t_t_a_c_h: PPRROOCCEEDDUURREE(_t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n;  _a_u_t_h:  _S_h_a_r_d_s_._L_i_d;
+            _o_b_j: _O_b_j_e_c_t; _a_s_p_e_c: _A_c_c_e_s_s_S_p_e_c_i_f_i_c_a_t_i_o_n) : BBOOOOLLEEAANN;
+            Attach  object _o_b_j to transaction _t_r_a_n_s.  The parame­
+            ter _a_s_p_e_c allows to specify how an object is intended
+            to  be  accessed  within the context of this transac­
+            tion.  Unlimited access is indicated  by  NNIILL,  other
+            object-specific  variants  may include the specifica­
+            tion of object parts (e.g. a subset of  a  container)
+            to permit parallel transactions, or read-only access.
+            This parameter should be passed to the  given  object
+            by the implementation of _t_r_a_n_s.
+       _a_t_t_a_c_h_e_d:  PPRROOCCEEDDUURREE(_t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h: _S_h_a_r_d_s_._L_i_d;
+            _o_b_j: _O_b_j_e_c_t) : BBOOOOLLEEAANN;
+            Indicate if _o_b_j is attached to _t_r_a_n_s _.
+       _a_t_t_a_c_h_a_b_l_e:    PPRROOCCEEDDUURREE(_t_r_a_n_s:     _T_r_a_n_s_a_c_t_i_o_n;     _a_u_t_h:
+            _S_h_a_r_d_s_._L_i_d;  _o_b_j: _O_b_j_e_c_t; _a_s_p_e_c: _A_c_c_e_s_s_S_p_e_c_i_f_i_c_a_t_i_o_n)
+            : BBOOOOLLEEAANN;
+            Indicate if an object can be attached to the transac­
+            tion with respect to _a_s_p_e_c.
+       _g_e_t_A_t_t_a_c_h_e_d:     PPRROOCCEEDDUURREE(_t_r_a_n_s:    _T_r_a_n_s_a_c_t_i_o_n;    _a_u_t_h:
+            _S_h_a_r_d_s_._L_i_d; VVAARR _i_t: _I_t_e_r_a_t_o_r_s_._I_t_e_r_a_t_o_r) : BBOOOOLLEEAANN;
+            Return the objects currently attached to _t_r_a_n_s.
+       _t_r_a_n_s: PPRROOCCEEDDUURREE(_t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h:  _S_h_a_r_d_s_._L_i_d)  :
+            BBOOOOLLEEAANN;
+            Mark  the  beginning of a transaction.  Any following
+            update operation within the scope of _t_r_a_n_s  must  not
+            alter  the  behaviour  of the attached objects perma­
+            nently despite a successful ending  of  the  transac­
+            tion.   This  procedure  must  not  block the calling
+            task.
+       _c_o_m_m_i_t: PPRROOCCEEDDUURREE(_t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h: _S_h_a_r_d_s_._L_i_d)  :
+            BBOOOOLLEEAANN;
+            Mark  the  end of a transaction. Any update operation
+            or state change executed since the transaction  began
+
+
+
+Release 0.5       Last change: 28 November 1996                 3
+
+
+
+
+
+Transactions(3)        Ulm's Oberon System        Transactions(3)
+
+
+            has  to  become  permanently.   This procedure should
+            block the calling task until all attached objects are
+            in a consistent state.
+       _a_b_o_r_t:  PPRROOCCEEDDUURREE(_t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h: _S_h_a_r_d_s_._L_i_d) :
+            BBOOOOLLEEAANN;
+            Abort the transaction and  reset  the  objects  to  a
+            state valid before the transaction began.
+       _r_e_l_e_a_s_e: PPRROOCCEEDDUURREE(_t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h: _S_h_a_r_d_s_._L_i_d) :
+            BBOOOOLLEEAANN;
+            Release all resources associated  with  _t_r_a_n_s.   This
+            includes  an implicit abortion if the transaction was
+            active (state _b_e_g_u_n).
+       _g_e_t_S_t_a_t_e: PPRROOCCEEDDUURREE(_t_r_a_n_s: _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h:  _S_h_a_r_d_s_._L_i_d;
+            VVAARR _s_t_a_t_e: _S_t_a_t_e) : BBOOOOLLEEAANN;
+            Return  the current state of _t_r_a_n_s where _s_t_a_t_e should
+            be one of:
+            _d_e_f_i_n_e_d     The transaction is defined  but  has  not
+                        been executed yet.
+            _b_e_g_u_n       The  transaction  has  been  begun and is
+                        still in progress.
+            _a_b_o_r_t_e_d     The transaction was  aborted  (no  matter
+                        for what reason).
+            _c_o_m_m_i_t_t_e_d   The  transaction  was  committed success­
+                        fully (i.e. all attached objects reported
+                        success for their commit operation).
+       _g_e_t_N_a_m_e:  PPRROOCCEEDDUURREE(_t_r_a_n_s:  _T_r_a_n_s_a_c_t_i_o_n; _a_u_t_h: _S_h_a_r_d_s_._L_i_d;
+            VVAARR _n_a_m_e: _C_o_n_s_t_S_t_r_i_n_g_s_._S_t_r_i_n_g) : BBOOOOLLEEAANN;
+            Return a name for the transaction. The interpretation
+            of names is implementation-dependent.  This interface
+            procedure may be omitted -- _G_e_t_N_a_m_e returns NNIILL then.
+       _t_a_k_e_I_n_t_e_r_e_s_t:    PPRROOCCEEDDUURREE(_t_r_a_n_s:    _T_r_a_n_s_a_c_t_i_o_n;    _a_u_t_h:
+            _S_h_a_r_d_s_._L_i_d;  VVAARR   _e_v_e_n_t_T_y_p_e:   _E_v_e_n_t_s_._E_v_e_n_t_T_y_p_e)   :
+            BBOOOOLLEEAANN;
+            Return  the event type which is used to propagate the
+            state  changes  _b_e_g_u_n,  _c_o_m_m_i_t_t_e_d,  and  _a_b_o_r_t_e_d  (as
+            events of type _E_v_e_n_t).  These events are to be raised
+            after the state changes became effective.
+
+       Applications can control the transactions and obtain state
+       information about them by means of the exported procedures
+       which in general follow the specifications of  the  corre­
+       sponding  interface procedures.  The transactions are free
+       to reject the requested operation for reasons of  insuffi­
+       cient authorization provided as parameter _a_u_t_h.
+
+       While   transactions   guarantee   the   basic  properties
+       described above, their behaviour in detail is  implementa­
+       tion-dependent. This affects the following aspects:
+
+       ·      The interpretation of the parameter _a_s_p_e_c.
+
+       ·      The  ability to attach objects of a certain type to
+              a transaction.
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 4
+
+
+
+
+
+Transactions(3)        Ulm's Oberon System        Transactions(3)
+
+
+       ·      The authorization scheme.
+
+       ·      Multiple attachments of the same object  with  dif­
+              ferent transaction parameters _a_s_p_e_c.
+
+DDIIAAGGNNOOSSTTIICCSS
+       All procedures return FFAALLSSEE if the associated operation of
+       the underlying implementation fails.  If a major operation
+       fails  (_A_b_o_r_t,  _A_t_t_a_c_h,  _B_e_g_i_n,  _C_o_m_m_i_t,  and _R_e_l_e_a_s_e), an
+       event  of  type  _e_r_r_o_r  indicating  the  failed  operation
+       (_a_b_o_r_t_F_a_i_l_e_d, ...)  is raised and related to the concerned
+       transaction.  Furthermore, the  underlying  implementation
+       is expected to generate more elaborate error events.
+
+SSEEEE AALLSSOO
+       _O_b_j_e_c_t_T_r_a_n_s_a_c_t_i_o_n_s_(_3_)   trivial  case of transactions with
+                               one object only
+       _R_e_l_a_t_e_d_E_v_e_n_t_s_(_3_)        error handling
+       _R_e_m_o_t_e_T_r_a_n_s_a_c_t_i_o_n_s_(_3_)   associated provider for the  _R_e_m_o_­
+                               _t_e_O_b_j_e_c_t_s_(_3_) service
+       _S_e_r_v_i_c_e_s_(_3_)             type-independent   definition   of
+                               extensions
+       _S_h_a_r_d_s_(_3_)               authorization protocol
+
+AAUUTTHHOORRSS
+       Werner Stanglow (stanglow@mathematik.uni-ulm.de),
+       revisions due to Andreas Borchert
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5       Last change: 28 November 1996                 5
+
+

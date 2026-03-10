@@ -1,0 +1,264 @@
+
+
+
+CompilerPragmas(3)     Ulm's Oberon System     CompilerPragmas(3)
+
+
+NNAAMMEE
+       CompilerPragmas  -  process and lookup compilation options
+       within sources
+
+SSYYNNOOPPSSIISS
+       TYPE PragmaContext = POINTER TO PragmaContextRec;
+       TYPE PragmaContextRec = RECORD (PersistentDisciplines.ObjectRec) END;
+
+       (* error events of ProcessArgs: *)
+       CONST usageError = 0; (* syntax error in pragma definition *)
+       CONST unknownPragma = 1; (* unknown pragma variable *)
+       CONST invalidValue = 2; (* invalid pragma value *)
+       CONST errors = 3;
+       TYPE ErrorCode = SHORTINT; (* usageError..invalidValue *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+                (Events.EventRec)
+                errorcode: ErrorCode;
+             END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE DefineArgs(args: Args.Arguments);
+       PROCEDURE Create(VAR pcontext: PragmaContext; pragmas: Args.Arguments);
+
+       PROCEDURE ProcessArgs(pcontext: PragmaContext;
+                             args: Args.Arguments) : BOOLEAN;
+       PROCEDURE ProcessPragmas(pcontext: PragmaContext;
+                                loc: CompilerObjects.Location;
+                                text: Streams.Stream);
+
+       PROCEDURE LookupPragma(pcontext: PragmaContext;
+                              location: CompilerObjects.Location;
+                              pname: ARRAY OF CHAR;
+                              VAR value: Args.Value);
+       PROCEDURE LookupFlag(pcontext: PragmaContext;
+                            location: CompilerObjects.Location;
+                            pname: ARRAY OF CHAR) : BOOLEAN;
+
+
+DDEESSCCRRIIPPTTIIOONN
+       _C_o_m_p_i_l_e_r_P_r_a_g_m_a_s allows to process and  lookup  compilation
+       options within sources, called pragmas.
+
+       _D_e_f_i_n_e_A_r_g_s  is  (like  _C_o_m_p_i_l_e_r_s_._D_e_f_i_n_e_A_r_g_s)  to be called
+       shortly after _A_r_g_s_._C_r_e_a_t_e by  those  modules  that  create
+       reference  objects for program text sources (see _C_o_m_p_i_l_e_r_­
+       _S_o_u_r_c_e_s_(_3_)) to extend the set of compilation options  that
+       apply  for a particular source.  _D_e_f_i_n_e_A_r_g_s creates a sin­
+       gle argument named ``pragma'' (no single-letter  abbrevia­
+       tion  available)  that  accepts (using _S_t_r_L_i_s_t_A_r_g_s_(_3_)) any
+       number of string arguments of initial pragma settings that
+       are  interpreted _l_a_t_e_r at compilation time by _P_r_o_c_e_s_s_A_r_g_s.
+
+
+
+Release 0.5         Last change: 22 April 2001                  1
+
+
+
+
+
+CompilerPragmas(3)     Ulm's Oberon System     CompilerPragmas(3)
+
+
+       In addition, the set of accepted values for boolean  argu­
+       ments (see _B_o_o_l_A_r_g_s_(_3_) and _B_o_o_l_D_i_s_c_i_p_l_i_n_e_s_(_3_)) for _a_r_g_s is
+       extended by ``+'' and ``on'' indicating TTRRUUEE, and by ``-''
+       and ``off'' indicating FFAALLSSEE.
+
+       _C_r_e_a_t_e  is to be called at the initial stage of a compila­
+       tion process to create a pragma context that,
+
+       ·      supporting the set of pragmas defined  by  _p_r_a_g_m_a_s,
+              and
+
+       ·      beginning with the initial state afterwards defined
+              by _P_r_o_c_e_s_s_A_r_g_s,
+
+       allows to set and query source location dependent compila­
+       tion  options.   Pragma  sets  are usually defined by com­
+       piler-dependent extensions of this module. See, for  exam­
+       ple,  _O_b_e_r_o_n_P_r_a_g_m_a_s_(_3_) that defines the set of pragmas for
+       the Oberon compiler and offers in _O_b_e_r_o_n_P_r_a_g_m_a_s_._C_r_e_a_t_e  an
+       operation  which  indirectly  calls  _C_r_e_a_t_e  with  its own
+       pragma set.
+
+       _P_r_o_c_e_s_s_A_r_g_s is to be called shortly  after  _C_r_e_a_t_e  before
+       _P_r_o_c_e_s_s_P_r_a_g_m_a_s  is called for the first time to accept any
+       initial pragma values given earlier at the  creation  time
+       of the associated source reference object.  Assignments in
+       initial pragma options consists of a variable name,  ``=''
+       as  delimiter,  and  a value whose interpretation is dele­
+       gated to the associated type extension of  _A_r_g_s_(_3_).   _P_r_o_­
+       _c_e_s_s_A_r_g_s  returns FFAALLSSEE and generates error events in case
+       of errors.
+
+       _P_r_o_c_e_s_s_P_r_a_g_m_a_s works  like  a  scanner  in  the  sense  of
+       _A_r_g_s_(_3_)  that  scans text stretches (_t_e_x_t at location _l_o_c)
+       with pragma settings within sources which,  in  dependence
+       of  the  language  and  the  compiler  in use, are usually
+       located within comments or specific instructions.   Pragma
+       settings are expected to conform to following syntax:
+       PPrraaggmmaaAAssssiiggnnmmeennttss =   { PPrraaggmmaaAAssssiiggnnmmeenntt } .
+       PPrraaggmmaaAAssssiiggnnmmeenntt =    "$" (FFllaaggAAssssiiggnnmmeenntt | FFrreeeeAAssssiiggnnmmeenntt) .
+       FFllaaggAAssssiiggnnmmeenntt =      FFllaaggNNaammee ("+" | "-" | "=") .
+       FFllaaggNNaammee =            (* just one letter *) .
+       FFrreeeeAAssssiiggnnmmeenntt =      PPrraaggmmaaVVaarrnnaammee = PPrraaggmmaaVVaalluuee .
+       PPrraaggmmaaVVaarrnnaammee =       (* word with at least two characters *) .
+       PPrraaggmmaaVVaalluuee =         NNaattuurraallNNuummbbeerr | QQuuootteeddVVaalluuee .
+       NNaattuurraallNNuummbbeerr =       (* sequence of digits 0..9 *)
+       QQuuootteeddVVaalluuee =         (* any text, enclosed in "..." *)
+       Two styles of pragma settings are provided:
+
+       ·      the  traditional  style in conformance to _o_c_(_1_) and
+              some Zürich compilers with  BBOOOOLLEEAANN-valued  single-
+              letter  options  that  allow nesting (``='' as flag
+              value undoes the previous flag setting), and
+
+
+
+
+Release 0.5         Last change: 22 April 2001                  2
+
+
+
+
+
+CompilerPragmas(3)     Ulm's Oberon System     CompilerPragmas(3)
+
+
+       ·      an open style that supports (on  base  of  _A_r_g_s_(_3_))
+              arbitrary pragma types where value parsing is dele­
+              gated  to   type   extensions   of   _A_r_g_s_(_3_)   like
+              _B_o_o_l_A_r_g_s_(_3_),  _I_n_t_A_r_g_s_(_3_),  and  _S_t_r_i_n_g_A_r_g_s_(_3_).  The
+              open style is required to use pragma variable names
+              with  a  minimal length of 2 to distinguish it syn­
+              tactically from the traditional style.
+
+       The interpretation of white space  within  pragma  assign­
+       ments  is  shared  with  that  of  _t_e_x_t,  see _S_t_r_e_a_m_D_i_s_c_i_­
+       _p_l_i_n_e_s_(_3_).
+
+       _L_o_o_k_u_p_P_r_a_g_m_a and _L_o_o_k_u_p_F_l_a_g permit to lookup pragma values
+       of _p_n_a_m_e at _l_o_c_a_t_i_o_n within _p_c_o_n_t_e_x_t. _L_o_o_k_u_p_P_r_a_g_m_a returns
+       (like _A_r_g_s_._G_e_t_V_a_l_u_e) NNIILL  in  case  of  undefined  values.
+       _L_o_o_k_u_p_F_l_a_g returns FFAALLSSEE for undefined flag values.
+
+DDIIAAGGNNOOSSTTIICCSS
+       Following  error  events  may  be raised by _P_r_o_c_e_s_s_A_r_g_s in
+       case of invalid initial pragma settings:
+       _u_s_a_g_e_E_r_r_o_r      ``='' is missing or  the  pragma  variable
+                       name is empty.
+       _u_n_k_n_o_w_n_P_r_a_g_m_a   An   unknown   pragma  variable  name  was
+                       encountered.
+       _i_n_v_a_l_i_d_V_a_l_u_e    The pragma value does not conform  to  the
+                       input  syntax  of  the  corresponding type
+                       extension of _A_r_g_s_(_3_).
+
+       General syntax errors in pragma assignments  are  silently
+       ignored  by  _P_r_o_c_e_s_s_P_r_a_g_m_a_s because not every text stretch
+       presented to _P_r_o_c_e_s_s_P_r_a_g_m_a_s  is  necessarily  intended  as
+       pragma  setting.  However,  once  a pragma setting is cor­
+       rectly recognized as such, compiler errors  using  _C_o_m_p_i_l_­
+       _e_r_E_r_r_o_r_s_(_3_)  are  generated  for unknown pragma variables,
+       unbalanced pragma settings (in  case  of  the  traditional
+       style),  and  invalid  pragma  values (in case of the open
+       style).
+
+       Error events generated by _A_r_g_s_(_3_)  are  forwarded  to  the
+       corresponding pragma context.
+
+SSEEEE AALLSSOO
+       _A_r_g_s_(_3_)              general  abstraction  for options and
+                            option types.
+       _C_o_m_p_i_l_e_r_E_r_r_o_r_s_(_3_)    standardized  event  generation   for
+                            compilation errors.
+       _C_o_m_p_i_l_e_r_S_o_u_r_c_e_s_(_3_)   reference  objects  for  program text
+                            sources that store the initial set of
+                            compilation  options  including prag­
+                            mas.
+       _O_b_e_r_o_n_P_r_a_g_m_a_s_(_3_)     defines the pragma set for the Oberon
+                            compiler   and   offers   _O_b_e_r_o_n_P_r_a_g_­
+                            _m_a_s_._C_r_e_a_t_e  that  indirectly  invokes
+                            _C_r_e_a_t_e.
+
+
+
+Release 0.5         Last change: 22 April 2001                  3
+
+
+
+
+
+CompilerPragmas(3)     Ulm's Oberon System     CompilerPragmas(3)
+
+
+       _S_t_r_L_i_s_t_A_r_g_s_(_3_)       list  of  strings for arguments; used
+                            for ``pragma'' compilation option  to
+                            setup initial pragma values.
+
+BBUUGGSS
+       Pragma  specifications given at the source object creation
+       time are checked much later at parsing time. To avoid  the
+       annoyance of postponed error messages, it could be wise to
+       create even at source object creation time a  pragma  con­
+       text and to invoke _P_r_o_c_e_s_s_A_r_g_s for it to check for errors.
+       This is, for example, done by _o_b_c_i_(_1_).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Release 0.5         Last change: 22 April 2001                  4
+
+

@@ -1,0 +1,202 @@
+DNSResolvers(3)               Ulm's Oberon System              DNSResolvers(3)
+
+
+
+[1mNAME[0m
+       DNSResolvers - general interface for the retrieval of DNS records
+
+[1mSYNOPSIS[0m
+       TYPE Resolver = POINTER TO ResolverRec;
+       TYPE ResolverRec = RECORD (Services.ObjectRec) END;
+
+       TYPE IPv4AddressList = POINTER TO IPv4AddressListRec;
+       TYPE IPv4AddressListRec =
+             RECORD
+                (Objects.ObjectRec)
+                addr: IPv4Addresses.Address;
+                next: IPv4AddressList;
+             END;
+
+       TYPE IPv6AddressList = POINTER TO IPv6AddressListRec;
+       TYPE IPv6AddressListRec =
+             RECORD
+                (Objects.ObjectRec)
+                addr: IPv6Addresses.Address;
+                next: IPv6AddressList;
+             END;
+
+       TYPE HostnameList = POINTER TO HostnameListRec;
+       TYPE HostnameListRec =
+             RECORD
+                (Objects.ObjectRec)
+                hostname: DNSRecords.Name;
+                next: HostnameList;
+             END;
+
+       TYPE MXList = POINTER TO MXListRec;
+       TYPE MXListRec =
+             RECORD
+                (Objects.ObjectRec)
+                hostname: DNSRecords.Name;
+                preference: INTEGER;
+                next: MXList;
+             END;
+
+       TYPE TXTList = POINTER TO TXTListRec;
+       TYPE TXTListRec =
+             RECORD
+                (Objects.ObjectRec)
+                text: DNSRecords.Name;
+                next: TXTList;
+             END;
+
+       TYPE GetRecordsProc =
+             PROCEDURE(resolver: Resolver;
+                hostname: ARRAY OF CHAR;
+                rrtype: DNSRecords.RRType;
+                trysuffixes: BOOLEAN;
+                VAR records: DNSRecords.Record;
+                errors: RelatedEvents.Object) : BOOLEAN;
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                getRecords: GetRecordsProc;
+             END;
+
+       CONST corruptedRecords = 0;
+       CONST errors = 1;
+       TYPE ErrorCode = SHORTINT; (* corruptedRecords... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+                (Events.EventRec)
+                errorcode: ErrorCode;
+                domain: DNSRecords.Name;
+                rrtype: DNSRecords.RRType;
+             END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       VAR std: Resolver; (* standard resolver *)
+
+       PROCEDURE Init(resolver: Resolver; if: Interface);
+
+       PROCEDURE GetRecords(resolver: Resolver;
+                            hostname: ARRAY OF CHAR;
+                            rrtype: DNSRecords.RRType;
+                            trysuffixes: BOOLEAN;
+                            VAR records: DNSRecords.Record;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE GetIPv4AddrByHost(resolver: Resolver;
+                                   hostname: ARRAY OF CHAR;
+                                   VAR addresses: IPv4AddressList;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetIPv6AddrByHost(resolver: Resolver;
+                                   hostname: ARRAY OF CHAR;
+                                   VAR addresses: IPv6AddressList;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE GetReverseRecords(resolver: Resolver;
+                                   revname: ARRAY OF CHAR;
+                                   VAR hosts: HostnameList;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetHostByIPv4Addr(resolver: Resolver;
+                                   address: IPv4Addresses.Address;
+                                   VAR hosts: HostnameList;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetHostByIPv6Addr(resolver: Resolver;
+                                   address: IPv6Addresses.Address;
+                                   VAR hosts: HostnameList;
+                                   errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE GetMXRecords(resolver: Resolver;
+                              domain: ARRAY OF CHAR;
+                              VAR mxrecords: MXList;
+                              errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetTXTRecords(resolver: Resolver;
+                               domain: ARRAY OF CHAR;
+                               VAR txtrecords: TXTList;
+                               errors: RelatedEvents.Object) : BOOLEAN;
+       PROCEDURE GetAttribute(resolver: Resolver;
+                              domain: ARRAY OF CHAR;
+                              attribute: ARRAY OF CHAR;
+                              VAR value: ARRAY OF CHAR;
+                              errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mDNSResolvers[24m  provide  a  general  interface for DNS resolvers that are
+       able to retrieve a set of records for a given resource record type  and
+       a domain name.  Implementations are usually based on [4mDNSRequests(3)[24m but
+       are able to follow chains of CNAME records and have  additional  knowl-
+       edge  about  DNS  caches  they  can ask and are able to apply rewriting
+       rules for domain names (e.g. appending the local domain name). In addi-
+       tion, [4mDNSResolvers[24m provides handy operations to extract the most common
+       resource record types.
+
+       Standard implementations  (one  candidate  is  [4mDNSStdResolvers(3)[24m)  are
+       expected  to  make  their  implementation available through [4mstd[24m.  Note,
+       however, that this variable is initially [1mNIL [22mas no default  implementa-
+       tion is provided by [4mDNSResolvers[24m.
+
+       Implementations  are  required  to implement following interface proce-
+       dure:
+       [4mgetRecords[24m: [1mPROCEDURE[22m([4mresolver[24m:  [4mResolver[24m;  [4mhostname[24m:  [1mARRAY  OF  CHAR[22m;
+            [4mrrtype[24m:  [4mDNSRecords.RRType[24m;  [4mtrysuffixes[24m:  [1mBOOLEAN[22m;  [1mVAR  [4m[22mrecords[24m:
+            [4mDNSRecords.Record[24m; [4merrors[24m: [4mRelatedEvents.Object[24m) : [1mBOOLEAN[22m;
+            Retrieve all resource records of type  [4mrrtype[24m  out  of  the  class
+            [4mDNSRecords.classIN[24m    for    [4mhostname[24m,    following    chains   of
+            [4mDNSRecords.cname[24m references, if any.  If  [4mtrysuffixes[24m  is  set  to
+            [1mTRUE[22m, the application of rewriting rules (e.g. appending the local
+            domain name) is permitted.  In case of failures, [1mFALSE  [22mis  to  be
+            returned,  and  error  events are to be related to [4merrors[24m. On suc-
+            cess, all retrieved records are to be returned as linear  list  in
+            [4mrecords[24m.   Note that the behaviour is not defined if CNAME records
+            are in conflict to other resource records for the same domain name
+            (see also RFC 1912, section 2.4).
+
+       [4mGetRecords[24m provides a direct access to the interface procedure.
+
+       [4mGetIPv4AddrByHost[24m  and  [4mGetIPv6AddrByHost[24m  return  all  IPv4  and  IPv6
+       addresses that are associated with [4mhostname[24m, respectively.
+
+       [4mGetReverseRecords[24m looks for [1mPTR [22mrecords associated  with  [4mrevname[24m.   As
+       CNAME records are followed, classless delegations according to RFC 2317
+       are supported. The structure of the domain name [4mrevname[24m depends on  the
+       address space to be used.
+
+       [4mGetHostByIPv4Addr[24m attempts to find the domain names associated with the
+       given IPv4 address using [4mGetReverseRecords[24m with a corresponding [4mrevname[0m
+       of  the  ``in-addr.arpa'' domain according to RFC 1034.  Likewise [4mGetH-[0m
+       [4mostByIPv6Addr[24m attempts to find  the  domain  names  for  a  given  IPv6
+       address.   This  is  at  first  attempted using the ``ip6.arpa'' domain
+       according to RFC 3152 and, if this fails, using the ``ip6.int''  domain
+       according to RFC 1886.
+
+       [4mGetMXRecords[24m  returns  all MX records associated with [4mdomain[24m in no par-
+       ticular order.
+
+       [4mGetTXTRecords[24m returns all TXT records associated with [4mdomain[24m in no par-
+       ticular order. Note that this operation presents all texts as flat list
+       independent from their origin, be it from a separate record  or  be  it
+       from  a  text  that  is  embedded  among other texts within one record.
+       [4mGetAttribute[24m supports the retrieval of attributes out  of  TXT  records
+       according to RFC 1464.
+
+[1mDIAGNOSTICS[0m
+       [4mDNSRecords[24m passes all errors events of the underlying implementation to
+       [4merrors[24m.  Following errors lead to error events generated by  [4mDNSRecords[0m
+       itself:
+       [4mcorruptedRecords[24m   One  of  the  extraction operations of [4mDNSRecords(3)[0m
+                          failed for one of the records returned by the imple-
+                          mentation.
+
+[1mSEE ALSO[0m
+       [4mDNSRecords(3)[24m        structure of resource records
+       [4mDNSStdResolvers(3)[24m   standard implementation of [4mDNSResolvers[0m
+
+
+
+Release 0.5               Last change: 19 March 2004           DNSResolvers(3)

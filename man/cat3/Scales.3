@@ -1,0 +1,200 @@
+Scales(3)                     Ulm's Oberon System                    Scales(3)
+
+
+
+[1mNAME[0m
+       Scales - general interface for systems of units for measuring
+
+[1mSYNOPSIS[0m
+       TYPE Family = POINTER TO FamilyRec;
+       TYPE FamilyRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE Scale = POINTER TO ScaleRec;
+       TYPE ScaleRec = RECORD (Disciplines.ObjectRec) END;
+       CONST unitNameLength = 32;
+       TYPE Unit = POINTER TO UnitRec;
+       TYPE UnitRec = RECORD (Disciplines.ObjectRec) END;
+       TYPE UnitName = ARRAY unitNameLength OF CHAR;
+       CONST absolute = 1; relative = 2; (* measure types *)
+       TYPE Measure = POINTER TO MeasureRec;
+       TYPE MeasureRec = RECORD (Operations.OperandRec) END;
+       TYPE Value = LONGINT;
+
+       TYPE CreateProc = PROCEDURE (scale: Scale; VAR measure: Measure; abs: BOOLEAN);
+       TYPE GetValueProc = PROCEDURE (measure: Measure; unit: Unit; VAR value: Value);
+       TYPE SetValueProc = PROCEDURE (measure: Measure; unit: Unit; value: Value);
+       TYPE AssignProc = PROCEDURE (target: Measure; source: Measure);
+       CONST add = Operations.add; sub = Operations.sub;
+       TYPE Operation = SHORTINT; (* add or sub *)
+       TYPE OperatorProc = PROCEDURE (op: Operation; op1, op2, result: Measure);
+       TYPE CompareProc = PROCEDURE (op1, op2: Measure) : INTEGER;
+       TYPE ConvertProc = PROCEDURE (from, to: Measure);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+          RECORD
+             (Objects.ObjectRec)
+             create: CreateProc;
+             getvalue: GetValueProc;
+             setvalue: SetValueProc;
+             assign: AssignProc;
+             op: OperatorProc;
+             compare: CompareProc;
+             scaleToReference: ConvertProc;
+             referenceToScale: ConvertProc;
+          END;
+
+       VAR invalidOperation: Events.EventType;
+       VAR incompatibleScales: Events.EventType;
+       VAR badCombination: Events.EventType;
+
+       PROCEDURE InitFamily(family: Family; reference: Scale);
+       PROCEDURE Init(scale: Scale; family: Family; if: Interface);
+       PROCEDURE InitUnit(scale: Scale; unit: Unit; name: UnitName);
+       PROCEDURE CreateMeasure(scale: Scale; VAR measure: Measure; type: SHORTINT);
+       PROCEDURE CreateAbsMeasure(scale: Scale; VAR measure: Measure);
+       PROCEDURE CreateRelMeasure(scale: Scale; VAR measure: Measure);
+       PROCEDURE ConvertMeasure(scale: Scale; VAR measure: Measure);
+
+       PROCEDURE GetReference(family: Family; VAR reference: Scale);
+       PROCEDURE GetFamily(scale: Scale; VAR family: Family);
+       PROCEDURE GetScaleOfUnit(unit: Unit; VAR scale: Scale);
+       PROCEDURE GetScale(measure: Measure; VAR scale: Scale);
+
+       PROCEDURE TraverseUnits(scale: Scale);
+       PROCEDURE NextUnit(scale: Scale; VAR unit: Unit) : BOOLEAN;
+       PROCEDURE GetName(unit: Unit; VAR name: UnitName);
+       PROCEDURE GetValue(measure: Measure; unit: Unit; VAR value: Value);
+       PROCEDURE SetValue(measure: Measure; unit: Unit; value: Value);
+
+       PROCEDURE IsAbsolute(measure: Measure) : BOOLEAN;
+       PROCEDURE IsRelative(measure: Measure) : BOOLEAN;
+       PROCEDURE MeasureType(measure: Measure) : SHORTINT;
+
+
+[1mDESCRIPTION[0m
+       [4mScales[24m  provides  a  general  interface  for measuring systems which is
+       based on [4mOperations[24m.
+
+       A scale is defined by a set of units for measuring, e.g.  a  scale  for
+       dates  could  consist  of  the units day, month and year.  A measure is
+       defined by a set of values for each of the units.  Values are  of  type
+       [4mValue[24m.
+
+       [4mScales[24m  distinguishes between absolute and relative measures.  An abso-
+       lute measure describes a point within the set of measures while a rela-
+       tive  measure describes the difference between two points of the set of
+       measures.  Let [4mm[24m1 and [4mm[24m2 be absolute measures for the points [4mp[24m1 and [4mp[24m2.
+       Then  we  can define the differences (relative measures) between [4mm[24m1 and
+       [4mm[24m2:
+            [4md[24m1:=[4mm[24m1-[4mm[24m2
+            [4md[24m2:=[4mm[24m2-[4mm[24m1
+       which are expected to hold following conditions:
+            [4mm[24m1-[4md[24m1=[4mm[24m2
+            [4mm[24m1+[4md[24m2=[4mm[24m2
+
+       In many cases there exist alternative unit systems for similar  scales.
+       A  family  of scales is defined by a reference scale and a set of addi-
+       tional scales where every scaling system knows how to convert its  mea-
+       sures to the reference system and back.
+
+       [4mInit[24m initializes a newly created [4mscale[24m and associates it with the given
+       [4mfamily[24m and uses [4mif[24m as interface.  [4mfamily[24m may be [1mNIL [22mif [4mscale[24m  does  not
+       belong to a family or if [4mscale[24m should become a reference scale.
+
+       The  interface  procedures are expected to meet the specifications fol-
+       lowing:
+       [4mcreate[24m: [1mPROCEDURE[22m([4mscale[24m: [4mScale[24m; [1mVAR [4m[22mmeasure[24m: [4mMeasure[24m; [4mabs[24m: [1mBOOLEAN[22m);
+            create a new measure of the given scale and initialize it with  an
+            implementation  dependant  zero value.  The measure type (absolute
+            or relative) is determined by [4mabs[24m.  [4mmeasure[24m needs not to be passed
+            to  [4mOperations.Init[24m.  Note that [4mMeasure[24m is an extension of [4mPersis-[0m
+            [4mtentObjects.Object[24m.  Thus, [4mPersistentObjects.Init[24m has to be called
+            immediately after creation.
+       [4mgetvalue[24m: [1mPROCEDURE[22m([4mmeasure[24m: [4mMeasure[24m; [4munit[24m: [4mUnit[24m; [1mVAR [4m[22mvalue[24m: [4mValue[24m);
+            store the value of the given unit of the given measure into [4mvalue[24m.
+       [4msetvalue[24m: [1mPROCEDURE[22m([4mmeasure[24m: [4mMeasure[24m; [4munit[24m: [4mUnit[24m; [4mvalue[24m: [4mValue[24m);
+            set the value of the given unit of the given measure to [4mvalue[24m.
+       [4massign[24m: [1mPROCEDURE[22m([4mtarget[24m: [4mMeasure[24m; [4msource[24m: [4mMeasure[24m);
+            copy the value of [4msource[24m to [4mtarget[24m; [4mtarget[24m is  of  the  appropiate
+            type and already initialized.
+       [4mop[24m: [1mPROCEDURE[22m([4mop[24m: [4mOperation[24m; [4mop1[24m, [4mop2[24m, [4mresult[24m: [4mMeasure[24m);
+            execute the given operator ([4madd[24m or [4msub[24m) for the given operands [4mop1[0m
+            and [4mop2[24m and store the result in the  already  initialized  [4mresult[24m.
+            [4mop1[24m,  [4mop2[24m  and  [4mresult[24m are guaranteed to belong to the same scale.
+            [4mresult[24m is guaranteed to be not equal to [4mop1[24m or [4mop2[24m.
+       [4mcompare[24m: [1mPROCEDURE[22m([4mop1[24m, [4mop2[24m: [4mMeasure[24m) : [1mINTEGER[22m;
+            compare the given operands and return an integer value  less  than
+            zero  if [4mop1[24m is less than [4mop2[24m, or equal to zero if [4mop1[24m equals [4mop2[24m,
+            or greater than zero if [4mop1[24m is greater than [4mop2[24m.
+       [4mscaleToReference[24m: [1mPROCEDURE[22m([4mfrom[24m, [4mto[24m: [4mMeasure[24m);
+            convert the given measure [4mfrom[24m to the reference scale  and  return
+            it in [4mto[24m (which is already created and initialized).
+       [4mreferenceToScale[24m: [1mPROCEDURE[22m([4mfrom[24m, [4mto[24m: [4mMeasure[24m);
+            convert  the given measure of the reference scale to the own scale
+            and return it in [4mto[24m (which is already created and initialized).
+       The conversion routines are only to be provided if the  scaling  system
+       belongs to a family.
+
+       [4mInitFamily[24m initializes a family and takes [4mreference[24m as reference scale.
+       [4mreference[24m must not belong to another family.
+
+       [4mInitUnit[24m adds a unit to the scaling system [4mscale[24m.   [4mname[24m  should  be  a
+       short  descriptive  name of the unit, e.g. "day", "month" or "year" for
+       dates.
+
+       [4mCreateAbsMeasure[24m creates and initializes [4mmeasure[24m to the origin  of  the
+       given scaling system.  [4mCreateRelMeasure[24m creates and initializes [4mmeasure[0m
+       to zero.  [4mCreateMeasure[24m creates and initializes [4mmeasure[24m for  the  given
+       type (either [4mabsolute[24m or [4mrelative[24m).  [4mConvertMeasure[24m converts [4mmeasure[24m to
+       the given scale which must belong to the same family  as  the  original
+       scale of [4mmeasure[24m.
+
+       [4mGetReference[24m  returns the reference scale of the given family.  [4mGetFam-[0m
+       [4mily[24m returns the family of the given scale which may be [1mNIL[22m.  [4mGetScaleO-[0m
+       [4mfUnit[24m or [4mGetScale[24m return the scale of the given unit or measure respec-
+       tively.
+
+       [4mTraverseUnits[24m starts a traverse through the set of units  of  a  scale.
+       [4mNextUnit[24m  returns [1mTRUE [22mon success and stores the next unit of the given
+       scale into [4munit[24m.  [1mFALSE [22mis returned at the end of the traverse.
+
+       [4mGetName[24m returns the name of the given unit.
+
+       [4mGetValue[24m and [4mSetValue[24m allow to get and set values  of  measures  for  a
+       given unit.
+
+       [4mIsAbsolute[24m  and  [4mIsRelative[24m  allow  to distinguish between absolute and
+       relative measures.  [4mMeasureType[24m returns the measure type (either  [4mabso-[0m
+       [4mlute[24m or [4mrelative[24m).
+
+       Additionally,  the  addition,  subtraction,  comparison  and assignment
+       operations of [4mOperations[24m may  be  used.   The  resulting  measure  type
+       (absolute  or relative) of addition and subtraction operations is shown
+       by following tables:
+                |          |                         |          |
+       [4mAdd[24m      | [4mabsolute[24m | [4mrelative[24m       [4mSub[24m      | [4mabsolute[24m | [4mrelative[0m
+       ---------+----------+-----------   -----------+----------+----------
+       [4mabsolute[24m | [1minvalid  [22m| [4mabsolute[24m       [4mabsolute[24m | [4mrelative[24m | [4mabsolute[0m
+       ---------+----------+-----------   -----------+----------+----------
+       [4mrelative[24m | [4mabsolute[24m | [4mrelative[24m       [4mrelative[24m | [1minvalid  [22m| [4mrelative[0m
+
+[1mDIAGNOSTICS[0m
+       Some of the possible errors lead to events which are passed  to  [4mAsser-[0m
+       [4mtions.Raise[24m:
+       [4minvalidOperation[24m     indicates  a  try  to execute an invalid operation
+                            for the given measure types, e.g. addition of  two
+                            absolute values.
+       [4mincompatibleScales[24m   the  scales  of  the operands do not belong to the
+                            same family.
+       [4mbadCombination[24m       this event is raised by [4mSetValue[24m  or  [4mGetValue[24m  if
+                            the  given  measure  and unit do not belong to the
+                            same scaling system.
+
+[1mSEE ALSO[0m
+       [4mAssertions(3)[24m          error handling
+       [4mOperations(3)[24m          addition, subtraction, comparison and assignment
+                              of measures
+       [4mPersistentObjects(3)[24m   interface for persistent objects
+
+
+
+Release 0.5             Last change: 16 September 1996               Scales(3)

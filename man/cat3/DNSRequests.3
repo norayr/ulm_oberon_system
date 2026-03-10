@@ -1,0 +1,195 @@
+DNSRequests(3)                Ulm's Oberon System               DNSRequests(3)
+
+
+
+[1mNAME[0m
+       DNSRequests - process DNS requests
+
+[1mSYNOPSIS[0m
+       TYPE Context = POINTER TO ContextRec;
+       TYPE ContextRec = RECORD (Disciplines.ObjectRec) END;
+
+       TYPE Name = DNSRecords.Name;
+       TYPE Record = DNSRecords.Record;
+       TYPE Query = POINTER TO QueryRec;
+       TYPE QueryRec =
+             RECORD
+                (Objects.ObjectRec)
+                name: Name;
+                type: DNSRecords.RRType;
+                class: DNSRecords.Class;
+             END;
+
+       CONST noNameServers = 0;
+       CONST protocolError = 1;
+       CONST tooManyRetries = 2;
+       CONST unexpectedResponse = 3;
+       CONST sendFailed = 4;
+       CONST timeout = 5;
+       CONST formatError = 6;
+       CONST serverFailure = 7;
+       CONST notImplemented = 8;
+       CONST refused = 9;
+       CONST unexpectedResponseCode = 10;
+       CONST errors = 11;
+       TYPE ErrorCode = SHORTINT; (* noNameServers... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+                (Events.EventRec)
+                errorcode: ErrorCode;
+                query: Query;
+                dnsserver: Name;
+             END;
+       VAR errormsg: ARRAY errors OF Events.Message;
+       VAR error: Events.EventType;
+
+       PROCEDURE CreateContext(VAR context: Context);
+       PROCEDURE AddNameServer(context: Context;
+                               socket: SysSockets.Socket;
+                               name: ARRAY OF CHAR);
+
+       PROCEDURE EnableRoundRobin(context: Context);
+       PROCEDURE SetTimeout(context: Context; seconds: INTEGER);
+       PROCEDURE SetNumberOfRetries(context: Context; retries: INTEGER);
+
+       PROCEDURE Process(context: Context;
+                         name: ARRAY OF CHAR;
+                         type: DNSRecords.RRType;
+                         class: DNSRecords.Class;
+                         VAR header: DNSHeaders.Header;
+                         VAR answerRecs, authRecs, addRecs: Record;
+                         errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mDNSRequests[24m allows to send DNS requests and to wait synchronously for a
+       response.  Each request is to be set in a context which consists of one
+       or  more  nameservers  and some configuration parameters. Any number of
+       requests can be processed in parallel.  Within a given context,  [4mDNSRe-[0m
+       [4mquests[24m  takes  care of load-balancing and sorting out of non-responsive
+       and refusing nameservers.
+
+       [4mCreateContext[24m creates a new context with initially  no  nameservers  at
+       all.
+
+       [4mAddNameServer[24m adds a nameserver to a context where [4msocket[24m is an already
+       connected socket of type [4mSysSockets.dgram[24m. Note that this socket can be
+       of any protocol family, be it [4mSysSockets.pfINET[24m, [4mSysSockets.pfINET6[24m, or
+       [4mSysSockets.pfUNIX[24m.  Additionally, a string  [4mname[24m  is  to  be  given  as
+       printable  representation  of the nameserver which can be used in error
+       messages. This is usually the printable representation  of  the  socket
+       address.
+
+       There is a transitive precedence relation defined over the set of name-
+       servers belonging to a context. Nameservers who refuse to  process  our
+       requests  have a lower precedence than those from which we haven't seen
+       any refusals yet. This being equal, nameservers have a lower precedence
+       if  they  had  more  timeouts than others. That also being equal, name-
+       servers are preferred if the queue  of  pending  requests  is  shorter.
+       Finally,  if  all other criterias show no difference, nameservers added
+       earlier with [4mAddNameServer[24m take precedence.  If a  roundrobin  mode  is
+       selected  using  [4mEnableRoundRobin[24m, however, the order of nameservers is
+       changed by each of invocation of [4mProcess[24m.   Note  that  the  maintained
+       counts  of  refusals  and  timeouts  are  reset to 0 as soon successful
+       replies are seen.
+
+       If no valid response comes within the given  timelimit,  or  the  name-
+       server  responds  with  a  refusal, requests are forwarded to the name-
+       server with the highest precedence excluding the last nameserver  used.
+
+       For  each  of  the nameservers added, a task is running (see [4mTasks(3)[24m).
+       All these tasks are automatically shut down  as  soon  as  the  context
+       object terminates (see [4mResources(3)[24m).
+
+       [4mSetTimeout[24m  sets the timeout for single request attempts. Note that the
+       total time for requests processed by [4mProcess[24m can be much longer as this
+       timeout  multiplies  with  the  number  of maximal retries. The default
+       value is 1.
+
+       By default, the maximal number of retries is 2 multiplied with the num-
+       ber  of  nameservers.  [4mSetNumberOfRetries[24m allows to change this factor.
+       This gives usually the number of retries per nameserver but, if  prece-
+       dences play a role because of timeouts and refusals, it might well hap-
+       pen that individual nameservers are queried more often and other  name-
+       servers are left out.
+
+       [4mProcess[24m  asks  for  resource records for [4mname[24m with the given type (e.g.
+       [4mDNSRecords.a[24m) in the given class (usually [4mDNSRecords.classIN[24m). If  suc-
+       cessful,  the header is returned along with the lists of answer, autho-
+       rization, and additional records.  Note that [4mname[24m must be a fully-qual-
+       ified  domain name. Local domain names and search lists are not consid-
+       ered.
+
+[1mSECURITY CONSIDERATIONS[0m
+       [4mDNSRequests[24m is unable to verify that response packets come indeed  from
+       the  queried  nameserver. Any attacker who knows our socket address and
+       the chosen request id, can forge a response packet which just needs  to
+       arrive first to be considered. To make it harder for attackers to guess
+       the request id,  [4mRandomGenerators.unpredictable[24m  is  used  to  generate
+       them.  But  this  provides  some limited defense only in case of blind-
+       folded attacks.  Note that it is recommended to add name server sockets
+       using  [4mAddNameServer[24m  whose  ports  have been selected by [4mEphemeralPor-[0m
+       [4mtRange.GetRandomPort[24m. As these sockets are continually used during  the
+       lifetime of a context, it might be useful to generate new contexts from
+       time to time.
+
+[1mDIAGNOSTICS[0m
+       All failures of [4mProcess[24m  are  represented  by  error  events  that  are
+       related to [4merrors[24m:
+       [4mnoNameServers[24m            No  nameservers  have  yet  been  added to the
+                                given context.
+       [4mprotocolError[24m            One of the queried nameservers returned a pro-
+                                tocol error.
+       [4mtooManyRetries[24m           The maximal number of retries was exhausted.
+       [4munexpectedResponse[24m       An  unexpected  response  packet was received.
+                                This can be the result of responses that  come
+                                after the timeout or the result of attempts to
+                                forge response packets.
+       [4msendFailed[24m               The send operation failed for one of the sock-
+                                ets.
+       [4mtimeout[24m                  A  timeout  occurred  with  one  of  the name-
+                                servers.
+       [4mformatError[24m              One of the nameservers was unable to interpret
+                                the query.
+       [4mserverFailure[24m            One of the nameservers returned a server fail-
+                                ure.
+       [4mnotImplemented[24m           One of the  nameservers  indicated  that  this
+                                type of query is not implemented.
+       [4mrefused[24m                  One  of the nameservers refused to process the
+                                query.
+       [4munexpectedResponseCode[24m   An unexpected response code  was  returned  by
+                                one of the nameservers.
+
+       Note that permanent name errors (i.e. [4mDNSHeaders.nameError[24m) do not lead
+       to error events or to a return of [1mFALSE [22mby [4mProcess[24m.  They are  expected
+       to be handled by the resolver who invokes [4mProcess[24m:
+
+       IF DNSRequests.Process(context, name,
+             rrtype, DNSRecords.classIN,
+             header, answerRecs, authRecs, addRecs, errors) THEN
+          rcode := DNSHeaders.GetResponseCode(header);
+          CASE rcode OF
+          | DNSHeaders.noError:
+                (* handle successful response *)
+          | DNSHeaders.nameError:
+                (* permanent error;
+                   error event is to be generated
+                   or another attempt is to be made using search lists
+                   or other rules
+                *)
+          END;
+       ELSE
+          (* temporary error;
+             error events have already been generated
+          *)
+       END;
+
+
+[1mSEE ALSO[0m
+       [4mDNSHeaders(3)[24m   DNS header structure as returned by [4mProcess[24m.
+       [4mDNSRecords(3)[24m   definition DNS records as returned by [4mProcess[24m.
+
+
+
+Release 0.5                Last change: 13 June 2004            DNSRequests(3)

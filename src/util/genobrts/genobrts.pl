@@ -128,7 +128,7 @@ _skip3:
 	pushl %esi
 	call SysSegments_Register
 	movl $0,0x8(%esp)
-	movl $0x1000,0x4(%esp)
+	movl $0x10000,0x4(%esp)
 	movl $0,(%esp)
 	call SysSegments_Register
 	movl Storage_end, %eax

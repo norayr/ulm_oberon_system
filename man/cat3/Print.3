@@ -1,0 +1,255 @@
+Print(3)                      Ulm's Oberon System                     Print(3)
+
+
+
+[1mNAME[0m
+       Print - formatted output to streams
+
+[1mSYNOPSIS[0m
+       CONST tooManyArgs = 0; (* too many arguments given *)
+       CONST tooFewArgs = 1; (* too few arguments given *)
+       CONST badFormat = 2; (* syntax error in format string *)
+       CONST badArgumentSize = 3; (* bad size of argument *)
+       CONST errors = 4;
+       TYPE FormatString = ARRAY 128 OF CHAR;
+       TYPE ErrorCode = SHORTINT;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (Events.EventRec)
+             errorcode: ErrorCode;
+             format: FormatString;
+             errpos: LONGINT;
+             nargs: INTEGER;
+          END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE F(fmt: ARRAY OF CHAR);
+       PROCEDURE F1(fmt: ARRAY OF CHAR; p1: ARRAY OF BYTE);
+       PROCEDURE F2(fmt: ARRAY OF CHAR; p1, p2: ARRAY OF BYTE);
+       PROCEDURE F3(fmt: ARRAY OF CHAR; p1, p2, p3: ARRAY OF BYTE);
+       PROCEDURE F4(fmt: ARRAY OF CHAR; p1, p2, p3, p4: ARRAY OF BYTE);
+       PROCEDURE F5(fmt: ARRAY OF CHAR; p1, p2, p3, p4, p5: ARRAY OF BYTE);
+       PROCEDURE F6(fmt: ARRAY OF CHAR; p1, p2, p3, p4, p5, p6: ARRAY OF BYTE);
+       PROCEDURE F7(fmt: ARRAY OF CHAR; p1, p2, p3, p4, p5, p6, p7: ARRAY OF BYTE);
+       PROCEDURE F8(fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6, p7, p8: ARRAY OF BYTE);
+       PROCEDURE F9(fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6, p7, p8, p9: ARRAY OF BYTE);
+
+       PROCEDURE S(out: Streams.Stream; fmt: ARRAY OF CHAR);
+       PROCEDURE S1(out: Streams.Stream; fmt: ARRAY OF CHAR; p1: ARRAY OF BYTE);
+       PROCEDURE S2(out: Streams.Stream; fmt: ARRAY OF CHAR; p1, p2: ARRAY OF BYTE);
+       PROCEDURE S3(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3: ARRAY OF BYTE);
+       PROCEDURE S4(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4: ARRAY OF BYTE);
+       PROCEDURE S5(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5: ARRAY OF BYTE);
+       PROCEDURE S6(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6: ARRAY OF BYTE);
+       PROCEDURE S7(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6, p7: ARRAY OF BYTE);
+       PROCEDURE S8(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6, p7, p8: ARRAY OF BYTE);
+       PROCEDURE S9(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    p1, p2, p3, p4, p5, p6, p7, p8, p9: ARRAY OF BYTE);
+
+       PROCEDURE SE(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                    errors: RelatedEvents.Object);
+       PROCEDURE SE1(out: Streams.Stream; fmt: ARRAY OF CHAR;    p1: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE2(out: Streams.Stream; fmt: ARRAY OF CHAR;    p1, p2: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE3(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE4(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE5(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4, p5: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE6(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4, p5, p6: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE7(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4, p5, p6, p7: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE8(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4, p5, p6, p7, p8: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+       PROCEDURE SE9(out: Streams.Stream; fmt: ARRAY OF CHAR;
+                     p1, p2, p3, p4, p5, p6, p7, p8, p9: ARRAY OF BYTE;
+                     errors: RelatedEvents.Object);
+
+
+[1mDESCRIPTION[0m
+       [4mPrint[24m offers formatted printing in [4mprintf(3)[24m style to [4mStreams.stdout[24m ([4mF[0m
+       through [4mF9[24m) or to [4mout[24m ([4mS[24m through [4mS9[24m and [4mSE[24m through  [4mSE9[24m).   The  proce-
+       dures convert their parameters (the number of parameters determines the
+       procedure name) and instantiate them into the format string [4mfmt[24m.
+
+       The format string is interpreted as follows: Any character not  belong-
+       ing  to  an  escape sequence introduced by [1m\ [22mor a format element intro-
+       duced by [1m% [22mis simply appended  to  [4mStreams.stdout[24m  resp.  [4mout[24m.   Escape
+       sequences  are  substituted by a single character while format elements
+       are instantiated by the next [4mp[24m? parameter.
+
+       Format elements must conform to the following syntax:
+
+       FormatElement = "%" {Flags} [Width] [Scale] Conversion .
+       Flags = "+" | "0" | "-" | "^" | "\" FillChar .
+       Width = Number | "*" .
+       Scale = "." Number .
+       Number = { DecDigits } .
+       DecDigits = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" .
+       Conversion = "b" | "c" | "d" | "e" | "f" | "g" | "j" | "o" | "s" | "x" | "y" .
+
+
+       Each format element defines a field in the output  stream  that  is  by
+       default  as  wide as necessary to insert the result of a parameter con-
+       version.  The field width can be expanded by specifying [4mWidth[24m.  If  not
+       given  as  an explicit [4mNumber[24m but as [1m* [4m[22mPrint[24m uses the value of the next
+       yet unused parameter (interpreted as an integer) as  width  indication.
+       Values  less  or  equal than the defaults have no effect.  In all other
+       cases the output field is filled up by leading blanks.  Padding charac-
+       ter and alignment strategy may be altered by use of [4mFlags[24m:
+
+
+       [1m+      [22mAny numeric output will be signed (by default positive values do
+              not get a [1m+[22msign).
+
+       [1m--     [22mThe output will be left aligned within its field.   This  option
+              has no effect if [4mwidth[24m is omitted.
+
+       [1m0      [22mThe  output of numeric values is padded with leading zeroes ([1m0[22m).
+              This option implies [1m-- [22mand [1m^[22m.
+
+       [1m^      [22mThe padding characters are inserted before the leading sign  and
+              the first digit of a number.
+
+       [1m\[4m[22mFillChar[0m
+              requires [4mFillChar[24m to become the padding character.
+
+       Other  numeric  output  is  not  affected  while strings are cut to the
+       length given by [4mScale[24m before  they  are  aligned  within  their  output
+       fields.   [4mPrint[24m will use the next yet unused parameter as [4mscale[24m indica-
+       tion if [1m* [22mis specified.
+
+       Since [4mPrint[24m has no idea about the actual types of the arguments  corre-
+       sponding  to  its  formal parameters, [4mconvchar[24m is used to determine the
+       conversions to be executed for the next yet  unused  parameter.   [4mPrint[0m
+       will  not  accept  any other conversion character than those listed and
+       described below.  In detail the specifications  of  [4mconvchar[24m  have  the
+       following effect:
+
+       [1mx      [22mHexadecimal output of an integer.
+
+       [1mo      [22mOctal output of an integer.
+
+       [1md      [22mDecimal output of an integer.
+
+       [1mf      [22mOutput  of a real number in floating point notation.  The scale,
+              if given, fixes the  number  of  digits  following  the  decimal
+              point.   However, the first non-zero digit is printed regardless
+              of the scale.
+
+       [1me      [22mOutput of a real number in its normalized exponential form.  The
+              scale,  if given, fixes the number of digits following the deci-
+              mal point.
+
+       [1mg      [22mOutput of a real number in floating point or  exponential  nota-
+              tion.   The  selection depends on the exponent and the scale: If
+              the exponent is greater or equal to -4 and less or equal to  the
+              scale,  the floating point notation is chosen.  The scale speci-
+              fies also the number of significant digits to be  shown.  If  no
+              explicit  scale is given, a default value of 6 is taken.  Trail-
+              ing zeroes are suppressed.
+
+       [1mc      [22mOutput of a single [1mCHAR[22m.
+
+       [1ms      [22mOutput of an [1mARRAY OF CHAR [22muntil the first null byte ([1m0X[22m) or the
+              high bound of the array is reached.
+
+       [1mb      [22mOutput of a [1mBOOLEAN [22mas text "TRUE" or "FALSE".
+
+       [1my      [22mOutput of a [1mBOOLEAN [22mas text "yes" or "no".
+
+       [1mj      [22mOutput of a [1mBOOLEAN [22mas text "ja" or "nein".
+
+       Note  that  [1mo[22m,  [1mx[22m,  and [1md [22mare legal conversion characters to output any
+       type which has the same size (in bytes) as the expected one.  This fea-
+       ture  can  be  used to output an address (integer size presumed).  Fur-
+       thermore these conversion characters may be used to output  the  ascii-
+       value  of  a [1mCHAR[22m.  Vice versa [1mc [22mmay be used to output a character that
+       is specified by a [1mSHORTINT[22m-value.
+
+       [1m%% [22mis not interpreted as a format element. A single  percent  character
+       is output instead.
+
+       Any  appearance  of the following escape sequences in format string [4mfmt[0m
+       is substituted as listed:
+
+       [1m\n     [22mnewline (line terminator as defined by [4mStreamDisciplines[24m)
+
+       [1m\r     [22mcarriage return (0DX)
+
+       [1m\t     [22mhorizontal tab (09X)
+
+       [1m\e     [22mescape (1BX)
+
+       [1m\f     [22mform feed (0CX)
+
+       [1m\b     [22mbackspace (08X)
+
+       [1m\&     [22mbell (07X)
+
+       [1m\Q     [22mdouble quote (22X)
+
+       [1m\q     [22mquote("'")
+
+       [1m\\     [22mbackslash ("\")
+
+       [1m\[22m[[1m0[22m-[1m9A[22m-[1mF[22m]+
+              character specified by [[1m0[22m-[1m9A[22m-[1mF[22m]+[1mX[22m.
+
+[1mDIAGNOSTICS[0m
+       The [4mcount[24m component of the output streams equals the  number  of  bytes
+       written.
+
+       Some  calling  errors  lead to events which are passed to [4mEvents[24m (if no
+       [4merrors[24m parameter is given) or to [4mRelatedEvents[24m (by use  of  [4mSE[24m  through
+       [4mSE9[24m).  Following error codes are implemented:
+       [4mtooManyArgs[24m       The  format  string  references  less  arguments than
+                         given.
+       [4mtooFewArgs[24m        The format strings  references  more  arguments  than
+                         given.
+       [4mbadFormat[24m         The  format string does not follow the above specifi-
+                         cation.
+       [4mbadArgumentSize[24m   One of the arguments has a size which does not comply
+                         to  the  argument  specification in the format string
+                         (e.g. passing a [1mREAL [22mvalue for [1m%d[22m).
+
+[1mSEE ALSO[0m
+       [4mEvents(3)[24m              error handling
+       [4mRelatedEvents(3)[24m       error handling for [4mSE[24m through [4mSE9[0m
+       [4mScan(3)[24m                format driven input scanning
+       [4mStreamDisciplines(3)[24m   definition of line terminator
+       [4mStreams(3)[24m             stream operations
+       [4mWrite(3)[24m               portable module for formatted output to streams
+
+[1mBUGS[0m
+       [4mPrint[24m has  been  written  prior  to  revised  Oberon.   Revised  Oberon
+       requires  type  identity  for  actual  parameters to be passed to value
+       parameters of type [1mARRAY OF BYTE[22m.  This restriction has  not  yet  been
+       implemented  by  Ulm's Oberon compiler but modules which use [4mPrint[24m with
+       parameters which cannot be passed to [1mVAR[22m-parameters are not portable to
+       compilers which are conform to revised Oberon.  This restricts the main
+       purpose of this module to debugging output which vanishes in  the  pro-
+       duction version.
+
+
+
+Release 0.5              Last change: 14 January 2004                 Print(3)

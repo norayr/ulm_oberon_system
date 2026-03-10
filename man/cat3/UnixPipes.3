@@ -1,0 +1,113 @@
+UnixPipes(3)                  Ulm's Oberon System                 UnixPipes(3)
+
+
+
+[1mNAME[0m
+       UnixPipes - initiate I/O to/from a process
+
+[1mSYNOPSIS[0m
+       CONST read = UnixFiles.read; write = UnixFiles.write;
+
+       TYPE Mode = UnixFiles.Mode;
+       TYPE Pipe = POINTER TO PipeRec;
+       TYPE PipeRec =
+          RECORD
+             (Streams.StreamRec)
+             (* read-only components *)
+             pid: SysProcess.ProcessId; (* process id of shell *)
+             status: SysProcess.Status; (* set after close *)
+             interrupted: BOOLEAN; (* EINTR occurred? *)
+             (* read/write component *)
+             retry: BOOLEAN; (* retry on interrupts? *)
+          END;
+
+       TYPE Child = POINTER TO ChildRec;
+       TYPE ChildRec = RECORD (Disciplines.DisciplineRec) END;
+
+       PROCEDURE Open(VAR pipe: Streams.Stream;
+                      command: ARRAY OF CHAR; mode: Mode; bufmode: Streams.BufMode;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Spawn(VAR pipe: Streams.Stream;
+                       readfd, writefd, childfd: SysIO.File;
+                       pathname: ARRAY OF CHAR;
+                       argv: SysArgs.Arguments;
+                       mode: Mode; bufmode: Streams.BufMode;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE Spawn3(command: ARRAY OF CHAR;
+                        bufmode: Streams.BufMode; (* of stdin *)
+                        VAR stdin, stdout, stderr: Streams.Stream;
+                        errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE CreateChild(VAR child: Child);
+       PROCEDURE AddPipeline(child: Child;
+                             readfd, writefd, childfd: SysIO.File;
+                             mode: Mode; bufmode: Streams.BufMode;
+                             VAR pipe: Streams.Stream);
+       PROCEDURE SpawnChild(child: Child;
+                            pathname: ARRAY OF CHAR;
+                            argv: SysArgs.Arguments;
+                            errors: RelatedEvents.Object) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mOpen[24m  creates  a pipe between the calling process and the command to be
+       executed.  [4mcommand[24m is a 0X-terminated string containing a shell command
+       line.   [4mmode[24m  specifies  the I/O mode, either [4mread[24m for reading or [4mwrite[0m
+       for writing.  The buffering mode (see [4mStreams(3)[24m) is given by  [4mbufmode[24m;
+       [4mStreams.onebuf[24m  should  be  taken  for pipes opened in [4mread[24m mode and by
+       default for [4mwrite[24m modes, [4mStreams.linebuf[24m may be  appropriate  for  logs
+       and  other  line-oriented  pipes  in  [4mwrite[24m mode.  The resulting stream
+       pointer will be returned in [4mpipe[24m.  The command interpreter is the  sys-
+       tem's  default  shell,  which  on  UNIX  systems  most  likely  will be
+       "/bin/sh".
+
+       [4mSpawn[24m offers a more flexible interface  that  requires  the  caller  to
+       setup the pipe (using, for example, [4mSysIO.Pipe[24m).  [4mchildfd[24m will be setup
+       (using [4mSysIO.Dup2[24m) by the child as the file  descriptor  that  is  con-
+       nected  to  the  pipe.   This is usually 0 or 1 (depending on [4mmode[24m) but
+       sometimes other file descriptors are to be used (3 for  the  [4mcheckpass-[0m
+       [4mword[24m  interface  by  Dan  J. Bernstein, for example). [4mpathname[24m and [4margv[0m
+       will be passed to [4mSysProcess.Exec[24m. [4mUnixArgs(3)[24m is recommended to  build
+       an  argument  list.  This  allows to circumvent the interpretation of a
+       command line by the shell and thereby avoiding the security  threat  of
+       malicious shell meta characters.
+
+       An even more general interface is provided by [4mCreateChild[24m, [4mAddPipeline[24m,
+       and [4mSpawnChild[24m as these procedures allow to set up an arbitrary  number
+       of  pipelines  between  the  parent process and the to be created child
+       process. [4mCreateChild[24m simply creates a child reference. [4mAddPipeline[24m adds
+       another  pipeline  with  parameters that are similar to those of [4mSpawn[24m.
+       [4mAddPipeline[24m must be called at least once. [4mSpawnChild[24m actually forks off
+       the  child.  All pipelines returned by [4mAddPipeline[24m are of type [4mPipe[24m and
+       hence allow to retrieve the termination status of the child  after  the
+       stream is closed.
+
+       [4mSpawn3[24m  invokes [4mcommand[24m and sets up three pipelines for standard input,
+       standard output, and standard error of the child  process.   Note  that
+       just  [4mstdin[24m  will  be  of  type  [4mPipe[24m  as  [4mstdout[24m  and [4mstderr[24m come from
+       [4mPipeReaders(3)[24m to avoid deadlocks.
+
+       Note that [4mUnixPipes[24m defines an empty handler for [4mSysSignals.PIPE[24m.
+
+[1mDIAGNOSTICS[0m
+       [4mOpen[24m, [4mSpawn[24m, [4mSpawn3[24m, and [4mSpawnChild[24m return [1mFALSE [22mand relate their error
+       events to [4merrors[24m in case of failures.
+
+       Errors  during  the  access  of the stream are converted into events of
+       [4mRelatedEvents(3)[24m.  By default, these events are being queued.
+
+       [4mUnixPipes[24m uses some interruptible system calls.  By default, operations
+       are  tried again in case of interruptions.  Optionally, the [4mretry[24m field
+       may be set to [1mFALSE[22m.  In this case  interruptions  may  lead  to  error
+       events.   The  [4minterrupt[24m field indicates whether the last operation was
+       interrupted or not.
+
+[1mSEE ALSO[0m
+       [4mPipeReaders(3)[24m,  [4mProcess(3)[24m,  [4mRelatedEvents(3)[24m,  [4mStreams(3)[24m,  [4mSysIO(3)[24m,
+       [4mSysSignals(3)[24m, [4mUnixArgs(3)[0m
+
+
+
+Release 0.5              Last change: 4 February 2005             UnixPipes(3)

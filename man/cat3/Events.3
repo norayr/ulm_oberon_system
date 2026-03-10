@@ -1,0 +1,230 @@
+Events(3)                     Ulm's Oberon System                    Events(3)
+
+
+
+[1mNAME[0m
+       Events - priority driven event handling
+
+[1mSYNOPSIS[0m
+       CONST default = 0; ignore = 1; funcs = 2;
+       TYPE EventType = POINTER TO EventTypeRec;
+       TYPE EventTypeRec = RECORD (Services.ObjectRec) END;
+       TYPE Reaction = INTEGER; (* one of default, ignore, or funcs *)
+       TYPE Message = ARRAY 80 OF CHAR;
+       TYPE Event = POINTER TO EventRec;
+       TYPE EventRec =
+          RECORD
+             (Objects.ObjectRec)
+             type: EventType;
+             message: Message;
+          END;
+       TYPE EventHandler = PROCEDURE (event: Event);
+       TYPE EventManager = PROCEDURE (type: EventType; reaction: Reaction);
+       TYPE HandlerList = POINTER TO HandlerRec;
+       TYPE HandlerRec =
+          RECORD
+             (Objects.ObjectRec)
+             handler: EventHandler;
+             next: HandlerList;
+          END;
+       TYPE Priority = INTEGER; (* must be non-negative *)
+       TYPE PrioritySystem = POINTER TO PrioritySystemRec;
+       TYPE PrioritySystemRec = RECORD (Objects.ObjectRec) END;
+
+       CONST priorityViolation = 0;
+       CONST unbalancedExitPriority = 1;
+       CONST unbalancedRestoreReaction = 2;
+       CONST negPriority = 3;
+       CONST errorcodes = 4;
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+          RECORD
+             (EventRec)
+             errorcode: SHORTINT;
+          END;
+       VAR errormsg: ARRAY errorcodes OF Message;
+       VAR error: EventType;
+
+       PROCEDURE Define(VAR type: EventType);
+       PROCEDURE Init(type: EventType);
+       PROCEDURE GetReaction(type: EventType) : Reaction;
+       PROCEDURE SetPriority(type: EventType; priority: Priority);
+       PROCEDURE GetEventPriority(type: EventType) : Priority;
+       PROCEDURE Manager(type: EventType; manager: EventManager);
+       PROCEDURE Handler(type: EventType; handler: EventHandler);
+       PROCEDURE RemoveHandlers(type: EventType);
+       PROCEDURE Ignore(type: EventType);
+       PROCEDURE GetHandlers(type: EventType; handlers: HandlerList);
+       PROCEDURE Log(loghandler: EventHandler);
+       PROCEDURE GetLog(VAR loghandler: EventHandler);
+       PROCEDURE QueueHandler(handler: EventHandler);
+       PROCEDURE AbortHandler(handler: EventHandler);
+       PROCEDURE GetAbortHandler(VAR handler: EventHandler);
+       PROCEDURE Raise(event: Event);
+       PROCEDURE EnterPriority(priority: Priority);
+       PROCEDURE AssertPriority(priority: Priority);
+       PROCEDURE ExitPriority;
+       PROCEDURE CreatePrioritySystem(VAR prioritySystem: PrioritySystem);
+       PROCEDURE CurrentPrioritySystem() : PrioritySystem;
+       PROCEDURE SwitchPrioritySystem(prioritySystem: PrioritySystem);
+       PROCEDURE GetPriority() : Priority;
+       PROCEDURE NilHandler(event: Event);
+       PROCEDURE SaveReaction(type: EventType);
+       PROCEDURE RestoreReaction(type: EventType);
+
+
+[1mDESCRIPTION[0m
+       [4mEvents[24m  allows  to  define the reaction on an event and the entry of an
+       event independently from each other.  Event types connect both parties:
+       reactions are specified for event types and an event type must be given
+       for each event.  Typical events are  UNIX  signals,  run  time  errors,
+       library errors, and program termination.
+
+       The reaction on an event is either
+       [4mdefault[24m   program termination (abort handler)
+       [4mignore[24m    event is ignored
+       [4mfuncs[24m     call associated event handlers
+       After  defining  an  event  type  (by  [4mDefine[24m  or [4mInit[24m) the reaction is
+       [4mdefault[24m.
+
+       Event handlers are procedures to be called on event entry.  They are of
+       type  [4mEventHandler[24m  and  get one parameter of type [4mEvent[24m which contains
+       the necessary information about the event.  The number  of  event  han-
+       dlers  of  an  event  is not limited.  One good example for distributed
+       event handling is program  termination  (which  is  an  event  of  [4mPro-[0m
+       [4mcess(3)[24m):  this  allows  each module not only to have an initialization
+       part but also to have a cleanup procedure  which  is  called  automati-
+       cally.   The  calling  order is reverse to the order of handler defini-
+       tions.  This is very important  for  program  termination  because  the
+       calling  order  of  cleanup  procedures  must be reverse to the calling
+       order  of  initializations  parts.   Normal  execution  resumes  ([4mRaise[0m
+       returns) after call of all event handlers.
+
+       [4mHandler[24m  defines an additional event handler for [4mtype[24m.  The reaction is
+       set to [4mfuncs[24m if the previous reaction was [4mdefault[24m or  [4mignore[24m.   [4mRemove-[0m
+       [4mHandlers[24m  removes the list of event handlers of [4mtype[24m and sets the reac-
+       tion to [4mdefault[24m (i.e. program  abortion).   [4mIgnore[24m  causes  receipt  of
+       events of type [4mtype[24m to be ignored.  [4mRemoveHandlers[24m and [4mIgnore[24m cause the
+       list of event handlers to be lost (if the previous reaction was [4mfuncs[24m).
+       This is not appropriate in case of temporary reaction changes.  [4mSaveRe-[0m
+       [4maction[24m and  [4mRestoreReaction[24m  implement  a  stack  of  event  reactions.
+       [4mSaveReaction[24m  saves  the  old reaction and sets the current reaction to
+       [4mignore[24m.  The new reaction can be changed as usual by [4mHandler[24m or [4mRemove-[0m
+       [4mHandlers[24m.
+
+       The  current  type  of  reaction  for  [4mtype[24m can be retrieved by call of
+       [4mGetReaction[24m.  [4mGetHandlers[24m returns the list of event handlers in case of
+       [4mfuncs[24m reaction.
+
+       In some cases (e.g. inheritance of UNIX signals) there is a significant
+       difference between [4mignore[24m reaction and an empty event handler.  [4mNilHan-[0m
+       [4mdler[24m is of type [4mEventHandler[24m and can be given as argument to [4mHandler[24m.
+
+       Some types of events need some extra action in case of reaction changes
+       (e.g. UNIX signals).  In this case, [4mManager[24m allows to define  an  event
+       manager which is called on all changes of reaction.
+
+       [4mEvents[24m  defines  a  software  priority system analogous to the hardware
+       priority system of the PDP11.  Each event has a priority (default  [4mPri-[0m
+       [4morities.default[24m).  The current priority is defined as following
+
+       (1)    [4mPriorities.base[24m at beginning of execution.
+
+       (2)    During  the call of an event handler the current priority is set
+              to the priority of the event.
+
+       (3)    The priority can be raised by calling [4mEnterPriority[24m  or  [4mAssert-[0m
+              [4mPriority[24m and restored by [4mExitPriority[24m.
+
+       Events  with  priority  less  than or equal to the current priority are
+       queued until the current priority is diminished to a  value  less  than
+       the  priority of the event.  Events with priority less than or equal to
+       [4mPriorities.base[24m are ignored (independent from  the  reaction).   System
+       events  with default reaction may cause abortion even if their priority
+       is less than or equal to the current priority.   Priority  values  must
+       not be negative.
+
+       [4mSetPriority[24m  redefines the priority of events of type [4mtype[24m to [4mpriority[24m.
+       [4mGetEventPriority[24m returns the priority of [4mtype[24m.  [4mGetPriority[24m returns the
+       current priority.  [4mEnterPriority[24m sets the current priority to [4mpriority[24m.
+       It is an error to give a priority less than the current priority  (this
+       error  causes  [4mbadpriority[24m to be raised).  [4mAssertPriority[24m sets the cur-
+       rent priority to [4mpriority[24m if the current priority is less  than  [4mprior-[0m
+       [4mity[24m.  [4mExitPriority[24m requests the priority that was valid before the last
+       call of [4mEnterPriority[24m or [4mAssertPriority[24m to be restored.
+
+       A priority system is defined by a stack of priorities which is  manipu-
+       lated by [4mEnterPriority[24m, [4mAssertPriority[24m and [4mExitPriority[24m.  In some cases
+       coroutines or groups of coroutines need their own priority system: [4mCre-[0m
+       [4matePrioritySystem[24m creates a new priority system with an empty stack and
+       a current priority which equals [4mPriorities.base[24m.  [4mCurrentPrioritySystem[0m
+       returns  the  priority system which is currently active.  [4mSwitchPriori-[0m
+       [4mtySystem[24m changes the current priority system to [4mprioritySystem[24m.
+
+       [4mRaise[24m causes [4mevent[24m to happen if the reaction of  the  associated  event
+       type ([4mevent.type[24m) is not equal to [4mignore[24m.  If the priority of the event
+       is less than or equal to the  current  priority  the  event  is  queued
+       (events  with  higher priority will be handled earlier, FIFO for events
+       with equal priority).  The abort handler is called in the default case.
+       If reaction equals [4mfuncs[24m the event handlers are called in reverse order
+       of definition.  The parameter [4mevent[24m is passed to  all  event  handlers.
+       [4mRaise[24m returns as follows:
+
+       [4mdefault[24m   no return
+       [4mignore[24m    immediate return
+       [4mfuncs[24m     either  after queuing of the event or after call of the asso-
+                 ciated event handlers
+
+       [4mQueueHandler[24m allows to replace the internal  event  queuing  system  of
+       [4mEvents[24m  by  an  alternative  implementation. The handler is invoked for
+       every event that was passed to [4mEvents.Raise[24m and whose priority does not
+       exceed the current priority. [4mSysMain(3)[24m installs its own queuing system
+       which creates individual tasks for each event that cannot be  processed
+       immediately.
+
+       For  tracing it is of interest to get a log of all events.  [4mLog[24m defines
+       an event handler which is called on each  event  with  reaction  [4mfuncs[24m.
+       Subsequent  calls  of [4mLog[24m replace the log handler.  [4mGetLog[24m sets [4mloghan-[0m
+       [4mdler[24m to the current log handler.
+
+       [4mEvents[24m does not know how to achieve program abortion  (usually  program
+       termination  with core dump).  [4mAbortHandler[24m defines a handler for abor-
+       tion which must not return.  The module  [4mProcess[24m  defines  a  procedure
+       which  calls  [4mProcess.Abort[24m  as abort handler during its initialization
+       phase.  Because [4mProcess[24m is part of each Oberon program there should  be
+       no  need to redefine the abort handler.  Multiple calls of [4mAbortHandler[0m
+       replace the abort handler.  [4mGetAbortHandler[24m sets [4mhandler[24m to the current
+       abort handler.
+
+[1mSEE ALSO[0m
+       [4mEventConditions(3)[24m   supports synchronous event handling
+       [4mPriorities(3)[24m        defines the priorities used by the Oberon library
+       [4mProcess(3)[24m           definition of termination events; program termina-
+                            tion and abortion
+       [4mRTErrors(3)[24m          raises events for runtime errors
+       [4mServices(3)[24m          allows services for [4mEvents.EventType[24m to be defined
+       [4mSysErrors(3)[24m         common  event  driven  error  handling  for system
+                            calls
+       [4mSysSignals(3)[24m        UNIX signals
+
+[1mDIAGNOSTICS[0m
+       Some usage errors cause events with priority [4mPriorities.liberrors[24m to be
+       raised.   The  event  records are of type [4mErrorEvent[24m and contain one of
+       the error codes given below:
+       [4mpriorityViolation[24m           [4mSetPriority[24m was called with a priority less
+                                   than the current priority
+       [4munbalancedExitPriority[24m      [4mExitPriority[24m  was called without prior call
+                                   of [4mEnterPriority[24m or [4mAssertPriority[24m.
+       [4munbalancedRestoreReaction[24m   [4mRestoreReaction[24m was  called  without  prior
+                                   call of [4mSaveReaction[0m
+       [4mnegPriority[24m                 A negative priority value was given.
+
+[1mBUGS[0m
+       Some  system events (i.e. UNIX signals) with default reaction have some
+       different behavior: The abort handler is not necessarily called in case
+       of  default reaction and they can cause abortion even if their priority
+       is less than or equal to the current priority.
+
+
+
+Release 0.5               Last change: 30 March 2004                 Events(3)

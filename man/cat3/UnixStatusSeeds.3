@@ -1,0 +1,80 @@
+UnixStatusSeeds(3)            Ulm's Oberon System           UnixStatusSeeds(3)
+
+
+
+[1mNAME[0m
+       UnixStatusSeeds  -  generate  seed  sequence  from  various Unix status
+       informations
+
+[1mSYNOPSIS[0m
+       TYPE StatusCommandList = POINTER TO StatusCommandListRec;
+       TYPE StatusCommandListRec = RECORD (Objects.ObjectRec) END;
+
+       PROCEDURE CreateList(VAR list: StatusCommandList);
+       PROCEDURE Add(list: StatusCommandList; command: ARRAY OF CHAR);
+
+       PROCEDURE Create(VAR sequence: RandomGenerators.Sequence;
+                        list: StatusCommandList);
+
+
+[1mDESCRIPTION[0m
+       [4mUnixStatusSeeds[24m provides seed values on base of the digested output  of
+       chosen  commands.  The  commands  should  be carefully selected so that
+       their output is hard to predict. [4mMD5(3)[24m is used to compute the digests.
+       As  soon as the digest sum is consumed up, the commands are rerun and a
+       new digest will be computed.
+
+       Note that this module serves primarily as a fallback solution if random
+       devices are not available, see [4mSeedStreams(3)[24m.  All useful seed genera-
+       tors like this one are expensive to use and ought to be stretched using
+       unpredictable generators like [4mSurfRandomGenerators(3)[24m.
+
+       [4mCreateList[24m and [4mAdd[24m allow to create and extend a list of commands. These
+       commands shall consist of a full pathname of a binary and a space-sepa-
+       rated  list  of arguments. Meta characters of shells or the environment
+       variable [1mPATH [22mare not considered as the commands are not  passed  to  a
+       shell  for  interpretation.  It does not hurt to try different paths if
+       the exact location is not known (see example). Note  however  that  the
+       standard error of these commands will be shared with the standard error
+       channel of the own process. Hence, it should be avoided to give  possi-
+       bly invalid flags or commands that occasionally fail.
+
+       [4mCreate[24m creates a sequence that is based upon the list of commands [4mlist[24m.
+       Note that the list must not be empty.
+
+[1mDIAGNOSTICS[0m
+       Error events in the attempts to execute the given commands are  related
+       to the sequence. Zeroes are generated in case of failures.
+
+[1mEXAMPLE[0m
+       Following  code snippet demonstrates how a seed sequence can be created
+       that uses the combined output of the [4mps[24m, [4mdate[24m, and [4mnetstat[24m  command  to
+       generate seed values:
+
+
+       VAR seq: RandomGenerators.Sequence;
+       VAR list: UnixStatusSeeds.StatusCommandList;
+       (* ... *)
+       UnixStatusSeeds.CreateList(list);
+       UnixStatusSeeds.Add(list, "/bin/ps -ef");
+       UnixStatusSeeds.Add(list, "/usr/bin/ps -ef");
+       UnixStatusSeeds.Add(list, "/bin/date");
+       UnixStatusSeeds.Add(list, "/usr/bin/date");
+       UnixStatusSeeds.Add(list, "/bin/netstat -n");
+       UnixStatusSeeds.Add(list, "/usr/bin/netstat -n");
+       UnixStatusSeeds.Create(seq, list);
+
+
+       This example also shows how multiple paths for one command can be given
+       if it is not clear where they are to be found.
+
+[1mSEE ALSO[0m
+       [4mRandomGenerators(3)[24m       abstraction for sequences of  random  numbers
+                                 or seeds
+       [4mSeedStreams(3)[24m            to  be preferred alternative, if supported on
+                                 the local system
+       [4mSurfRandomGenerators(3)[24m   good candidate for stretching seed values
+
+
+
+Release 0.5                Last change: 8 March 2004        UnixStatusSeeds(3)

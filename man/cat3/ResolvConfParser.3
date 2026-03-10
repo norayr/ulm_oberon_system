@@ -1,0 +1,126 @@
+ResolvConfParser(3)           Ulm's Oberon System          ResolvConfParser(3)
+
+
+
+[1mNAME[0m
+       ResolvConfParser - parse resolv.conf configuration files
+
+[1mSYNOPSIS[0m
+       TYPE Configuration = POINTER TO ConfigurationRec;
+       TYPE ConfigurationRec = RECORD (Disciplines.DisciplineRec) END;
+
+       TYPE SortListMember = POINTER TO SortListMemberRec;
+       TYPE SortListMemberRec =
+             RECORD
+                (Objects.ObjectRec)
+                ipaddr: IPv4Addresses.Address;
+                netmask: IPv4Addresses.Address;
+                netmaskDefined: BOOLEAN;
+             END;
+
+       TYPE NameServer = POINTER TO NameServerRec;
+       TYPE NameServerRec =
+             RECORD
+                (Objects.ObjectRec)
+                ipaddr: IPv4Addresses.Address;
+             END;
+
+       TYPE Option = POINTER TO OptionRec;
+       TYPE OptionRec =
+             RECORD
+                (Objects.ObjectRec)
+                name: ConstStrings.String;
+                value: INTEGER; (* 1 for set BOOLEAN options *)
+             END;
+
+       CONST dottedDecimalExpected = 0;
+       CONST keywordExpected = 1;
+       CONST domainExpected = 2;
+       CONST multipleDomains = 3;
+       CONST integerExpected = 3;
+       CONST errors = 5;
+       TYPE ErrorCode = SHORTINT; (* dottedEcimalExpected... *)
+       TYPE ErrorEvent = POINTER TO ErrorEventRec;
+       TYPE ErrorEventRec =
+             RECORD
+                (Events.EventRec)
+                errorcode: ErrorCode;
+                line, col: INTEGER;
+             END;
+       VAR error: Events.EventType;
+       VAR errormsg: ARRAY errors OF Events.Message;
+
+       PROCEDURE Parse(VAR conf: Configuration;
+                       s: Streams.Stream;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+
+       PROCEDURE IterateNameServers(conf: Configuration;
+                                    VAR it: Iterators.Iterator);
+
+       PROCEDURE IterateSearchList(conf: Configuration;
+                                   VAR it: Iterators.Iterator);
+
+       PROCEDURE IterateSortLists(conf: Configuration;
+                                  VAR it: Iterators.Iterator);
+
+       PROCEDURE IterateOptions(conf: Configuration;
+                                VAR it: Iterators.Iterator);
+
+       PROCEDURE GetOption(conf: Configuration;
+                           name: ARRAY OF CHAR;
+                           VAR value: INTEGER) : BOOLEAN;
+
+       PROCEDURE GetLocalDomain(conf: Configuration;
+                                VAR domain: ARRAY OF CHAR) : BOOLEAN;
+
+
+[1mDESCRIPTION[0m
+       [4mResolvConfParser[24m   parses   configuration   files   that   conform   to
+       [4mresolv.conf(5)[24m.  This module does not impose the limits of  the  tradi-
+       tional resolver library for C. The number of nameservers is not limited
+       and conflicting configurations like ``domain'' and ``search''  can  co-
+       exist.
+
+       [4mParse[24m parses [4ms[24m and creates a configuration [4mconf[24m.
+
+       [4mIterateNameServers[24m  creates  an  iterator  that returns objects of type
+       [4mNameServer[24m for each of the ``nameserver'' declarations within the  con-
+       figuration [4mconf[24m.
+
+       [4mIterateSearchList[24m creates an iterator that returns objects of type [4mCon-[0m
+       [4mstStrings.String[24m for each of the domains that are specified within  the
+       ``search'' declaration.
+
+       [4mIterateSortLists[24m  creates  an  iterator  that  returns  objects of type
+       [4mSortListMember[24m for each of the networks that are specified  within  the
+       ``sortlist'' declaration.
+
+       Iterators  created by [4mIterateOption[24m return an object of type [4mOption[24m for
+       all options that are declared with an ``option'' directive.   [4mGetOption[0m
+       allows  to retrieve option values by option names. [1mFALSE [22mis returned if
+       an option named [4mname[24m was not found within the configuration.
+
+       [4mGetLocalDomain[24m returns the domain specified with the ``domain''  direc-
+       tive, if provided.
+
+[1mDIAGNOSTICS[0m
+       [4mParse[24m  generates  error  events  and  returns  [1mFALSE  [22min case of syntax
+       errors:
+       [4mdottedDecimalExpected[24m   a  dotted  decimal  (e.g.  ``127.0.0.1'')   was
+                               expected but not found
+       [4mkeywordExpected[24m         a  keyword  (e.g.  ``nameserver'') was expected
+                               but not found
+       [4mdomainExpected[24m          a valid domain name was expected but not found
+       [4mmultipleDomains[24m         more than one ``domain'' declaration was found
+       [4mintegerExpected[24m         an integer value was expected but not found
+
+[1mFILES[0m
+       [4m/etc/resolv.conf[24m   The standard location for this configuration file.
+
+[1mSEE ALSO[0m
+       [4mDNSStdResolvers(3)[24m   implements  [4mDNSResolvers(3)[24m  using   configuration
+                            files of this type
+
+
+
+Release 0.5               Last change: 10 March 2004       ResolvConfParser(3)

@@ -1,0 +1,134 @@
+Proxies(3)                    Ulm's Oberon System                   Proxies(3)
+
+
+
+[1mNAME[0m
+       Proxies - support of proxies for local objects
+
+[1mSYNOPSIS[0m
+       TYPE CreateProxyProc = PROCEDURE (VAR object: Services.Object;
+                                         orig: Services.Object);
+       TYPE InitProxyProc = PROCEDURE (object: Services.Object;
+                                       orig: Services.Object);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                createProxy: CreateProxyProc;
+                initProxy: InitProxyProc;
+             END;
+
+       PROCEDURE Register(type: Services.Type; if: Interface);
+       PROCEDURE Supported(type: Services.Type) : BOOLEAN;
+       PROCEDURE GetSupportedBaseType(type: Services.Type;
+                                      VAR baseType: Services.Type);
+
+       PROCEDURE CreateProxy(VAR proxy: Services.Object;
+                             orig: Services.Object);
+
+       PROCEDURE CreateUninitializedProxy(VAR proxy: Services.Object;
+                                          orig: Services.Object);
+       PROCEDURE InitializeAllInterfacesUpTo(proxy: Services.Object;
+                                             type: Services.Type);
+       PROCEDURE InitializeAllInterfacesBeyond(proxy: Services.Object;
+                                               type: Services.Type);
+
+       PROCEDURE GetOrig(proxy: Services.Object; VAR orig: Services.Object);
+
+
+[1mDESCRIPTION[0m
+       A  proxy  object  delegates  all operations to another object, possibly
+       after some filtering has taken place. Most proxy  implementations  just
+       take care of one primary abstraction (i.e. an abstraction that is based
+       upon the static type).  A  framework  is  needed  to  support  extended
+       abstractions.   The delegation of secondary abstractions (i.e. abstrac-
+       tions based on dynamic type extensions as provided  by  [4mDisciplines(3)[24m)
+       is  supported  by  [4mForwarders(3)[24m. A framework for delegations to remote
+       objects is provided by  [4mRemoteObjects(3)[24m.   This  module  provides  the
+       framework that supports the delegation of primary abstractions to local
+       objects.
+
+       Assume a base type [4mT[24m, an extension of [4mT[24m named [4mT1[24m, which itself has been
+       extended  by  [4mT2[24m.  All of them come with their own set of operations. A
+       proxy implementation for [4mT1[24m is obviously aware of the operations of  [4mT[24m.
+       Hence,  it can implement easily all delegating operations for [4mT[24m and [4mT1[24m.
+       However, it cannot foresee  the  extension  [4mT2[24m.  [4mProxies[24m  allows  proxy
+       implementations  to  focus  on just one abstraction layer (e.g. that of
+       [4mT1[24m), assuming that another proxy module takes care  of  the  base  type
+       (e.g.  [4mT[24m)  and other modules of the possible extensions (e.g. [4mT2[24m). Each
+       proxy module has to provide two interface procedures to [4mRegister[24m:
+       [4mcreateProxy[24m:  [1mPROCEDURE[22m([1mVAR   [4m[22mobject[24m:   [4mServices.Object[24m;   [4morig[24m:   [4mSer-[0m
+            [4mvices.Object[24m);
+            creates  but  does not initialize a proxy object of the associated
+            type extension. [4mServices.Init[24m, however, needs  to  be  called  for
+            [4mobject[24m. The original object is provided through [4morig[24m.
+       [4minitProxy[24m: [1mPROCEDURE[22m([4mobject[24m: [4mServices.Object[24m; [4morig[24m: [4mServices.Object[24m);
+            initialize [4mobject[24m at the associated abstraction layer.  All inter-
+            face procedures have simply  to  delegate  the  operation  to  the
+            original object [4morig[24m.  Initializations according to the base types
+            have already been performed.
+
+       Assume we have proxy modules [4mProxyT[24m, [4mProxyT1[24m, and [4mProxyT2[24m. Then let  us
+       have  a  [4mFilterT1[24m  module  that  somehow  filters  all operations on [4mT1[0m
+       objects at the layer of [4mT1[24m  (not  touching  the  operations  at  the  [4mT[0m
+       layer).   Now,  [4mFilterT1[24m  just needs to take care of the [4mT1[24m operations.
+       If the original object is an extension of [4mT2[24m, [4mProxyT[24m and  [4mProxyT2[24m  will
+       do  the  rest.  [4mProxyT1[24m  will be left out as this part is taken by [4mFil-[0m
+       [4mterT1[24m.
+
+       Note that none of the proxy modules can rely  on  an  own  static  type
+       extension  even  if  they  may  have to create objects through the [4mcre-[0m
+       [4mateProxy[24m interface procedure. However, their delegating implementations
+       have  to  work  for  anything that extends the type they are associated
+       with. Hence, they will have to be  based  on  disciplines  (see  [4mDisci-[0m
+       [4mplines(3)[24m)  instead  of  static type extensions if they need some book-
+       keeping. The link to the original target object does  not  need  to  be
+       maintained, however, as [4mGetOrig[24m allows to retrieve it.
+
+       [4mSupported[24m tells if a given type has proxy support and [4mGetSupportedBase-[0m
+       [4mType[24m returns the associated base type.  Assume  in  the  example  above
+       that  the  abstraction  [4mT2[24m  is implemented by an extension [4mT3[24m. Then, if
+       [4mProxyT[24m, [4mProxyT1[24m, and [4mProxyT2[24m registered themselves for [4mT[24m, [4mT1[24m,  and  [4mT2[24m,
+       respectively,  [4mSupported[24m would return [1mTRUE [22mfor [4mT3[24m and [4mGetSupportedBase-[0m
+       [4mType[24m would return [4mT2[24m.
+
+       [4mCreateProxy[24m creates a proxy object [4mproxy[24m that delegates all  operations
+       to  [4morig[24m.  Note that this creates a pure proxy object. None of the sup-
+       ported operations of the primary abstractions are filtered  or  changed
+       in  any  way.  The  relation  of  [4mproxy[24m  to  [4morig[24m is registered to [4mFor-[0m
+       [4mwarders(3)[24m.
+
+       A filtering module that filters operations at  some  abstraction  layer
+       needs  the  initializations  for  all abstraction layers by the regular
+       proxy modules but its own layer.  This can be  done  by  starting  with
+       [4mCreateUninitializedProxy[24m  which  returns  a  [4mproxy[24m object that has been
+       created by the [4mcreateProxy[24m interface  procedure  of  the  most-extended
+       proxy module. In the second step, all interfaces have to be initialized
+       that  are  more  basic  than  our  abstraction  layer  using   [4mInitial-[0m
+       [4mizeAllInterfacesUpTo[24m  which  initializes  all layers up to that of [4mtype[0m
+       which is included.  In the third step, the initialization  on  the  own
+       abstraction  layer  has  to  be performed. Finally, [4mInitializeAllInter-[0m
+       [4mfacesBeyond[24m has to be invoked to  initialize  all  interfaces  for  the
+       extensions of [4mtype[24m (excluding [4mtype[24m). [4mInitializeAllInterfacesBeyond[24m also
+       registers the relationship between [4mproxy[24m and [4morig[24m to [4mForwarders(3)[24m.
+
+       [4mGetOrig[24m returns the original target object [4mproxy[24m is linked to.
+
+[1mDIAGNOSTICS[0m
+       Established proxy relations are announced  to  [4mForwarders(3)[24m  which  in
+       turn   registers   the   relationship   with   [4mResources.DependsOn[24m   to
+       [4mResources(3)[24m. This causes all error events that are raised at the orig-
+       inal object to be forwarded to the proxy object.
+
+[1mSEE ALSO[0m
+       [4mForwarders(3)[24m         forward   secondary  abstractions  through  proxy
+                             objects
+       [4mProxyNodes(3)[24m         example  for  a  proxy  module  at  the  [4mNames(3)[0m
+                             abstraction layer
+       [4mRemoteObjects(3)[24m      delegations to remote objects
+       [4mTranslucentNames(3)[24m   example  for  a  filtering module at the [4mNames(3)[0m
+                             abstraction layer
+
+
+
+Release 0.5             Last change: 22 September 2004              Proxies(3)

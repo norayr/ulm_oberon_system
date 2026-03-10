@@ -1,0 +1,181 @@
+Plotters(3)                   Ulm's Oberon System                  Plotters(3)
+
+
+
+[1mNAME[0m
+       Plotters - abstraction for simple plotters
+
+[1mSYNOPSIS[0m
+       TYPE Plotter = POINTER TO PlotterRec;
+       TYPE PlotterRec = RECORD (Services.ObjectRec) END;
+
+       CONST solid = 0;
+       CONST dotted = 1;
+       CONST dotdashed = 2;
+       CONST shortdashed = 3;
+       CONST longdashed = 4;
+       CONST lineModes = 5;
+       TYPE LineMode = SHORTINT; (* solid ... *)
+
+       CONST setspace = 0;
+       CONST erase = 1;
+       CONST string = 2;
+       CONST linemodes = 3;
+       CONST linewidth = 4;
+       TYPE CapabilitySet = SET; (* OF setspace, erase ... *)
+
+       TYPE Description = POINTER TO DescriptionRec;
+       TYPE DescriptionRec =
+             RECORD
+                (Objects.ObjectRec)
+                xmin, ymin, xmax, ymax: INTEGER; (* maximal supported range *)
+             END;
+
+       TYPE GetSpaceProc = PROCEDURE (
+             plotter: Plotter;
+             VAR xmin, ymin, xmax, ymax: INTEGER);
+       TYPE SetSpaceProc = PROCEDURE (
+             plotter: Plotter;
+             xmin, ymin, xmax, ymax: INTEGER);
+       TYPE EraseProc = PROCEDURE (plotter: Plotter);
+       TYPE MoveProc = PROCEDURE (plotter: Plotter; xto, yto: INTEGER);
+       TYPE LineProc = PROCEDURE (plotter: Plotter; xfrom, yfrom, xto, yto: INTEGER);
+       TYPE ArcProc = PROCEDURE (
+             plotter: Plotter;
+             xcenter, ycenter, xstart, ystart, xend, yend: INTEGER);
+       TYPE CircleProc = PROCEDURE (
+             plotter: Plotter; xcenter, ycenter, radius: INTEGER);
+       TYPE StringProc = PROCEDURE (plotter: Plotter; str: ARRAY OF CHAR);
+       TYPE SetLineModeProc = PROCEDURE (plotter: Plotter; mode: LineMode);
+       TYPE SetLineWidthProc = PROCEDURE (plotter: Plotter; width: INTEGER);
+       TYPE CloseProc = PROCEDURE (plotter: Plotter);
+       TYPE Interface = POINTER TO InterfaceRec;
+       TYPE InterfaceRec =
+             RECORD
+                (Objects.ObjectRec)
+                setSpace: SetSpaceProc;
+                erase: EraseProc;
+                move: MoveProc;
+                cont: MoveProc;
+                point: MoveProc;
+                line: LineProc;
+                arc: ArcProc;
+                circle: CircleProc;
+                string: StringProc;
+                setLineMode: SetLineModeProc;
+                setLineWidth: SetLineWidthProc;
+                close: CloseProc;
+             END;
+
+       PROCEDURE Init(plotter: Plotter; if: Interface;
+                      caps: CapabilitySet; desc: Description);
+       PROCEDURE GetCapabilities(plotter: Plotter) : CapabilitySet;
+
+       PROCEDURE GetSpace(plotter: Plotter;
+                          VAR xmin, ymin,
+                          xmax, ymax: INTEGER);
+       PROCEDURE GetMaxSpace(plotter: Plotter;
+                             VAR xmin, ymin,
+                             xmax, ymax: INTEGER);
+       PROCEDURE SetSpace(plotter: Plotter;
+                          xmin, ymin,
+                          xmax, ymax: INTEGER);
+
+       PROCEDURE Erase(plotter: Plotter);
+
+       PROCEDURE Move(plotter: Plotter; xto, yto: INTEGER);
+       PROCEDURE Cont(plotter: Plotter; xto, yto: INTEGER);
+       PROCEDURE Point(plotter: Plotter; xpoint, ypoint: INTEGER);
+       PROCEDURE Line(plotter: Plotter; xfrom, yfrom, xto, yto: INTEGER);
+       PROCEDURE Arc(plotter: Plotter;
+                     xcenter, ycenter, xstart, ystart, xend, yend: INTEGER);
+       PROCEDURE Circle(plotter: Plotter; xcenter, ycenter, radius: INTEGER);
+       PROCEDURE String(plotter: Plotter; str: ARRAY OF CHAR);
+       PROCEDURE SetLineMode(plotter: Plotter; mode: LineMode);
+       PROCEDURE SetLineWidth(plotter: Plotter; width: INTEGER);
+
+       PROCEDURE Close(plotter: Plotter);
+
+
+[1mDESCRIPTION[0m
+       [4mPlotters[24m  provides  an  abstraction  for a very limited set of plotting
+       operations that are modeled after the Berkeley [4mplot(5)[24m interface.
+
+       A plotter provides a two-dimensional rectangular discrete  space  whose
+       dimensions  can be retrieved by [4mGetSpace[24m, and, if supported, changed by
+       [4mSetSpace[24m under consideration of the maximal supported space returned by
+       [4mGetMaxSpace[24m.  Note  that  many  plotter  implementations support square
+       areas only, that means they convert rectangular areas implicitly to the
+       smallest  square  enclosing  them.  There  is always a current position
+       defined which is initially (0,0) in the lower left corner of the  plot-
+       ting space.
+
+       [4mGetSpace[24m, [4mMove[24m, [4mCont[24m, [4mPoint[24m, [4mLine[24m, [4mArc[24m, [4mCircle[24m, and [4mClose[24m are supported
+       by all implementations.  [4mSetSpace[24m, [4mErase[24m, [4mString[24m, and  [4mSetLineMode[24m  are
+       permitted  by  some  implementations  only.   The  set  of capabilities
+       returned by [4mGetCapabilities[24m tells which of the optional operations  are
+       permitted.
+
+   [1mClient interface[0m
+       [4mErase[24m  erases  the  entire  plot  area. This is permitted only if [4merase[0m
+       belongs to the set of capabilities.
+
+       [4mMove[24m sets the current position to [4mxto[24m, [4myto[24m.
+
+       [4mCont[24m draws a line from the current position to [4mxto[24m, [4myto[24m, and  sets  the
+       current position to ([4mxto[24m, [4myto[24m).
+
+       [4mPoint[24m draws a point at the given position and sets the current point to
+       it.
+
+       [4mLine[24m draws a line between the given two points  and  sets  the  current
+       point to ([4mxto[24m, [4myto[24m).
+
+       [4mArc[24m  draws  an  arc  of  a circle with center point ([4mxcenter[24m, [4mycenter[24m),
+       beginning at ([4mxstart[24m, [4mystart[24m) and  going  counter-clockwise  to  ([4mxend[24m,
+       [4myend[24m). The current position is undefined after this operation.
+
+       [4mCircle[24m  draws a circle with the given center point and radius. The cur-
+       rent position is undefined after this operation.
+
+       [4mString[24m puts a text string at the current position. The string must  not
+       include  newlines.  This  is  permitted only if [4mstring[24m is in the set of
+       capabilities.
+
+       [4mSetLineMode[24m allows to set the line mode to  [4msolid[24m,  [4mdotted[24m,  [4mdotdashed[24m,
+       [4mshortdashed[24m,  or [4mlongdashed[24m.  This is permitted only if [4mlinemodes[24m is in
+       the set of capabilities.
+
+       [4mSetLineWidth[24m changes the line width to [4mwidth[24m. This is permitted only if
+       [4mlinewidth[24m is in the set of capabilities.
+
+       [4mClose[24m allows to finalize a plot. No operation on the plotter is allowed
+       afterwards. This operation is implicitly invoked in case of a  termina-
+       tion event (see [4mResources(3)[24m).
+
+   [1mImplementation interface[0m
+       [4mInit[24m  allows  to  connect a plotter object with an implementation.  The
+       interface procedures should follow the specifications above and must be
+       defined  if  the  corresponding  capabilities are provided in [4mcaps[24m. The
+       only exception is [4mclose[24m which can be set to [1mNIL [22mif it  is  not  needed.
+       [4mdesc[24m  contains the maximal supported rectangular area which is returned
+       by [4mGetMaxSpace[24m. This is also implicitly the initial plot area.  If  the
+       implementation  prefers another default area, [4mSetSpace[24m should be called
+       immediately after [4mInit[24m.
+
+[1mDIAGNOSTICS[0m
+       [4mPlotters[24m does not generate any error events on its own. The  invocation
+       of  unsupported operations is caught by assertions. Likewise, [4mInit[24m per-
+       forms some sanity checks on the given interface.
+
+[1mSEE ALSO[0m
+       [4mPlot5Streams(3)[24m     traditional implementations that generates  streams
+                           with  plot instructions in the traditional Berkeley
+                           format
+       [4mTurtleGraphics(3)[24m   simple turtle graphics which  is  based  upon  this
+                           module
+       [4mXPlotters(3)[24m        displays the plot on an X server.
+
+
+
+Release 0.5               Last change: 11 April 2005               Plotters(3)
