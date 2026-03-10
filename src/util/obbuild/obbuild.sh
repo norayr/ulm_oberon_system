@@ -90,7 +90,7 @@ then
    done
    if $BINDIR/genobrts -o $tmpdir/_start.s $* &&
 	 as -32 -o $tmpdir/_start.o $tmpdir/_start.s &&
-	 ld -m elf_i386 -e _entry -o "$output" $tmpdir/*.o
+	 ld -T $BINDIR/oberon-i386.ld -m elf_i386 -o "$output" $tmpdir/*.o
    then
       exit 0
    else

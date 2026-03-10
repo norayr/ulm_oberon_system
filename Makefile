@@ -4,7 +4,8 @@
 # we set InstallDir etc to the package construction area and DestDir etc
 # to the final destination which is created later on by the package
 Root := $(shell pwd)
-DestDir := $(Root)
+#DestDir := $(Root)
+DestDir := ~/ulmo
 InstallDir := $(DestDir)
 BinDir := $(DestDir)/bin
 EtcDir := $(DestDir)/etc
