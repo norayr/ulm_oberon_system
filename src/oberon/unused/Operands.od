@@ -1,0 +1,121 @@
+DEFINITION Operands;
+
+   IMPORT Objects,SYSTEM, Sym32 := Oberon32iSymbols,
+	  Relocations, FragmentedStreams, Oberon32i, Oberon8Chars,
+	  Registers;
+
+   TYPE
+      Register = INTEGER;
+      Location = INTEGER;
+      ConstantKind = Sym32.ConstantKind;
+
+   CONST
+      noConst = 0;          (* Record doesn't contain constant data *)
+      integerConst = 1;     (* Record contains an integer or cardinal *)
+      realConst = 2;        (* Reocrd contains a real number *)
+      setConst = 3;         (* Record contains a set *)
+      charConst = 4;        (* Record contains a character *)
+      booleanConst = 5;     (* Record contains a boolean *)
+      nilConst = 6;         (* Record contains a NIL pointer *)
+      dataConst = 7;        (* Record contains other constant data *)
+
+
+   TYPE
+      ConstantData = POINTER TO ConstantDataRec;
+      ConstantDataRec = RECORD
+	 (Objects.ObjectRec)
+         kind : ConstantKind;
+         intval : Oberon32i.Integer;
+         realval : Oberon32i.Real;
+         setval : Oberon32i.Set;
+         charval : Oberon8Chars.Value;
+         boolval : BOOLEAN;
+      END;
+
+
+   TYPE
+      Operand = POINTER TO OperandRec;
+      OperandRec = RECORD
+	 (Objects.ObjectRec)
+	 reg1, reg2 : Registers.Value;
+	 immsz,memsz, dispsz : LONGINT;
+	 disp : LONGINT;
+	 data : ConstantData;
+	 volatile : BOOLEAN;
+      END;
+
+      OperandCache = POINTER TO OperandCacheRec;
+      OperandCacheRec = RECORD
+         (Objects.ObjectRec)
+      END;
+
+   CONST
+      error = 31;        (* An error occured during Operand generation *)
+      none = 0;	         (* Operand is not (yet) usable for an Instruction *)
+      immediate = 1;	 (* Operand data is immediate *)
+      immediateDyn = 2;  (* Operand data is immediate and extendable *)
+      register = 3;	 (* Operand data is in a register *)
+      register2 = 4;	 (* Operand data consists of two registers *)
+      memory = 5;	 (* Operand data is in memory *)
+      fpuRegister = 6;   (* Operand data is in a FPU register *)
+      condition = 7;     (* Operand data is a boolean condition code
+			  * stored in reg1. This type can't be passed
+			  * to OpcodeGen.EmitGeneric *)
+
+   (* Operand cache realted functions *)
+   PROCEDURE CreateCache (VAR opcache : OperandCache);
+   PROCEDURE Alloc(opcache : OperandCache) : Operand;
+   PROCEDURE Free(opcache : OperandCache; op : Operand);
+
+   (* New Operand Creation *)
+   PROCEDURE Dup (op : Operand) : Operand;
+   PROCEDURE ImmOp (dyn : BOOLEAN) : Operand;
+   PROCEDURE ImmOpV (cache : OperandCache; dyn : BOOLEAN) : Operand;
+   PROCEDURE Error () : Operand;
+   PROCEDURE IsError (op : Operand) : BOOLEAN;
+   PROCEDURE ImmIntFixed (i : Oberon32i.Integer; sz : LONGINT) : Operand;
+   PROCEDURE ImmInt (i : Oberon32i.Integer) : Operand;
+   PROCEDURE ImmIntV (cache : OperandCache; i : Oberon32i.Integer) : Operand;
+   PROCEDURE ImmReal (r : Oberon32i.Real) : Operand;
+   PROCEDURE ImmSet (s : Oberon32i.Set) : Operand;
+   PROCEDURE ImmChar (c : Oberon8Chars.Value) : Operand;
+   PROCEDURE ImmBool (b : BOOLEAN) : Operand;
+   PROCEDURE ImmNil () : Operand;
+   PROCEDURE ImmData (dyn : BOOLEAN; sz : LONGINT; data : ARRAY OF BYTE) : Operand;
+
+   PROCEDURE RegOp (reg : Registers.Value; size : LONGINT) : Operand;
+   PROCEDURE RegOpV (cache : OperandCache; reg : Registers.Value;
+                     size : LONGINT) : Operand;
+   PROCEDURE Reg2Op (reg1, reg2 : Registers.Value; size : LONGINT) : Operand;
+   PROCEDURE MemOp0 (memsz, disp, dispsz : LONGINT) : Operand;
+   PROCEDURE MemOp1 (reg : Registers.Value; memsz, disp, dispsz : LONGINT)
+				   : Operand;
+   PROCEDURE MemOp2 (reg1, reg2 : Registers.Value; memsz, disp, dispsz : LONGINT;
+		     scale : INTEGER) : Operand;
+   PROCEDURE FPUOp (reg : Registers.Value) : Operand;
+   PROCEDURE CCOp (cc : LONGINT) : Operand;
+
+   PROCEDURE SetLoc (op : Operand; newloc : Location);
+
+   PROCEDURE Loc (op : Operand) : INTEGER;
+   PROCEDURE Scale (op : Operand; VAR scale : INTEGER);
+   PROCEDURE SetScale (op : Operand; newscale : INTEGER);
+   PROCEDURE Sizes (op: Operand; VAR immsz : LONGINT; VAR memsz : LONGINT)
+			     : BOOLEAN;
+   PROCEDURE Reg (op: Operand; VAR reg : Register) : BOOLEAN;
+   PROCEDURE Reg2 (op : Operand; VAR reg1, reg2 : Register) : BOOLEAN;
+   (* Return the register Code of a two register Operand
+    * (Location = Register2) *)
+   PROCEDURE Mem16 (op : Operand; VAR reg1 : Register; VAR reg2 : Register;
+		    VAR disp : LONGINT; VAR dispsize : LONGINT) : BOOLEAN;
+   PROCEDURE Mem32 (op : Operand; VAR base : Register; VAR index : Register;
+		    VAR scale : INTEGER; VAR disp : LONGINT;
+		    VAR dispsize : LONGINT) : BOOLEAN;
+   PROCEDURE GetImmData (op : Operand; VAR arr : ARRAY OF BYTE; len : LONGINT);
+
+   PROCEDURE NeedReloc (op : Operand) : BOOLEAN;
+   PROCEDURE RelocOpen (op : Operand; reloc : Relocations.RelocRequest);
+   PROCEDURE RelocInstance (op : Operand; l : FragmentedStreams.Label);
+   PROCEDURE RelocInfo (op : Operand; off, len : LONGINT);
+
+END Operands.

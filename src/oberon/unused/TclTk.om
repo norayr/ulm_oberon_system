@@ -1,0 +1,1917 @@
+MODULE TclTk;
+
+   IMPORT ASCII, BlockingEvents, Conditions, ConstStrings, Coroutines,
+      Disciplines, Errors, EventConditions, Events, InetResolver,
+      IPv4Addresses, IPv4TCPSockets, LocalSemaphores, NetIO, Objects, Print,
+      Priorities, Process, Read, RelatedEvents, Resources, Semaphores,
+      Services, Sets, StreamConditions, StreamDisciplines, Streams, Strings,
+      SysHost, SYSTEM, Tasks, Texts, UnixEnvironment, UnixFiles, Write;
+
+
+TYPE List = POINTER TO ListRec;
+TYPE ListRec = 
+	RECORD 
+		(Objects.ObjectRec)
+		first, last: List;
+	END;
+
+TYPE IntList = POINTER TO IntListRec;
+TYPE IntListRec =
+	RECORD
+		(ListRec)
+		value: INTEGER;
+		next: IntList;
+	END;
+
+TYPE RealList = POINTER TO RealListRec;
+TYPE RealListRec =
+	RECORD
+		(ListRec)
+		value: REAL;
+		next: RealList;
+	END;
+
+TYPE StringList = POINTER TO StringListRec;
+TYPE StringListRec =
+	RECORD
+		(ListRec)
+		value: Streams.Stream;
+		next: StringList;
+	END;
+
+TYPE BoolList = POINTER TO BoolListRec;
+TYPE BoolListRec =
+	RECORD
+		(ListRec)
+		value: BOOLEAN;
+		next: BoolList;
+	END;
+
+TYPE EventType = ARRAY 20 OF CHAR;
+
+(* Types for the hashtables *)
+TYPE HashKey = POINTER TO HashKeyRec;
+TYPE HashKeyRec = RECORD (Objects.ObjectRec) END;
+
+TYPE IntKey = POINTER TO IntKeyRec;
+TYPE IntKeyRec = RECORD (HashKeyRec) key: INTEGER; END;
+
+TYPE CharKey = POINTER TO CharKeyRec;
+TYPE CharKeyRec = RECORD (HashKeyRec) key: ARRAY 20 OF CHAR; END;
+
+TYPE CStringKey = POINTER TO CStringKeyRec;
+TYPE CStringKeyRec = RECORD (HashKeyRec) key: ConstStrings.String; END;
+
+TYPE HashEntry = POINTER TO HashEntryRec;
+TYPE HashEntryRec =
+	RECORD
+		key: HashKey;
+		object: Objects.Object;
+		next: HashEntry;
+	END;
+CONST hashtabsize = 64;
+
+TYPE CompareProc = PROCEDURE (key1: HashKey; key2: HashKey) : BOOLEAN;
+TYPE HashProc = PROCEDURE (key: HashKey) : INTEGER;
+TYPE Hashtable = POINTER TO HashtableRec;
+TYPE HashtableRec =
+	RECORD
+		table: ARRAY hashtabsize OF HashEntry;
+		compare: CompareProc;
+		hash: HashProc;
+	END;
+
+TYPE Identifier = INTEGER;
+
+TYPE Interpreter = POINTER TO  InterpreterRec;
+TYPE Record = POINTER TO RecordRec;
+
+TYPE ReplyCondition = POINTER TO ReplyConditionRec;
+TYPE ReplyConditionRec =
+	RECORD
+		(Conditions.ConditionRec)
+		interp: Interpreter;
+		requestID: Identifier;
+			(* id used to identify incoming replies *)
+		processed: BOOLEAN;	
+			(* set to TRUE, if result contains the result of the request *)
+		result: Streams.Stream;	
+			(* reference to the stream, where the user wants the result *)
+		error: BOOLEAN;	
+			(* indicates, if the request leads to an error *)
+		record: Record;
+			(* the result of a CallProc command *)
+		next: ReplyCondition;
+	END;
+
+TYPE InterpreterRec = 
+	RECORD 
+		(Services.ObjectRec) 
+		s: Streams.Stream;
+			(* connection to the server with the interpreter *)
+		streamlock: Semaphores.Semaphore;
+		writeCond: Conditions.Condition;
+		readCond: Conditions.Condition;
+			(* conditions for reading and writing *)
+		records: Hashtable;
+			(* records which where defined in the interpreter *)
+		recordtypenos: Hashtable;
+			(* for translating incoming typenos to the type definition *)
+		eventtypes: Hashtable;
+			(* known event types in the interpreter *)
+		conditionlist: ReplyCondition;
+			(* outstanding EvalRequests or CallProc results *)
+		objectterminated: BlockingEvents.EventType;
+			(* used to support Resources *)
+		requestID: Identifier;
+			(* next ID for requests *)
+		eventtypeID: Identifier;
+			(* next ID for  EventTypes defined by "Define" *)
+	END;
+    
+(* Types for constructing the definition of a record, as defined in Tcl *)
+CONST 
+	subrecord = 0; integer = 1; real = 2; string = 3; boolean = 4;
+	listInteger = 5; listReal = 6; listString = 7; listBoolean = 8; listNIL = 9;
+
+(* each slot of a record occupies one such structure *)
+TYPE SlotDefinition = POINTER TO SlotDefinitionRec;
+TYPE SlotDefinitionRec =
+	RECORD
+		name: ConstStrings.String;
+			(* slotname *)
+		type: SHORTINT; 
+			(* subrecord..listBoolean *)
+		subrecord: SlotDefinition;
+			(* NIL, if slot is not complex *)
+		next: SlotDefinition;
+	END;
+(* definition of a record type *)
+TYPE RecordTypeDef = POINTER TO RecordTypeDefRec;
+TYPE RecordTypeDefRec = 
+	RECORD
+		(Objects.ObjectRec)
+		typename: ConstStrings.String;
+            (* typename of the record *)
+		typeno: INTEGER;
+            (* no. for this type used in the protocol with the server *)
+		slotdef: SlotDefinition;
+            (* definition of the slots *)
+	END;
+
+(* the value of a slot is stored in a Slot structure *)
+TYPE Slot = POINTER TO SlotRec;
+TYPE SlotRec =
+	RECORD
+		definition: SlotDefinition;
+		value: Streams.Stream;
+		listvalue: List;
+		subvalues: Slot;
+		next: Slot;
+	END;
+
+TYPE RecordRec =
+	RECORD
+		(Disciplines.ObjectRec)			
+		typename: ConstStrings.String;	
+		typedef: RecordTypeDef;
+            (* points to the definition *)
+		slots: Slot;
+            (* values *)
+	END;
+
+
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+	RECORD
+		(Events.EventRec)
+		interp: Interpreter;
+            (* used like "from", but is private *)
+		from: Interpreter;
+            (* the event is raised from "from" *)
+		record: Record;
+	END;
+
+(* gets append to every Events.EventType defined by a call *)
+(* of "Define" or "Events define"                          *)
+TYPE Discipline = POINTER TO DisciplineRec;
+TYPE DisciplineRec =
+	RECORD
+		(Disciplines.DisciplineRec)
+		tclname: EventType;
+            (* name used in Tcl for this EventType *)
+		interp: Interpreter;
+            (* interpreter for which the Type is defined *)
+		next: Discipline;
+	END;
+
+(* separators used in the protocol with the server *)
+CONST fieldseparator = ASCII.etx; stuffchar = ASCII.dle;
+	messageseparator = ASCII.eot;
+
+(* internal msgtypes for SendMessage *)
+CONST
+	eval = 0; eventsdefine = 1; eventsraise = 2; callproc = 3;
+(* structure that holds the values needed by SendMessage to *)
+(* send the message                                         *)
+TYPE Message = POINTER TO MessageRec;
+TYPE MessageRec =
+	RECORD
+		(Objects.ObjectRec)
+		cmd: SHORTINT;
+			(* eval..callproc *)
+		requestID: Identifier;
+            (* ID for this request *)
+		s: Streams.Stream;
+            (* things to transmit are stored there *)
+		event: Events.Event;
+            (* the event that is to transmit *)
+		proc: ARRAY 80 OF CHAR;
+            (* the name of the Tcl procedure that is to call *)
+		record: Record;
+            (* the record that is to send *)
+	END;
+
+CONST
+    connectionFailed = 0;   (* unable to access the port listener *)
+	connectionRefused = 1;  (* setup failed *)
+	connectionBroken = 2;   (* connection is broken *)
+	sendFailed = 3;         (* failed to send the requested data *)
+	receiveFailed = 4;      (* failed to receive the requested data *)
+	serverExit = 5;  		(* tcltk-server receives an exit-Event *)
+	protocolError = 6;      (* got an unexpected value *)   
+	tkError = 7;            (* tkerror occured *)
+	callProcError = 8;		(* tclerror or no record returned by proc *)
+	errors = 9;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+	RECORD
+		(Events.EventRec);
+		errorcode: SHORTINT;
+		detail: Streams.Stream;
+	END;
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+
+VAR discID: Disciplines.Identifier;
+VAR evalDomain: Conditions.Domain;
+VAR interpreterType: Services.Type;
+
+VAR processTerminationCond: Conditions.Condition;
+
+
+
+(* =========== error handling  ========================================== *)
+
+PROCEDURE WriteError(s: Streams.Stream; event: Events.Event);
+BEGIN
+	Write.LineS(s, event.message);
+	WITH event: ErrorEvent DO
+		IF event.detail # NIL THEN
+			IF Streams.Seek(event.detail, 0, Streams.fromStart) &
+			   Streams.Copy(event.detail, s, -1) THEN END;
+		END;
+	END;
+END WriteError;
+
+PROCEDURE Error(object: RelatedEvents.Object; errorcode: SHORTINT;
+					detail: Streams.Stream);
+	VAR
+		event: ErrorEvent;
+BEGIN
+	NEW(event);
+	event.type := error;
+	event.message := errormsg[errorcode];
+	event.errorcode := errorcode;
+	Texts.Open(event.detail);
+	IF detail # NIL THEN
+		IF Streams.Seek(detail, 0, Streams.fromStart) &
+		   Streams.Copy(detail, event.detail, -1) THEN END; 
+	END;
+	RelatedEvents.Raise(object, event);
+END Error;
+
+PROCEDURE InitErrorHandling;
+BEGIN
+	Events.Define(error); Events.SetPriority(error, Priorities.liberrors);
+	Errors.AssignWriteProcedure(error, WriteError);
+   	errormsg[connectionFailed] := "unable to access the port listener";
+	errormsg[connectionRefused] := "setup failed";
+	errormsg[connectionBroken] := "connection is broken";
+	errormsg[sendFailed] := "failed to send the requested data";
+	errormsg[receiveFailed] := "failed to receive the requested data";
+	errormsg[serverExit] := "tcltk-server receives an exit-Event";
+	errormsg[protocolError] := "got an unexpected value";
+	errormsg[tkError] := "tkerror occured";
+	errormsg[callProcError] := "tclerror or no record returned by proc"; 
+END InitErrorHandling;
+
+
+	(* =========== procedures for some strange events ======================= *)
+PROCEDURE ObjectTerminationHandler(event: Events.Event);
+	VAR
+		ev: Events.Event;
+BEGIN
+	WITH event: Resources.Event DO
+		IF (event.change = Resources.terminated) OR
+		   (event.change = Resources.unreferenced) THEN
+			NEW(ev);
+			ev.type := event.resource(Interpreter).objectterminated;
+			BlockingEvents.Raise(ev);
+		END;
+	END;
+END ObjectTerminationHandler;
+
+	(* =========== procedures for condition handling  ======================= *)
+PROCEDURE CreateReplyCondition(VAR condition: ReplyCondition;
+							  interp: Interpreter;
+							  result: Streams.Stream);
+BEGIN
+	NEW(condition);
+	Conditions.Init(condition, evalDomain);
+	condition.interp := interp;
+	condition.requestID := interp.requestID; INC(interp.requestID);
+	condition.processed := FALSE;
+	condition.result := result;
+	condition.record := NIL;
+	condition.next := interp.conditionlist;
+	interp.conditionlist := condition;
+END CreateReplyCondition;
+
+PROCEDURE TestReplyCondition(domain: Conditions.Domain;
+							condition: Conditions.Condition;
+							errors: RelatedEvents.Object) : BOOLEAN;
+BEGIN
+	WITH condition: ReplyCondition DO
+		IF ~condition.processed &
+			( (condition.interp.s = NIL) OR
+			  condition.interp.s.eof OR condition.interp.s.error ) THEN
+			Error(errors, connectionBroken, NIL);
+			Error(condition.interp, connectionBroken, NIL);
+			RETURN TRUE;
+		ELSE
+			RETURN condition.processed;
+		END;
+	END;
+END TestReplyCondition;
+
+PROCEDURE PreConditions(domain: Conditions.Domain; 
+			condition: Conditions.Condition;
+			VAR preconds: Conditions.ConditionSet;
+			errors: RelatedEvents.Object) : BOOLEAN;
+BEGIN
+	WITH condition: ReplyCondition DO
+		IF TestReplyCondition(domain, condition, errors) THEN
+			RETURN FALSE;
+		ELSIF condition.processed OR
+			  (condition.interp.s = NIL) OR
+			  condition.interp.s.eof OR condition.interp.s.error  THEN
+			RETURN FALSE;
+		ELSE
+			Conditions.Incl(preconds, condition.interp.readCond);
+		END;
+	END;
+END PreConditions;
+
+	(* =========== procedures for hashing =================================== *)
+PROCEDURE IntHash(key: HashKey) : INTEGER;
+BEGIN
+	IF key IS IntKey THEN
+		RETURN (key(IntKey).key MOD hashtabsize);
+	ELSE
+		RETURN -1;
+	END;
+END IntHash;
+
+PROCEDURE CStringHash(key: HashKey) : INTEGER;
+BEGIN
+	IF key IS CStringKey THEN
+		RETURN SHORT(key(CStringKey).key.hashval MOD hashtabsize);
+	ELSE
+		RETURN -1;
+	END;
+END CStringHash;
+
+PROCEDURE CharHash(key: HashKey) : INTEGER;
+	CONST
+		shift = 4;
+		maxlen = 15;
+	VAR
+      	index: LONGINT;
+		length: LONGINT;
+      	val: LONGINT;
+      	ch: CHAR;
+      	ordval: INTEGER;
+BEGIN
+	IF ~(key IS CharKey) THEN RETURN -1; END;
+	WITH key: CharKey DO
+		length := Strings.Len(key.key);
+		IF length > maxlen THEN length := maxlen; END;
+      	index := 0; val := length;
+      	WHILE index < length DO
+         	ch := key.key[index];
+         	IF ch >= " " THEN
+            	ordval := ORD(ch) - ORD(" ");
+         	ELSE
+            	ordval := ORD(MAX(CHAR)) - ORD(" ") + ORD(ch);
+         	END;
+         	val := ASH(val, shift) + ordval;
+         	INC(index);
+      	END;
+      	val := val MOD hashtabsize;
+      	RETURN SHORT(val)
+	END;
+END CharHash;
+
+PROCEDURE IntCompare(key1: HashKey; key2: HashKey) : BOOLEAN;
+BEGIN
+	IF (key1 IS IntKey) & (key2 IS IntKey) THEN
+		RETURN (key1(IntKey).key = key2(IntKey).key);
+	ELSE
+		RETURN FALSE;
+	END;
+END IntCompare;
+
+PROCEDURE CStringCompare(key1: HashKey; key2: HashKey) : BOOLEAN;
+BEGIN
+	IF (key1 IS CStringKey) & (key2 IS CStringKey) THEN
+		RETURN ConstStrings.Compare(key1(CStringKey).key, key2(CStringKey).key) = 0;
+	ELSE
+		RETURN FALSE;
+	END;
+END CStringCompare;
+
+PROCEDURE CharCompare(key1: HashKey; key2: HashKey) : BOOLEAN;
+BEGIN
+	IF (key1 IS CharKey) & (key2 IS CharKey) THEN
+		RETURN key1(CharKey).key = key2(CharKey).key;
+	ELSE
+		RETURN FALSE;
+	END;
+END CharCompare;
+
+
+PROCEDURE FindHashEntry(hashtable: Hashtable; key: HashKey;
+							VAR entry: HashEntry) : BOOLEAN;
+    (* looks for an entry in the given hashtable *)
+	VAR
+		entryp: HashEntry;
+		hashval: INTEGER;
+BEGIN
+	hashval := hashtable.hash(key);
+	ASSERT(hashval >= 0);
+	entryp := hashtable.table[hashval];
+	WHILE (entryp # NIL) & ~hashtable.compare(key, entryp.key) DO
+		entryp:= entryp.next;
+	END;
+	entry := entryp;
+	RETURN entryp # NIL;
+END FindHashEntry;
+	
+PROCEDURE InsertHashEntry(hashtable: Hashtable; entry: HashEntry);
+    (* insert an entry in the hashtable according to the key in entry *)
+	VAR
+		hashval: INTEGER;
+BEGIN
+	hashval := hashtable.hash(entry.key);
+	ASSERT(hashval >= 0);
+	IF hashtable.table[hashval] = NIL THEN
+		hashtable.table[hashval] := entry;
+	ELSE 
+		entry.next := hashtable.table[hashval].next;
+		hashtable.table[hashval].next := entry;
+	END;
+END InsertHashEntry;
+
+
+	(* =========== procedures for Record handling =========================== *)
+PROCEDURE CreateRecordVar(VAR record: Record; interp: Interpreter; 
+					tcltypename: ConstStrings.String);
+    (* 
+     * create an object of type Record. For each slot defined 
+     * a structure is created to hold the value. The slots
+     * are connected like the definition.
+     *
+     *)
+	VAR
+		entry: HashEntry;
+		key: CStringKey;
+
+	PROCEDURE CreateSlot(VAR slot: Slot; slotdefinition: SlotDefinition);
+		VAR
+			firstslot, lastslot, newslot: Slot;
+	BEGIN
+		WHILE slotdefinition # NIL DO
+			NEW(newslot);
+			IF firstslot = NIL THEN 
+				firstslot := newslot; lastslot := newslot;
+			ELSE
+				lastslot.next := newslot; lastslot := newslot;
+			END;
+			newslot.definition := slotdefinition;
+			Texts.Open(newslot.value);
+			CASE newslot.definition.type OF
+			| integer: Texts.Open(newslot.value); Write.IntS(newslot.value, 0, 1);
+			| real: Texts.Open(newslot.value); Write.RealS(newslot.value, 0.0, 1);
+			| string: Texts.Open(newslot.value); Write.StringS(newslot.value, ""); 
+			| boolean: Texts.Open(newslot.value); Write.IntS(newslot.value, 0, 1);
+			| listInteger, listReal, listString, listBoolean:
+				newslot.listvalue := NIL;
+			| subrecord: 
+				CreateSlot(newslot.subvalues, slotdefinition.subrecord);
+			END;
+			slotdefinition := slotdefinition.next;
+		END;
+		slot := firstslot;
+	END CreateSlot;
+
+BEGIN
+    (* get the definition *)
+	NEW(key);
+	key.key := tcltypename;
+	ASSERT(FindHashEntry(interp.records, key, entry));
+
+    (* create the record *)
+	NEW(record);
+	record.typename := key.key;
+        (* typename is already stored as a key *)
+	record.typedef := entry.object(RecordTypeDef);
+        (* point to the definition of record *)
+	CreateSlot(record.slots, record.typedef.slotdef);
+END CreateRecordVar;
+
+
+PROCEDURE WriteRecord(record: Record; s: Streams.Stream);
+    (*
+     * write the record into the stream that connects Oberon and
+     * the Tcl/Tk-server. The algorithm used is the same used
+     * in the server, so that no slotid has to be transmitted.
+     * The algorithm used works toward depth-first method 
+     *
+     *)
+	CONST
+		stuffed = TRUE; unstuffed = FALSE;
+
+	PROCEDURE WriteValue(value: Streams.Stream; withStuffing: BOOLEAN);
+		VAR
+			ch: CHAR;
+	BEGIN
+		IF Streams.Seek(value, 0, Streams.fromStart) THEN END;
+		IF withStuffing THEN
+			WHILE Streams.ReadByte(value, ch) DO 
+				IF (ch = fieldseparator) OR (ch = stuffchar) THEN
+					Write.CharS(s, stuffchar);
+				END;
+				Write.CharS(s, ch);
+			END;
+		ELSE
+			IF Streams.Copy(value, s, -1) THEN END;
+		END;
+		Write.CharS(s, fieldseparator);
+	END WriteValue;
+
+	PROCEDURE WriteSlots(slot: Slot);
+		VAR
+			listtype: SHORTINT;
+			listlen: INTEGER;
+			p: StringList;
+			firstelement: BOOLEAN;
+			value: List;
+			fstr1, fstr2: ARRAY 4 OF CHAR;
+
+		PROCEDURE WriteListElement(value: ARRAY OF BYTE);
+            (* 
+             * lists not of type StringList are written 
+             * according to their Tcl syntax like {1 2 3 4}
+             * WriteListElement appends an element by writint it 
+             * to the stream according to the Tcl syntax.
+             *
+             *)
+		BEGIN
+			IF firstelement THEN 
+				Print.S1(s, fstr1, value);
+				firstelement := FALSE;
+			ELSE
+				Print.S1(s, fstr2, value);
+			END;
+		END WriteListElement;
+				
+	BEGIN
+
+		WHILE slot # NIL DO
+			firstelement := TRUE;
+			value := slot.listvalue;
+			CASE slot.definition.type OF
+			| integer, real, boolean:
+				WriteValue(slot.value, unstuffed);
+			| string:
+                (* string slots have to be stuffed *)
+				WriteValue(slot.value, stuffed);
+			| listString:
+                (* 
+                 * string lists are written element by element so
+                 * that no quoting with backslash is necessary.
+                 * Therefore it may work with other releases of Tcl.
+                 *
+                 * To be able to read in the list by the server, the length
+                 * of the list is prefixed.
+                 *
+                 *)
+				IF value # NIL THEN
+					listlen := 0;
+					p := slot.listvalue(StringList);
+					WHILE p # NIL DO INC(listlen); p := p.next; END;
+					Print.S2(s, "%d%c", listlen, fieldseparator);
+					IF listlen > 0 THEN
+						WITH value: StringList DO 
+							WHILE value # NIL DO 
+								WriteValue(value.value, stuffed);
+								value := value.next;
+							END;
+						END;
+					END;
+				ELSE
+					Print.S2(s, "%d%c", 0, fieldseparator);
+				END;
+			| listInteger:
+				IF value # NIL THEN
+					fstr1 := "%d"; fstr2 := " %d";
+					WITH value: IntList DO 
+						WHILE value # NIL DO 
+							WriteListElement(value.value);
+							value := value.next;
+						END;
+					END;
+				END;
+				Write.CharS(s, fieldseparator);
+			| listReal:
+				IF value # NIL THEN
+					fstr1 := "%f"; fstr2 := " %f";
+					WITH value: RealList DO 
+						WHILE value # NIL DO 
+							WriteListElement(value.value);
+							value := value.next;
+						END;
+					END;
+				END;
+				Write.CharS(s, fieldseparator);
+			| listBoolean:
+				IF value # NIL THEN
+					fstr1 := "%y"; fstr2 := " %y";
+					WITH value: BoolList DO 
+						WHILE value # NIL DO 
+							WriteListElement(value.value);
+							value := value.next;
+						END;
+					END;
+				END;
+				Write.CharS(s, fieldseparator);
+			|subrecord:
+				WriteSlots(slot.subvalues);
+			END;
+			slot := slot.next;
+		END;
+	END WriteSlots;
+BEGIN
+	IF record # NIL THEN
+		Write.IntS(s, record.typedef.typeno, 1);
+            (* write the no. of the type for identifying it *)
+		Write.CharS(s, fieldseparator);
+		WriteSlots(record.slots);
+            (* write all the slots into the stream *)
+	ELSE
+		Print.S1(s, "0%c", fieldseparator);
+	END;
+END WriteRecord;
+
+
+(* ==== tasks for receiving data from server and performing commands === *)
+PROCEDURE ^ DefineEventType(interp: Interpreter; type: Events.EventType; typename: EventType);
+
+PROCEDURE Raise(VAR cr: Coroutines.Coroutine; event: Events.Event);
+    (* 
+     * This task is created be "MessageReceiver" in order to call
+     * "Events.Raise" for it. This has to be done to avoid a 
+     * deadlock, which occures if the receiver of the event does
+     * a call to "Eval", "EvalStream" or "CallProc".
+     *
+     *)
+BEGIN
+	SYSTEM.CRSPAWN(cr);
+	Events.Raise(event);
+	Tasks.Terminate;
+END Raise;
+
+PROCEDURE MessageReceiver(VAR cr: Coroutines.Coroutine; interp: Interpreter);
+    (*
+     * decodes incoming messages from the Tcl/Tk-Server and performs the
+     * requestet actions.
+     *
+     *)
+	CONST (* msgTypes used in the protocol *)
+		execError = -1;
+		initok = 0; refuse = 1;
+		tclok = 2; tclerror = 3; tkerror = 4; definerecord = 5;
+		raiseevent = 6; defineeventtype = 7; callprocerror = 8; 
+		callprocresult = 9; exitC = 10;
+	VAR
+		objectTerminationCond: Conditions.Condition;
+		cset: Conditions.ConditionSet;
+		event: Events.Event;
+		tclev: Event;
+		evtype: Events.EventType;
+		s: Streams.Stream;
+		charset: Sets.CharSet;
+		eventtypename: EventType;
+		ch: CHAR;
+		msgType: SHORTINT;
+		requestID: Identifier;
+		errormsg: Streams.Stream;
+		entry: HashEntry;
+		slotdef: SlotDefinition;
+		raisetask: Tasks.Task;
+		raisecr: Coroutines.Coroutine;
+		evalcond: ReplyCondition;
+		name: Streams.Stream;
+		cname: ConstStrings.String;
+		initInProcess: BOOLEAN;
+
+		(* keys used to store and retrieve entries in/from hashtables *)
+		cstringkey, recTypeKey: CStringKey;
+		charKey: CharKey;
+		recTypeDef: RecordTypeDef;
+		intKey: IntKey;
+
+
+
+	PROCEDURE ReadStringFieldAsStream(VAR to: Streams.Stream; trunc: BOOLEAN);
+		(* Reads a StringField and checks for stuffed characters *)
+		VAR
+			endOfField, stuffed: BOOLEAN;
+	BEGIN 
+		IF trunc THEN 
+			IF Streams.Seek(to, 0, Streams.fromStart) &
+		   		Streams.Trunc(to, 0) THEN END;
+		END;
+		(* read until eot *)
+		endOfField := FALSE; stuffed := FALSE;
+		WHILE ~endOfField & Streams.ReadByte(s, ch) DO
+			CASE ch OF
+			| fieldseparator:
+				IF stuffed THEN Write.CharS(to, ch); stuffed := FALSE;
+				ELSE endOfField := TRUE;
+				END;
+			| messageseparator:
+				IF stuffed THEN Write.CharS(to, ch); stuffed := FALSE;
+				ELSE Error(interp,protocolError,NIL);
+				END;
+			| stuffchar:
+				IF stuffed THEN Write.CharS(to, ch); stuffed := FALSE;
+				ELSE stuffed := TRUE;
+				END;
+			ELSE
+				Write.CharS(to, ch);
+			END;
+		END;
+		IF ~endOfField THEN Error(interp, receiveFailed, NIL); END;
+	END ReadStringFieldAsStream;
+
+	PROCEDURE ReadStringField(VAR string: ARRAY OF CHAR);
+		VAR
+			str: Streams.Stream;
+	BEGIN
+		(* for truly pervers namefields *)
+		Strings.Open(str, string);
+		ReadStringFieldAsStream(str, TRUE);
+		IF Streams.Close(str) THEN END;
+	END ReadStringField;
+
+	PROCEDURE ReadShortIntField(VAR short: SHORTINT) : BOOLEAN;
+		VAR
+			ch: CHAR;
+	BEGIN
+		Read.ShortIntS(s, short);
+		RETURN (s.count > 0) & Streams.ReadByte(s, ch);
+	END ReadShortIntField;
+
+	PROCEDURE ReadIntField(VAR integer: INTEGER);
+		VAR
+			ch: CHAR;
+	BEGIN
+		Read.IntS(s, integer);
+		IF ~( (s.count > 0) & Streams.ReadByte(s,ch) ) THEN
+			Error(interp, receiveFailed, NIL);
+		END;
+	END ReadIntField;
+
+	PROCEDURE ReadRealField(VAR real: REAL);
+		VAR
+			ch: CHAR;
+	BEGIN
+		Read.RealS(s, real);
+		IF ~( (s.count > 0) & Streams.ReadByte(s,ch) ) THEN
+			Error(interp, receiveFailed, NIL);
+		END;
+	END ReadRealField;
+
+	PROCEDURE ReadBoolField(VAR bool: BOOLEAN);
+		VAR
+			ch: CHAR;
+			int: INTEGER;
+	BEGIN
+		Read.IntS(s, int);
+		bool := int # 0;
+		IF ~( (s.count > 0) & Streams.ReadByte(s,ch) ) THEN
+			Error(interp, receiveFailed, NIL);
+		END;
+	END ReadBoolField;
+
+	PROCEDURE ReadRecordDefinition(VAR slotdef: SlotDefinition; s: Streams.Stream);
+		(* 
+	 	 * read the definition for the record and construct the
+	 	 * aquivalent structure like it is done by the "Records" command.
+	 	 *)
+		VAR
+			first, last, newslot: SlotDefinition;
+			type: ARRAY 5 OF CHAR;
+			slotname: Streams.Stream;
+	BEGIN
+		first := NIL;
+		last := NIL;
+		LOOP
+			NEW(newslot);
+			ConstStrings.Init(slotname);
+			ReadStringFieldAsStream(slotname, TRUE);
+				(* read the name of the slot *)
+			ConstStrings.Close(slotname, newslot.name);
+			ReadStringField(type);
+				(* read the type of the slot *)
+			IF type = "" THEN EXIT; END;
+			CASE type[0] OF
+			| "I": newslot.type := integer;
+			| "R": newslot.type := real;
+			| "S": newslot.type := string;
+			| "B": newslot.type := boolean;
+			| "L": CASE type[1] OF
+			   	   | "I": newslot.type := listInteger;
+			   	   | "R": newslot.type := listReal;
+			   	   | "S": newslot.type := listString;
+			   	   | "B": newslot.type := listBoolean;
+			   	   ELSE
+				   		first := NIL; EXIT;
+				   END;
+			| "{": newslot.type := subrecord;
+				   ReadRecordDefinition(newslot.subrecord, s);
+				   IF newslot.subrecord = NIL THEN
+						first := NIL; EXIT;
+					END;
+			| "}": EXIT;
+			ELSE
+				first := NIL; EXIT;
+			END;
+
+			IF first = NIL THEN 
+				first := newslot; last := newslot;
+			ELSE
+				last.next := newslot; last := newslot;
+			END;
+		END;
+		slotdef := first;
+	END ReadRecordDefinition;
+
+
+	PROCEDURE ReadRecord(VAR record: Record);
+        (* read the values from the stream and fill them into record *)
+		VAR
+			typenoKey: IntKey;
+			entry: HashEntry;
+
+		PROCEDURE ReadSlot(slot: Slot);
+			VAR
+				listlen: INTEGER;
+				intlist: IntList;
+				stringlist: StringList;
+				reallist: RealList;
+				boollist: BoolList;
+			
+			PROCEDURE Append(list: List; element: List; listtype: SHORTINT);
+			BEGIN
+				IF list.first = NIL THEN
+					list.first := element; list.last := element;
+				ELSE
+					CASE listtype OF
+					| listString: list.last(StringList).next := element(StringList);
+					| listInteger: list.last(IntList).next := element(IntList);
+					| listReal: list.last(RealList).next := element(RealList);
+					| listBoolean: list.last(BoolList).next := element(BoolList);
+					END;
+					list.last := element;
+				END;
+			END Append;
+
+		BEGIN
+			WHILE slot # NIL DO
+				CASE slot.definition.type OF
+				| integer, real, string, boolean:
+					ReadStringFieldAsStream(slot.value, TRUE);
+				| listInteger: 
+					NEW(slot.listvalue);
+					ReadIntField(listlen);
+					WHILE listlen > 0 DO
+						NEW(intlist);
+						ReadIntField(intlist.value);
+						Append(slot.listvalue, intlist, listInteger);
+						DEC(listlen);
+					END;
+				| listReal: 
+					NEW(slot.listvalue);
+					ReadIntField(listlen);
+					WHILE listlen > 0 DO
+						NEW(reallist);
+						ReadRealField(reallist.value);
+						Append(slot.listvalue, reallist, listReal);
+						DEC(listlen);
+					END;
+				| listString: 
+					NEW(slot.listvalue);
+					ReadIntField(listlen);
+					WHILE listlen > 0 DO
+						NEW(stringlist);
+						Texts.Open(stringlist.value);
+						ReadStringFieldAsStream(stringlist.value, TRUE);
+						Append(slot.listvalue, stringlist, listString);
+						DEC(listlen);
+					END;
+				| listBoolean:
+					NEW(slot.listvalue);
+					ReadIntField(listlen);
+					WHILE listlen > 0 DO
+						NEW(boollist);
+						ReadBoolField(boollist.value);
+						Append(slot.listvalue, boollist, listBoolean);
+						DEC(listlen);
+					END;
+				| subrecord:
+					ReadSlot(slot.subvalues);
+				END;
+				slot := slot.next;
+			END;
+		END ReadSlot;
+
+	BEGIN
+		(* read typeno for the record *)
+		NEW(typenoKey);
+		ReadIntField(typenoKey.key);
+
+		IF typenoKey.key > 0 THEN 
+			(* search the type definition for this no *)
+			IF FindHashEntry(interp.recordtypenos, typenoKey, entry) THEN END;
+
+			(* create slots and assign them the transmitted values *)
+			CreateRecordVar(record, interp, entry.object(RecordTypeDef).typename);
+			ReadSlot(record.slots);
+		ELSE
+            (* no. 0 is used for the NIL object *)
+			record := NIL;
+		END;
+	END ReadRecord;
+
+	PROCEDURE GetCondition(VAR condition: ReplyCondition; ID: Identifier) : BOOLEAN;
+        (* extracts the condition identified by ID from interp.conditionslist *)
+		VAR
+			ptr, prev: ReplyCondition;
+	BEGIN
+		ptr := interp.conditionlist; prev := NIL;
+		WHILE (ptr # NIL) & (ptr.requestID # ID) DO
+			prev := ptr; ptr := ptr.next;
+		END;
+		
+		IF ptr # NIL THEN
+			(* remove the condition *)
+			IF prev = NIL THEN
+				interp.conditionlist := ptr.next;
+			ELSE
+				prev.next := ptr.next;
+			END;
+			ptr.next := NIL;
+			condition := ptr; 
+			RETURN TRUE;
+		ELSE
+			RETURN FALSE;
+		END;
+	END GetCondition;
+
+
+BEGIN (* MessageReceiver *)
+	s := interp.s;
+	BlockingEvents.Register(interp.objectterminated, objectTerminationCond);
+	SYSTEM.CRSPAWN(cr);
+
+	initInProcess := TRUE;
+	Texts.Open(errormsg);
+
+    (* setup StreamDisciplines to match the separators used in the protocol *)
+	Sets.InitSet(charset);
+	StreamDisciplines.GetWhiteSpace(s, charset);
+ 	Sets.ExclChar(charset, ASCII.sp);
+	Sets.InclChar(charset, fieldseparator);
+	StreamDisciplines.SetWhiteSpace(s, charset);
+
+    (* create some keys used to lookup some entrys in hashtables *)
+	NEW(cstringkey);
+	NEW(charKey);
+
+	(* things to wait for *)
+	Conditions.CreateSet(cset);
+	Conditions.Incl(cset, processTerminationCond);
+	Conditions.Incl(cset, objectTerminationCond);
+	Conditions.Incl(cset, interp.readCond);
+
+	LOOP
+
+		Tasks.WaitForOneOf(cset);
+
+		IF BlockingEvents.TestAndGet(objectTerminationCond, event) OR
+		   Conditions.Test(processTerminationCond, NIL) THEN
+			EXIT;
+		END;
+
+		(* 
+         * perform the actions according to the type of the message 
+         * sent by the Tcl/Tk-server
+         *
+         *)
+		msgType := -1;
+		IF ~ReadShortIntField(msgType) THEN
+			IF initInProcess THEN
+				msgType := -1;
+			ELSE
+				Error(interp, connectionBroken, NIL); EXIT;
+			END;
+		END;
+		CASE msgType OF
+		| execError:
+			(* failed to exec the server tcltks *)
+			IF GetCondition(evalcond, 0) THEN
+				evalcond.error := TRUE;
+				evalcond.processed := TRUE;
+				Write.StringS(evalcond.result,
+					"listener: failed to exec the Tcl/Tk-server tcltks");
+			END;
+			EXIT;
+
+		| initok:
+			(* initialization of server was ok *)
+			IF GetCondition(evalcond, 0) THEN 
+				evalcond.error := FALSE;
+				evalcond.processed := TRUE;
+			END;
+			initInProcess := FALSE;
+
+		| refuse:
+			(* initialization of server failes *)
+			IF GetCondition(evalcond, 0) THEN
+				evalcond.error := TRUE;
+				ReadStringFieldAsStream(evalcond.result, TRUE); 
+				evalcond.processed := TRUE;
+			END;
+			EXIT;
+
+		| tclok, tclerror:
+            (* answer to an previous Eval request *)
+			requestID := interp.requestID;
+			ReadIntField(requestID);
+			IF requestID >= interp.requestID THEN
+				Error(interp, protocolError, NIL);
+				EXIT;
+			END;
+			(* look for the associated condition *)
+			IF GetCondition(evalcond, requestID) THEN
+				evalcond.error := (msgType = tclerror);
+				ReadStringFieldAsStream(evalcond.result, FALSE); 
+				evalcond.processed := TRUE;
+			ELSE
+				(* ignore message *)
+				ReadStringFieldAsStream(errormsg, TRUE);
+			END;
+
+		| tkerror:
+			ReadStringFieldAsStream(errormsg, TRUE);
+			Error(interp, tkError, errormsg);
+
+		| definerecord:
+            (* "Records define" was called in Tcl *)
+
+			(* read the definition for this record *)
+			NEW(recTypeDef);
+
+			(* read typename *)
+			ConstStrings.Init(name);
+			ReadStringFieldAsStream(name, TRUE);
+			ConstStrings.Close(name, recTypeDef.typename);
+
+			(* read typeno for use in communication with the server *)
+			ReadIntField(recTypeDef.typeno);
+
+			(* read the definition for the slots *)
+			ReadRecordDefinition(recTypeDef.slotdef, s);
+
+			(* insert type definition into hashtable with typename as key *)
+			NEW(recTypeKey);
+			recTypeKey.key := recTypeDef.typename;
+			NEW(entry);
+			entry.object := recTypeDef;
+			entry.key := recTypeKey;
+			InsertHashEntry(interp.records, entry);
+
+			(* insert typeno into hashtable used as ID for later transmissions *)
+			NEW(intKey);
+			intKey.key := recTypeDef.typeno;
+			NEW(entry);
+			entry.object := recTypeDef;
+			entry.key := intKey;
+			InsertHashEntry(interp.recordtypenos, entry);
+
+		| raiseevent:
+            (* "Events raise" was called in Tcl *)
+
+			NEW(tclev);
+			tclev.interp := interp;
+			tclev.from := interp;
+
+			(* read name of eventtype *)
+			ReadStringField(charKey.key);
+
+			(* look up the associated oberon Events.EventType *)
+			ASSERT(FindHashEntry(interp.eventtypes, charKey, entry));
+			tclev.type := entry.object(Events.EventType);
+
+			(* read message and record *)
+			ReadStringField(tclev.message);
+			ReadRecord(tclev.record);
+
+			(* run a new task in order to raise the event *)
+			Raise(raisecr, tclev);
+			Tasks.Create(raisetask, raisecr);
+
+		| defineeventtype:
+            (* "Events define" was called in Tcl *)
+
+			(* read name of the eventtype, which was defined with "Events define" *)
+			ReadStringField(eventtypename);
+
+			(* define an oberon Events.EventType with this name *)
+			Events.Define(evtype);
+
+			(* append a discipline to the event and store the type in the hashtable *)
+			DefineEventType(interp, evtype, eventtypename);
+
+		| callprocerror, callprocresult:
+			(* read the requestID *)
+			requestID := interp.requestID;
+			ReadIntField(requestID);
+			IF requestID >= interp.requestID THEN
+				Error(interp, protocolError, NIL);
+				EXIT;
+			END;
+
+			(* get the associated condition *)
+			IF GetCondition(evalcond, requestID) THEN
+
+				IF msgType = callprocerror THEN
+					evalcond.error := TRUE;
+					evalcond.record := NIL;
+					(* read errormessage *)
+					ReadStringFieldAsStream(evalcond.result, TRUE); 
+					Error(interp, callProcError, evalcond.result);
+				ELSE
+					(* read the record that was returned by the proc *)
+					evalcond.error := FALSE;
+					ReadRecord(evalcond.record);
+				END;
+				evalcond.processed := TRUE;
+			ELSE
+				(* ignore message *)
+				ReadStringFieldAsStream(errormsg, TRUE);
+			END;
+
+		| exitC:
+			(* "exit" was called in Tcl *)
+
+			Error(interp, serverExit, NIL);
+			EXIT;
+
+		ELSE
+			(* something is wrong: the type of message is not defined yet *)
+			IF Streams.Seek(errormsg, 0, Streams.fromStart)  &
+			   Streams.Trunc(errormsg, 0) THEN END;
+			Print.S1(errormsg, "unknown msgtype received: '%d'", msgType);
+			Error(interp, protocolError, errormsg);
+		END;
+
+		(* read terminating messageseparator *)
+		ch := " ";
+		Read.CharS(s,ch);
+		IF ch # messageseparator THEN
+			(* the last operation reads too few or too many fields *)
+			Error(interp, protocolError, NIL);
+   
+			(* sync with the begin of the next message *)
+			WHILE ch # messageseparator DO Read.CharS(s,ch); END;
+		END;
+
+		Tasks.Suspend;
+
+	END; (* Loop *)
+
+	BlockingEvents.Unregister(objectTerminationCond);
+	Streams.Release(s);
+	interp.s := NIL;
+	Tasks.Terminate;
+END MessageReceiver;
+
+(* ==== sending data ================================================== *)
+PROCEDURE SendMessage(interp: Interpreter; message: Message) : BOOLEAN;
+    (*
+     * code a message according to the protocol
+     *
+     *)
+	CONST (* msgTypes as defined in the protocol *)
+		evalRequest = 1; defineRequest = 2; raiseRequest = 3; callprocRequest = 4;
+	VAR
+		event: Events.Event;
+		disc: Discipline;
+		msgSend: BOOLEAN;
+BEGIN
+	msgSend := FALSE;
+	CASE message.cmd OF
+	| eval:
+		IF interp.s = NIL THEN RETURN FALSE; END;
+		interp.s.errors := 0;
+		Semaphores.P(interp.streamlock);
+		Tasks.WaitFor(interp.writeCond);
+		Print.S4(interp.s, "%d%c%d%c", evalRequest, fieldseparator, message.requestID, fieldseparator);
+
+		msgSend := (interp.s.errors = 0) &
+		   			Streams.Copy(message.s, interp.s, -1) &
+		   			Streams.WriteByte(interp.s, fieldseparator) &
+			   		Streams.WriteByte(interp.s, messageseparator) &
+		   			Streams.Flush(interp.s);
+		Semaphores.V(interp.streamlock);
+
+	| eventsdefine:
+		(* called by "Define" to make the name for this type known *)
+         
+		IF interp.s = NIL THEN RETURN FALSE; END;
+		interp.s.errors := 0;
+		Semaphores.P(interp.streamlock);
+		Tasks.WaitFor(interp.writeCond);
+		Print.S2(interp.s, "%d%c", defineRequest, fieldseparator);
+		(* definitions of new eventtypes can be buffered *)
+		msgSend := (interp.s.errors = 0 ) &
+				   	Streams.Copy(message.s, interp.s, -1) &
+		   			Streams.WriteByte(interp.s, fieldseparator) &
+			   		Streams.WriteByte(interp.s, messageseparator);
+		Semaphores.V(interp.streamlock);
+
+	| eventsraise:
+        (* 
+         * send an eventsraise message to every interpreter, the
+         * event type was defined.
+         *
+         *)
+
+		event := message.event;
+		IF ~Disciplines.Seek(event.type, discID, disc) THEN END;
+		WHILE disc # NIL DO
+			(* keep care to not sending an incoming event back (event.interp) *)
+			IF (~(event IS Event) OR (disc.interp # event(Event).interp)) &
+				(disc.interp.s # NIL) THEN
+				disc.interp.s.errors := 0;
+				Semaphores.P(disc.interp.streamlock);
+				Tasks.WaitFor(disc.interp.writeCond);
+				Print.S6(disc.interp.s, "%d%c%s%c%s%c",
+					raiseRequest, fieldseparator,
+					disc.tclname, fieldseparator,
+					event.message, fieldseparator);
+				IF event IS Event THEN 
+					WriteRecord(event(Event).record, disc.interp.s);
+				ELSE
+					WriteRecord(NIL, disc.interp.s);
+				END;
+				msgSend := (disc.interp.s.errors = 0) &
+		   					Streams.WriteByte(disc.interp.s, messageseparator) &
+						    Streams.Flush(disc.interp.s);
+				Semaphores.V(disc.interp.streamlock);
+				IF ~msgSend THEN 
+					Error(disc.interp, sendFailed, NIL);
+				END;
+			END;	
+			disc := disc.next;
+		END;
+		msgSend := TRUE;
+
+	| callproc:
+  		(* call the Tcl procedure *)
+
+		IF interp.s = NIL THEN RETURN FALSE; END;
+		interp.s.errors := 0;
+		Semaphores.P(interp.streamlock);
+		Tasks.WaitFor(interp.writeCond);
+		Print.S6(interp.s, "%d%c%d%c%s%c", callprocRequest, fieldseparator,
+					message.requestID, fieldseparator,
+					message.proc, fieldseparator);
+		WriteRecord(message.record, interp.s);
+
+		msgSend := (interp.s.errors = 0) &
+		   			Streams.WriteByte(interp.s, messageseparator) &
+		   			Streams.Flush(interp.s);
+		Semaphores.V(interp.streamlock);
+	END;
+
+	IF ~msgSend THEN 
+		Error(interp, sendFailed, NIL);
+	END;
+	RETURN msgSend;
+END SendMessage;
+
+(* =========== exported procedures ========================================== *)
+PROCEDURE Open(VAR interp: Interpreter; address: IPv4TCPSockets.SocketAddress;
+				display, appName, className: ARRAY OF CHAR;
+				errors: RelatedEvents.Object) : BOOLEAN;
+	CONST 
+		defaultPort = 22090;
+		maxpwdlen = 512;
+		initMsg = 0;
+	VAR 
+		env: ARRAY 512 OF CHAR;				(* environment *)
+		hostname: ARRAY 80 OF CHAR;			(* hostname of port listener *)
+		s: Streams.Stream;
+		cr: Coroutines.Coroutine;
+		task: Tasks.Task;
+		serveradr: IPv4TCPSockets.SocketAddress;	(* address of port listener *)
+		port: INTEGER;						(* port no. of the address *)
+		charset: Sets.CharSet;
+		errorMsg: Streams.Stream;
+		objectterminated: Events.EventType;
+		tcltksFile: Streams.Stream;			(* pwd file *)
+		pwd: ARRAY maxpwdlen OF CHAR;
+		condition: ReplyCondition;			(* condition for the init request *)
+BEGIN
+	interp := NIL;
+
+	Sets.InitSet(charset);
+	Sets.InclChar(charset, ":");
+	hostname := "";
+
+	(* read the file .tcltks in the users home directory *)
+	IF ~UnixEnvironment.String("HOME", env) THEN
+		RETURN FALSE;
+	END;
+
+	Strings.Concatenate(env, "/.tcltks");
+	IF ~UnixFiles.Open(tcltksFile, env,  UnixFiles.read, Streams.linebuf, errors) THEN
+		RETURN FALSE;
+	END;
+
+	(* read the pwd *)
+	Read.LineS(tcltksFile, pwd);
+
+
+	(* check if a address is specified *)
+	IF (address.host # 0) & (address.portnum # 0) THEN
+		serveradr := address;
+	ELSIF UnixEnvironment.String("TCLTKSERVER", env) THEN
+		(* use env. var TCLTKSERVER for address *)
+		Strings.Open(s, env);
+		StreamDisciplines.SetWhiteSpace(s, charset);
+		Read.StringS(s, hostname);
+		Read.IntS(s, port);
+	ELSIF UnixEnvironment.String("DISPLAY", env) THEN 
+		(* use env. var DISPLAY to get hostname *)
+		IF env[0] = ":" THEN 
+			SysHost.GetHostName(hostname); 
+		ELSE
+			Strings.Open(s, env);
+			StreamDisciplines.SetWhiteSpace(s, charset);
+			Read.StringS(s, hostname);
+			IF hostname = "unix" THEN SysHost.GetHostName(hostname); END;
+		END;
+		port := defaultPort;
+	ELSE
+		(* take the local host *)
+		SysHost.GetHostName(hostname);
+		port:= defaultPort;
+	END;
+
+	IF hostname # "" THEN
+		IF ~InetResolver.AddrByHost(hostname, serveradr, errors) THEN RETURN FALSE; END;
+		IPv4Addresses.SetPort(serveradr, port);
+	END;	
+
+	NEW(interp);
+
+	Texts.Open(errorMsg);
+
+	(* contact the port listener *)
+	IF ~IPv4TCPSockets.Open(interp.s, serveradr, Streams.onebuf, errors) THEN
+		Print.S(errorMsg, "Can't contact port listener.\nCheck if listener is running or set the TCLTKSERVER or DISPLAY variable properly");
+		Error(errors, connectionFailed, errorMsg);
+		RETURN FALSE;
+	END;
+
+	RelatedEvents.Forward(interp.s, errors);
+
+	
+	(* send init message to the server *)
+	Print.S4(interp.s, "%d%c%s%c",
+				initMsg, fieldseparator,
+				pwd, fieldseparator );
+	Print.S7(interp.s, "%s%c%s%c%s%c%c", 
+				display, fieldseparator, 
+				appName, fieldseparator, 
+				className, fieldseparator,
+				messageseparator);
+	IF ~Streams.Flush(interp.s) OR (s.errors # 0) THEN RETURN FALSE; END;
+
+
+	(* init interp *)
+	Services.Init(interp, interpreterType);
+	interp.conditionlist := NIL;
+	interp.requestID := 0;
+	interp.eventtypeID := 0;
+
+	(* init components, which are needed for the channel listener *)
+	StreamConditions.Create(interp.readCond, interp.s, StreamConditions.read);
+	BlockingEvents.Define(interp.objectterminated);
+	Resources.TakeInterest(interp, objectterminated);
+	Events.Handler(objectterminated, ObjectTerminationHandler);
+	RelatedEvents.QueueEvents(interp);
+
+	(* install  channel listener *)
+	MessageReceiver(cr, interp);
+	Tasks.Create(task, cr);
+
+	(* wait for the answer of the init request *)
+	CreateReplyCondition(condition, interp, errorMsg);
+	Tasks.WaitFor(condition);
+
+	IF condition.error THEN 
+		(* wrong pwd or not auth. to the display specified *)
+		Error(errors, connectionRefused, errorMsg);
+		RETURN FALSE;
+	ELSE
+		(* init the other components *)
+		StreamConditions.Create(interp.writeCond, interp.s, StreamConditions.write);
+		LocalSemaphores.Create(interp.streamlock);
+
+		(* init hashtables *)
+		NEW(interp.records);
+		interp.records.hash := CStringHash;
+		interp.records.compare := CStringCompare;
+		NEW(interp.eventtypes);
+		interp.eventtypes.hash := CharHash;
+		interp.eventtypes.compare := CharCompare;
+		NEW(interp.recordtypenos);
+		interp.recordtypenos.hash := IntHash;
+		interp.recordtypenos.compare := IntCompare;
+
+		RETURN TRUE;
+	END;
+END Open;
+
+PROCEDURE Close(interp: Interpreter);
+    (* terminate server and MessageReceiver *)
+BEGIN
+	Resources.Notify(interp, Resources.terminated);
+END Close;
+
+
+PROCEDURE EvalStream(interp: Interpreter; script: Streams.Stream;
+						result: Streams.Stream) : BOOLEAN;
+	VAR
+		condition: ReplyCondition;
+		message: Message;
+BEGIN
+ 	ASSERT(result # NIL); 
+	CreateReplyCondition(condition, interp, result);
+	NEW(message);
+	message.cmd := eval;
+	message.requestID := condition.requestID;
+	message.s := script;
+	IF ~SendMessage(interp, message) THEN RETURN FALSE; END;
+
+	(* wait for the result *)
+	Tasks.WaitFor(condition);
+
+	IF condition.processed THEN
+		RETURN ~condition.error;
+	ELSE
+		RETURN FALSE;
+	END;
+END EvalStream;
+
+PROCEDURE Eval(interp: Interpreter; script: ARRAY OF CHAR;
+						result: Streams.Stream) : BOOLEAN;
+	VAR
+		s: Streams.Stream;
+BEGIN
+	Texts.Open(s);
+	Write.StringS(s, script);
+	IF Streams.Seek(s, 0, Streams.fromStart) THEN END;
+	RETURN EvalStream(interp, s, result);
+END Eval;
+
+PROCEDURE CallProc(interp: Interpreter; proc: ARRAY OF CHAR;
+				   arguments: Record; VAR result: Record) : BOOLEAN;
+	VAR
+		error: Texts.Text;
+		condition: ReplyCondition;
+		message: Message;
+BEGIN
+	Texts.Open(error);
+	CreateReplyCondition(condition, interp, error);
+	NEW(message);
+	message.cmd := callproc;
+	message.requestID := condition.requestID;
+	COPY(proc, message.proc);
+	message.record := arguments;
+	IF ~SendMessage(interp, message) THEN RETURN FALSE; END;
+
+	(* wait for the result *)
+	Tasks.WaitFor(condition);
+
+	IF condition.processed THEN
+		result := condition.record;
+		RETURN ~condition.error;
+	ELSE
+		RETURN FALSE;
+	END;
+END CallProc;
+
+
+PROCEDURE HandlerProc(event: Events.Event);
+	(* 
+     * handler for every event type that was defined
+     * by "Events define" or "Define"
+     *
+     *)
+	VAR
+		message: Message;
+BEGIN
+	NEW(message);
+	message.cmd := eventsraise;
+	message.event := event;
+	IF SendMessage(NIL, message) THEN END;
+END HandlerProc;
+
+PROCEDURE DefineEventType(interp: Interpreter; type: Events.EventType; 
+							typename: EventType);
+	(* 
+     * insert type into the hashtable with the typename as key
+     * and add a discipline to the type
+     *
+     *)
+	VAR
+		disc: Discipline;
+		newDisc: Discipline;
+		entry: HashEntry;
+		key: CharKey;
+BEGIN
+	NEW(entry);
+	NEW(key);
+	COPY(typename, key.key);
+	entry.key := key;
+	entry.object := type;
+	InsertHashEntry(interp.eventtypes, entry);
+
+	NEW(newDisc);
+	newDisc.id := discID;
+	newDisc.interp := interp;
+	newDisc.tclname := typename;
+
+	IF Disciplines.Seek(type, discID, disc) THEN
+		newDisc.next := disc;
+	END;
+	Disciplines.Add(type, newDisc);
+	Events.Handler(type, HandlerProc);
+END DefineEventType;
+
+PROCEDURE Define(interp: Interpreter; type: Events.EventType; 
+					VAR tcltypename: EventType);
+	CONST eventtypePrefix = "o";
+	VAR
+		s: Streams.Stream;
+		id: INTEGER;
+		disc: Discipline;
+		defined: BOOLEAN;
+		message: Message;
+BEGIN
+	defined := FALSE;
+	IF Disciplines.Seek(type, discID, disc) THEN
+		WHILE (disc # NIL) & (disc.interp # interp) DO disc := disc.next; END;
+		IF disc # NIL THEN
+			defined := TRUE;
+			tcltypename := disc.tclname;
+		END;
+	END;		
+
+	IF ~defined THEN
+		id := interp.eventtypeID;
+		INC(interp.eventtypeID);
+		Strings.Open(s, tcltypename);
+		Print.S2(s, "%s%d", eventtypePrefix, id);
+		Streams.Release(s);
+
+		NEW(message);
+		message.cmd := eventsdefine;
+		Texts.Open(message.s);
+		Write.StringS(message.s, tcltypename);
+		IF Streams.Seek(message.s, 0, Streams.fromStart) THEN END;
+		IF SendMessage(interp, message) THEN END;
+
+		DefineEventType(interp, type, tcltypename);
+	END;
+END Define;
+
+PROCEDURE GetEventType(interp: Interpreter; tcltypename: EventType;
+						VAR type: Events.EventType);
+	VAR
+		entry: HashEntry;
+		key: CharKey;
+BEGIN
+	NEW(key);
+	COPY(tcltypename, key.key);
+	ASSERT(FindHashEntry(interp.eventtypes, key, entry));
+	type := entry.object(Events.EventType);
+END GetEventType;
+
+PROCEDURE Handler(interp: Interpreter; type: Events.EventType; tclhandler: ARRAY OF CHAR); 
+	VAR
+		disc: Discipline;
+		script, result: Streams.Stream;
+BEGIN
+	ASSERT(Disciplines.Seek(type, discID, disc));
+		(* "type" has to be defined previously by "Define" or "Events define" *)
+	WHILE (disc # NIL) & (disc.interp # interp) DO disc := disc.next; END;
+	ASSERT(disc # NIL);
+		(* "type" has to be defined for the given "interp" *)
+	Texts.Open(script);
+	Print.S2(script, "Events handler %s %s", disc.tclname, tclhandler);
+	IF Streams.Seek(script, 0, Streams.fromStart) THEN END;
+	Texts.Open(result);
+	IF ~EvalStream(interp, script, result) THEN END;
+END Handler;
+
+
+(* ===== procedures for slothandling ========================================== *)
+PROCEDURE CreateRecord(VAR record: Record; interp: Interpreter; 
+                       tcltypename: ARRAY OF CHAR);
+	VAR
+		cstring: ConstStrings.String;
+BEGIN
+	ConstStrings.Create(cstring, tcltypename);
+	CreateRecordVar(record, interp, cstring);
+END CreateRecord;
+		
+PROCEDURE FindSlot(VAR slot: Slot; record: Record; 
+					name: ARRAY OF CHAR; type: SHORTINT);
+	VAR
+		string: Streams.Stream;
+
+	PROCEDURE GetSlot(name: Streams.Stream; firstslot: Slot; VAR slot: Slot) : BOOLEAN;
+		VAR
+			ch: CHAR;
+			string: Streams.Stream;
+			subname: ConstStrings.String;
+			p: Slot;
+	BEGIN
+		ConstStrings.Init(string);
+		WHILE Streams.ReadByte(name, ch) & (ch # ".") DO
+			Write.CharS(string, ch);
+		END;
+		ConstStrings.Close(string, subname);
+		p := firstslot;
+		WHILE (p # NIL) & (ConstStrings.Compare(subname, p.definition.name) # 0) DO
+			p := p.next;
+		END;
+		IF p # NIL THEN
+			IF p.definition.type = subrecord THEN
+				RETURN GetSlot(name, p.subvalues, slot);
+			ELSIF name.eof THEN
+				slot := p; RETURN TRUE;
+			ELSE
+				RETURN FALSE;
+			END;
+		ELSE
+			RETURN FALSE;
+		END;
+	END GetSlot;
+
+BEGIN
+	Texts.Open(string);
+	Write.StringS(string, name);
+	IF Streams.Seek(string, 0, Streams.fromStart) THEN END;
+	ASSERT(GetSlot(string, record.slots, slot));
+
+	IF type # listNIL THEN
+		ASSERT(slot.definition.type = type);
+	ELSE
+		ASSERT((slot.definition.type = listString) OR
+				(slot.definition.type = listInteger) OR
+				(slot.definition.type = listReal) OR
+				(slot.definition.type = listBoolean));
+	END;
+	IF ~Streams.Seek(slot.value, 0, Streams.fromStart) THEN END;
+END FindSlot;
+
+(* ==== reading slots ============================================ *)
+PROCEDURE GetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+							VAR value: ARRAY OF CHAR);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, string);
+	Strings.Read(value, slot.value);
+END GetStringSlot;
+
+PROCEDURE GetStringSlotAsStream(record: Record; slotname: ARRAY OF CHAR;
+								VAR value: Streams.Stream);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, string);
+	IF ~Streams.Copy(slot.value, value, -1) THEN END;
+END GetStringSlotAsStream;
+
+PROCEDURE GetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+								VAR value: INTEGER);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, integer);
+	Read.IntS(slot.value, value);
+END GetIntSlot;
+
+PROCEDURE GetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+								VAR value: REAL);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, real);
+	Read.RealS(slot.value, value);
+END GetRealSlot;
+
+PROCEDURE GetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+								VAR value: BOOLEAN);
+	VAR
+		slot: Slot;
+		int: INTEGER;
+BEGIN
+	FindSlot(slot, record, slotname, boolean);
+	Read.IntS(slot.value, int);
+	value := (int # 0);
+END GetBooleanSlot;
+
+PROCEDURE GetListSlot(record: Record; slotname: ARRAY OF CHAR;
+								VAR value: List);
+	VAR
+		slot: Slot;
+		listtype: SHORTINT;
+BEGIN
+	FindSlot(slot, record, slotname, listNIL);
+	value := slot.listvalue.first;
+END GetListSlot;
+
+(* ==== writing slots ============================================ *)
+PROCEDURE SetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+							value: ARRAY OF CHAR);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, string);
+	IF Streams.Trunc(slot.value, 0) THEN END;
+	Write.StringS(slot.value, value);
+END SetStringSlot;
+
+PROCEDURE SetStringSlotFromStream(record: Record; slotname: ARRAY OF CHAR;
+									value: Streams.Stream);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, string);
+	IF Streams.Trunc(slot.value, 0) THEN END;
+	IF ~Streams.Copy(value, slot.value, -1) THEN END;
+END SetStringSlotFromStream;
+
+PROCEDURE SetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+							value: INTEGER);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, integer);
+	IF Streams.Trunc(slot.value, 0) THEN END;
+	Write.IntS(slot.value, value, 1);
+END SetIntSlot;
+
+PROCEDURE SetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+							value: REAL);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, real);
+	IF Streams.Trunc(slot.value, 0) THEN END;
+	Write.RealS(slot.value, value, 1);
+END SetRealSlot;
+
+PROCEDURE SetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+							value: BOOLEAN);
+	VAR
+		slot: Slot;
+BEGIN
+	FindSlot(slot, record, slotname, boolean);
+	IF Streams.Trunc(slot.value, 0) THEN END;
+	Print.S1(slot.value, "%y", value);
+END SetBooleanSlot;
+
+PROCEDURE SetListSlot(record: Record; slotname: ARRAY OF CHAR;
+							value: List);
+	VAR
+		slot: Slot;
+		listtype: SHORTINT;
+BEGIN
+	IF value # NIL THEN
+		IF value IS StringList THEN listtype := listString;
+		ELSIF value IS IntList THEN listtype := listInteger;
+		ELSIF value IS RealList THEN listtype := listReal; 
+		ELSIF value IS BoolList THEN listtype := listBoolean;
+		END;
+	ELSE
+		listtype := listNIL;
+	END;
+	FindSlot(slot, record, slotname, listtype);
+	slot.listvalue := value;
+END SetListSlot;
+
+
+PROCEDURE CreateEventConditions(interp: Interpreter; record: Record; 
+				slotnames: ARRAY OF ARRAY OF CHAR;
+				VAR conditions: ARRAY OF Conditions.Condition;
+				conditionset: Conditions.ConditionSet );
+	VAR
+		i: INTEGER;
+		len: LONGINT;
+		tkeventtype: EventType;
+		eventtype: Events.EventType;
+BEGIN
+	len := LEN(slotnames);
+	ASSERT(len <= LEN(conditions));
+	ASSERT(conditionset # NIL);
+
+	i := 0;
+	WHILE i < len DO
+		GetStringSlot(record, slotnames[i], tkeventtype);
+		GetEventType(interp, tkeventtype, eventtype);
+		EventConditions.Create(conditions[i], eventtype);
+		Conditions.Incl(conditionset, conditions[i]);
+		INC(i);
+	END;
+END CreateEventConditions;
+
+PROCEDURE DropEventConditions(conditions: ARRAY OF Conditions.Condition);
+	VAR
+		i: INTEGER;
+BEGIN
+	i := 0;
+	WHILE i < LEN(conditions) DO
+		EventConditions.Drop(conditions[i]);
+		INC(i);
+	END;
+END DropEventConditions;
+
+
+(* =========== initializing procedures ================================== *)
+PROCEDURE Init;
+	VAR
+		if: Conditions.Interface;
+		desc: Conditions.Description;
+BEGIN
+	(* setup conditions *)
+	NEW(if); 
+	if.test := TestReplyCondition;
+	if.preconditions := PreConditions;
+	NEW(desc); desc.internal := TRUE; desc.caps := {};
+	NEW(evalDomain);
+	Conditions.InitDomain(evalDomain, if, desc);
+
+	Services.CreateType(interpreterType, "TclTk.Interpreter", "");
+
+	EventConditions.Create(processTerminationCond, Process.termination);
+
+	discID := Disciplines.Unique();
+END Init;
+
+BEGIN
+	Init;
+	InitErrorHandling;
+END TclTk.

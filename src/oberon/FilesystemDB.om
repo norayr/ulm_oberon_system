@@ -1,0 +1,364 @@
+(* Ulm's Oberon Compiler
+   Filesystem-based CompilerDatabases implementation.
+   No pons/cdbd dependency.
+
+   Filename convention for compiled .obj files:
+     ModName-def-gen.obj   -- public interface, arch-independent (arch=NIL)
+     ModName-mod-I386.obj  -- private module body, arch-specific (arch=I386)
+     ModName-def-I386.obj  -- public interface, arch-specific (rare)
+     ModName-mod-gen.obj   -- private, arch-independent (rare)
+
+   The "def"/"mod" suffix mirrors the OberonLoader -O %m-%t-%a.obj pattern.
+   The "gen" suffix is used when arch=NIL (architecture-independent).
+   ----------------------------------------------------------------------------
+*)
+
+MODULE FilesystemDB;
+
+   IMPORT Args, Architectures, CompilerDatabases, CompilerKeys,
+      CompilerObjects, ConstStrings, Iterators, OberonBuiltIns,
+      PersistentObjects, PersistentTexts, RelatedEvents, Services,
+      Sources := CompilerSources, Streams, StrListArgs, Strings,
+      UnixFiles, UnixOberonSources;
+
+   TYPE
+      DirList = POINTER TO DirListRec;
+      DirListRec =
+         RECORD
+            dir: ARRAY 1024 OF CHAR;
+            next: DirList;
+         END;
+
+      Database = POINTER TO DatabaseRec;
+      DatabaseRec =
+         RECORD
+            (CompilerDatabases.DatabaseRec)
+            outdir: ARRAY 1024 OF CHAR;
+            srcdirs, srclast: DirList;
+            objdirs, objlast: DirList;
+         END;
+
+   VAR
+      dbType: Services.Type;
+      if: CompilerDatabases.Interface;
+      srcArgs: Args.Arguments;   (* shared, lazily initialized on first LookupSrc *)
+      srcArgsReady: BOOLEAN;
+
+   (* ===================================================================== *)
+   (* Filename construction                                                  *)
+   (* ===================================================================== *)
+
+   PROCEDURE MakeFilename(VAR filename: ARRAY OF CHAR;
+                          dir: ARRAY OF CHAR;
+                          modname: ConstStrings.String;
+                          type: CompilerObjects.ObjectType;
+                          arch: Architectures.Architecture);
+      VAR
+         modbuf: ARRAY 256 OF CHAR;
+         archbuf: ARRAY 128 OF CHAR;
+         archstr: ConstStrings.String;
+   BEGIN
+      ConstStrings.Extract(modbuf, modname);
+      COPY(dir, filename);
+      IF dir[0] # 0X THEN
+         Strings.Concatenate(filename, "/");
+      END;
+      Strings.Concatenate(filename, modbuf);
+      Strings.Concatenate(filename, "-");
+      CASE type OF
+      | CompilerObjects.public:  Strings.Concatenate(filename, "def");
+      | CompilerObjects.private: Strings.Concatenate(filename, "mod");
+      END;
+      Strings.Concatenate(filename, "-");
+      IF arch = NIL THEN
+         Strings.Concatenate(filename, "gen");
+      ELSE
+         Architectures.GetString(arch, archstr);
+         ConstStrings.Extract(archbuf, archstr);
+         Strings.Concatenate(filename, archbuf);
+      END;
+      Strings.Concatenate(filename, ".obj");
+   END MakeFilename;
+
+   (* ===================================================================== *)
+   (* Reading .obj files                                                     *)
+   (* ===================================================================== *)
+
+   PROCEDURE TryReadFile(filename: ARRAY OF CHAR;
+                         VAR header: CompilerObjects.Header;
+                         VAR text: PersistentTexts.Text;
+                         readText: BOOLEAN) : BOOLEAN;
+      (* Try to open filename and read a Header (and optionally Text) from it.
+         Errors are silently swallowed so callers can probe multiple paths.
+         Returns TRUE only if the file exists and contains a valid Header.
+      *)
+      VAR
+         s: Streams.Stream;
+         obj: PersistentObjects.Object;
+         dummy: RelatedEvents.Object;
+   BEGIN
+      NEW(dummy); RelatedEvents.QueueEvents(dummy);
+      IF ~UnixFiles.Open(s, filename, UnixFiles.read, Streams.onebuf, dummy) THEN
+         RETURN FALSE
+      END;
+      RelatedEvents.Forward(s, dummy);
+      IF ~PersistentObjects.Read(s, obj) OR ~(obj IS CompilerObjects.Header) THEN
+         Streams.Release(s);
+         RETURN FALSE
+      END;
+      header := obj(CompilerObjects.Header);
+      text := NIL;
+      IF readText THEN
+         IF ~PersistentObjects.Read(s, obj) OR ~(obj IS PersistentTexts.Text) THEN
+            Streams.Release(s);
+            RETURN FALSE
+         END;
+         text := obj(PersistentTexts.Text);
+      END;
+      Streams.Release(s);
+      RETURN TRUE
+   END TryReadFile;
+
+   PROCEDURE SearchDirs(modname: ConstStrings.String;
+                        type: CompilerObjects.ObjectType;
+                        arch: Architectures.Architecture;
+                        dirs: DirList;
+                        VAR header: CompilerObjects.Header;
+                        VAR text: PersistentTexts.Text;
+                        readText: BOOLEAN) : BOOLEAN;
+      VAR
+         d: DirList;
+         filename: ARRAY 1300 OF CHAR;
+   BEGIN
+      d := dirs;
+      WHILE d # NIL DO
+         MakeFilename(filename, d.dir, modname, type, arch);
+         IF TryReadFile(filename, header, text, readText) THEN
+            RETURN TRUE
+         END;
+         d := d.next;
+      END;
+      RETURN FALSE
+   END SearchDirs;
+
+   (* ===================================================================== *)
+   (* CompilerDatabases interface procedures                                 *)
+   (* ===================================================================== *)
+
+   PROCEDURE Lookup(dbase: CompilerDatabases.Database;
+                    modname: ConstStrings.String;
+                    type: CompilerObjects.ObjectType;
+                    arch: Architectures.Architecture;
+                    keys: CompilerKeys.Set;
+                    VAR header: CompilerObjects.Header;
+                    VAR text: PersistentTexts.Text;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      WITH dbase: Database DO
+         RETURN SearchDirs(modname, type, arch, dbase.objdirs,
+                           header, text, TRUE)
+      END;
+   END Lookup;
+
+   PROCEDURE LookupHeader(dbase: CompilerDatabases.Database;
+                          modname: ConstStrings.String;
+                          type: CompilerObjects.ObjectType;
+                          arch: Architectures.Architecture;
+                          keys: CompilerKeys.Set;
+                          VAR header: CompilerObjects.Header;
+                          errors: RelatedEvents.Object) : BOOLEAN;
+      VAR text: PersistentTexts.Text;
+   BEGIN
+      WITH dbase: Database DO
+         RETURN SearchDirs(modname, type, arch, dbase.objdirs,
+                           header, text, FALSE)
+      END;
+   END LookupHeader;
+
+   PROCEDURE Store(dbase: CompilerDatabases.Database;
+                   header: CompilerObjects.Header;
+                   text: PersistentTexts.Text;
+                   errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+         filename: ARRAY 1300 OF CHAR;
+         s: Streams.Stream;
+   BEGIN
+      WITH dbase: Database DO
+         MakeFilename(filename, dbase.outdir,
+                      header.modname, header.type, header.arch);
+         IF ~UnixFiles.Open(s, filename,
+                            UnixFiles.write + UnixFiles.create,
+                            Streams.onebuf, errors) THEN
+            RETURN FALSE
+         END;
+         RelatedEvents.Forward(s, errors);
+         IF ~PersistentObjects.Write(s, header) OR
+               ~PersistentObjects.Write(s, text) THEN
+            Streams.Release(s);
+            RETURN FALSE
+         END;
+         Streams.Release(s);
+         RETURN TRUE
+      END;
+   END Store;
+
+   PROCEDURE SysSetItProc(it: Iterators.Iterator;
+                           ref: Iterators.Reference;
+                           mode: Iterators.Mode);
+      (* Yields the standard SYSTEM built-in set names used for Ulm Oberon.
+         "sys"    = OberonSysBuiltIns  (ADR, BIT, GET, PUT, MOVE, SYSNEW ...)
+         "ulmsys" = OberonUlmBuiltIns  (ADDRESS, UNTRACEDADDRESS, INT16 ...)
+         "unixsys"= UnixOberonBuiltIns (UNIXCALL, UNIXFORK, UNIXSIGNAL ...)
+      *)
+      VAR cs: ConstStrings.String;
+   BEGIN
+      ConstStrings.Create(cs, "sys");     Iterators.Yield(it, cs);
+      ConstStrings.Create(cs, "ulmsys");  Iterators.Yield(it, cs);
+      ConstStrings.Create(cs, "unixsys"); Iterators.Yield(it, cs);
+   END SysSetItProc;
+
+   PROCEDURE GetSrcArgs() : Args.Arguments;
+      (* Lazily initialize srcArgs, deferred until first call so that all
+         built-in sets (OberonUlmBuiltIns etc.) are registered by then.
+      *)
+      VAR it: Iterators.Iterator;
+          sysval: Args.Value;
+   BEGIN
+      IF ~srcArgsReady THEN
+         Args.Create(srcArgs);
+         RelatedEvents.QueueEvents(srcArgs);
+         OberonBuiltIns.DefArgs(srcArgs);
+         (* Set "sys" to include standard + Ulm + Unix SYSTEM built-in sets
+            so that SYS.ADDRESS, SYS.UNTRACEDADDRESS, SYS.INT16 etc.
+            are available when compiling library modules from source.
+         *)
+         Iterators.CreateQuickIterator(it, SysSetItProc, NIL, 0);
+         StrListArgs.Create(sysval, it);
+         Args.SetValue(srcArgs, "sys", sysval);
+         srcArgsReady := TRUE;
+      END;
+      RETURN srcArgs
+   END GetSrcArgs;
+
+   PROCEDURE LookupSrc(dbase: CompilerDatabases.Database;
+                       modname: ConstStrings.String;
+                       kind: Sources.SourceKind;
+                       VAR src: Sources.Source;
+                       errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+         d: DirList;
+         modbuf: ARRAY 256 OF CHAR;
+         filename: ARRAY 1300 OF CHAR;
+         suffix: ARRAY 8 OF CHAR;
+         dummy: RelatedEvents.Object;
+         source: Sources.Source;
+   BEGIN
+      WITH dbase: Database DO
+         ConstStrings.Extract(modbuf, modname);
+         CASE kind OF
+         | Sources.definition: COPY("od",  suffix);
+         | Sources.module:     COPY("om",  suffix);
+         | Sources.defmod:     COPY("mod", suffix);
+         END;
+         d := dbase.srcdirs;
+         WHILE d # NIL DO
+            COPY(d.dir, filename);
+            IF d.dir[0] # 0X THEN
+               Strings.Concatenate(filename, "/");
+            END;
+            Strings.Concatenate(filename, modbuf);
+            Strings.Concatenate(filename, ".");
+            Strings.Concatenate(filename, suffix);
+            NEW(dummy); RelatedEvents.QueueEvents(dummy);
+            IF UnixOberonSources.Create(source, filename, GetSrcArgs(), dummy) THEN
+               src := source;
+               RETURN TRUE
+            END;
+            d := d.next;
+         END;
+         RETURN FALSE
+      END;
+   END LookupSrc;
+
+   PROCEDURE StoreSrc(dbase: CompilerDatabases.Database;
+                      src: Sources.Source;
+                      errors: RelatedEvents.Object) : BOOLEAN;
+   BEGIN
+      RETURN TRUE   (* no-op: we don't modify source files *)
+   END StoreSrc;
+
+   (* ===================================================================== *)
+   (* Module initialization                                                  *)
+   (* ===================================================================== *)
+
+   PROCEDURE Init;
+   BEGIN
+      Services.CreateType(dbType, "FilesystemDB.Database",
+                          "CompilerDatabases.Database");
+      NEW(if);
+      if.lookup       := Lookup;
+      if.lookupHeader := LookupHeader;
+      if.store        := Store;
+      if.lookupSrc    := LookupSrc;
+      if.storeSrc     := StoreSrc;
+      (* srcArgs is initialized lazily in GetSrcArgs(), so that all
+         built-in sets are registered before DefArgs is called.
+      *)
+      srcArgsReady := FALSE;
+   END Init;
+
+   (* ===================================================================== *)
+   (* Internal helper                                                        *)
+   (* ===================================================================== *)
+
+   PROCEDURE AppendDir(VAR head, tail: DirList; dir: ARRAY OF CHAR);
+      VAR d: DirList;
+   BEGIN
+      NEW(d);
+      COPY(dir, d.dir);
+      d.next := NIL;
+      IF tail = NIL THEN
+         head := d;
+      ELSE
+         tail.next := d;
+      END;
+      tail := d;
+   END AppendDir;
+
+   (* ===================================================================== *)
+   (* Exported constructors                                                  *)
+   (* ===================================================================== *)
+
+   PROCEDURE Open(VAR db: CompilerDatabases.Database;
+                  outdir: ARRAY OF CHAR);
+      VAR newdb: Database;
+   BEGIN
+      NEW(newdb); Services.Init(newdb, dbType);
+      CompilerDatabases.Init(newdb, if);
+      COPY(outdir, newdb.outdir);
+      newdb.srcdirs := NIL; newdb.srclast := NIL;
+      newdb.objdirs := NIL; newdb.objlast := NIL;
+      (* outdir is always the first object search path *)
+      AppendDir(newdb.objdirs, newdb.objlast, outdir);
+      db := newdb;
+   END Open;
+
+   PROCEDURE AddSrcDir(db: CompilerDatabases.Database;
+                       dir: ARRAY OF CHAR);
+   BEGIN
+      WITH db: Database DO
+         AppendDir(db.srcdirs, db.srclast, dir);
+      END;
+   END AddSrcDir;
+
+   PROCEDURE AddObjDir(db: CompilerDatabases.Database;
+                       dir: ARRAY OF CHAR);
+   BEGIN
+      WITH db: Database DO
+         AppendDir(db.objdirs, db.objlast, dir);
+      END;
+   END AddObjDir;
+
+BEGIN
+   Init;
+END FilesystemDB.

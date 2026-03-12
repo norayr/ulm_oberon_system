@@ -1,0 +1,228 @@
+(* Ulmo Oberon Compiler
+   we now build Oberon source files without pons/cdbd, yay! (:
+
+   Usage: ulmoc [-I srcdir]... sourcefile [sourcefile...]
+
+   For each .od file: compiles the public interface (arch-independent).
+   For each .om/.mod file: compiles the module body (I386, arch-dependent).
+   In both cases ObjectLoader also recursively compiles all dependencies
+   from source, caching results as .obj files in the current directory.
+
+   The shell wrapper "ulmo" additionally runs obtofgen+tof2elf to produce
+   an ELF .o file from the private .obj.
+
+   Filename convention (matches OberonLoader -O %m-%t-%a.obj):
+     Net-def-gen.obj   public interface, arch-independent
+     Net-mod-I386.obj  private module body, I386
+*)
+
+MODULE Ulmo;
+
+   IMPORT CL := UnixArguments, Architectures, CompilerDatabases,
+      CompilerKeys, CompilerObjects, Compilers, ConstStrings,
+      FilesystemDB, I386OberonBuiltIns, Listers, ModularizedStructures,
+      OberonBuiltIns, OberonCompiler, OberonI386, OberonParser,
+      OberonSPARCv8, OberonSymbols, OberonUlmProcedures,
+      ObjectLoader, PersistentTexts, Process, RelatedEvents,
+      Storage, Streams, Write;
+
+   VAR
+      errors: RelatedEvents.Object;
+      db: CompilerDatabases.Database;
+      context: Compilers.Context;
+      arch: Architectures.Architecture;
+      archcs: ConstStrings.String;
+      ok: BOOLEAN;
+      intensity: INTEGER;
+      flag: CHAR;
+      srcdir: ARRAY 1024 OF CHAR;
+      sourcefile: ARRAY 1024 OF CHAR;
+
+   (* ===================================================================== *)
+   (* Path helpers                                                           *)
+   (* ===================================================================== *)
+
+   PROCEDURE ExtractDirPart(path: ARRAY OF CHAR; VAR dir: ARRAY OF CHAR);
+      (* Return the directory portion of path (everything before the last '/').
+         If path contains no '/', dir is set to the empty string.
+      *)
+      VAR i, lastSlash: INTEGER;
+   BEGIN
+      lastSlash := -1;
+      i := 0;
+      WHILE (i < LEN(path)) & (path[i] # 0X) DO
+         IF path[i] = "/" THEN lastSlash := i; END;
+         INC(i);
+      END;
+      IF lastSlash < 0 THEN
+         dir[0] := 0X;
+      ELSE
+         i := 0;
+         WHILE i < lastSlash DO
+            dir[i] := path[i]; INC(i);
+         END;
+         dir[i] := 0X;
+      END;
+   END ExtractDirPart;
+
+   PROCEDURE ExtractBaseName(path: ARRAY OF CHAR; VAR base: ARRAY OF CHAR);
+      (* Return the module name: strip the leading directory and the last
+         file-extension suffix.  "../src/net/Net.om" -> "Net".
+      *)
+      VAR i, start, dotpos: INTEGER;
+   BEGIN
+      (* find start: position after the last '/' *)
+      start := 0; i := 0;
+      WHILE (i < LEN(path)) & (path[i] # 0X) DO
+         IF path[i] = "/" THEN start := i + 1; END;
+         INC(i);
+      END;
+      (* find the last '.' in the filename portion *)
+      dotpos := i;   (* default: no dot = end of string *)
+      i := start;
+      WHILE (i < LEN(path)) & (path[i] # 0X) DO
+         IF path[i] = "." THEN dotpos := i; END;
+         INC(i);
+      END;
+      (* copy path[start..dotpos-1] *)
+      i := 0;
+      WHILE (start + i < dotpos) & (i + 1 < LEN(base)) DO
+         base[i] := path[start + i]; INC(i);
+      END;
+      base[i] := 0X;
+   END ExtractBaseName;
+
+   PROCEDURE GetSuffix(path: ARRAY OF CHAR; VAR suffix: ARRAY OF CHAR);
+      (* Return the last extension (the part after the last '.').
+         "Net.om" -> "om".  Returns empty string if no dot found.
+      *)
+      VAR i, dotpos: INTEGER;
+   BEGIN
+      dotpos := -1; i := 0;
+      WHILE (i < LEN(path)) & (path[i] # 0X) DO
+         IF path[i] = "." THEN dotpos := i; END;
+         INC(i);
+      END;
+      IF dotpos < 0 THEN
+         suffix[0] := 0X;
+      ELSE
+         INC(dotpos); i := 0;
+         WHILE (dotpos < LEN(path)) & (path[dotpos] # 0X) &
+               (i + 1 < LEN(suffix)) DO
+            suffix[i] := path[dotpos]; INC(i); INC(dotpos);
+         END;
+         suffix[i] := 0X;
+      END;
+   END GetSuffix;
+
+   (* ===================================================================== *)
+   (* Compile one source file                                               *)
+   (* ===================================================================== *)
+
+   PROCEDURE CompileFile(sourcefile: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+         dirpart: ARRAY 1024 OF CHAR;
+         modname: ARRAY 256 OF CHAR;
+         suffix: ARRAY 16 OF CHAR;
+         modcs: ConstStrings.String;
+         type: CompilerObjects.ObjectType;
+         fileArch: Architectures.Architecture;
+         header: CompilerObjects.Header;
+         text: PersistentTexts.Text;
+   BEGIN
+      (* Add the source file's directory to the source search path *)
+      ExtractDirPart(sourcefile, dirpart);
+      FilesystemDB.AddSrcDir(db, dirpart);
+
+      (* Determine module name and compilation mode from the file suffix *)
+      ExtractBaseName(sourcefile, modname);
+      GetSuffix(sourcefile, suffix);
+
+      IF suffix = "od" THEN
+         (* Definition module: compile only the public (arch-independent) interface *)
+         type := CompilerObjects.public;
+         fileArch := NIL;
+      ELSIF (suffix = "om") OR (suffix = "mod") THEN
+         (* Implementation module: compile the private, arch-dependent body.
+            ObjectLoader will automatically compile the public part first
+            (Pass1, arch=NIL) if it is not already cached.
+         *)
+         type := CompilerObjects.private;
+         fileArch := arch;
+      ELSE
+         Write.StringS(Streams.stderr, "ulmo: unknown suffix: ");
+         Write.LineS(Streams.stderr, suffix);
+         RETURN FALSE
+      END;
+
+      ConstStrings.Create(modcs, modname);
+      IF ~ObjectLoader.LoadText(OberonCompiler.compiler, context,
+                                modcs, type, fileArch,
+                                header, text, errors) THEN
+         Listers.GenListing(Streams.stderr, errors);
+         RETURN FALSE
+      END;
+      RETURN TRUE
+   END CompileFile;
+
+BEGIN
+   NEW(errors); RelatedEvents.QueueEvents(errors);
+
+   (* Obtain the I386 architecture object.  OberonI386 registers it in its
+      module initialisation body, so it is available via Architectures.GetArch.
+   *)
+   ConstStrings.Create(archcs, "I386");
+   Architectures.GetArch(archcs, arch);
+   IF arch = NIL THEN
+      Write.LineS(Streams.stderr, "ulmo: I386 architecture not available");
+      Process.Exit(Process.indicateFailure);
+   END;
+
+   (* Create the filesystem database.  The current directory (".") is used
+      both as the output directory for compiled .obj files and as the first
+      search path when looking up previously compiled objects.
+   *)
+   FilesystemDB.Open(db, ".");
+   RelatedEvents.Forward(db, errors);
+
+   (* Set up the compiler context *)
+   NEW(context);
+   CompilerKeys.CreateSet(context.keys);
+   ModularizedStructures.CreateTable(context.tab);
+   CompilerObjects.CreateModuleTable(context.mtab);
+   context.db := db;
+   context.log := NIL;
+   (* Cache public objects and arch-dependent private objects; this mirrors
+      the cachemode used by OberonLoader.
+   *)
+   context.cachemode := CompilerObjects.cachePublic +
+      {CompilerObjects.private * CompilerObjects.archDependent};
+
+   intensity := Storage.Intensity(4);
+
+   (* Parse command-line arguments.
+      -I srcdir   Add srcdir to the source file search path.
+      sourcefile  An Oberon source file to compile (.od or .om or .mod).
+   *)
+   CL.Init("[-I srcdir]... sourcefile [sourcefile...]");
+   WHILE CL.GetFlag(flag) DO
+      CASE flag OF
+      | "I":
+            CL.FetchString(srcdir);
+            FilesystemDB.AddSrcDir(db, srcdir);
+      ELSE
+         CL.Usage;
+      END;
+   END;
+
+   ok := TRUE;
+   WHILE ok & CL.GetArg(sourcefile) DO
+      ok := CompileFile(sourcefile);
+   END;
+
+   IF ok THEN
+      Process.Exit(Process.indicateSuccess);
+   ELSE
+      Process.Exit(Process.indicateFailure);
+   END;
+END Ulmo.

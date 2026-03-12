@@ -1,0 +1,123 @@
+MODULE WebCounters;
+
+   IMPORT
+      LocalSemaphores, RelatedEvents, Semaphores, Services, Streams, Strings,
+      WebObjects, Write;
+      
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+         RECORD
+            (WebObjects.ObjectRec)
+            (* private *)
+            counter: LONGINT;
+            increment: LONGINT;
+            mutex: Semaphores.Semaphore;
+         END;
+   
+      Handle = POINTER TO HandleRec;
+      HandleRec =
+         RECORD
+            (WebObjects.HandleRec)
+            (* private *)
+            myCounterValue: ARRAY 15 OF CHAR;
+         END;
+         
+   CONST
+      caps = {WebObjects.createHandleCap, WebObjects.getMediaTypeCap,
+         WebObjects.getLengthCap, WebObjects.getCacheMechanismCap,
+         WebObjects.writeBodyCap};
+      
+   VAR
+      (* private *)
+      if: WebObjects.Interface;
+      serviceType: Services.Type;
+      
+   PROCEDURE CreateHandle(VAR handle: WebObjects.Handle;
+                          object: WebObjects.Object;
+                          search, body: Streams.Stream;
+                          errors: RelatedEvents.Object): BOOLEAN;
+      
+      VAR
+         counterHandle: Handle;
+         s: Streams.Stream;
+         
+   BEGIN
+      NEW(counterHandle);
+      counterHandle.myCounterValue[0] := 0X;
+      Strings.Open(s, counterHandle.myCounterValue);
+      WITH object: Object DO
+         Semaphores.P(object.mutex);
+         INC(object.counter, object.increment);
+         Write.IntS(s, object.counter, 1);
+         Semaphores.V(object.mutex);
+      END;
+      Streams.Release(s);
+      
+      handle := counterHandle;
+      RETURN TRUE;
+   END CreateHandle;
+
+   PROCEDURE GetMediaType(handle: WebObjects.Handle; 
+                          VAR type, subtype, param: ARRAY OF CHAR);
+   
+   BEGIN
+      COPY("text", type);
+      COPY("plain", subtype);
+      param[0] := 0X;
+   END GetMediaType;
+   
+   
+   PROCEDURE GetLength(handle: WebObjects.Handle; VAR length: LONGINT);
+   
+   BEGIN
+      length := Strings.Len(handle(Handle).myCounterValue);
+   END GetLength;
+   
+   
+   PROCEDURE GetCacheMechanism(handle: WebObjects.Handle;
+                               VAR mechanism: SET);
+   
+   BEGIN
+      mechanism := {WebObjects.noCache};
+   END GetCacheMechanism;
+   
+   
+   PROCEDURE WriteBody(handle: WebObjects.Handle; body: Streams.Stream);
+   
+   BEGIN
+      RelatedEvents.Save(body);
+      RelatedEvents.Forward(body, handle);
+      RelatedEvents.QueueEvents(body);
+      Write.StringS(body, handle(Handle).myCounterValue);
+      handle.error := RelatedEvents.EventsPending(body);
+      RelatedEvents.Restore(body);
+   END WriteBody;
+   
+   PROCEDURE Create(VAR object: WebObjects.Object; start, increment: LONGINT);
+      
+      VAR
+         obj: Object;
+         
+   BEGIN
+      NEW(obj);
+      Services.Init(obj, serviceType);
+      WebObjects.Init(obj, if, caps);
+      obj.counter := start;
+      obj.increment := increment;
+      LocalSemaphores.Create(obj.mutex);
+      object := obj;
+   END Create;
+   
+   
+BEGIN
+   NEW(if);
+   if.createHandle := CreateHandle;
+   if.getMediaType := GetMediaType;
+   if.getLength := GetLength;
+   if.getCacheMechanism := GetCacheMechanism;
+   if.writeBody := WriteBody;
+   
+   Services.CreateType(serviceType, "WebCounters.Object",
+                       "WebObjects.Object");
+END WebCounters.

@@ -1,0 +1,74 @@
+DEFINITION Relocations;
+
+(* Support for Relocations and declaration of internal symbols.
+ * Relocations: Once we discover that a reloction record
+ * is needed for an Operand we create a RelocRequest for this Operand.
+ * The creator should fill in the symbol Reference (ref and type).
+ * OpcodeGen will add off and len. label should mark the first byte
+ * of the instruction.
+ * Symbols: Just call NewSymbol. Relocations.Process will deal with the
+ * declaration later on.
+ * All Requests are collected by an owner Object. The FragmentedStreams.Stream
+ * or the code Block can be used for this. Once all labels are fixed these
+ * requests are translated into real relocation entries.
+ *)
+
+   IMPORT Conclusions, Disciplines, FragmentedStreams, Streams, ConstStrings;
+
+   TYPE
+      RelocType = INTEGER;
+
+   CONST
+      noReloc = 0;   (* No Relocation needed *)
+      addSym  = 1;   (* Add the symbol value to the target *)
+      setSym  = 2;   (* Set the target to the symbol value *)
+      (* more types will be added *)
+
+   TYPE
+      Instance = POINTER TO InstanceRec;
+      InstanceRec = RECORD
+	 next : Instance;
+	 label : FragmentedStreams.Label;
+	 off, len : LONGINT;
+      END;
+
+      SymRef = POINTER TO  SymRefRec;
+      SymRefRec = RECORD
+         (Disciplines.ObjectRec)
+         modname : ConstStrings.String;
+         symname : ConstStrings.String;
+      END;
+
+      Request = POINTER TO RequestRec;
+      RequestRec = RECORD
+	 (Disciplines.ObjectRec)
+	 next : Request;
+      END;
+
+      RelocRequest = POINTER TO RelocRequestRec;
+      RelocRequestRec = RECORD
+	 (RequestRec)
+	 instances : Instance;
+	 type : RelocType;
+	 ref  : SymRef;
+      END;
+
+      SymRequest = POINTER TO SymRequestRec;
+      SymRequestRec = RECORD
+	 (RequestRec)
+	 name  : ConstStrings.String;
+	 label : FragmentedStreams.Label;
+      END;
+
+   (* Create a Request and add it to the Request list of owner. *)
+   PROCEDURE Create (VAR ret : Request; owner : Disciplines.Object;
+		     type : RelocType; ref : SymRef);
+
+   PROCEDURE NewSymbol (owner : Disciplines.Object;
+		        name : ConstStrings.String;
+			lab : FragmentedStreams.Label);
+
+   PROCEDURE GetRequests (obj : Disciplines.Object) : Request;
+
+
+END Relocations.

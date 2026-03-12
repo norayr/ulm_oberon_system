@@ -1,0 +1,483 @@
+MODULE HTTPResponse;
+
+   (* Supports servers-responses to the client. *)
+   
+   IMPORT
+      ASCII, Clocks, Convert:=HTTPConversions, Streams, Times, WebObjects, Write;
+
+   TYPE
+      Phrase = ARRAY 40 OF CHAR;
+      
+   VAR (* private *)
+      informPhrases: ARRAY 2 OF Phrase;
+      successPhrases: ARRAY 7 OF Phrase;
+      redirectPhrases: ARRAY 6 OF Phrase;
+      clientPhrases: ARRAY 16 OF Phrase;
+      serverPhrases: ARRAY 6 OF Phrase;
+      cacheMechanisms: ARRAY WebObjects.cacheMechanisms OF ARRAY 20 OF CHAR;
+      
+   PROCEDURE InitPhrases;
+      (* Assign phrases to variables *)
+      
+   BEGIN
+      informPhrases[0] := "Continue";
+      informPhrases[1] := "Switching Protocols";
+      successPhrases[0] := "OK";
+      successPhrases[1] := "Created";
+      successPhrases[2] := "Accepted";
+      successPhrases[3] := "Non-Authoritative Information";
+      successPhrases[4] := "No Content";
+      successPhrases[5] := "Reset Content";
+      successPhrases[6] := "Partial Content";
+      redirectPhrases[0] := "Multiple Choices";
+      redirectPhrases[1] := "Moved Permanently";
+      redirectPhrases[2] := "Moved Temporarily";
+      redirectPhrases[3] := "See Other";
+      redirectPhrases[4] := "Not Modified";
+      redirectPhrases[5] := "Use Proxy";
+      clientPhrases[0] := "Bad Request";
+      clientPhrases[1] := "Unauthorized";
+      clientPhrases[2] := "Payment Required";
+      clientPhrases[3] := "Forbidden";
+      clientPhrases[4] := "Not Found";
+      clientPhrases[5] := "Method Not Allowed";
+      clientPhrases[6] := "Not Acceptable";
+      clientPhrases[7] := "Proxy Authentication Required";
+      clientPhrases[8] := "Request Timeout";
+      clientPhrases[9] := "Conflict";
+      clientPhrases[10] := "Gone";
+      clientPhrases[11] := "Length Required";
+      clientPhrases[12] := "Precondition Failed";
+      clientPhrases[13] := "Request Entity Too Large";
+      clientPhrases[14] := "Request URI Too Long";
+      clientPhrases[15] := "Unsupported Media Type";
+      serverPhrases[0] := "Internal Server Error";
+      serverPhrases[1] := "Not Implemented";
+      serverPhrases[2] := "Bad Gateway";
+      serverPhrases[3] := "Service Unavaliable";
+      serverPhrases[4] := "Gateway Timeout";
+      serverPhrases[5] := "HTTP Version Not Supported";
+   END InitPhrases;
+   
+   
+   PROCEDURE GetPhrase(code: INTEGER; VAR phrase: Phrase);
+      (* Provides a textual error to a given code. If there is no phrase
+         avalilabe to that code the 'phrase' will be empty.
+      *)
+      
+   BEGIN
+      CASE code OF
+      | 100, 101:
+         COPY(informPhrases[code-100], phrase);
+      | 200..206:
+         COPY(successPhrases[code-200], phrase);
+      | 300..305:
+         COPY(redirectPhrases[code-300], phrase);
+      | 400..415:
+         COPY(clientPhrases[code-400], phrase);
+      | 500..505:
+         COPY(serverPhrases[code-500], phrase);
+      ELSE
+         phrase[0] := 0X;
+      END;
+   END GetPhrase;
+   
+   
+   PROCEDURE StatusLine(s: Streams.Stream; code: INTEGER;
+                        versionMajor, versionMinor: SHORTINT);
+      (* Writes status-line and reason-phrase to the 's'. *)
+      
+      VAR
+         phrase: Phrase;
+         
+   BEGIN
+      Write.StringS(s, "HTTP/");
+      Write.IntS(s, versionMajor, 1);
+      Write.CharS(s, ".");
+      Write.IntS(s, versionMinor, 1);
+      Write.CharS(s, " ");
+      Write.IntS(s, code, 1);
+      Write.CharS(s, " ");
+      GetPhrase(code, phrase);
+      Write.StringS(s, phrase);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END StatusLine;
+   
+   
+   PROCEDURE Allow(s: Streams.Stream; methods: ARRAY OF CHAR);
+      (* Writes an "Allow"-header to 's'. 'methods' is a comma separated list of
+         methods.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Allow: ");
+      Write.StringS(s, methods);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Allow;
+   
+   
+   PROCEDURE InitCacheMechanisms;
+      (* Assigns cache mechanism to variables *)
+      
+   BEGIN
+      cacheMechanisms[0] := "public";
+      cacheMechanisms[1] := "private";
+      cacheMechanisms[2] := "no-cache";
+      cacheMechanisms[3] := "no-store";
+      cacheMechanisms[4] := "no-transform";
+      cacheMechanisms[5] := "must-revalidate";
+      cacheMechanisms[6] := "proxy-revalidate";
+   END InitCacheMechanisms;
+   
+   PROCEDURE CacheControl(s: Streams.Stream; mechanism: SET);
+      (* Writes an "Cache-Control"-header to 's'. *)
+      
+      VAR
+         i: SHORTINT;
+         first: BOOLEAN;
+         
+   BEGIN
+      first := TRUE;
+      IF mechanism # {} THEN
+         Write.StringS(s, "Cache-Control: ");
+         i := 0;
+         WHILE i < WebObjects.cacheMechanisms DO
+            IF i IN mechanism THEN
+               IF ~first THEN
+                  Write.StringS(s, ", ");
+               ELSE
+                  first := FALSE;
+               END;
+               Write.StringS(s, cacheMechanisms[i]);
+            END;
+            INC(i);
+         END;
+         Write.CharS(s, ASCII.cr);
+         Write.CharS(s, ASCII.nl);
+      END;
+   END CacheControl;
+   
+   
+   PROCEDURE Connection(s: Streams.Stream; tokens: ARRAY OF CHAR);
+      (* Writes an "Connection"-header to 's'. 'tokens' is a comma separated
+         list.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Connection: ");
+      Write.StringS(s, tokens);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Connection;
+   
+   
+   PROCEDURE ContentBase(s: Streams.Stream; baseURL: ARRAY OF CHAR);
+      (* Writes an "Content-Base"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Base: ");
+      Write.StringS(s, baseURL);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentBase;
+   
+   
+   PROCEDURE ContentEncoding(s: Streams.Stream; encoding: ARRAY OF CHAR);
+      (* Writes a "Content-Encoding"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Encoding: ");
+      Write.StringS(s, encoding);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentEncoding;
+   
+   
+   PROCEDURE ContentLanguage(s: Streams.Stream; languages: ARRAY OF CHAR);
+      (* Writes a "Content-Language"-header to 's'. 'languages' is a list
+         separated by commas.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Language: ");
+      Write.StringS(s, languages);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentLanguage;
+   
+   
+   PROCEDURE ContentLength(s: Streams.Stream; length: LONGINT);
+      (* Writes a "Content-Length"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Length: ");
+      Write.IntS(s, length, 1);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentLength;
+   
+   
+   PROCEDURE ContentLocation(s: Streams.Stream; location: ARRAY OF CHAR);
+      (* Writes a "Content-Length"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Location: ");
+      Write.StringS(s, location);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentLocation;
+   
+   
+   PROCEDURE ContentType(s: Streams.Stream; type, subType, params: ARRAY OF CHAR);
+      (* Writes a "Content-Type"-header to 's'. More than one parameters
+         must separated by semicolons.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Content-Type: "); 
+      Write.StringS(s, type);
+      Write.StringS(s, "/");
+      Write.StringS(s, subType);
+      IF params # "" THEN
+         Write.StringS(s, " ;");
+         Write.StringS(s, params);
+      END;
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END ContentType;
+   
+   
+   PROCEDURE Date(s: Streams.Stream; date: Times.Time);
+      (* Writes a "Date"-header to 's'.*)
+      
+      VAR
+         dateStr: Convert.DateStr;
+         
+   BEGIN
+      Convert.ToHTTPDate(date, dateStr);
+      Write.StringS(s, "Date: ");
+      Write.StringS(s, dateStr);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Date;
+   
+   
+   PROCEDURE ActualDate(s: Streams.Stream);
+      (* Writes a "Date"-header to 's'. Actual Date is used *)
+   
+      VAR
+         date: Times.Time;
+         
+   BEGIN
+      Clocks.GetTime(Clocks.system, date);
+      Date(s, date);
+   END ActualDate;
+   
+   
+   PROCEDURE EntityTag(s: Streams.Stream; eTag: ARRAY OF CHAR; weak: BOOLEAN);
+      (* Writes a "ETag"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "ETag: ");
+      IF weak THEN
+         Write.StringS(s, "W/");
+      END;
+      Write.StringS(s, eTag);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END EntityTag;
+   
+   
+   PROCEDURE Expires(s: Streams.Stream; date: Times.Time);
+      (* Writes a "Expires"-header to 's'.*)
+      
+      VAR
+         dateStr: Convert.DateStr;
+         
+   BEGIN
+      Convert.ToHTTPDate(date, dateStr);
+      Write.StringS(s, "Expires: ");
+      Write.StringS(s, dateStr);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Expires;
+   
+   
+   PROCEDURE LastModified(s: Streams.Stream; date: Times.Time);
+      (* Writes a "LastModified"-header to 's'.*)
+      
+      VAR
+         dateStr: Convert.DateStr;
+         
+   BEGIN
+      Convert.ToHTTPDate(date, dateStr);
+      Write.StringS(s, "Last-Modified: ");
+      Write.StringS(s, dateStr);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END LastModified;
+   
+   
+   PROCEDURE Location(s: Streams.Stream; url: ARRAY OF CHAR);
+      (* Writes an "Location"-header to 's'. *)
+      
+   BEGIN
+      Write.StringS(s, "Location: ");
+      Write.StringS(s, url);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Location;
+   
+   
+   PROCEDURE Pragma(s: Streams.Stream; directives: ARRAY OF CHAR);
+      (* Writes an "Pragma"-header to 's'. 'directive' is a list separated by
+         commas.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Pragma: ");
+      Write.StringS(s, directives);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Pragma;
+   
+   
+   PROCEDURE Public(s: Streams.Stream; methods: ARRAY OF CHAR);
+      (* Writes an "Public"-header to 's'. 'methods' is a comma separated list of
+         methods.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Public: ");
+      Write.StringS(s, methods);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Public;
+   
+   
+   PROCEDURE RetryAfter(s: Streams.Stream; isDelta: BOOLEAN; delta: LONGINT;
+                        date: Times.Time);
+      (* Writes a "Retry-After"-header to 's'. if 'isDelta' is TRUE, a delta
+         will be given in 'delta', otherwise 'date' is written to 's'.
+      *)
+      
+      VAR
+         dateStr: Convert.DateStr;
+         
+   BEGIN
+      Write.StringS(s, "Retry-After: ");
+      IF isDelta THEN
+         Write.IntS(s, delta, 1);
+      ELSE
+         Convert.ToHTTPDate(date, dateStr);
+         Write.StringS(s, dateStr);
+      END;
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END RetryAfter;
+   
+   
+   PROCEDURE Server(s: Streams.Stream; info: ARRAY OF CHAR);
+      (* Writes an "Server"-header to 's'. 'info' is a space separated list of
+         products and comments.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Server: ");
+      Write.StringS(s, info);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Server;
+   
+   
+   PROCEDURE TransferEncoding(s: Streams.Stream; encoding: ARRAY OF CHAR);
+      (* Writes an "Transfer-Encoding"-header to 's'. 'encoding' is a comma
+         separated list of applied encodings.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Transfer-Encoding: ");
+      Write.StringS(s, encoding);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END TransferEncoding;
+   
+   
+   PROCEDURE Upgrade(s: Streams.Stream; products: ARRAY OF CHAR);
+      (* Writes an "Upgrade"-header to 's'. 'products' is a comma
+         separated list of possible upgrades.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Upgrade: ");
+      Write.StringS(s, products);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Upgrade;
+   
+   
+   PROCEDURE Vary(s: Streams.Stream; fieldNames: ARRAY OF CHAR);
+      (* Writes an "Vary"-header to 's'. 'fieldNames' is a comma
+         separated list header-field-names.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "Vary: ");
+      Write.StringS(s, fieldNames);
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END Vary;
+   
+   
+   PROCEDURE WWWAuthenticate(s: Streams.Stream;
+                             scheme, realm, param: ARRAY OF CHAR);
+      (* Writes a "WWW-Authenticate"-header to 's'; Creates the Challenge.
+         More than one parameters must separated by commas.
+      *)
+      
+   BEGIN
+      Write.StringS(s, "WWW-Authenticate: "); 
+      Write.StringS(s, scheme);
+      Write.StringS(s, " realm=");
+      Write.CharS(s, ASCII.quote);
+      Write.StringS(s, realm);
+      Write.CharS(s, ASCII.quote);
+      IF param # "" THEN
+         Write.StringS(s, " ,");
+         Write.StringS(s, param);
+      END;
+      Write.CharS(s, ASCII.cr);
+      Write.CharS(s, ASCII.nl);
+   END WWWAuthenticate;
+   
+   
+   PROCEDURE Error(s: Streams.Stream; code: INTEGER; reason: ARRAY OF CHAR);
+      (* Sends an error-message to s. The text of the  message will be
+         determined by the given 'code'-value. 'reason' specifies the problem.
+         The mediatype of the message is text/html.
+      *)
+      
+      VAR
+         phrase: Phrase;
+         
+   BEGIN
+      GetPhrase(code, phrase);
+      Write.LineS(s, "<HTML><HEAD><TITLE>");
+      Write.IntS(s, code, 1);
+      Write.CharS(s, " ");
+      Write.LineS(s, phrase);
+      Write.LineS(s, "</TITLE></HEAD><BODY>");
+      Write.StringS(s, "<H1>");
+      Write.StringS(s, phrase);
+      Write.LineS(s, "</H1>");
+      Write.LineS(s, reason);
+      Write.LineS(s, "</BODY></HTML>");
+   END Error;
+   
+   
+BEGIN
+   InitPhrases;
+   InitCacheMechanisms
+END HTTPResponse.

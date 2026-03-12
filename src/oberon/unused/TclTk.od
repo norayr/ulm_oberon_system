@@ -1,0 +1,144 @@
+DEFINITION TclTk;
+
+IMPORT Conditions, ConstStrings, Disciplines, Events, IPv4TCPSockets, Objects,
+    RelatedEvents, Services, Streams;
+
+TYPE Interpreter = POINTER TO  InterpreterRec;
+TYPE InterpreterRec =
+    RECORD
+        (Services.ObjectRec)
+    END;
+    
+(* objects used to communicate with Tcl *)
+TYPE Record = POINTER TO RecordRec;
+TYPE RecordRec =
+    RECORD
+        (Disciplines.ObjectRec)
+        typename: ConstStrings.String;
+    END;
+
+(* lists used within a object of type Record *)
+TYPE List = POINTER TO ListRec;
+TYPE ListRec = RECORD (Objects.ObjectRec) END;
+
+TYPE IntList = POINTER TO IntListRec;
+TYPE IntListRec =
+    RECORD
+        (ListRec)
+        value: INTEGER;
+        next: IntList;
+    END;
+
+TYPE RealList = POINTER TO RealListRec;
+TYPE RealListRec =
+    RECORD
+        (ListRec)
+        value: REAL;
+        next: RealList;
+    END;
+
+TYPE StringList = POINTER TO StringListRec;
+TYPE StringListRec =
+    RECORD
+        (ListRec)
+        value: Streams.Stream;      
+        next: StringList;
+    END;
+
+TYPE BoolList = POINTER TO BoolListRec;
+TYPE BoolListRec =
+    RECORD
+        (ListRec)
+        value: BOOLEAN;
+        next: BoolList;
+    END;
+
+(* events exchanged with Tcl *)
+TYPE EventType = ARRAY 20 OF CHAR;
+TYPE Event = POINTER TO EventRec;
+TYPE EventRec =
+    RECORD
+        (Events.EventRec)
+        from: Interpreter;
+        record: Record;
+    END;
+
+CONST
+    connectionFailed = 0;   (* unable to access the port listener *)
+    connectionRefused = 1;  (* setup failed *)
+    connectionBroken = 2;   (* connection is broken *)
+    sendFailed = 3;         (* failed to send the requested data *)
+    receiveFailed = 4;      (* failed to receive the requested data *)
+    serverExit = 5;         (* tcltk-server receives an exit-Event *)
+    protocolError = 6;      (* got an unexpected value *)
+    tkError = 7;            (* tkerror occured *)
+    callProcError = 8;      (* tclerror or no record returned by proc *)
+    errors = 9;
+TYPE ErrorEvent = POINTER TO ErrorEventRec;
+TYPE ErrorEventRec =
+    RECORD
+        (Events.EventRec);
+        errorcode: SHORTINT;
+    END;
+VAR error: Events.EventType;
+VAR errormsg: ARRAY errors OF Events.Message;
+
+(* handling a connection to a interpreter *)
+PROCEDURE Open(VAR interp: Interpreter; address: IPv4TCPSockets.SocketAddress;
+               display, appName, className: ARRAY OF CHAR; 
+               errors: RelatedEvents.Object) : BOOLEAN;
+PROCEDURE Close(interp: Interpreter);
+
+(* evaluating Tcl scripts *)
+PROCEDURE Eval(interp: Interpreter; script: ARRAY OF CHAR;
+               result: Streams.Stream) : BOOLEAN;
+PROCEDURE EvalStream(interp: Interpreter; script: Streams.Stream;
+                     result: Streams.Stream) : BOOLEAN;
+
+(* event handling *)
+PROCEDURE Define(interp: Interpreter; type: Events.EventType;
+                 VAR tcltypename: EventType);
+PROCEDURE Handler(interp: Interpreter; type: Events.EventType;
+                  tclhandler: ARRAY OF CHAR);
+PROCEDURE GetEventType(interp: Interpreter; tcltypename: EventType;
+                       VAR type: Events.EventType);
+PROCEDURE CreateEventConditions(interp: Interpreter; record: Record; 
+                                slotnames: ARRAY OF ARRAY OF CHAR;
+                                VAR conditions: ARRAY OF Conditions.Condition; 
+                                conditionset: Conditions.ConditionSet);
+PROCEDURE DropEventConditions(conditions: ARRAY OF Conditions.Condition);
+
+(* remote procedure call *)
+PROCEDURE CallProc(interp: Interpreter; proc: ARRAY OF CHAR;
+                   arguments: Record; VAR result: Record) : BOOLEAN;
+
+(* handling with objects for communication *)
+PROCEDURE CreateRecord(VAR record: Record; interp: Interpreter;
+                       tcltypename: ARRAY OF CHAR);
+PROCEDURE GetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+                        VAR value: ARRAY OF CHAR);
+PROCEDURE GetStringSlotAsStream(record: Record; 
+                                slotname: ARRAY OF CHAR;
+                                VAR value: Streams.Stream);
+PROCEDURE GetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+                     VAR value: INTEGER);
+PROCEDURE GetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+                      VAR value: REAL);
+PROCEDURE GetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+                         VAR value: BOOLEAN);
+PROCEDURE GetListSlot(record: Record; slotname: ARRAY OF CHAR;
+                      VAR value: List);
+PROCEDURE SetStringSlot(record: Record; slotname: ARRAY OF CHAR;
+                        value: ARRAY OF CHAR);
+PROCEDURE SetStringSlotFromStream(record: Record; 
+                                  slotname: ARRAY OF CHAR;
+                                  value: Streams.Stream);
+PROCEDURE SetIntSlot(record: Record; slotname: ARRAY OF CHAR;
+                     value: INTEGER);
+PROCEDURE SetRealSlot(record: Record; slotname: ARRAY OF CHAR;
+                      value: REAL);
+PROCEDURE SetBooleanSlot(record: Record; slotname: ARRAY OF CHAR;
+                         value: BOOLEAN);
+PROCEDURE SetListSlot(record: Record; slotname: ARRAY OF CHAR;
+                      value: List);
+END TclTk.

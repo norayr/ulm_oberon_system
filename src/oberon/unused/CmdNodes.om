@@ -1,0 +1,56 @@
+MODULE CmdNodes;
+
+   IMPORT Names, Objects, Services, Shards, Streams;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+
+      Node = POINTER TO NodeRec;
+      NodeRec =
+	 RECORD
+	    (Names.NodeRec)
+	    if: Interface;
+	 END;
+
+      ExecuteProc = PROCEDURE(node: Node; auth: Shards.Lid;
+	                      in, out: Streams.Stream):BOOLEAN;
+
+      InterfaceRec = RECORD
+	 (Objects.ObjectRec)
+	 execute: ExecuteProc;
+      END;
+
+   CONST
+      caps = {};
+
+   VAR
+      type: Services.Type;
+      namesif: Names.Interface;
+
+   PROCEDURE Init(node: Node; if: Interface);
+   BEGIN
+      ASSERT((if # NIL) & (if.execute # NIL));
+      node.if := if;
+   END Init;
+
+   PROCEDURE Create(VAR node: Node; if: Interface);
+      VAR
+	 nnode: Node;
+   BEGIN
+      NEW(nnode);
+      Services.Init(nnode, type);
+      Names.InitNode(nnode, namesif, caps);
+      Init(nnode, if);
+      node := nnode;
+   END Create;
+
+   PROCEDURE Execute(node: Node; auth: Shards.Lid;
+      in, out: Streams.Stream):BOOLEAN;
+   BEGIN
+      RETURN node.if.execute(node, auth, in, out);
+   END Execute;
+
+BEGIN
+   Services.CreateType(type, "CmdNodes.Node", "Names.Node");
+   NEW(namesif);
+END CmdNodes.

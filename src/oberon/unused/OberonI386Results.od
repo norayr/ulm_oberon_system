@@ -1,0 +1,64 @@
+DEFINITION OberonI386Results;
+
+   IMPORT Conclusions, ConstStrings, Disciplines, CompilerObjects, PersistentObjects, PersistentTexts, Iterators, Relocations;
+
+   TYPE
+      BlockType = SET;  (* read ... execute *)
+
+   CONST
+      read    = 0;
+      write   = 1;
+      execute = 2;
+
+   TYPE
+      Block = POINTER TO BlockRec;
+      Reloc = POINTER TO RelocRec;
+      Result = POINTER TO ResultRec;
+      Symbol = POINTER TO SymbolRec;
+
+      BlockRec = RECORD
+	 (Disciplines.ObjectRec);
+	 next : Block;
+	 res  : Result;
+	 mode : BlockType;
+         data : PersistentTexts.Text;
+	 datalen, memlen : LONGINT;   (* ASSERT memlen >= datalen *)
+	 align : LONGINT;
+      END;
+
+      RelocRec = RECORD
+	 (Disciplines.ObjectRec)
+	 next : Reloc;
+	 block : Block;
+	 type : Relocations.RelocType;
+	 offset, size : LONGINT;
+	 symref : Relocations.SymRef;
+      END;
+
+      SymbolRec = RECORD
+	 (Disciplines.ObjectRec)
+	 next : Symbol;
+	 block : Block;
+	 name : ConstStrings.String;
+	 offset : LONGINT;
+      END;
+
+      ResultRec = RECORD
+	 (CompilerObjects.ObjectRec)
+	 name : ConstStrings.String;
+	 blocks : Block;
+	 syms : Symbol;
+	 relocs : Reloc;
+      END;
+
+      PROCEDURE Create(VAR res : CompilerObjects.Object);
+      PROCEDURE AddBlock (res : Result; mode : BlockType; VAR block : Block);
+      PROCEDURE AddSymbol (block : Block; name : ConstStrings.String;
+			   offset : LONGINT);
+      PROCEDURE AddReloc (block : Block; type : Relocations.RelocType;
+			  offset,size:LONGINT; ref : Relocations.SymRef);
+      PROCEDURE GetSymbols (VAR it : Iterators.Iterator; block : Block);
+      PROCEDURE GetRelocs (VAR it : Iterators.Iterator; block : Block);
+
+
+END OberonI386Results.

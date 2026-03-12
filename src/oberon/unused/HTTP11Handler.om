@@ -1,0 +1,860 @@
+MODULE HTTP11Handler;
+
+   IMPORT
+      ASCII, Handlers:=WebHandlers, Headers:=HTTPHeaders, InetHTTPURLs,
+      InetURLs, NamedObjects, Networks, RelatedEvents,
+      Response:=HTTPResponse, Streams, Strings, SubStreams, Texts, Times,
+      WebNames, WebObjects, Write;
+      
+   TYPE
+      Handler = POINTER TO HandlerRec;
+      HandlerRec =
+         RECORD
+            (Handlers.HandlerRec)
+            (* private *)
+            nameSpace: WebNames.NameSpace;
+         END;
+         
+   VAR (* private *)
+      if: Handlers.Interface;
+      
+      
+   PROCEDURE CompStrings(a, b: ARRAY OF CHAR): BOOLEAN;
+      (* CaseINSENSITIVly compares two 0-terminated Strings. Result ist
+         TRUE if they are equal.
+      *)
+
+      VAR
+         i, j: LONGINT;
+
+   BEGIN
+      i := 0; j:= 0;
+      WHILE (a[i] # 0X) & (b[j] # 0X) & (CAP(a[i]) = CAP(b[j])) DO
+         INC(i);
+         INC(j);
+      END;
+
+      RETURN CAP(a[i]) = CAP(b[j]);
+   END CompStrings;
+         
+         
+   PROCEDURE CompStreamString(a: Streams.Stream; b: ARRAY OF CHAR): BOOLEAN;
+      (* CompStreamString caseSENSITIVly compares a stream and a
+         0x-terminated string starting at stream position 0 and returns TRUE
+         if they are equal.
+      *)
+
+      VAR
+         i: LONGINT;
+         aCh: CHAR;
+
+   BEGIN
+      Streams.SetPos(a, 0);
+      i := 0;
+      WHILE Streams.ReadByte(a, aCh) & (b[i] # 0X) & (aCh = b[i]) DO
+         INC(i);
+      END;
+
+      IF a.eof THEN
+         aCh := 0X;
+      END;
+
+      RETURN aCh = b[i];
+   END CompStreamString;
+   
+   PROCEDURE IsInList(s: Streams.Stream; toFind: ARRAY OF CHAR;
+                      caseSensitive: BOOLEAN): BOOLEAN;
+      (* Checks if 'toFind' is an element of (comma separated list) s. The
+         element is identified by 'toFind' bounded left by a comma, a space or
+         begin of stream and bounded right by a comma, a space, a semi-colon or
+         end of stream. Searching starts at position 0. 'FindInStream' will
+         return FALSE if the element isn't found.
+         'toFind' must not be empty.
+      *)
+      
+      VAR
+         i: LONGINT;
+         ch: CHAR;
+         state: SHORTINT;
+         
+   BEGIN
+      Streams.SetPos(s, 0);
+      state := 0;
+      i := 0;
+      LOOP
+         WHILE Streams.ReadByte(s, ch) & (ch = " ") &
+               ((state = 0) OR (state = 2)) DO
+            (* ignore spaces *)
+         END;
+         
+         IF state = 0 THEN
+            state := 1;
+         END;
+         
+         CASE state OF
+         | 1:
+            IF s.eof THEN
+               RETURN FALSE;
+            ELSIF (caseSensitive & (ch = toFind[i])) OR
+                  (~caseSensitive & (CAP(ch) = CAP(toFind[i]))) THEN
+               INC(i);
+               IF toFind[i] = 0X THEN
+                  state := 2;
+               END;
+            ELSE
+               state := 3;
+            END;
+         | 2:
+            IF s.eof OR (ch = ",") OR (ch = ";") THEN
+               RETURN TRUE;
+            ELSE
+               state := 3;
+            END;
+         | 3:
+            IF s.eof THEN
+               RETURN FALSE;
+            ELSIF ch = "," THEN
+               state := 0;
+            END;
+         END;
+      END;
+   END IsInList;
+   
+   PROCEDURE HandleRequest(handler: Handlers.Handler; request: Handlers.Request;
+                           errors: RelatedEvents.Object);
+      
+      VAR
+         url: InetURLs.URL; (* requested URL *)
+         object: NamedObjects.Object; (* requested resource *)
+         handle: WebObjects.Handle; (* for working with the object *)
+         responseHeaders: Streams.Stream; (* pre-build headers here *)
+         closeConnection: BOOLEAN; (*must I close connection after sending body*)
+         mIsHEAD: BOOLEAN; (* is it a HEAD-method? *)
+      
+      
+      PROCEDURE HTTPError(code: INTEGER; addBody: BOOLEAN;
+                          reason: ARRAY OF CHAR);
+         (* Sends an error to the client. 'code' and 'reason' specify the error.
+            The method will close the connection to the client. If 'addBody' is
+            FALSE the error-body will not be added (for HEAD-methods)
+         *)
+         
+      BEGIN
+         Response.StatusLine(request.response, code, 1, 1);
+         Response.ActualDate(request.response);
+         Response.ContentType(request.response, "text", "html", "");
+         Response.Connection(request.response, "close");
+         Write.CharS(request.response, ASCII.cr);
+         Write.CharS(request.response, ASCII.nl);
+         IF addBody THEN
+            Response.Error(request.response, code, reason);
+         END;
+         Streams.Release(request.response);
+      END HTTPError;
+      
+      PROCEDURE GetHandle(VAR Handle: WebObjects.Handle;
+                          object: WebObjects.Object;
+                          search, body: Streams.Stream;
+                          request: Handlers.Request;
+                          addBody: BOOLEAN): BOOLEAN;
+         (* Gets the handle for 'object'. 'search' and 'body' are parameters to
+            determine the content of the object. If the object doesn't accept
+            'body' (provided by POST) or if there ar other errors the method
+            will raise an HTTP-error and return FALSE.
+         *)
+         
+      BEGIN
+         IF ~CompStreamString(request.method, "POST") THEN
+            (* This is not a POST-method. So we make sure that there is no
+               body-parameter.
+            *)
+            body := NIL;
+         END;
+         
+         IF ~WebObjects.CreateHandle(handle, object, search, body, errors) THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting a handle");
+            RETURN FALSE;
+         END;
+         RETURN TRUE;
+      END GetHandle;
+      
+      PROCEDURE CheckConnection(handle: WebObjects.Handle;
+                                request: Handlers.Request;
+                                responseHeaders: Streams.Stream;
+                                VAR closeConnection: BOOLEAN);
+         (* Checks what client is present and decides if the connection should
+            be closed after sending the body. Handles Connection-header.
+            Attention: we will have to close the connection if we can't
+            determine a body-length. All headers will be written to
+            'responseHeaders' if the procedure is successful.
+         *)
+         
+         VAR
+            connectionS: Streams.Stream;
+            
+      BEGIN
+         (* standards for Connection-handling *)
+         IF ((request.versionMajor = 1) & (request.versionMinor = 0))
+               OR (request.versionMajor < 1) THEN
+            closeConnection := TRUE;
+         ELSE
+            closeConnection := FALSE;
+         END;
+         
+         Headers.Get(request.headers, "Connection", connectionS);
+         IF connectionS # NIL THEN
+            IF IsInList(connectionS, "Keep-Alive", FALSE) THEN
+               closeConnection := FALSE;
+               Response.Connection(responseHeaders, "Keep-Alive");
+            ELSIF IsInList(connectionS, "close", FALSE) THEN
+               closeConnection := TRUE;
+               Response.Connection(responseHeaders, "close");
+            END;
+         END;
+      END CheckConnection;
+      
+      PROCEDURE CheckHostHeader(request: Handlers.Request;
+                                   addBody: BOOLEAN): BOOLEAN;
+         (* A HTTP/1.1-client-message must include a host-header. This is
+            checked by this procedure. It will raise a HTTP-error and return
+            FALSE if the host-header is missing. 'addBody' will be TRUE, if a
+            body should be added in case of an HTTP-error.
+         *)
+         
+         VAR
+            value: Streams.Stream;
+            
+      BEGIN
+         IF (request.versionMajor = 1) & (request.versionMinor = 1) THEN
+            Headers.Get(request.headers, "Host", value);
+            IF value = NIL THEN
+               HTTPError(400, addBody, "No 'Host'-header in HTTP/1.1-request");
+               RETURN FALSE;
+            END;
+         END;
+         RETURN TRUE;
+      END CheckHostHeader;
+      
+      PROCEDURE CheckAuthentication(handle: WebObjects.Handle;
+                                    request: Handlers.Request;
+                                    addBody: BOOLEAN;
+                                    errors: RelatedEvents.Object): BOOLEAN;
+         (* Checks if authentication the object need an authentication. This
+            must be done first because the content can be different for each
+            authenticator. 'addBody' will be TRUE, if a body should be added in
+            case of an HTTP-error.
+         *)
+         
+         VAR
+            scheme, realm, param: ARRAY 512 OF CHAR;
+            credentials: Streams.Stream;
+            error: BOOLEAN;
+            schemeS, paramS: Streams.Stream;
+            startPos, endPos: Streams.Count;
+            closeConnection: BOOLEAN;
+            errorBody: ARRAY 512 OF CHAR;
+            errorBodyS: Streams.Stream;
+            ch: CHAR;
+            
+      BEGIN
+         WebObjects.GetChallenge(handle, scheme, realm, param);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the challenge");
+            RETURN FALSE;
+         END;
+         IF scheme # "" THEN
+            (* authentication needed *)
+            Headers.Get(request.headers, "Authorization", credentials);
+            error := credentials = NIL;
+            IF ~error THEN
+               (* skip spaces *)
+               Streams.SetPos(credentials, 0);
+               WHILE Streams.ReadByte(credentials, ch) & (ch = " ") DO
+               END;
+               
+               (* read scheme to 'schemeS' *)
+               Streams.GetPos(credentials, startPos);
+               WHILE Streams.ReadByte(credentials, ch) & (ch # " ") DO
+               END;
+               Streams.GetPos(credentials, endPos);
+               IF SubStreams.Open(schemeS, credentials, startPos-1,
+                                  endPos-1, errors) THEN
+               END;
+               
+               (* skip spaces *)
+               WHILE Streams.ReadByte(credentials, ch) & (ch = " ") DO
+               END;
+               
+               (* read parameters to 'paramS' *)
+               Streams.GetPos(credentials, startPos);
+               IF Streams.Seek(credentials, 0, Streams.fromEnd) THEN END;
+               Streams.GetPos(credentials, endPos);
+               IF SubStreams.Open(paramS, credentials, startPos-1,
+                     endPos, errors) THEN
+               END;
+               error := ~WebObjects.Authenticate(handle, schemeS, paramS);
+               IF handle.error THEN
+                  HTTPError(500, addBody,
+                     "Sorry. Oh I hate these internal problems doing an authentication");
+                  RETURN FALSE;
+               END;
+            END;
+            IF error THEN
+               (* authentication failed If possible, keep connection open.*)
+               errorBody := "";
+               Strings.Open(errorBodyS, errorBody);
+               
+               Response.Error(errorBodyS, 401,
+                              "Authorization failed. Check your inputs");
+               
+               Response.StatusLine(request.response, 401, 1, 1);
+               CheckConnection(handle, request, request.response,
+                     closeConnection); (* Send Connection-header *)
+               Response.ActualDate(request.response);
+               Response.WWWAuthenticate(request.response, scheme, realm, param);
+               Response.ContentType(request.response, "text", "html", "");
+               Response.ContentLength(request.response, Strings.Len(errorBody));
+               Write.CharS(request.response, ASCII.cr);
+               Write.CharS(request.response, ASCII.nl);
+               IF addBody THEN
+                  Streams.SetPos(errorBodyS, 0);
+                  IF Streams.Copy(errorBodyS, request.response, -1) THEN END;
+               END;
+               IF Streams.Flush(request.response) THEN END;
+               IF closeConnection THEN
+                  Streams.Release(request.response);
+               END;
+               RETURN FALSE;
+            END;
+         END;
+         RETURN TRUE;
+      END CheckAuthentication;
+
+      PROCEDURE CheckTypeAndCharset(handle: WebObjects.Handle;
+                                    request: Handlers.Request;
+                                    addBody: BOOLEAN;
+                                    responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the provided media-type and charset match one out of the
+            list of accepted. 'addBody' will be TRUE, if a body should be added
+            in case of an HTTP-error. All headers will be written to
+            'responseHeaders' if the procedure is successful.
+         *)
+         
+         VAR
+            type, typeCopy, subType, charset: ARRAY 50 OF CHAR;
+            param: ARRAY 512 OF CHAR;
+            typesS, charsetsS: Streams.Stream;
+            
+      BEGIN
+         WebObjects.GetMediaType(handle, type, subType, param);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the media-type");
+            RETURN FALSE;
+         END;
+         WebObjects.GetCharset(handle, charset);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the charset");
+            RETURN FALSE;
+         END;
+         
+         (* build the Content-Type-response-header *)
+         IF type # "" THEN
+            IF charset # "" THEN
+               IF param # "" THEN
+                  Strings.Concatenate(param, ", charset=");
+               ELSE
+                  param := "charset=";
+               END;
+               Strings.Concatenate(param, charset);
+            END;
+            Response.ContentType(responseHeaders, type, subType, param);
+            
+            (* check if charset is acceptable *)
+            IF (charset # "") & ~CompStrings(charset, "iso-8859-1") THEN
+               Headers.Get(request.headers, "Accept-Charset", charsetsS);
+               IF charsetsS # NIL THEN
+                  IF ~IsInList(charsetsS, charset, FALSE) THEN
+                     HTTPError(406, addBody,
+                        "Can't provide any requested charset");
+                     RETURN FALSE;
+                  END;
+               END;
+            END;
+            
+            (* check if mediatype is acceptable *)
+            Headers.Get(request.headers, "Accept", typesS);
+            IF typesS # NIL THEN
+               IF ~IsInList(typesS, "*/*", TRUE) THEN
+                  COPY(type, typeCopy);
+                  Strings.Concatenate(typeCopy, "/*");
+                  IF ~IsInList(typesS, typeCopy, FALSE) THEN
+                     Strings.Concatenate(type, "/");
+                     Strings.Concatenate(type, subType);
+                     IF ~IsInList(typesS, type, FALSE) THEN
+                        HTTPError(406, addBody, "Can't provide media-type");
+                        RETURN FALSE;
+                     END;
+                  END;
+               END;
+            END;
+         END;
+         RETURN TRUE;
+      END CheckTypeAndCharset;
+      
+      PROCEDURE CheckLanguage(handle: WebObjects.Handle;
+                              responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check for language. As this is not a 'WebSelectobject' and
+            there will be no error if accepted languages do not fit, we can
+            write the content-language to the client and use the object. All
+            headers will be written to 'responseHeaders' if the procedure is
+            successful.
+         *)
+         
+         VAR
+            languages: ARRAY 64 OF CHAR;
+            
+      BEGIN
+         WebObjects.GetLanguages(handle, languages);
+         IF ~handle.error & (languages # "") THEN
+            Response.ContentLanguage(responseHeaders, languages);
+         END;
+         RETURN TRUE;
+      END CheckLanguage;
+
+      PROCEDURE CheckEncoding(handle: WebObjects.Handle;
+                              request: Handlers.Request;
+                              addBody: BOOLEAN;
+                              responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the provided encoding matches one out of the list of
+            accepted. 'addBody' will be TRUE, if a body should be added in case
+            of an HTTP-error. All headers will be written to 'responseHeaders'
+            if the procedure is successful.
+         *)
+         
+         VAR
+            encoding: ARRAY 64 OF CHAR;
+            encodingS: Streams.Stream;
+            
+      BEGIN
+         WebObjects.GetEncoding(handle, encoding);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the encoding");
+            RETURN FALSE;
+         END;
+         IF encoding # "" THEN
+            Headers.Get(request.headers, "Accept-Encoding", encodingS);
+            IF encodingS # NIL THEN
+               IF ~IsInList(encodingS, encoding, FALSE) THEN
+                  HTTPError(406, addBody, "can't provide acceptable encoding");
+                  RETURN FALSE;
+               ELSE
+                  Response.ContentEncoding(responseHeaders, encoding);
+               END;
+            END;
+         END;
+         RETURN TRUE;
+      END CheckEncoding;
+      
+      PROCEDURE CheckCaching(handle: WebObjects.Handle;
+                             request: Handlers.Request;
+                             addBody: BOOLEAN;
+                             responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check for caching options and write response-header. 'addBody' will
+            be TRUE, if a body should be added in case of an HTTP-error. All
+            headers will be written to 'responseHeaders' if the procedure is
+            successful.
+         *)
+         
+         VAR
+            mechanism: SET;
+            
+      BEGIN
+         WebObjects.GetCacheMechanism(handle, mechanism);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting cache options");
+            RETURN FALSE;
+         END;
+         IF ((request.versionMajor = 1) & (request.versionMinor = 0))
+               OR (request.versionMajor < 1) THEN
+            IF WebObjects.noCache IN mechanism THEN
+               Response.Pragma(responseHeaders, "no-cache");
+            END;
+         ELSE
+            Response.CacheControl(responseHeaders, mechanism);
+         END;
+         RETURN TRUE;
+      END CheckCaching;
+      
+      PROCEDURE CheckBase(handle: WebObjects.Handle;
+                          request: Handlers.Request;
+                          addBody: BOOLEAN;
+                          responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the object provides a Content-Base. 'addBody' will be TRUE,
+            if a body should be added in case of an HTTP-error. All headers will
+            be written to 'responseHeaders' if the procedure is successful.
+         *)
+         
+         VAR
+            url: InetURLs.URL;
+            urlString: ARRAY 512 OF CHAR;
+            
+      BEGIN
+         WebObjects.GetBase(handle, url);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the content-base");
+            RETURN FALSE;
+         END;
+         IF url # NIL THEN
+            InetURLs.ToString(url, urlString);
+            Response.ContentBase(responseHeaders, urlString);
+         END;
+         RETURN TRUE;
+      END CheckBase;
+      
+      PROCEDURE CheckLength(handle: WebObjects.Handle;
+                            request: Handlers.Request;
+                            addBody: BOOLEAN;
+                            responseHeaders: Streams.Stream;
+                            VAR closeConnection: BOOLEAN): BOOLEAN;
+         (* Check if the object provides a Content-Length. If the length isn't
+            determinable we will have to indicate the end of the body by closing
+            then connection. 'addBody' will be TRUE, if a body should be added
+            in case of an HTTP-error. All headers will be written to
+            'responseHeaders' if the procedure is successful.
+         *)
+         
+         VAR
+            length: LONGINT;
+            
+      BEGIN
+         WebObjects.GetLength(handle, length);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the lenght");
+            RETURN FALSE;
+         END;
+         IF length >= 0 THEN
+            Response.ContentLength(responseHeaders, length);
+         ELSE
+            (* no length -> we must indicate the end of the body by
+               closing the connection.
+            *)
+            closeConnection := TRUE;
+         END;
+         RETURN TRUE;
+      END CheckLength;
+      
+      PROCEDURE CheckContentLocation(handle: WebObjects.Handle;
+                                     request: Handlers.Request;
+                                     addBody: BOOLEAN;
+                                     responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the object provides a Content-Location. 'addBody' will be
+            TRUE, if a body should be added in case of an HTTP-error. All
+            headers will be written to 'responseHeaders' if the procedure is
+            successful.
+         *)
+         
+         VAR
+            url: InetURLs.URL;
+            urlString: ARRAY 512 OF CHAR;
+            
+      BEGIN
+         WebObjects.GetLocation(handle, url);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the content-location");
+            RETURN FALSE;
+         END;
+         IF url # NIL THEN
+            InetURLs.ToString(url, urlString);
+            Response.ContentLocation(responseHeaders, urlString);
+         END;
+         RETURN TRUE;
+      END CheckContentLocation;
+      
+      PROCEDURE CheckEntityTag(handle: WebObjects.Handle;
+                               request: Handlers.Request;
+                               addBody: BOOLEAN;
+                               responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the object provides an entity-tag. 'addBody' will be TRUE,
+            if a body should be added in case of an HTTP-error. All headers will
+            be written to 'responseHeaders' if the procedure is successful.
+            
+            To increase caching-mechanisms this method should support If-Match-,
+            If-None-Match- or If-Range-headers. This is not implemented yet.
+         *)
+         
+         VAR
+            tag: ARRAY 256 OF CHAR;
+            qTag: ARRAY 258 OF CHAR;
+            weak: BOOLEAN;
+            eTagList: Streams.Stream;
+            ch: CHAR;
+            
+      BEGIN
+         WebObjects.GetEntityTag(handle, tag, weak);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the entity tag");
+            RETURN FALSE;
+         END;
+         IF tag # "" THEN
+            Response.EntityTag(responseHeaders, tag, weak);
+            
+            (* build quoted eTag and compare*)
+            COPY(ASCII.quote, qTag);
+            Strings.Concatenate(qTag, tag);
+            Strings.Concatenate(qTag, ASCII.quote);
+            
+            (* Check for If-Match *)
+            Headers.Get(request.headers, "If-Match", eTagList);
+            IF eTagList # NIL THEN
+               IF ~Streams.ReadByte(eTagList, ch) OR (ch # "*")
+                     OR Streams.ReadByte(eTagList, ch) THEN
+                  (* eTagList # "*" -> Try to match provided eTag *)
+                  IF ~IsInList(eTagList, qTag, TRUE) THEN
+                     HTTPError(412, addBody, "No valid ETag in If-Match-header");
+                     RETURN FALSE;
+                  END;
+               END;
+            END;
+            Headers.Get(request.headers, "If-None-Match", eTagList);
+            IF eTagList # NIL THEN
+               IF (Streams.ReadByte(eTagList, ch) & (ch = "*")
+                        & ~Streams.ReadByte(eTagList, ch)) 
+                     OR IsInList(eTagList, qTag, TRUE) THEN
+                  IF CompStreamString(request.method, "POST") THEN
+                     HTTPError(412, addBody, "Found ETag in If-None-Match-header");
+                  ELSE
+                     HTTPError(304, FALSE, "");
+                  END;
+                  RETURN FALSE;
+               END;
+            END;
+         END;
+         RETURN TRUE;
+      END CheckEntityTag;
+      
+      PROCEDURE CheckExpireDate(handle: WebObjects.Handle;
+                                request: Handlers.Request;
+                                addBody: BOOLEAN;
+                                responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the object provides an expire-date. 'addBody' will be TRUE,
+            if a body should be added in case of an HTTP-error. All headers will
+            be written to 'responseHeaders' if the procedure is successful.
+         *)
+         
+         VAR
+            date: Times.Time;
+            
+      BEGIN
+         WebObjects.GetExpireDate(handle, date);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the expire-date");
+            RETURN FALSE;
+         END;
+         IF date # NIL THEN
+            Response.Expires(responseHeaders, date);
+         END;
+         RETURN TRUE;
+      END CheckExpireDate;
+
+      PROCEDURE CheckLastModifiedDate(handle: WebObjects.Handle;
+                                      request: Handlers.Request;
+                                      addBody: BOOLEAN;
+                                      responseHeaders: Streams.Stream): BOOLEAN;
+         (* Check if the object provides an last-modified-date. 'addBody' will
+            be TRUE, if a body should be added in case of an HTTP-error. All
+            headers will be written to 'responseHeaders' if the procedure is
+            successful.
+         *)
+         
+         VAR
+            date: Times.Time;
+            unmodifiedDateS: Streams.Stream;
+            unmodifiedDate: Times.Time;
+            
+      BEGIN
+         WebObjects.GetLastModifiedDate(handle, date);
+         IF handle.error THEN
+            HTTPError(500, addBody,
+               "Sorry. Oh I hate these internal problems getting the last-modified-date");
+            RETURN FALSE;
+         END;
+         IF date # NIL THEN
+            Response.LastModified(responseHeaders, date);
+            
+            (* Check If-Unmodified-header *)
+         END;
+         RETURN TRUE;
+      END CheckLastModifiedDate;
+               
+   BEGIN
+      url:=request.url; (* Now a type-guard is possible to url *)
+      
+      (* We can't write Headers directly to the client, because there may be an
+         error later. So we buffer them first.
+      *)
+      Texts.Open(responseHeaders);
+      
+      mIsHEAD := CompStreamString(request.method, "HEAD");
+
+      IF CompStreamString(request.method, "POST")
+            OR CompStreamString(request.method, "GET") OR mIsHEAD THEN
+         IF ~CheckHostHeader(request, ~mIsHEAD) THEN
+            RETURN; (* HTTP/1.1 Client didn't send Host-header *)
+         END;
+         
+         (* search for the requested resource now - We can assume that the URL
+            is a HTTP-URL.
+         *)
+         WITH url: InetHTTPURLs.URL DO
+            WITH handler: Handler DO
+               IF ~WebNames.GetObject(handler.nameSpace, url.path, object) THEN
+                  (* resource not present *)
+                  HTTPError(404, ~mIsHEAD, "I can't find your requested resource");
+                  RETURN;
+               END;
+            END;
+         END;
+         IF object IS WebObjects.Object THEN
+            WITH object: WebObjects.Object DO
+               (* found an explicit resource - get handle now. *)
+               WITH url: InetHTTPURLs.URL DO
+                  IF ~GetHandle(handle, object, url.search, request.body,
+                        request, ~mIsHEAD) THEN
+                     RETURN;
+                  END;
+                  
+                  RelatedEvents.Forward(handle, errors);
+               END;
+               
+               IF ~CheckAuthentication(handle, request, ~mIsHEAD, errors) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckTypeAndCharset(handle, request, ~mIsHEAD,
+                                       responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckLanguage(handle, responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckEncoding(handle, request, ~mIsHEAD, responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckCaching(handle, request, ~mIsHEAD, responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               CheckConnection(handle, request, responseHeaders,closeConnection);
+               
+               IF ~CheckBase(handle, request, ~mIsHEAD, responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckLength(handle, request, ~mIsHEAD, responseHeaders,
+                     closeConnection) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckContentLocation(handle, request, ~mIsHEAD,
+                     responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               (* Send orginate date of message *)
+               Response.ActualDate(responseHeaders);
+               
+               IF ~CheckEntityTag(handle, request, ~mIsHEAD, responseHeaders)THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckExpireDate(handle, request, ~mIsHEAD,
+                     responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               IF ~CheckLastModifiedDate(handle, request, ~mIsHEAD,
+                     responseHeaders) THEN
+                  RETURN;
+               END;
+               
+               (* Useragent specific document is ignored *)
+               
+               (* Ranges are not supported yet *)
+               
+               (* MD5 check is not implemented here *)
+               
+               (* Send headers and Body *)
+               Response.StatusLine(request.response, 200, 1, 1);
+               Streams.SetPos(responseHeaders, 0);
+               IF ~Streams.Copy(responseHeaders, request.response, -1) THEN
+                  Streams.Release(request.response);
+                  RETURN;
+               END;
+               Write.CharS(request.response, ASCII.cr);
+               Write.CharS(request.response, ASCII.nl);
+               IF ~mIsHEAD THEN
+                  WebObjects.WriteBody(handle, request.response);
+                  IF handle.error THEN
+                     Streams.Release(request.response);
+                     RETURN;
+                  END;
+               END;
+               
+               IF Streams.Flush(request.response) THEN END;
+               
+               (* do we have to close the connection? *)
+               IF closeConnection THEN
+                  Streams.Release(request.response);
+               END;
+            END;
+         (*ELSIF object IS WebSelectObjects.Object THEN
+            (* found a selection-object. unfortunately not implemented yet *)
+         ELSIF object IS WebRedirectObjects.Object THEN
+            (* found a redirect-object. unfortunately not implemented yet *)*)
+         ELSE
+            (* no fitting object *)
+            HTTPError(404, mIsHEAD, "I can't find your resource");
+            RETURN;
+         END;
+      ELSE
+         (* Method not known *)
+         HTTPError(501, TRUE, "I don't know anything about your method");
+         RETURN;
+      END;
+   END HandleRequest;
+   
+   
+   PROCEDURE Create(VAR handler: Handlers.Handler; space: WebNames.NameSpace);
+      (* Creates a new HTTP/1.1-handler. The handler searches for WebObjects in
+         'space'.
+      *)
+   
+      VAR
+         http11Handler: Handler;
+         
+   BEGIN
+      NEW(http11Handler);
+      Handlers.Init(http11Handler, if);
+      http11Handler.nameSpace := space;
+      handler := http11Handler;
+   END Create;
+   
+   
+BEGIN
+   NEW(if);
+   if.handleRequest := HandleRequest;
+END HTTP11Handler.

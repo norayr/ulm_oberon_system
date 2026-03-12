@@ -1,0 +1,556 @@
+(* Edit RemoteChess.rm instead of this file which has been generated
+   by genrem at Fri Apr 23 21:07:51 MEST 2004
+*)
+
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: RemoteChess.rm,v 1.1 2004/04/23 06:11:03 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: RemoteChess.rm,v $
+   Revision 1.1  2004/04/23 06:11:03  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE RemoteChessClocks;
+
+   IMPORT ChessClocks, Clocks, Messages, NetIO, Objects, PersistentObjects,
+      RelatedEvents, RemoteClocks, RemoteObjects, Services, Shards, Streams,
+      Times;
+
+   TYPE
+      ChessClock = POINTER TO ChessClockRec;
+      ChessClockRec = RECORD (ChessClocks.ChessClockRec) END;
+
+   TYPE
+      ProxyParameters = POINTER TO ProxyParametersRec;
+      ProxyParametersRec =
+         RECORD
+            (PersistentObjects.ObjectRec)
+            numberOfPlayers: SHORTINT;
+            timelimit: Times.Time;
+         END;
+   VAR
+      proxyParamsType: Services.Type;
+
+   TYPE
+      Message = POINTER TO MessageRec;
+      MessageRec = RECORD (Messages.MessageRec) END;
+
+   TYPE
+      StartMessage = POINTER TO StartMessageRec;
+      StartMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPY *)
+         END;
+   VAR
+      startMessageType: Services.Type;
+
+   TYPE
+      StopMessage = POINTER TO StopMessageRec;
+      StopMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPY *)
+         END;
+   VAR
+      stopMessageType: Services.Type;
+
+   TYPE
+      SwitchMessage = POINTER TO SwitchMessageRec;
+      SwitchMessageRec =
+         RECORD
+            (MessageRec)
+            auth: Shards.Lid; (* IN via COPY *)
+            player: ChessClocks.Player; (* IN via ShortInt *)
+         END;
+   VAR
+      switchMessageType: Services.Type;
+
+   TYPE
+      RunningMessage = POINTER TO RunningMessageRec;
+      RunningMessageRec =
+         RECORD
+            (MessageRec)
+            running: BOOLEAN; (* RVAL via Boolean *)
+         END;
+   VAR
+      runningMessageType: Services.Type;
+
+   TYPE
+      CurrentPlayerMessage = POINTER TO CurrentPlayerMessageRec;
+      CurrentPlayerMessageRec =
+         RECORD
+            (MessageRec)
+            player: ChessClocks.Player; (* RVAL via ShortInt *)
+         END;
+   VAR
+      currentPlayerMessageType: Services.Type;
+
+   TYPE
+      GetClockMessage = POINTER TO GetClockMessageRec;
+      GetClockMessageRec =
+         RECORD
+            (MessageRec)
+            player: ChessClocks.Player; (* IN via ShortInt *)
+            clock: Clocks.Clock; (* OUT via REF *)
+         END;
+   VAR
+      getClockMessageType: Services.Type;
+
+   VAR
+      if: ChessClocks.Interface; (* of ChessClocks *)
+      type: Services.Type; (* of RemoteChessClocks.ChessClock *)
+
+   PROCEDURE CreateProxyParams(VAR object: PersistentObjects.Object);
+      VAR proxyParams: ProxyParameters;
+   BEGIN
+      NEW(proxyParams);
+      PersistentObjects.Init(proxyParams, proxyParamsType);
+      object := proxyParams;
+   END CreateProxyParams;
+
+   PROCEDURE WriteProxyParams(s: Streams.Stream;
+                              object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.WriteShortInt(s, object.numberOfPlayers) &
+                PersistentObjects.Write(s, object.timelimit)
+      END;
+   END WriteProxyParams;
+
+   PROCEDURE ReadProxyParams(s: Streams.Stream;
+                             object: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH object: ProxyParameters DO
+         RETURN NetIO.ReadShortInt(s, object.numberOfPlayers) &
+                PersistentObjects.Read(s, object.timelimit)
+      END;
+   END ReadProxyParams;
+
+   PROCEDURE CreateStartMessage(VAR object: PersistentObjects.Object);
+      VAR msg: StartMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, startMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateStartMessage;
+
+   PROCEDURE WriteStartMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: StartMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.auth)
+         END;
+      END;
+   END WriteStartMessage;
+
+   PROCEDURE ReadStartMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: StartMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.auth)
+         END;
+      END;
+   END ReadStartMessage;
+
+   PROCEDURE CreateStopMessage(VAR object: PersistentObjects.Object);
+      VAR msg: StopMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, stopMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateStopMessage;
+
+   PROCEDURE WriteStopMessage(s: Streams.Stream;
+                              msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: StopMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.auth)
+         END;
+      END;
+   END WriteStopMessage;
+
+   PROCEDURE ReadStopMessage(s: Streams.Stream;
+                             msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: StopMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.auth)
+         END;
+      END;
+   END ReadStopMessage;
+
+   PROCEDURE CreateSwitchMessage(VAR object: PersistentObjects.Object);
+      VAR msg: SwitchMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, switchMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateSwitchMessage;
+
+   PROCEDURE WriteSwitchMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SwitchMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Write(s, msg.auth) &
+                   NetIO.WriteShortInt(s, msg.player)
+         END;
+      END;
+   END WriteSwitchMessage;
+
+   PROCEDURE ReadSwitchMessage(s: Streams.Stream;
+                               msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: SwitchMessage DO
+         IF msg.processed THEN
+            RETURN TRUE
+         ELSE
+            RETURN PersistentObjects.Read(s, msg.auth) &
+                   NetIO.ReadShortInt(s, msg.player)
+         END;
+      END;
+   END ReadSwitchMessage;
+
+   PROCEDURE CreateRunningMessage(VAR object: PersistentObjects.Object);
+      VAR msg: RunningMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, runningMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateRunningMessage;
+
+   PROCEDURE WriteRunningMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: RunningMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteBoolean(s, msg.running)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteRunningMessage;
+
+   PROCEDURE ReadRunningMessage(s: Streams.Stream;
+                                msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: RunningMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadBoolean(s, msg.running)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadRunningMessage;
+
+   PROCEDURE CreateCurrentPlayerMessage(VAR object: PersistentObjects.Object);
+      VAR msg: CurrentPlayerMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, currentPlayerMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateCurrentPlayerMessage;
+
+   PROCEDURE WriteCurrentPlayerMessage(s: Streams.Stream;
+                                       msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: CurrentPlayerMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.WriteShortInt(s, msg.player)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END WriteCurrentPlayerMessage;
+
+   PROCEDURE ReadCurrentPlayerMessage(s: Streams.Stream;
+                                      msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: CurrentPlayerMessage DO
+         IF msg.processed THEN
+            RETURN NetIO.ReadShortInt(s, msg.player)
+         ELSE
+            RETURN TRUE
+         END;
+      END;
+   END ReadCurrentPlayerMessage;
+
+   PROCEDURE CreateGetClockMessage(VAR object: PersistentObjects.Object);
+      VAR msg: GetClockMessage;
+   BEGIN
+      NEW(msg);
+      PersistentObjects.Init(msg, getClockMessageType);
+      Messages.Init(msg);
+      object := msg;
+   END CreateGetClockMessage;
+
+   PROCEDURE WriteGetClockMessage(s: Streams.Stream;
+                                  msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetClockMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Export(s, msg.clock)
+         ELSE
+            RETURN NetIO.WriteShortInt(s, msg.player)
+         END;
+      END;
+   END WriteGetClockMessage;
+
+   PROCEDURE ReadGetClockMessage(s: Streams.Stream;
+                                 msg: PersistentObjects.Object) : BOOLEAN;
+   BEGIN
+      WITH msg: GetClockMessage DO
+         IF msg.processed THEN
+            RETURN RemoteObjects.Import(s, msg.clock)
+         ELSE
+            RETURN NetIO.ReadShortInt(s, msg.player)
+         END;
+      END;
+   END ReadGetClockMessage;
+
+   PROCEDURE Handler(object: Messages.Object; VAR msg: Messages.Message);
+      VAR
+         oldQueue, newQueue: RelatedEvents.Queue;
+   BEGIN
+      IF ~(msg IS Message) THEN RETURN END;
+      WITH object: ChessClocks.ChessClock DO
+         RelatedEvents.QueueEvents(object);
+         RelatedEvents.GetQueue(object, oldQueue);
+         msg.processed := TRUE;
+         IF msg IS StartMessage THEN
+            WITH msg: StartMessage DO
+               msg.done := ChessClocks.Start(object, msg.auth);
+            END;
+         ELSIF msg IS StopMessage THEN
+            WITH msg: StopMessage DO
+               msg.done := ChessClocks.Stop(object, msg.auth);
+            END;
+         ELSIF msg IS SwitchMessage THEN
+            WITH msg: SwitchMessage DO
+               msg.done := ChessClocks.Switch(object, msg.auth, msg.player);
+            END;
+         ELSIF msg IS RunningMessage THEN
+            WITH msg: RunningMessage DO
+               msg.running := ChessClocks.Running(object);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS CurrentPlayerMessage THEN
+            WITH msg: CurrentPlayerMessage DO
+               msg.player := ChessClocks.CurrentPlayer(object);
+               msg.done := TRUE;
+            END;
+         ELSIF msg IS GetClockMessage THEN
+            WITH msg: GetClockMessage DO
+               ChessClocks.GetClock(object, msg.player, msg.clock);
+               msg.done := TRUE;
+            END;
+         END;
+         RelatedEvents.GetQueue(object, newQueue);
+         RelatedEvents.AppendQueue(msg.errors, newQueue);
+         RelatedEvents.AppendQueue(object, oldQueue);
+      END;
+   END Handler;
+
+   PROCEDURE Start(chessClock: ChessClocks.ChessClock;
+                   auth: Shards.Lid) : BOOLEAN;
+      VAR msg: StartMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateStartMessage(msg);
+      msg.auth := auth;
+      Messages.Send(chessClock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+      RETURN msg.done
+   END Start;
+
+   PROCEDURE Stop(chessClock: ChessClocks.ChessClock;
+                  auth: Shards.Lid) : BOOLEAN;
+      VAR msg: StopMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateStopMessage(msg);
+      msg.auth := auth;
+      Messages.Send(chessClock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+      RETURN msg.done
+   END Stop;
+
+   PROCEDURE Switch(chessClock: ChessClocks.ChessClock;
+                    auth: Shards.Lid;
+                    player: ChessClocks.Player) : BOOLEAN;
+      VAR msg: SwitchMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateSwitchMessage(msg);
+      msg.auth := auth;
+      msg.player := player;
+      Messages.Send(chessClock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+      RETURN msg.done
+   END Switch;
+
+   PROCEDURE Running(chessClock: ChessClocks.ChessClock) : BOOLEAN;
+      VAR msg: RunningMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateRunningMessage(msg);
+      Messages.Send(chessClock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+      RETURN msg.running
+   END Running;
+
+   PROCEDURE CurrentPlayer(chessClock: ChessClocks.ChessClock) : ChessClocks.Player;
+      VAR msg: CurrentPlayerMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateCurrentPlayerMessage(msg);
+      Messages.Send(chessClock, msg);
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+      RETURN msg.player
+   END CurrentPlayer;
+
+   PROCEDURE GetClock(chessClock: ChessClocks.ChessClock;
+                      player: ChessClocks.Player;
+                      VAR clock: Clocks.Clock);
+      VAR msg: GetClockMessage; queue: RelatedEvents.Queue;
+   BEGIN
+      CreateGetClockMessage(msg);
+      msg.player := player;
+      Messages.Send(chessClock, msg);
+      clock := msg.clock;
+      RelatedEvents.GetQueue(msg.errors, queue);
+      RelatedEvents.AppendQueue(chessClock, queue);
+   END GetClock;
+
+   PROCEDURE InitPO(VAR type: Services.Type;
+                    name, baseName: ARRAY OF CHAR;
+                    create: PersistentObjects.CreateProc;
+                    read: PersistentObjects.ReadProc;
+                    write: PersistentObjects.WriteProc);
+      VAR if: PersistentObjects.Interface;
+   BEGIN
+      NEW(if);
+      if.create := create; if.read := read; if.write := write;
+      if.createAndRead := NIL;
+      PersistentObjects.RegisterType(type, name, baseName, if);
+   END InitPO;
+
+   PROCEDURE ^ CreateProxy(VAR object: Services.Object;
+                           params: PersistentObjects.Object);
+
+   PROCEDURE ^ GetParams(object: Services.Object;
+                         VAR params: PersistentObjects.Object;
+                         VAR mode: RemoteObjects.ExportMode);
+
+   PROCEDURE InitIFs;
+      VAR
+         msgtype: Services.Type;
+         remoteObjIf: RemoteObjects.Interface;
+         baseType: Services.Type;
+   BEGIN
+      NEW(if);
+      if.start := Start;
+      if.stop := Stop;
+      if.switch := Switch;
+      if.running := Running;
+      if.currentPlayer := CurrentPlayer;
+      if.getClock := GetClock;
+      PersistentObjects.RegisterType(msgtype,
+         "RemoteChessClocks.Message", "Messages.Message", NIL);
+      InitPO(startMessageType, "RemoteChessClocks.StartMessage", "RemoteChessClocks.Message",
+             CreateStartMessage, ReadStartMessage, WriteStartMessage);
+      InitPO(stopMessageType, "RemoteChessClocks.StopMessage", "RemoteChessClocks.Message",
+             CreateStopMessage, ReadStopMessage, WriteStopMessage);
+      InitPO(switchMessageType, "RemoteChessClocks.SwitchMessage", "RemoteChessClocks.Message",
+             CreateSwitchMessage, ReadSwitchMessage, WriteSwitchMessage);
+      InitPO(runningMessageType, "RemoteChessClocks.RunningMessage", "RemoteChessClocks.Message",
+             CreateRunningMessage, ReadRunningMessage, WriteRunningMessage);
+      InitPO(currentPlayerMessageType, "RemoteChessClocks.CurrentPlayerMessage", "RemoteChessClocks.Message",
+             CreateCurrentPlayerMessage, ReadCurrentPlayerMessage, WriteCurrentPlayerMessage);
+      InitPO(getClockMessageType, "RemoteChessClocks.GetClockMessage", "RemoteChessClocks.Message",
+             CreateGetClockMessage, ReadGetClockMessage, WriteGetClockMessage);
+      Services.CreateType(type,
+         "RemoteChessClocks.ChessClock", "ChessClocks.ChessClock");
+      InitPO(proxyParamsType, "RemoteChessClocks.ProxyParameters", "",
+             CreateProxyParams, ReadProxyParams, WriteProxyParams);
+
+      Services.SeekType("ChessClocks.ChessClock", baseType);
+      ASSERT(baseType # NIL);
+      NEW(remoteObjIf);
+      remoteObjIf.getParams := GetParams;
+      remoteObjIf.createProxy := CreateProxy;
+      remoteObjIf.msgHandler := Handler;
+      RemoteObjects.Register(baseType, remoteObjIf, RemoteObjects.parallel);
+   END InitIFs;
+
+
+   PROCEDURE CreateProxy(VAR object: Services.Object;
+			 params: PersistentObjects.Object);
+      VAR cc: ChessClock;
+   BEGIN
+      NEW(cc);
+      Services.Init(cc, type);
+      WITH params: ProxyParameters DO
+	 ChessClocks.Init(cc, if,
+	                  params.numberOfPlayers, params.timelimit);
+      END;
+      RelatedEvents.QueueEvents(cc);
+      object := cc;
+   END CreateProxy;
+
+   PROCEDURE GetParams(object: Services.Object;
+                       VAR params: PersistentObjects.Object;
+		       VAR mode: RemoteObjects.ExportMode);
+   BEGIN
+      WITH object: ChessClocks.ChessClock DO
+	 CreateProxyParams(params);
+	 WITH params: ProxyParameters DO
+	    params.numberOfPlayers := ChessClocks.NumberOfPlayers(object);
+	    ChessClocks.GetTimeLimit(object, params.timelimit);
+	 END;
+      END;
+      mode := RemoteObjects.linked;
+   END GetParams;
+   
+BEGIN
+   InitIFs;
+END RemoteChessClocks.

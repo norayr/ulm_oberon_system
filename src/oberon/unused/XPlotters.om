@@ -1,0 +1,860 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2005 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: XPlotters.om,v 1.1 2005/04/15 13:18:35 borchert Exp borchert $
+   ----------------------------------------------------------------------------
+   $Log: XPlotters.om,v $
+   Revision 1.1  2005/04/15 13:18:35  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE XPlotters;
+
+   IMPORT Clocks, Conditions, EventConditions, Events, Jobs, Math, Plotters,
+      RelatedEvents, Resources, Scales, Services, Signals, Tasks,
+      TimeConditions, Times, X := XDisplays, XColors, XResources,
+      XStdProperties;
+
+   CONST
+      caps = {Plotters.setspace, Plotters.erase,
+	 Plotters.linemodes, Plotters.linewidth, Plotters.string};
+
+   CONST
+      moveOp = 0;
+      contOp = 1;
+      pointOp = 2;
+      lineOp = 3;
+      arcOp = 4;
+      circleOp = 5;
+      setLineModeOp = 6;
+      setLineWidthOp = 7;
+      stringOp = 8;
+   TYPE
+      Operation = POINTER TO OperationRec;
+      OperationRec =
+	 RECORD
+	    kind: SHORTINT; (* moveOp .. *)
+	    xto, yto: INTEGER;
+	    xpoint, ypoint: INTEGER;
+	    xfrom, yfrom: INTEGER;
+	    xcenter, ycenter: INTEGER;
+	    xstart, ystart: INTEGER;
+	    xend, yend: INTEGER;
+	    radius: INTEGER;
+	    lineMode: Plotters.LineMode;
+	    lineWidth: INTEGER;
+	    text: ARRAY 256 OF CHAR;
+	    next: Operation;
+	 END;
+   TYPE
+      Plotter = POINTER TO PlotterRec;
+      PlotterRec =
+	 RECORD
+	    (Plotters.PlotterRec)
+	    display: X.Display;
+	    win: XResources.Window;
+	    x, y: INTEGER; (* current position *)
+	    head, tail: Operation;
+	    last: Operation; (* last executed operation *)
+	    signal: Signals.Signal; (* tells that list of ops was modified *)
+	    erased: BOOLEAN;
+	    width, height: INTEGER; (* virtual size *)
+	    xmin, ymin: INTEGER; (* offset of origin *)
+	    ok: BOOLEAN;
+	 END;
+   TYPE
+      Job = POINTER TO JobRec;
+      JobRec =
+	 RECORD
+	    (Jobs.JobRec)
+	    plotter: Plotter;
+	 END;
+   VAR
+      plotterType: Services.Type;
+      if: Plotters.Interface;
+      desc: Plotters.Description;
+
+   (* === auxiliary procedures ======================================= *)
+
+   PROCEDURE WindowHandler(job: Jobs.Job);
+      CONST
+	 border = 5;
+      TYPE
+	 Timer =
+	    RECORD
+	       condition: Conditions.Condition;
+	       delay: Times.Time;
+	       set: BOOLEAN;
+	    END;
+      VAR
+	 plotter: Plotter;
+	 conditions: Conditions.ConditionSet;
+	 termCondition: Conditions.Condition;
+	 exposeCondition: Conditions.Condition;
+	 signalCondition: Conditions.Condition;
+	 eventType: Events.EventType;
+	 event: Resources.Event;
+	 xevent: XResources.Event;
+	 geometry, lastGeometry: X.Geometry;
+	 arc: X.ListOfArcs;
+	 width, height: INTEGER; (* from geometry, considering border *)
+	 xoffset, yoffset: INTEGER;
+	 aspectRatioOfPlotter: REAL;
+	 aspectRatioOfX: REAL;
+	 fontLoaded: BOOLEAN;
+	 reconfigured: BOOLEAN; (* wait for next expose event if true *)
+	 redrawTimer: Timer;
+	 updateGeometryTimer: Timer;
+	 adjustGeometryTimer: Timer;
+	 requestedWidth, requestedHeight: INTEGER;
+	 newGeometryRequested: BOOLEAN;
+	 firstDraw: BOOLEAN;
+
+      PROCEDURE InitTimer(VAR timer: Timer; seconds, usecs: Scales.Value);
+      BEGIN
+	 timer.condition := NIL;
+	 timer.set := FALSE;
+	 Times.CreateAndSet(timer.delay, Times.relative, 0, seconds, usecs);
+      END InitTimer;
+
+      PROCEDURE SetTimer(VAR timer: Timer);
+      BEGIN
+	 IF ~timer.set THEN
+	    timer.set := TRUE;
+	    TimeConditions.Create(timer.condition, Clocks.system, timer.delay);
+	    Conditions.Incl(conditions, timer.condition);
+	 END;
+      END SetTimer;
+
+      PROCEDURE RemoveTimer(VAR timer: Timer);
+      BEGIN
+	 IF timer.set THEN
+	    Conditions.Excl(conditions, timer.condition);
+	    timer.set := FALSE;
+	 END;
+      END RemoveTimer;
+
+      PROCEDURE TimerPassed(VAR timer: Timer) : BOOLEAN;
+      BEGIN
+	 IF timer.set THEN
+	    IF ~Conditions.Test(timer.condition, plotter.display) THEN
+	       RETURN FALSE
+	    END;
+	    RemoveTimer(timer);
+	 END;
+	 RETURN TRUE
+      END TimerPassed;
+
+      PROCEDURE UpdateTimer(VAR timer: Timer);
+      BEGIN
+	 IF timer.set THEN
+	    RemoveTimer(timer);
+	    SetTimer(timer);
+	 END;
+      END UpdateTimer;
+
+      PROCEDURE PerformOp(VAR op: Operation);
+	 CONST
+	    radianToDegree = 360 / (2 * Math.pi);
+	    maxOps = 512;
+	    eps = 1.0E-6;
+	 VAR
+	    head, tail: X.ListOfPoints;
+	    lineWidth: INTEGER;
+	    count: INTEGER;
+	    centerx, centery: INTEGER;
+	    startx, starty: INTEGER;
+	    endx, endy: INTEGER;
+	    r: REAL;
+	    radiusx, radiusy: INTEGER;
+	    angle1, angle2: REAL;
+	    abr: REAL; (* a/b for the ellipse in arcOp *)
+	    a, b: REAL;
+	    t: REAL;
+
+	 PROCEDURE MapX(x: REAL) : INTEGER;
+	 BEGIN
+	    RETURN SHORT(ENTIER(width / plotter.width *
+			(x - plotter.xmin)) + xoffset)
+	 END MapX;
+
+	 PROCEDURE MapY(y: REAL) : INTEGER;
+	 BEGIN
+	    RETURN height - 1 -
+	           SHORT(ENTIER(height / plotter.height *
+			(y - plotter.ymin))) + yoffset
+	 END MapY;
+
+	 PROCEDURE MapWidth(w: REAL) : INTEGER;
+	 BEGIN
+	    RETURN SHORT(ENTIER(width / plotter.width * w))
+	 END MapWidth;
+
+	 PROCEDURE MapHeight(h: REAL) : INTEGER;
+	 BEGIN
+	    RETURN SHORT(ENTIER(height / plotter.height * h))
+	 END MapHeight;
+
+	 PROCEDURE Square(x: INTEGER) : INTEGER;
+	 BEGIN
+	    RETURN x * x
+	 END Square;
+
+	 PROCEDURE Distance(x1, y1, x2, y2: INTEGER) : REAL;
+	 BEGIN
+	    RETURN Math.Sqrt(Square(x1 - x2) + Square(y1 - y2))
+	 END Distance;
+
+	 PROCEDURE AddPoint(x, y: REAL);
+	    VAR
+	       p: X.ListOfPoints;
+	 BEGIN
+	    NEW(p); p.x := MapX(x); p.y := MapY(y); p.next := NIL;
+	    IF head = NIL THEN
+	       head := p;
+	    ELSE
+	       tail.next := p;
+	    END;
+	    tail := p;
+	 END AddPoint;
+
+      BEGIN (* PerformOp *)
+	 CASE op.kind OF
+	 | moveOp:
+	       plotter.x := op.xto; plotter.y := op.yto;
+	 | contOp:
+	       head := NIL; tail := NIL;
+	       AddPoint(plotter.x, plotter.y);
+	       AddPoint(op.xto, op.yto);
+	       count := 2;
+	       WHILE (count < maxOps) &
+		     (op.next # NIL) & (op.next.kind = contOp) DO
+		  op := op.next;
+		  AddPoint(op.xto, op.yto);
+		  INC(count);
+	       END;
+	       plotter.ok := plotter.ok &
+	                     XResources.PolyLine(plotter.win, 0, head);
+	       plotter.x := op.xto; plotter.y := op.yto;
+	 | pointOp:
+	       head := NIL; tail := NIL;
+	       AddPoint(op.xpoint, op.ypoint);
+	       count := 1;
+	       WHILE (count < maxOps) &
+		     (op.next # NIL) & (op.next.kind = pointOp) DO
+		  op := op.next;
+		  AddPoint(op.xpoint, op.ypoint);
+		  INC(count);
+	       END;
+	       plotter.ok := plotter.ok &
+	                     XResources.PolyPoint(plotter.win, 0, head);
+	       plotter.x := op.xpoint; plotter.y := op.ypoint;
+	 | lineOp:
+	       head := NIL; tail := NIL;
+	       AddPoint(op.xfrom, op.yfrom);
+	       AddPoint(op.xto, op.yto);
+	       plotter.ok := plotter.ok &
+	                     XResources.PolyLine(plotter.win, 0, head);
+	       plotter.x := op.xto; plotter.y := op.yto;
+	 | arcOp:
+	       NEW(arc); arc.next := NIL;
+	       startx := MapX(op.xstart);
+	       starty := MapY(op.ystart);
+	       centerx := MapX(op.xcenter);
+	       centery := MapY(op.ycenter);
+	       endx := MapX(op.xend);
+	       endy := MapY(op.yend);
+	       IF (startx = endx) OR (starty = endy) OR
+		     (ABS(startx - centerx) = ABS(endx - centerx)) THEN
+		  abr := 1;
+	       ELSE
+		  abr := Math.Sqrt(
+			   ABS(Square(startx - centerx) -
+				 Square(endx - centerx)) /
+			   ABS(Square(endy - centery) -
+				 Square(starty - centery)));
+	       END;
+	       IF (startx - centerx = 0) OR (starty - centery = 0) THEN
+		  IF startx - centerx = 0 THEN
+		     b := ABS(starty - centery);
+		     a := b * abr;
+		  ELSE
+		     a := ABS(startx - centerx);
+		     b := a / abr;
+		  END;
+	       ELSE
+		  t := Math.Arctan2(abr * (starty - centery), startx - centerx);
+		  a := ABS((startx - centerx) / Math.Cos(t));
+		  b := a / abr;
+	       END;
+	       (* arc.x and arc.y specify the upper-left corner of
+		  the enclosing rectangle
+	       *)
+	       radiusx := SHORT(ENTIER(a + eps));
+	       radiusy := SHORT(ENTIER(b + eps));
+	       arc.x := centerx - radiusx;
+	       arc.y := centery - radiusy;
+	       (* width and height of the enclosing rectangle *)
+	       arc.width := radiusx * 2;
+	       arc.height := radiusy * 2;
+	       centerx := arc.x + arc.width DIV 2;
+	       centery := arc.y + arc.height DIV 2;
+	       (* angle1 is counter-clockwise relative to the
+		  three o'clock position of the rectangle, angle2
+		  is relative to angle1
+	       *)
+	       angle1 := Math.Arctan2(centery - starty,
+	                    startx - centerx) * radianToDegree;
+	       IF angle1 < 0 THEN
+		  angle1 := 360 + angle1;
+	       END;
+	       angle2 := Math.Arctan2(centery - endy,
+			   endx - centerx) * radianToDegree;
+	       IF angle2 < 0 THEN
+		  angle2 := 360 + angle2;
+	       END;
+	       IF angle2 < angle1 THEN
+		  angle2 := angle2 + 360 - angle1;
+	       ELSE
+		  angle2 := angle2 - angle1;
+	       END;
+	       arc.angle1 := SHORT(ENTIER(angle1 * 64 - 0.5));
+	       arc.angle2 := SHORT(ENTIER(0.5 + angle2 * 64));
+	       plotter.ok := plotter.ok &
+			     XResources.PolyArc(plotter.win, arc);
+	       plotter.x := op.xend; plotter.y := op.yend;
+	 | circleOp:
+	       NEW(arc); arc.next := NIL;
+	       arc.x := MapX(op.xcenter - op.radius);
+	       arc.y := MapY(op.ycenter + op.radius);
+	       arc.width := MapWidth(op.radius * 2);
+	       arc.height := MapWidth(op.radius * 2);
+	       arc.angle1 := 0;
+	       arc.angle2 := 360 * 64;
+	       plotter.ok := plotter.ok &
+			     XResources.PolyArc(plotter.win, arc);
+	 | setLineModeOp:
+	       CASE op.lineMode OF
+	       | Plotters.solid:
+		     XResources.SetLineStyle(plotter.win, X.gclsSolid);
+	       | Plotters.dotted:
+		     XResources.SetLineStyle(plotter.win, X.gclsOnOffDash);
+		     XResources.SetDashes(plotter.win, 0, 1, 2);
+	       | Plotters.dotdashed:
+		     XResources.SetLineStyle(plotter.win, X.gclsOnOffDash);
+		     XResources.SetDashes2(plotter.win, 0, 5, 2, 1, 2);
+	       | Plotters.shortdashed:
+		     XResources.SetLineStyle(plotter.win, X.gclsOnOffDash);
+		     XResources.SetDashes(plotter.win, 0, 3, 3);
+	       | Plotters.longdashed:
+		     XResources.SetLineStyle(plotter.win, X.gclsOnOffDash);
+		     XResources.SetDashes(plotter.win, 0, 7, 7);
+	       END;
+	 | setLineWidthOp:
+	       lineWidth := MapWidth(op.lineWidth);
+	       IF lineWidth < 1 THEN
+		  lineWidth := 1;
+	       END;
+	       XResources.SetLineWidth(plotter.win, lineWidth);
+	       IF lineWidth > 1 THEN
+		  (* this style joins separately drawn lines
+		     and arcs better
+		  *)
+		  XResources.SetCapStyle(plotter.win, X.gccsProjecting);
+	       END;
+	 | stringOp:
+	       IF ~fontLoaded THEN
+		  XResources.SetNamedFont(plotter.win, "7x13");
+		  fontLoaded := TRUE;
+	       END;
+	       plotter.ok := plotter.ok &
+	                     XResources.WriteString(plotter.win,
+				    MapX(plotter.x),
+				    MapY(plotter.y),
+				    op.text);
+	 END;
+      END PerformOp;
+
+      PROCEDURE Draw;
+      BEGIN
+	 IF plotter.erased THEN
+	    plotter.erased := FALSE;
+	    plotter.ok := plotter.ok & XResources.Clear(plotter.win);
+	    XResources.RestoreGContext(plotter.win);
+	    XResources.SaveGContext(plotter.win);
+	 ELSE
+	    LOOP
+	       IF plotter.last = NIL THEN
+		  plotter.erased := FALSE;
+		  plotter.last := plotter.head;
+		  plotter.ok := plotter.ok & XResources.Clear(plotter.win);
+		  XResources.RestoreGContext(plotter.win);
+		  XResources.SaveGContext(plotter.win);
+	       ELSIF plotter.last.next = NIL THEN
+		  firstDraw := FALSE;
+		  EXIT
+	       ELSE
+		  plotter.last := plotter.last.next;
+	       END;
+	       PerformOp(plotter.last);
+	       IF ~plotter.ok THEN EXIT END;
+	       IF Conditions.Test(exposeCondition, plotter.display) THEN
+		  EXIT
+	       END;
+	    END;
+	 END;
+	 plotter.ok := plotter.ok & X.Flush(plotter.display);
+      END Draw;
+
+      PROCEDURE Visible() : BOOLEAN;
+      BEGIN
+	 RETURN XResources.Visibility(plotter.win) # X.fullyObscured
+      END Visible;
+
+      PROCEDURE CreateWindow() : BOOLEAN;
+	 VAR
+	    win: XResources.Window;
+	    width, height: INTEGER;
+	    aspectRatioOfPlotter: REAL;
+	    displayWidth, displayHeight: INTEGER;
+      BEGIN
+	 aspectRatioOfPlotter := plotter.width / plotter.height;
+	 displayWidth := X.GetWidth(plotter.display);
+	 displayHeight := X.GetHeight(plotter.display);
+	 IF (plotter.width + 2*border < displayWidth) &
+	       (plotter.height + 2*border < displayHeight) THEN
+	    width := plotter.width + 2*border;
+	    height := plotter.height + 2*border;
+	 ELSIF plotter.width / displayWidth <
+		  plotter.height / displayHeight THEN
+	    height := displayHeight DIV 2;
+	    width := SHORT(ENTIER(height * aspectRatioOfPlotter));
+	    IF width < 2*border THEN width := 2*border END;
+	 ELSE
+	    width := displayWidth DIV 2;
+	    height := SHORT(ENTIER(width / aspectRatioOfPlotter));
+	    IF height < 2*border THEN height := 2*border END;
+	 END;
+	 IF ~XResources.CreateSimpleWindow(win, plotter.display,
+	                                   NIL, 0, 0,
+					   width, height,
+					   (* border width = *) 3,
+					   X.GetBlackPixel(plotter.display),
+					   X.GetWhitePixel(plotter.display)) OR
+	       ~XStdProperties.SetDefaults(win) THEN
+	    X.Close(plotter.display);
+	    RETURN FALSE
+	 END;
+	 plotter.win := win;
+	 RETURN TRUE
+      END CreateWindow;
+
+      PROCEDURE UpdateGeometry(adjust: BOOLEAN);
+	 VAR
+	    newWidth, newHeight: INTEGER;
+	    requestIgnored: BOOLEAN;
+	    scaleX, scaleY: REAL; (* scale down factors *)
+      BEGIN
+	 aspectRatioOfPlotter := plotter.width / plotter.height;
+	 XResources.GetGeometry(plotter.win, geometry);
+	 IF ~adjust & (lastGeometry # NIL) &
+	       (geometry.width = lastGeometry.width) &
+	       (geometry.height = lastGeometry.height) THEN
+	    reconfigured := FALSE;
+	    RETURN (* nothing to be done *)
+	 END;
+	 lastGeometry := geometry;
+	 requestIgnored := newGeometryRequested &
+	    (requestedWidth # geometry.width) &
+	    (requestedHeight # geometry.height);
+	 IF newGeometryRequested & ~requestIgnored THEN
+	    RemoveTimer(updateGeometryTimer);
+	 END;
+	 IF geometry.width > 2*border THEN
+	    width := geometry.width - 2*border;
+	    xoffset := border;
+	 ELSE
+	    width := geometry.width;
+	    xoffset := 0;
+	 END;
+	 IF geometry.height > 2*border THEN
+	    height := geometry.height - 2*border;
+	    yoffset := border;
+	 ELSE
+	    height := geometry.height;
+	    yoffset := 0;
+	 END;
+	 aspectRatioOfX := width / height;
+	 IF aspectRatioOfX > aspectRatioOfPlotter THEN
+	    (* X window is wider than that of the plotter *)
+	    scaleX := aspectRatioOfPlotter / aspectRatioOfX;
+	    scaleY := 1;
+	    width := SHORT(ENTIER(width * scaleX));
+	    IF width < 2*border THEN
+	       width := 2*border;
+	    END;
+	 ELSE
+	    scaleX := 1;
+	    scaleY := aspectRatioOfX / aspectRatioOfPlotter;
+	    height := SHORT(ENTIER(height * scaleY));
+	    IF height < 2*border THEN
+	       height := 2*border;
+	    END;
+	 END;
+	 (* attempt to resize our window if its aspect ratio
+	    differs too much
+	 *)
+	 IF (ABS(aspectRatioOfPlotter - aspectRatioOfX) > 0.1) &
+	       (geometry.width > 100) & (geometry.height > 100) THEN
+	    IF adjust THEN
+	       IF aspectRatioOfX > aspectRatioOfPlotter THEN
+		  newWidth := SHORT(ENTIER(geometry.width /
+		     (aspectRatioOfX / aspectRatioOfPlotter)));
+		  newHeight := geometry.height;
+	       ELSE
+		  newWidth := geometry.width;
+		  newHeight := SHORT(ENTIER(geometry.height /
+		     (aspectRatioOfPlotter / aspectRatioOfX)));
+	       END;
+	       plotter.ok := plotter.ok &
+		  XResources.ConfigureWindowSize(plotter.win,
+		     newWidth, newHeight) &
+		  X.Flush(plotter.display);
+	       newGeometryRequested := TRUE;
+	       requestedWidth := newWidth;
+	       requestedHeight := newHeight;
+	       SetTimer(updateGeometryTimer);
+	       reconfigured := TRUE;
+	    ELSIF requestIgnored THEN
+	       reconfigured := FALSE;
+	    ELSE
+	       SetTimer(adjustGeometryTimer);
+	       reconfigured := TRUE;
+	    END;
+	 ELSIF requestIgnored THEN
+	    reconfigured := FALSE;
+	 ELSE
+	    reconfigured := FALSE;
+	    newGeometryRequested := FALSE;
+	 END;
+      END UpdateGeometry;
+
+   BEGIN (* WindowHandler *)
+      plotter := job(Job).plotter;
+      IF ~plotter.erased & (plotter.head = NIL) THEN
+	 Signals.Create(plotter.signal);
+	 Signals.WaitFor(plotter.signal);
+	 plotter.signal := NIL;
+	 IF ~Resources.Alive(plotter) THEN RETURN END;
+      END;
+      IF ~CreateWindow() THEN RETURN END;
+      IF ~Resources.Alive(plotter) THEN RETURN END;
+      Conditions.CreateSet(conditions);
+      Resources.TakeInterest(plotter.win, eventType);
+      EventConditions.Create(termCondition, eventType);
+      Conditions.Incl(conditions, termCondition);
+      XResources.GetEventType(plotter.win, X.exposeEvent, eventType);
+      EventConditions.Create(exposeCondition, eventType);
+      Conditions.Incl(conditions, exposeCondition);
+      IF XResources.ExtendEventMask(plotter.win, {X.exposure}) &
+	    X.MapWindow(plotter.display, XResources.GetID(plotter.win)) THEN
+	 XResources.SaveGContext(plotter.win);
+	 fontLoaded := FALSE; lastGeometry := NIL;
+	 newGeometryRequested := FALSE;
+	 firstDraw := TRUE;
+	 InitTimer(redrawTimer, 0, 500000);
+	 InitTimer(updateGeometryTimer, 1, 500000);
+	 InitTimer(adjustGeometryTimer, 0, 400000);
+	 LOOP
+	    IF Visible() THEN
+	       IF plotter.signal = NIL THEN
+		  Signals.Create(plotter.signal);
+		  Signals.CreateCondition(signalCondition, plotter.signal);
+		  Conditions.Incl(conditions, signalCondition);
+	       END;
+	    ELSE
+	       IF plotter.signal # NIL THEN
+		  Conditions.Excl(conditions, signalCondition);
+		  plotter.signal := NIL;
+	       END;
+	    END;
+	    Tasks.WaitForOneOf(conditions);
+	    IF EventConditions.TestAndGet(termCondition, event) THEN
+	       IF event.change = Resources.terminated THEN
+		  EXIT
+	       END;
+	    END;
+	    IF EventConditions.TestAndGet(exposeCondition, xevent) THEN
+	       WHILE EventConditions.TestAndGet(exposeCondition, xevent) DO
+		  (* remove all pending expose events from the queue *)
+	       END;
+	       RemoveTimer(redrawTimer);
+	       UpdateTimer(updateGeometryTimer);
+	       UpdateTimer(adjustGeometryTimer);
+	       UpdateGeometry((* adjust = *) firstDraw);
+	       IF reconfigured THEN
+		  SetTimer(redrawTimer);
+	       ELSE
+		  plotter.last := NIL;
+		  Draw;
+	       END;
+	    ELSIF (plotter.signal # NIL) & Signals.Raised(plotter.signal) THEN
+	       RemoveTimer(redrawTimer);
+	       aspectRatioOfPlotter := plotter.width / plotter.height;
+	       plotter.signal := NIL;
+	       Conditions.Excl(conditions, signalCondition);
+	       IF Visible() THEN
+		  Draw;
+	       END;
+	    ELSIF redrawTimer.set & TimerPassed(redrawTimer) THEN
+	       IF Visible() THEN
+		  Draw;
+	       END;
+	    ELSIF updateGeometryTimer.set &
+		  TimerPassed(updateGeometryTimer) THEN
+	       IF newGeometryRequested THEN
+		  newGeometryRequested := FALSE;
+		  UpdateGeometry((* adjust = *) TRUE);
+	       END;
+	    ELSIF adjustGeometryTimer.set &
+		  TimerPassed(adjustGeometryTimer) THEN
+	       UpdateGeometry((* adjust = *) TRUE);
+	    END;
+	    IF ~plotter.ok THEN
+	       EXIT
+	    END;
+	 END;
+      END;
+      EventConditions.Drop(termCondition);
+      EventConditions.Drop(exposeCondition);
+      Resources.Notify(plotter.win, Resources.terminated);
+      Resources.Notify(plotter, Resources.terminated);
+   END WindowHandler;
+
+   PROCEDURE AddOp(plotter: Plotter; op: Operation);
+   BEGIN
+      op.next := NIL;
+      IF plotter.head = NIL THEN
+	 plotter.head := op;
+      ELSE
+	 plotter.tail.next := op;
+      END;
+      plotter.tail := op;
+      IF plotter.signal # NIL THEN
+	 Signals.Raise(plotter.signal);
+      END;
+   END AddOp;
+
+   (* === if procedures ============================================== *)
+
+   PROCEDURE SetSpace(plotter: Plotters.Plotter;
+                      xmin, ymin,
+		      xmax, ymax: INTEGER);
+   BEGIN
+      WITH plotter: Plotter DO
+	 plotter.xmin := xmin; plotter.ymin := ymin;
+	 plotter.width := xmax - xmin;
+	 plotter.height := ymax - ymin;
+	 plotter.head := NIL; plotter.tail := NIL; plotter.last := NIL;
+	 IF plotter.signal # NIL THEN
+	    Signals.Raise(plotter.signal);
+	 END;
+      END;
+   END SetSpace;
+		     
+   PROCEDURE Erase(plotter: Plotters.Plotter);
+   BEGIN
+      WITH plotter: Plotter DO
+	 plotter.head := NIL; plotter.tail := NIL; plotter.last := NIL;
+	 plotter.erased := TRUE;
+	 IF plotter.signal # NIL THEN
+	    Signals.Raise(plotter.signal);
+	 END;
+      END;
+   END Erase;
+
+   PROCEDURE Move(plotter: Plotters.Plotter; xto, yto: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := moveOp; op.xto := xto; op.yto := yto;
+	 AddOp(plotter, op);
+      END;
+   END Move;
+
+   PROCEDURE Cont(plotter: Plotters.Plotter; xto, yto: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := contOp; op.xto := xto; op.yto := yto;
+	 AddOp(plotter, op);
+      END;
+   END Cont;
+
+   PROCEDURE Point(plotter: Plotters.Plotter; xpoint, ypoint: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := pointOp;
+	 op.xpoint := xpoint; op.ypoint := ypoint;
+	 AddOp(plotter, op);
+      END;
+   END Point;
+
+   PROCEDURE Line(plotter: Plotters.Plotter; xfrom, yfrom, xto, yto: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := lineOp;
+	 op.xfrom := xfrom; op.yfrom := yfrom;
+	 op.xto := xto; op.yto := yto;
+	 AddOp(plotter, op);
+      END;
+   END Line;
+
+   PROCEDURE Arc(plotter: Plotters.Plotter;
+                 xcenter, ycenter, xstart, ystart, xend, yend: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := arcOp;
+	 op.xcenter := xcenter; op.ycenter := ycenter;
+	 op.xstart := xstart; op.ystart := ystart;
+	 op.xend := xend; op.yend := yend;
+	 AddOp(plotter, op);
+      END;
+   END Arc;
+
+   PROCEDURE Circle(plotter: Plotters.Plotter;
+                    xcenter, ycenter, radius: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := circleOp;
+	 op.xcenter := xcenter;
+	 op.ycenter := ycenter;
+	 op.radius := radius;
+	 AddOp(plotter, op);
+      END;
+   END Circle;
+
+   PROCEDURE String(plotter: Plotters.Plotter; str: ARRAY OF CHAR);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := stringOp; COPY(str, op.text);
+	 AddOp(plotter, op);
+      END;
+   END String;
+
+   PROCEDURE SetLineMode(plotter: Plotters.Plotter; mode: Plotters.LineMode);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := setLineModeOp; op.lineMode := mode;
+	 AddOp(plotter, op);
+      END;
+   END SetLineMode;
+
+   PROCEDURE SetLineWidth(plotter: Plotters.Plotter; width: INTEGER);
+      VAR
+	 op: Operation;
+   BEGIN
+      WITH plotter: Plotter DO
+	 NEW(op); op.kind := setLineWidthOp; op.lineWidth := width;
+	 AddOp(plotter, op);
+      END;
+   END SetLineWidth;
+
+   PROCEDURE Close(plotter: Plotters.Plotter);
+   BEGIN
+      WITH plotter: Plotter DO
+	 IF plotter.signal # NIL THEN
+	    Signals.Raise(plotter.signal);
+	 END;
+	 X.Close(plotter.display);
+      END;
+   END Close;
+
+   (* === module initialization ====================================== *)
+
+   PROCEDURE InitModule;
+   BEGIN
+      Services.CreateType(plotterType, "XPlotters.Plotter",
+	 "Plotters.Plotter");
+      NEW(if);
+      if.setSpace := SetSpace;
+      if.erase := Erase;
+      if.move := Move;
+      if.cont := Cont;
+      if.point := Point;
+      if.line := Line;
+      if.arc := Arc;
+      if.circle := Circle;
+      if.string := String;
+      if.setLineMode := SetLineMode;
+      if.setLineWidth := SetLineWidth;
+      if.close := Close;
+      NEW(desc);
+      desc.xmin := 0; desc.xmax := 16383;
+      desc.ymin := 0; desc.ymax := 16383;
+   END InitModule;
+
+   (* === exported constructor ======================================= *)
+
+   PROCEDURE Create(VAR plotter: Plotters.Plotter;
+                    errors: RelatedEvents.Object) : BOOLEAN;
+      VAR
+	 p: Plotter;
+	 display: X.Display;
+	 win: XResources.Window;
+	 job: Job;
+   BEGIN
+      IF ~X.Open(display, "", errors) THEN
+	 RETURN FALSE
+      END;
+      RelatedEvents.Forward(display, plotter);
+      NEW(p); Services.Init(p, plotterType);
+      p.ok := TRUE;
+      p.display := display; p.win := NIL;
+      p.head := NIL; p.tail := NIL; p.last := NIL;
+      p.x := 0; p.y := 0; p.signal := NIL;
+      p.width := 4096; p.height := 4096;
+      p.xmin := 0; p.ymin := 0; p.erased := FALSE;
+      Plotters.Init(p, if, caps, desc);
+      Plotters.SetSpace(p, 0, 0, p.width, p.height);
+      NEW(job); job.plotter := p;
+      Jobs.Submit(job, WindowHandler);
+      plotter := p;
+      RETURN TRUE
+   END Create;
+
+BEGIN
+   InitModule;
+END XPlotters.

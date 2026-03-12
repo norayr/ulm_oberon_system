@@ -1,0 +1,45 @@
+MODULE I386Relocations;
+
+   IMPORT Conclusions, Relocations, Res := OberonI386Results, Disciplines,
+	  FragmentedStreams;
+
+
+   PROCEDURE Process (obj : Disciplines.Object;
+		      stream : FragmentedStreams.Stream;
+		      target : Res.Block; start : FragmentedStreams.Label);
+      VAR
+         req : Relocations.Request;
+         mind, maxd : LONGINT;
+         dist, dummy : LONGINT;
+         inst : Relocations.Instance;
+   BEGIN
+      req := NIL;
+      req := Relocations.GetRequests (obj);
+      WHILE req # NIL DO
+         IF req IS Relocations.RelocRequest THEN
+            WITH req : Relocations.RelocRequest DO
+               IF req.type # Relocations.noReloc THEN
+                  inst := req.instances;
+                  WHILE inst # NIL DO
+                     FragmentedStreams.Difference (start, inst.label, dist,
+                                                 dummy);
+                     ASSERT(dist = dummy);
+                     Res.AddReloc (target, req.type, dist + inst.off,
+                                   inst.len, req.ref);
+                     inst := inst.next;
+                  END;
+               END;
+            END;
+         ELSE
+            WITH req : Relocations.SymRequest DO
+               FragmentedStreams.Difference (start, req.label, dist, dummy);
+               ASSERT(dist = dummy);
+               Res.AddSymbol (target, req.name, dist);
+            END;
+         END;
+         req := req.next;
+      END;
+   END Process;
+
+END I386Relocations.
+

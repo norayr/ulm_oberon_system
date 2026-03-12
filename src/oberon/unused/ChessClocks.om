@@ -1,0 +1,163 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2004 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id: ChessClocks.om,v 1.1 2004/04/23 06:10:17 borchert Exp $
+   ----------------------------------------------------------------------------
+   $Log: ChessClocks.om,v $
+   Revision 1.1  2004/04/23 06:10:17  borchert
+   Initial revision
+
+   ----------------------------------------------------------------------------
+*)
+
+MODULE ChessClocks;
+
+   IMPORT Clocks, Objects, Op := Operations, Scales, Services, Shards, Times;
+
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+
+      ChessClock = POINTER TO ChessClockRec;
+      ChessClockRec =
+	 RECORD
+	    (Services.ObjectRec)
+	    if: Interface;
+	    numberOfPlayers: SHORTINT;
+	    timelimit: Times.Time; (* relative *)
+	    abstimelimit: Times.Time; (* absolute *)
+	 END;
+      Player = SHORTINT; (* player number, starting from 0 *)
+
+   TYPE
+      StartProc = PROCEDURE (chessclock: ChessClock;
+                             auth: Shards.Lid) : BOOLEAN;
+      StopProc = PROCEDURE (chessclock: ChessClock;
+                            auth: Shards.Lid) : BOOLEAN;
+      SwitchProc = PROCEDURE (chessclock: ChessClock;
+	                      auth: Shards.Lid; player: Player) : BOOLEAN;
+
+      RunningProc = PROCEDURE (chessclock: ChessClock) : BOOLEAN;
+      CurrentPlayerProc = PROCEDURE (chessclock: ChessClock) : Player;
+      GetClockProc = PROCEDURE (chessclock: ChessClock; player: Player;
+	                        VAR clock: Clocks.Clock);
+
+      InterfaceRec =
+	 RECORD
+	    (Objects.ObjectRec)
+	    start: StartProc;
+	    stop: StopProc;
+	    switch: SwitchProc;
+	    running: RunningProc;
+	    currentPlayer: CurrentPlayerProc;
+	    getClock: GetClockProc;
+	 END;
+
+   (* === private procedures ============================================= *)
+
+   PROCEDURE InitModule;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.CreateType(type, "ChessClocks.ChessClock", "");
+   END InitModule;
+
+   PROCEDURE MakeAbsolute(time: Times.Time; VAR abstime: Times.Time);
+      VAR
+	 timeval: Times.TimeValueRec;
+   BEGIN
+      Times.GetValue(time, timeval);
+      Times.CreateAndSet(abstime, Scales.absolute,
+                         timeval.epoch, timeval.second, timeval.usec);
+   END MakeAbsolute;
+
+   (* === exported procedures ============================================ *)
+
+   PROCEDURE Init(chessclock: ChessClock; if: Interface;
+                  numberOfPlayers: SHORTINT;
+		  timelimit: Times.Time);
+   BEGIN
+      ASSERT((if.start # NIL) & (if.stop # NIL) & (if.switch # NIL) &
+         (if.running # NIL) & (if.currentPlayer # NIL) & (if.getClock # NIL));
+      ASSERT(numberOfPlayers > 0);
+      ASSERT(Scales.IsRelative(timelimit));
+      chessclock.if := if;
+      chessclock.numberOfPlayers := numberOfPlayers;
+      chessclock.timelimit := timelimit;
+      MakeAbsolute(timelimit, chessclock.abstimelimit);
+   END Init;
+
+   PROCEDURE Start(chessclock: ChessClock; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN chessclock.if.start(chessclock, auth)
+   END Start;
+
+   PROCEDURE Stop(chessclock: ChessClock; auth: Shards.Lid) : BOOLEAN;
+   BEGIN
+      RETURN chessclock.if.stop(chessclock, auth)
+   END Stop;
+
+   PROCEDURE Switch(chessclock: ChessClock;
+                    auth: Shards.Lid; player: Player) : BOOLEAN;
+   BEGIN
+      RETURN chessclock.if.switch(chessclock, auth, player)
+   END Switch;
+
+   PROCEDURE Running(chessclock: ChessClock) : BOOLEAN;
+   BEGIN
+      RETURN chessclock.if.running(chessclock)
+   END Running;
+
+   PROCEDURE CurrentPlayer(chessclock: ChessClock) : Player;
+   BEGIN
+      RETURN chessclock.if.currentPlayer(chessclock)
+   END CurrentPlayer;
+
+   PROCEDURE GetClock(chessclock: ChessClock; player: Player;
+                      VAR clock: Clocks.Clock);
+   BEGIN
+      chessclock.if.getClock(chessclock, player, clock);
+   END GetClock;
+
+   (* === exported procedures that are not propagated to the impl. *)
+
+   PROCEDURE NumberOfPlayers(chessclock: ChessClock) : SHORTINT;
+   BEGIN
+      RETURN chessclock.numberOfPlayers
+   END NumberOfPlayers;
+
+   PROCEDURE TimeLeft(chessclock: ChessClock; player: Player;
+                      VAR time: Times.Time);
+      VAR
+	 clock: Clocks.Clock;
+	 currentTime: Times.Time;
+   BEGIN
+      GetClock(chessclock, player, clock);
+      Clocks.GetTime(clock, currentTime);
+      Op.Sub3(time, chessclock.abstimelimit, currentTime);
+   END TimeLeft;
+
+   PROCEDURE GetTimeLimit(chessclock: ChessClock;
+                          VAR timelimit: Times.Time);
+   BEGIN
+      timelimit := chessclock.timelimit;
+   END GetTimeLimit;
+
+BEGIN
+   InitModule;
+END ChessClocks.

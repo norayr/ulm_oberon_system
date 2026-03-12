@@ -1,0 +1,102 @@
+MODULE BspDaemon;
+
+   IMPORT
+      InetHTTPDaemon, HTTP11Handler, InetTCP, Networks, RelatedEvents, Streams,
+      Strings, SysStat, Texts, UnixDirectories, WebCounters, WebFileObjects, WebHandlers,
+      WebMRTestObjects, WebNames, WebObjects, Write;
+      
+   VAR
+      object: WebObjects.Object;
+      address: Networks.Address;
+      ipAddress: InetTCP.Address;
+      handler: WebHandlers.Handler;
+      daemon: InetHTTPDaemon.HTTPD;
+      nameSpace: WebNames.NameSpace;
+      path: Streams.Stream;
+      str: ARRAY 512 OF CHAR;
+      nameS: Texts.Text;
+      
+   PROCEDURE InitDir(name: ARRAY OF CHAR; nameSpace: WebNames.NameSpace;
+                     baseLen: LONGINT);
+      (* Inserts every file of given directory in namespace. 'baseLen'
+         characters of name are ignored when the name is inserted into the
+         namespace.
+         To avoid creating a Text-Stream for every call the global variable
+         'nameS' is used.
+      *)
+      
+      VAR
+         dirEntries: Streams.Stream;
+         entry: UnixDirectories.Entry;
+         stat: SysStat.StatRec;
+         obj: WebObjects.Object;
+         pos: LONGINT;
+
+   BEGIN
+      Strings.Concatenate(name, "/");
+      pos := Strings.Len(name);
+      IF UnixDirectories.Open(dirEntries, name, RelatedEvents.null) THEN
+         WHILE Streams.Read(dirEntries, entry) DO
+            IF (entry.name # ".") & (entry.name # "..") THEN
+               name[pos] := 0X;
+               Strings.Concatenate(name, entry.name);
+               IF ~SysStat.Stat(name, stat, NIL) THEN
+                  Write.Line("can't get stat");
+               ELSE
+                  IF (stat.mode * SysStat.type = SysStat.dir) THEN
+                     InitDir(name, nameSpace, baseLen);
+                  ELSIF (stat.mode * SysStat.type = SysStat.reg) THEN
+                     Write.Line(name);
+                     WebFileObjects.Create(obj, name);
+                     Strings.WritePart(nameS, name, baseLen);
+                     IF ~WebNames.InsertObject(nameSpace, nameS, obj) THEN
+                        Write.String("can't insert ");
+                        Write.Line(name);
+                     END;
+                  END;
+               END;
+            END;
+         END;
+         Streams.Release(dirEntries);
+      END;
+   END InitDir;
+         
+BEGIN
+   WebNames.CreateNameSpace(nameSpace);
+   
+   HTTP11Handler.Create(handler, nameSpace);
+   ipAddress.portnum := 7914;
+   InetTCP.CreateAddress(address, ipAddress);
+   InetHTTPDaemon.Create(daemon, address, handler);
+   IF ~InetHTTPDaemon.Start(daemon) THEN
+      Write.Line("error starting daemon");
+      HALT(1);
+   END;
+
+   str := "/index.html";
+   Strings.Open(path, str);
+   WebMRTestObjects.Create(object);
+   IF ~WebNames.InsertObject(nameSpace, path, object) THEN
+      Write.Line("error with inserting in name space");
+      HALT(1);
+   END;
+   
+   str := "counter.html"; Streams.Touch(path);
+   WebCounters.Create(object, 4, 3);
+   IF ~WebNames.InsertObject(nameSpace, path, object) THEN
+      Write.Line("error with inserting in name space");
+      HALT(1);
+   END;
+   Streams.Release(path);
+   
+   Texts.Open(nameS);
+   str := "/www/thales/www/htdocs/stochastik";
+   InitDir(str, nameSpace, Strings.Len("/www/thales/www/htdocs"));
+
+   str := "/www/thales/www/htdocs/stadtulm";
+   InitDir(str, nameSpace, Strings.Len("/www/thales/www/htdocs"));
+   Streams.Release(nameS);
+           
+           
+   (* do own work e.g. logging from errors *)
+END BspDaemon.

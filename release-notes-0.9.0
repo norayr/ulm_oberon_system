@@ -1,0 +1,156 @@
+Notes about revival of Ulm's Oberon System on modern Linux
+====================================================================
+
+These notes document all changes we made to build and run ulm's oberon on a modern GNU/Linux operating system. We have used Gentoo on x86_64 (binutils 2.44, elfutils 0.194, kernel 6.12).
+We were able to do this because we had preserved the old 0.8.6 binaries built in 2006. We needed those 0.8.6 binaries served as the means to build our newer version. We didn't need the compiler itself but name server and database binaries. Otherwise we could not produce the binaries required for assembling the compiler from existing tof files.
+
+
+Background
+----------
+The ULM Oberon system produces 32-bit i386 statically linked ELF executables.
+All binaries are statically linked and require no 32-bit userspace libraries;
+the kernel's 32-bit (IA-32) execution support is sufficient.
+
+The build system is database-driven:
+  pons   - persistent name server (TCP, port 9880/9881)
+  cdbd   - compiler database daemon (TCP, port 9882)
+  obload - loads compiled module objects from the database
+  obtofgen - generates .tof (Transportable Object Format) from .obj
+  tof2elf - converts .tof text files to ELF .o relocatable objects
+
+Bootstrap does NOT require running the Oberon compiler: build/tofs.tgz
+contains 295 pre-compiled .tof files that are converted directly to .o
+and archived into libo.a, then linked with the bootstrap binaries.
+
+
+Files added
+-----------
+src/util/oblink/oberon-i386.ld  (NEW)
+  Custom GNU ld linker script for all Oberon binaries.
+  Required to reproduce the exact single-segment layout that the Oberon
+  runtime expects (see "Why a custom linker script" below).
+
+
+Files modified
+--------------
+Makefile (top-level)
+  - stage1 and stage2 targets used bare `time` command.
+    However /usr/bin/time is not installed on our Gentoo system;
+    `time` only exists as a bash built-in.
+    So we've fixed this by wrapping the command in $(SHELL) -c '...':
+        $(SHELL) -c 'time $(BinDir)/mk_obstage ...'
+
+src/util/tof2elf/Makefile
+  - Removed -static from LDFLAGS: there is no static libelf.a on many systems.
+    tof2elf is a standalone utility; a dynamically linked binary is fine.
+  - Added `chmod 755 $@` to the install target (file was copied without
+    execute permission).
+
+src/util/tof2elf/tof2elf.c
+  - Fixed for modern libelf (elfutils 0.194).  See "tof2elf fix" below.
+
+src/util/oblink/oblink.sh
+  - Changed linker invocation to use new custom linker script:
+      Before:  ld -o $outfile -e _entry -m elf_i386 $start $lib
+      After:   ld -T $BINDIR/oberon-i386.ld -m elf_i386 -o $outfile $start $lib
+
+src/util/oblink/Makefile
+  - Added oberon-i386.ld to Targets so it is installed alongside oblink.
+  - Added install rule for the linker script.
+
+src/util/obstage/mk_obstage.sh
+  - The inline build() function also called bare ld without the linker
+    script.  Fixed the same way as oblink.sh:
+      Before:  ld -m elf_i386 -e _entry -o $output start.o libo.a
+      After:   ld -T $ibindir/oberon-i386.ld -m elf_i386 -o $output start.o libo.a
+
+
+Why a custom linker script
+--------------------------
+Two separate problems with modern GNU ld (2.44) required a custom script.
+
+Problem 0: Multiple LOAD segments
+  Modern ld produces 4 LOAD segments by default: R (text), RWE, R (rodata),
+  RW (data/bss).  The Oberon runtime patches init trampolines at startup,
+  which requires all sections to be in a single writable+executable segment.
+  With multiple segments, the R segment causes SIGSEGV_ACCERR when the
+  runtime tries to patch it.
+
+  The -N flag (used in older binutils) forces a single RWE segment, but
+  sets p_align=0x20, which triggers next problem (:.
+
+Problem 1: ASLR and non-page-aligned segments
+  With p_align < 0x1000 (PAGE_SIZE), the Linux kernel randomizes the
+  brk() starting position even for ET_EXEC (non-PIE) 32-bit binaries
+  when ASLR is enabled (randomize_va_space=2).  The MEMINIT startup
+  assembly (in genobrts.pl) assumes brk(0) returns an address just past
+  the BSS, which is true only when the segment is page-aligned.  With a
+  randomized brk, the segment registration arithmetic produces wrong
+  addresses and the Memory module's ReserveRegion() raises:
+    "assertion failed: given address interval overlaps existing regions"
+
+  Here's why we need our custom `oberon-i386.ld`.
+  The linker script creates a single LOAD segment, includes the ELF
+  headers (FILEHDR PHDRS) in the segment so the load address matches
+  the old 0.8.6 layout, and sets p_align=0x1000 (page size):
+```
+    OUTPUT_FORMAT("elf32-i386", "elf32-i386", "elf32-i386")
+    OUTPUT_ARCH(i386)
+    ENTRY(_entry)
+
+    PHDRS
+    {
+      oberon PT_LOAD FILEHDR PHDRS FLAGS(7);
+    }
+
+    SECTIONS
+    {
+      . = 0x08048000 + SIZEOF_HEADERS;
+      .init   : { *(.init)   } :oberon
+      .text   : { *(.text)   }
+      .rodata : { *(.rodata) }
+      .private : { *(.private) *(.data) *(.got) *(.got.plt) }
+      .bss    : { *(.bss) *(COMMON) }
+      /DISCARD/ : { *(.note*) *(.comment) *(.eh_frame*) }
+    }
+```
+  Result: LOAD 0x000000 0x08048000 0x08048000 0xXXXXXX 0xXXXXXX RWE 0x1000
+  This exactly matches the segment layout produced by the old toolchain.
+
+
+tof2elf fix (modern libelf / elfutils)
+---------------------------------------
+tof2elf.c is a standalone C program that reads .tof (text) files and
+writes 32-bit i386 ELF .o relocatable objects.  It uses Elf32_* types
+throughout and explicitly sets e_machine=EM_386, so it produces correct
+32-bit output regardless of whether the tof2elf binary itself is 32-bit
+or 64-bit.  The host binary can be (and now is) a native 64-bit binary.
+
+Problem was that the old libelf respected user-set Elf_Data.d_off values
+when computing the file layout.
+The original code used this by creating one Elf_Data chunk per
+string/symbol/relocation, manually tracking cumulative offsets
+in a counter, setting d_off to that value, and returning it for use as
+sh_name or symbol index.
+
+Modern elfutils ignores user-set d_off and recomputes all section offsets
+during elf_update().  The sh_name values (set from the manually-tracked
+counter) no longer matched where libelf actually placed the strings,
+producing sh_name offsets beyond the end of the string table.  `ar` and
+`readelf` would report "ELF section name out of range".
+
+Fixed by replacing the one-Elf_Data-per-item pattern with a single growable
+buffer per section (string table, symbol table, per-section reloc table).
+The buffer is updated in place before elf_update() is called, so libelf
+sees a single Elf_Data containing the complete section content.  The
+manually-tracked offset counter still correctly reflects the buffer
+position and can safely be used as sh_name / symbol index.
+
+The fixed tof2elf.c compiles and works correctly on both 32-bit and 64-bit
+Linux systems with modern libelf (elfutils >= 0.150 or so).
+
+Installation
+============
+
+See INSTALL file.
+

@@ -1,0 +1,514 @@
+MODULE InetHTTPURLs;
+   
+   IMPORT
+      ASCII, Events, InetURLs, RelatedEvents, Streams, Strings, SubStreams,
+      Write;
+   
+   TYPE
+      URL = POINTER TO URLRec;
+      URLRec =
+         RECORD
+            (InetURLs.URLRec)
+            (* Attention: escaped characters remain escaped. *)
+            host: Streams.Stream;
+            port: Streams.Stream;
+            path: Streams.Stream; (* path to resource *)
+            absolutePath: BOOLEAN;
+            search: Streams.Stream;
+            fragment: Streams.Stream;
+         END;
+         
+      
+   CONST
+      illegalScheme = 0; (* Illegal Character in scheme of URL *)
+      expectingSlash = 1; (* Expecting '/' in URL *)
+      illegalName = 2; (* Illegal Character in domain name of URL *)
+      illegalPort = 3; (* Illegal Character in port number of URL *)
+      illegalPath = 4; (* Illegal Character in path of URL *)
+      illegalSearch = 5; (* Illegal Character in search-part of URL *)
+      illegalFragment = 6; (* Illegal Character in fragment-part of URL *)
+      errorcodes = 7;
+         
+   TYPE
+      ErrorCode = SHORTINT;
+
+      ErrorEvent = POINTER TO ErrorEventRec;
+      ErrorEventRec =
+         RECORD
+            (Events.EventRec)
+            errorcode: ErrorCode;
+         END;   
+   
+   VAR
+      errorMessages: ARRAY errorcodes OF Events.Message;
+      error: Events.EventType;
+      
+   PROCEDURE InitErrorHandling;
+   
+   BEGIN
+      Events.Define(error);
+      errorMessages[illegalScheme] := "Illegal Character in scheme of URL";
+      errorMessages[expectingSlash] := "Expecting '/' in URL";
+      errorMessages[illegalName] := "Illegal Character in domain name of URL";
+      errorMessages[illegalPort] := "Illegal Character in port number of URL";
+      errorMessages[illegalPath] := "Illegal Character in path of URL";
+      errorMessages[illegalSearch] := "Illegal Character in search-part of URL";
+      errorMessages[illegalFragment] := "Illegal Character in fragment-part of URL";
+   END InitErrorHandling;
+   
+   
+   PROCEDURE Error(errors: RelatedEvents.Object; code: ErrorCode);
+      (* raise an error event; to be called in standard situations *)
+      
+      VAR
+         event: ErrorEvent;
+         
+   BEGIN
+      NEW(event);
+      event.type := error;
+      event.message := errorMessages[code];
+      event.errorcode := code;
+      RelatedEvents.Raise(errors, event);
+   END Error;
+   
+   
+   PROCEDURE Assign(url: InetURLs.URL; s: Streams.Stream): BOOLEAN;
+      (* Assigns the Streams 's' to the URL. The Stream is parsed from the
+         actual position to EOF, or to the next space, tab, or newline is
+         reached and the elements are stored in 'url'. Escaped characters are
+         still escaped.  's' must be able to handle Substreams. 'Assign' will
+         return FALSE if `url` doesn`t conform to the URL expected (e.g. a
+         stored FTP-URL can`t be parsed as a  HTTP-URL). FALSE will also
+         returned if there are other syntactical errors. Error events related to
+         'url' closer describe the errors.
+      *)
+   
+      VAR
+         start: Streams.Count; (* current part of URL starts at 'start' of 's' *)
+         aktPos: Streams.Count;
+         ch: CHAR;
+         state: INTEGER;
+         
+      PROCEDURE GetSlashStream(VAR s: Streams.Stream);
+         (* Creates a stream which only consists of a '/'-char *)
+         
+         VAR
+            p: POINTER TO ARRAY 2 OF CHAR;
+            
+      BEGIN
+         NEW(p);
+         p^[0] := "/";
+         p^[1] := 0X;
+         Strings.Open(s, p^);
+      END GetSlashStream;
+      
+      
+      PROCEDURE MkSubStream(VAR s: Streams. Stream; base: Streams.Stream; 
+                     start, length: Streams.Count; errors: RelatedEvents.Object);
+         
+      BEGIN
+         IF ~SubStreams.Open(s, base, start, length, errors) THEN 
+         END;
+      END MkSubStream;
+      
+   BEGIN
+      WITH url: URL DO
+         (* initialize URL (maybe it was not newly created), to get definite 
+            values 
+         *)
+         url.scheme := NIL;
+         url.host := NIL;
+         url.port := NIL;
+         url.path := NIL;
+         url.absolutePath := FALSE;
+         url.search := NIL;
+         url.fragment := NIL;
+
+         Streams.GetPos(s, start);
+         state := 1;
+         aktPos := start;
+         LOOP
+            (* increment 'aktPos' even if s.eof is TRUE so we mustn't distinguish
+               within position-calcs - Don't use 'Streams.GetPos' instead.
+            *)
+            INC(aktPos);
+            IF ~Streams.ReadByte(s,ch) THEN
+               (* if there are no more characters available assume that a space
+                  is read.
+               *)
+               ch := ASCII.sp;
+            END;
+
+            IF ch # ASCII.cr THEN
+               (* carrigae return is ignored *)
+               CASE state OF
+               | 1: (**** state 1 ****)
+                  CASE ch OF
+                  | "h", "H":
+                     state := 2;
+                  | "/":
+                     state := 13;
+                     url.absolutePath := TRUE;
+                  | "?":
+                     state := 15;
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..".", "0"..";", "=", "@".."G",
+                        "I".."Z", "_", "a".."g", "i".."z":
+                     state := 14;
+                  ELSE
+                     Error(url, illegalScheme);
+                     RETURN FALSE;
+                  END; 
+               | 2: (**** state 2 ****)
+                  CASE ch OF
+                  | "t", "T":
+                     state := 3;
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..";", "=", "@".."S", "U".."Z", "_", 
+                        "a".."s", "u".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 1, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalScheme);
+                     RETURN FALSE;
+                  END; 
+               | 3: (**** state 3 ****)
+                  CASE ch OF
+                  | "t", "T":
+                     state := 4;
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 2, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 2, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..";", "=", "@".."S", "U".."Z", "_",
+                        "a".."s", "u".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 2, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalScheme);
+                     RETURN FALSE;
+                  END; 
+               | 4: (**** state 4 ****)
+                  CASE ch OF
+                  | "p", "P":
+                     state := 5;
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 3, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 3, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..";", "=", "@".."O", "Q".."Z", "_",
+                        "a".."o", "q".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 3, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalScheme);
+                     RETURN FALSE;
+                  END; 
+               | 5: (**** state 5 ****)
+                  CASE ch OF
+                  | ":":
+                     state := 6;
+                     MkSubStream(url.scheme, s, start, 4, url);
+                     start := aktPos;
+                 | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 4, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 4, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$".."9", ";", "=", "@".."Z", "_", 
+                                                                        "a".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 4, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalScheme);
+                     RETURN FALSE;
+                  END; 
+               | 6, 7: (**** state 6 and 7 ****)
+                  CASE ch OF
+                  | "/":
+                     INC(state);
+                     url.absolutePath := TRUE;
+                  ELSE
+                     Error(url, expectingSlash);
+                     RETURN FALSE;
+                  END; 
+               | 8: (**** state 8 ****)
+                  CASE ch OF
+                  | "!", ASCII.quote, "$"..".", "0".."9", "A".."Z", "_", 
+                                                                        "a".."z":
+                     state := 9;
+                     start := aktPos - 1;
+                  ELSE
+                     Error(url, illegalName);
+                     RETURN FALSE;
+                  END; 
+               | 9: (**** state 9 ****)
+                  CASE ch OF
+                  | ":":
+                     state := 10;
+                     MkSubStream(url.host, s, start, aktPos-start-1, url);
+                     start := aktPos;
+                  | "/":
+                     state := 12;
+                     MkSubStream(url.host, s, start, aktPos-start-1, url);
+                     start := aktPos - 1; 
+                  | "!", ASCII.quote, "$"..".", "0".."9", "A".."Z", "_", 
+                                                                        "a".."z":
+                     (* state := 9; *)
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.host, s, start, aktPos-start-1, url);
+                     GetSlashStream(url.path);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalName);
+                     RETURN FALSE;
+                  END; 
+               | 10: (**** state 10 ****)
+                  CASE ch OF
+                  | "0".."9":
+                     state := 11;
+                  ELSE
+                     Error(url, illegalPort);
+                     RETURN FALSE;
+                  END; 
+               | 11: (**** state 11 ****)
+                  CASE ch OF
+                  | "/":
+                     state := 12;
+                     MkSubStream(url.port, s, start, aktPos-start-1, url);
+                     start := aktPos - 1; 
+                  | "0".."9":
+                     (* state := 11; *)
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.port, s, start, aktPos-start-1,
+                                 url);
+                     GetSlashStream(url.path);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalPort);
+                     RETURN FALSE;
+                  END; 
+               | 12: (**** state 12 ****)
+                  CASE ch OF
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..";", "=", "@".."Z", "_", "a".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 1, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalPath);
+                     RETURN FALSE;
+                  END; 
+               | 13: (**** state 13 ****)
+                  CASE ch OF
+                  | "/":
+                     state := 8;
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, 1, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..".", "0"..";", "=", "@".."Z", "_", 
+                                                                        "a".."z":
+                     state := 14;
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, 1, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalPath);
+                     RETURN FALSE;
+                  END; 
+               | 14: (**** state 14 ****)
+                  CASE ch OF
+                  | "?":
+                     state := 15;
+                     MkSubStream(url.path, s, start, aktPos-start-1, url);
+                     start := aktPos;
+                  | "#":
+                     state := 16;
+                     MkSubStream(url.path, s, start, aktPos-start-1, url);
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..";", "=", "@".."Z", "_", "a".."z":
+                     (* state := 14; *)
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     MkSubStream(url.path, s, start, aktPos-start-1, url);
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalPath);
+                     RETURN FALSE;
+                  END; 
+               | 15: (**** state 15 ****)
+                  CASE ch OF
+                  | "#":
+                     state := 16;
+                     IF aktPos-start >= 2 THEN
+                        (* ...?#... means an empty search *)
+                        MkSubStream(url.search, s, start, aktPos-start-1,
+                                    url);
+                     END;
+                     start := aktPos;
+                  | "!", ASCII.quote, "$"..".", "0"..";", "=", "@".."Z", "_",
+                                                                        "a".."z":
+                     (* state := 15; *)
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     IF aktPos-start >= 2 THEN
+                        (* ...? means an empty search *)
+                        MkSubStream(url.search, s, start, aktPos-start-1,
+                                    url);
+                     END;
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalSearch);
+                     RETURN FALSE;
+                  END; 
+               | 16: (**** state 16 ****)
+                  CASE ch OF
+                  | "!"..".", "0"..";", "=", "@".."Z", "_", "a".."z":
+                     (* state := 16; *)
+                  | ASCII.sp, ASCII.ht, ASCII.nl:
+                     IF aktPos-start >= 2 THEN
+                        (* ...?# means an empty fragment *)
+                        MkSubStream(url.fragment, s, start, aktPos-start-1, 
+                                    url);
+                     END;
+                     RETURN TRUE;
+                  ELSE
+                     Error(url, illegalFragment);
+                     RETURN FALSE;
+                  END; 
+               END;
+            END;
+         END;
+      END;
+   END Assign;
+   
+   
+   PROCEDURE ToString(url: InetURLs.URL; VAR stringURL: ARRAY OF CHAR);
+      (* Combines the parts of th HTTP-URL to a string. *)
+   
+      VAR
+         pos: Streams.Count;
+         lenght: Streams.Count;
+         
+   BEGIN
+      WITH url: URL DO
+         pos := 0;
+
+         IF url.scheme # NIL THEN
+            Strings.ReadPart(stringURL, pos, url.scheme);
+            IF Streams.Seek(url.scheme, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.scheme, lenght);
+            INC(pos, lenght);
+            stringURL[pos] := ":";
+            INC(pos); 
+            (* don't care about string termination; other elements follow. *)
+         END;
+
+         IF url.host # NIL THEN
+            stringURL[pos] := "/";
+            INC(pos);
+            stringURL[pos] := "/";
+            INC(pos);
+            Strings.ReadPart(stringURL, pos, url.host);
+            IF Streams.Seek(url.host, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.host, lenght);
+            INC(pos, lenght);
+         END;
+
+         IF url.port # NIL THEN
+            stringURL[pos] := ":";
+            INC(pos);
+            Strings.ReadPart(stringURL, pos, url.port);
+            IF Streams.Seek(url.port, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.port, lenght);
+            INC(pos, lenght);
+         END;
+
+         IF url.path # NIL THEN
+            Strings.ReadPart(stringURL, pos, url.path);
+            IF Streams.Seek(url.path, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.path, lenght);
+            INC(pos, lenght)
+         END;
+
+         IF url.search # NIL THEN
+            stringURL[pos] := "?";
+            INC(pos);
+            Strings.ReadPart(stringURL, pos, url.search);
+            IF Streams.Seek(url.search, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.search, lenght);
+            INC(pos, lenght);
+         END;
+
+         IF url.fragment # NIL THEN
+            stringURL[pos] := "#";
+            INC(pos);
+            Strings.ReadPart(stringURL, pos, url.fragment);
+            IF Streams.Seek(url.fragment, 0, Streams.fromEnd) THEN END;
+            Streams.GetPos(url.fragment, lenght);
+            INC(pos, lenght);
+         END;
+      END;
+   END ToString;
+      
+      
+   PROCEDURE Create(VAR url: InetURLs.URL);
+      (* Creates an new instance of a HTTP-URL. *)
+      
+      VAR
+         if: InetURLs.Interface;
+         httpURL: URL;
+         
+   BEGIN
+      NEW(httpURL);
+      NEW(if);
+      if.assign := Assign;
+      if.toString := ToString;
+      InetURLs.Init(httpURL, if);
+      url := httpURL;
+   END Create;
+   
+      
+BEGIN
+   InitErrorHandling;
+END InetHTTPURLs.

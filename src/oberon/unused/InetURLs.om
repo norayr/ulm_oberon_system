@@ -1,0 +1,68 @@
+MODULE InetURLs;
+
+   IMPORT
+      Disciplines, RelatedEvents, Streams;
+      
+   TYPE
+      Interface = POINTER TO InterfaceRec;
+      URL = POINTER TO URLRec;
+      URLRec =
+         RECORD
+            (Disciplines.ObjectRec)
+            scheme: Streams.Stream;
+            (* private *)
+            if: Interface
+         END;
+         
+   (* Interface to implementations *)
+   
+   TYPE
+      AssignProc = PROCEDURE (url: URL; s: Streams.Stream): BOOLEAN;
+      ToStringProc = PROCEDURE (url: URL; VAR stringURL: ARRAY OF CHAR);
+      (* Interface = POINTER TO InterfaceRec; *)
+      InterfaceRec =
+         RECORD
+            assign: AssignProc;
+            toString: ToStringProc; (* This procedure is optional to implement *)
+         END;
+            
+   PROCEDURE Init(url: URL; if: Interface);
+      (* Assigns Interface `if` to given `url` *)
+      
+   BEGIN
+      ASSERT((if # NIL) & (if.assign # NIL));
+      url.if := if;
+   END Init;
+   
+   
+   (* Interface to clients *)
+   
+   PROCEDURE Assign(url: URL; s: Streams.Stream): BOOLEAN;
+      (* Assigns the Streams 's' to the URL. The Stream is parsed from the
+         actual position to EOF, or to the next space, tab, or newline is
+         reached and the elements are stored in 'url'. Escaped characters are
+         still escaped.  's' must be able to handle Substreams. 'Assign' will
+         return FALSE if `url` doesn`t conform to the URL expected (e.g. a
+         stored FTP-URL can`t be parsed as a  HTTP-URL). FALSE will also
+         returned if there are other syntactical errors. Error events related to
+         'url' closer describe the errors.
+      *)
+   
+   BEGIN
+      RETURN url.if.assign(url, s);
+   END Assign;
+   
+   
+   PROCEDURE ToString(url: URL; VAR stringURL: ARRAY OF CHAR);
+      (* Combines the parts of an URL to a string. This Procedure is optional
+         for  implementations and may not be implemented.
+      *)
+   
+   BEGIN
+      ASSERT(url.if.toString # NIL);
+      url.if.toString(url, stringURL);
+   END ToString;
+
+
+BEGIN
+END InetURLs.

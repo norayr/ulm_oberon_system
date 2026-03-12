@@ -1,0 +1,318 @@
+(* Ulm's Oberon Library
+   Copyright (C) 1989-2001 by University of Ulm, SAI, D-89069 Ulm, Germany
+   ----------------------------------------------------------------------------
+   Ulm's Oberon Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either version
+   2 of the License, or (at your option) any later version.
+
+   Ulm's Oberon Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Library General Public License for more details.
+
+   You should have received a copy of the GNU Library General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   ----------------------------------------------------------------------------
+   E-mail contact: oberon@mathematik.uni-ulm.de
+   ----------------------------------------------------------------------------
+   $Id$
+   ----------------------------------------------------------------------------
+   $Log$
+   ----------------------------------------------------------------------------
+*)
+
+MODULE NetIO32;
+
+   (* NetIO implementation for 32-bit architectures *)
+
+   IMPORT Reals, Streams, SYS := SYSTEM, Texts;
+
+   VAR
+      if: NetIO.Interface;
+
+   PROCEDURE ReadByte(s: Streams.Stream; VAR byte: Byte) : BOOLEAN;
+   BEGIN
+      RETURN Streams.ReadByte(s, byte)
+   END ReadByte;
+
+   PROCEDURE ReadChar(s: Streams.Stream; VAR char: CHAR) : BOOLEAN;
+   BEGIN
+      RETURN Streams.ReadByte(s, char)
+   END ReadChar;
+
+   PROCEDURE ReadBoolean(s: Streams.Stream; VAR boolean: BOOLEAN) : BOOLEAN;
+      VAR
+	 char: CHAR;
+   BEGIN
+      IF ~Streams.ReadByte(s, char) THEN RETURN FALSE END;
+      boolean := char # 0X;
+      RETURN TRUE
+   END ReadBoolean;
+
+   PROCEDURE ReadShortInt(s: Streams.Stream; VAR shortint: SHORTINT) : BOOLEAN;
+      (* one-byte integer *)
+      VAR
+	 byte: BYTE;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte) THEN RETURN FALSE END;
+      shortint := VAL(SHORTINT, byte);
+      RETURN TRUE
+   END ReadShortInt;
+
+   PROCEDURE ReadInteger(s: Streams.Stream; VAR integer: INTEGER) : BOOLEAN;
+      (* 4-byte integer *)
+      VAR
+	 byte1, byte2, byte3, byte4: BYTE;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte1) OR
+	    ~Streams.ReadByte(s, byte2) OR
+	    ~Streams.ReadByte(s, byte3) OR
+	    ~Streams.ReadByte(s, byte4) THEN
+	 RETURN FALSE
+      END;
+      integer :=            SYS.VAL(INTEGER, byte1) +
+		     100H * SYS.VAL(INTEGER, byte2) +
+		   10000H * SYS.VAL(INTEGER, byte3) +
+		 1000000H * SYS.VAL(INTEGER, byte4);
+      RETURN TRUE
+   END ReadInteger;
+
+   PROCEDURE ReadLongInt(s: Streams.Stream; VAR longint: LONGINT) : BOOLEAN;
+   BEGIN
+      (* 4-byte integer *)
+      VAR
+	 byte1, byte2, byte3, byte4: BYTE;
+   BEGIN
+      IF ~Streams.ReadByte(s, byte1) OR
+	    ~Streams.ReadByte(s, byte2) OR
+	    ~Streams.ReadByte(s, byte3) OR
+	    ~Streams.ReadByte(s, byte4) THEN
+	 RETURN FALSE
+      END;
+      longint :=            SYS.VAL(LONGINT, byte1) +
+		     100H * SYS.VAL(LONGINT, byte2) +
+		   10000H * SYS.VAL(LONGINT, byte3) +
+		 1000000H * SYS.VAL(LONGINT, byte4);
+      RETURN TRUE
+   END ReadLongInt;
+
+   PROCEDURE ReadLongReal(s: Streams.Stream; VAR longreal: LONGREAL) : BOOLEAN;
+      CONST
+	 maxdigits = 256;
+      VAR
+	 digits: ARRAY maxdigits OF CHAR;
+	 index: INTEGER;
+	 neg: BOOLEAN;
+	 ch: CHAR;
+	 exponent: INTEGER;
+	 mantissa: LONGREAL;
+   BEGIN
+      IF ~ReadBoolean(s, neg) THEN RETURN FALSE END;
+      index := 0;
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	 CASE ch OF
+	 | "0".."9", "A".."F":
+	    IF index < maxdigits THEN
+	       digits[index] := ch; INC(index);
+	    END;
+	 | " ":
+	    EXIT
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+      IF index < maxdigits THEN
+	 digits[index] := 0X;
+      END;
+      IF ~ReadInteger(s, exponent) THEN RETURN FALSE END;
+      Reals.Convert(digits, 16, neg, mantissa);
+      longreal := mantissa * Reals.Power(16, exponent);
+      IF neg THEN longreal := - longreal END;
+      RETURN TRUE
+   END ReadLongReal;
+
+   PROCEDURE ReadReal(s: Streams.Stream; VAR real: REAL) : BOOLEAN;
+      VAR
+	 longreal: LONGREAL;
+   BEGIN
+      IF ~ReadLongReal(s, longreal) THEN RETURN FALSE END;
+      real := longreal;
+      RETURN TRUE
+   END ReadReal;
+
+   PROCEDURE ReadSet(s: Streams.Stream; VAR set: SET) : BOOLEAN;
+      VAR
+	 index: INTEGER;
+	 boolval: BOOLEAN;
+   BEGIN
+      index := 0;
+      set := {};
+      WHILE index < 32 DO
+	 IF ~ReadBoolean(s, boolval) THEN RETURN FALSE END;
+	 IF boolval THEN
+	    IF index > MAX(SET) THEN RETURN FALSE END;
+	    INCL(set, index);
+	 END;
+	 INC(index);
+      END;
+      RETURN TRUE
+   END ReadSet;
+
+   PROCEDURE ReadString(s: Streams.Stream; VAR string: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 ch: CHAR; index: LONGINT;
+   BEGIN
+      index := 0;
+      LOOP
+	 IF ~Streams.ReadByte(s, ch) THEN RETURN FALSE END;
+	 IF ch = 0X THEN EXIT END;
+	 IF index + 1 < LEN(string) THEN
+	    string[index] := ch; INC(index);
+	 END;
+      END;
+      string[index] := 0X;
+      RETURN TRUE
+   END ReadString;
+
+   PROCEDURE ReadConstStringD(s: Streams.Stream;
+			      domain: ConstStrings.Domain;
+			      VAR string: ConstStrings.String) : BOOLEAN;
+      VAR
+	 length: LONGINT;
+	 buf: Streams.Stream;
+	 ch: CHAR;
+   BEGIN
+      IF ReadLongInt(s, length) THEN
+	 ConstStrings.Init(buf);
+	 WHILE (length > 0) & Streams.ReadByte(s, ch) &
+	       Streams.WriteByte(buf, ch) DO
+	    DEC(length);
+	 END;
+	 ConstStrings.CloseD(buf, domain, string);
+	 RETURN length = 0
+      ELSE
+	 RETURN FALSE
+      END;
+   END ReadConstStringD;
+
+   PROCEDURE ReadConstString(s: Streams.Stream;
+			     VAR string: ConstStrings.String) : BOOLEAN;
+   BEGIN
+      RETURN ReadConstStringD(s, ConstStrings.std, string)
+   END ReadConstString;
+
+   PROCEDURE WriteByte(s: Streams.Stream; byte: Byte) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, byte)
+   END WriteByte;
+
+   PROCEDURE WriteChar(s: Streams.Stream; char: CHAR) : BOOLEAN;
+      VAR
+	 disc: Discipline;
+   BEGIN
+      RETURN Streams.WriteByte(s, char)
+   END WriteChar;
+
+   PROCEDURE WriteBoolean(s: Streams.Stream; boolean: BOOLEAN) : BOOLEAN;
+   BEGIN
+      IF boolean THEN
+	 RETURN Streams.WriteByte(s, 1X)
+      ELSE
+	 RETURN Streams.WriteByte(s, 0X)
+      END;
+   END WriteBoolean;
+
+   PROCEDURE WriteShortInt(s: Streams.Stream; shortint: SHORTINT) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, SYS.VAL(BYTE, shortint))
+   END WriteShortInt;
+
+   PROCEDURE WriteInteger(s: Streams.Stream; integer: INTEGER) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, SYS.VAL(BYTE, integer MOD 100H)) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 100H MOD 100H) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 10000H MOD 100H) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 1000000H MOD 100H)
+   END WriteInteger;
+
+   PROCEDURE WriteLongInt(s: Streams.Stream; longint: LONGINT) : BOOLEAN;
+   BEGIN
+      RETURN Streams.WriteByte(s, SYS.VAL(BYTE, integer MOD 100H)) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 100H MOD 100H) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 10000H MOD 100H) &
+	     Streams.WriteByte(s, SYS.VAL(BYTE, integer DIV 1000000H MOD 100H)
+   END WriteLongInt;
+
+   PROCEDURE WriteReal(s: Streams.Stream; real: REAL) : BOOLEAN;
+   BEGIN
+      RETURN WriteLongReal(s, real)
+   END WriteReal;
+
+   PROCEDURE WriteLongReal(s: Streams.Stream; longreal: LONGREAL) : BOOLEAN;
+      VAR
+	 neg: BOOLEAN;
+   BEGIN
+      IF longreal < 0 THEN
+	 neg := TRUE; longreal := ABS(longreal);
+      ELSE
+	 neg := FALSE;
+      END;
+      IF Disciplines.Seek(s, discID, disc) THEN
+	 RETURN disc.if.writeLongReal(s, longreal)
+      ELSE
+	 RETURN Streams.Write(s, longreal)
+      END;
+   END WriteLongReal;
+
+   PROCEDURE WriteSet(s: Streams.Stream; set: SET) : BOOLEAN;
+      VAR
+	 index: INTEGER;
+   BEGIN
+      IF Disciplines.Seek(s, discID, disc) THEN
+	 RETURN disc.if.writeSet(s, set)
+      ELSE
+	 RETURN Streams.Write(s, set)
+      END;
+   END WriteSet;
+
+   PROCEDURE WriteString(s: Streams.Stream; string: ARRAY OF CHAR) : BOOLEAN;
+      VAR
+	 disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, discID, disc) THEN
+	 RETURN disc.if.writeString(s, string)
+      ELSE
+	 RETURN Streams.WritePart(s, string, 0, Strings.Len(string)) &
+		Streams.WriteByte(s, 0X)
+      END;
+   END WriteString;
+
+   PROCEDURE WriteConstString(s: Streams.Stream;
+			      string: ConstStrings.String) : BOOLEAN;
+      VAR
+	 ch: CHAR;
+	 buf: Streams.Stream;
+	 length: LONGINT;
+	 disc: Discipline;
+   BEGIN
+      IF Disciplines.Seek(s, discID, disc) THEN
+	 RETURN disc.if.writeConstString(s, string)
+      ELSE
+	 IF WriteLongInt(s, string.len) THEN
+	    ConstStrings.Open(buf, string);
+	    length := string.len;
+	    WHILE (length > 0) & Streams.ReadByte(buf, ch) &
+		  Streams.WriteByte(s, ch) DO
+	       DEC(length);
+	    END;
+	    RETURN length = 0
+	 ELSE
+	    RETURN FALSE
+	 END;
+      END;
+   END WriteConstString;
+
+END NetIO32.

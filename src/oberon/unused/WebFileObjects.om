@@ -1,0 +1,200 @@
+MODULE WebFileObjects;
+   
+   IMPORT
+      Events, RelatedEvents, Services, Streams, Strings,
+      SysStat, Times, UnixFiles, WebObjects;
+      
+   TYPE
+      Object = POINTER TO ObjectRec;
+      ObjectRec =
+         RECORD
+            (WebObjects.ObjectRec)
+            (* private *)
+            fileName: ARRAY 256 OF CHAR;
+         END;
+   
+   CONST (* private *)
+      extNum = 7;
+      caps = {WebObjects.createHandleCap, WebObjects.getLengthCap,
+            WebObjects.getLastModifiedDateCap, WebObjects.writeBodyCap,
+            WebObjects.getMediaTypeCap};
+      
+   VAR (* private *)
+      if: WebObjects.Interface;
+      serviceType: Services.Type;
+      extensions: ARRAY extNum OF ARRAY 20 OF CHAR;
+      types: ARRAY extNum OF ARRAY 20 OF CHAR;
+      subtypes: ARRAY extNum OF ARRAY 20 OF CHAR;
+   
+   PROCEDURE CreateHandle(VAR handle: WebObjects.Handle;
+                       object: WebObjects.Object; 
+                       search, body: Streams.Stream;
+                       errors: RelatedEvents.Object): BOOLEAN;
+
+   BEGIN
+      NEW(handle);
+      RETURN TRUE;
+   END CreateHandle;
+      
+   
+   PROCEDURE GetMediaType(handle: WebObjects.Handle; 
+                          VAR type, subtype, param: ARRAY OF CHAR);
+      (* determine type from extension *)
+   
+      VAR
+         object: WebObjects.Object;
+         extension: ARRAY 20 OF CHAR;
+         i: INTEGER;
+         
+      PROCEDURE GetExtension(fileName: ARRAY OF CHAR;
+                             VAR extension: ARRAY OF CHAR);
+      
+         VAR
+            i: INTEGER;
+            pos: INTEGER;
+            
+      BEGIN
+         i := 0;
+         WHILE fileName[i] # 0X DO
+            IF fileName[i] = "." THEN
+               pos := i + 1;
+            END;
+            INC(i);
+         END;
+         
+         Strings.PartCopy(extension, 0, fileName, pos);
+      END GetExtension;
+      
+      PROCEDURE CompStrings(a, b: ARRAY OF CHAR): BOOLEAN;
+         (* CompStrings Caseinsensitivly compares two 0x-terminated strings and
+            returns TRUE if a is equal to b.
+         *)
+
+         VAR
+            i: LONGINT;
+
+      BEGIN
+         i := 0;
+         WHILE (a[i] # 0X) & (b[i] # 0X) & (CAP(a[i]) = CAP(b[i])) DO
+            INC(i);
+         END;
+         RETURN CAP(a[i]) = CAP(b[i]);
+      END CompStrings;
+ 
+   BEGIN
+      object := handle.object;
+      WITH object: Object DO
+         handle.error := FALSE;
+         GetExtension(object.fileName, extension);
+         i := 0;
+         WHILE i < extNum DO
+            IF CompStrings(extension, extensions[i]) THEN
+               COPY(types[i], type);
+               COPY(subtypes[i], subtype);
+               param[0] := 0X;
+               RETURN;
+            END;
+            
+            INC(i);
+         END;
+         
+         type[0] := 0X;
+      END;
+   END GetMediaType;
+   
+   
+   PROCEDURE GetLength(handle: WebObjects.Handle; VAR length: LONGINT);
+   
+      VAR
+         stat: SysStat.StatRec;
+         object: WebObjects.Object;
+         
+   BEGIN
+      object := handle.object;
+      WITH object: Object DO
+         IF SysStat.Stat(object.fileName, stat, RelatedEvents.null) THEN
+            length := stat.size;
+            handle.error := FALSE;
+         ELSE
+            handle.error := TRUE;
+         END;
+      END;
+   END GetLength;
+   
+   
+   PROCEDURE GetLastModifiedDate(handle: WebObjects.Handle;
+                                 VAR date: Times.Time);
+   
+      VAR
+         stat: SysStat.StatRec;
+         object: WebObjects.Object;
+         
+   BEGIN
+      object := handle.object;
+      WITH object: Object DO
+         IF SysStat.Stat(object.fileName, stat, RelatedEvents.null) THEN
+            Times.CreateAndSet(date, Times.absolute, 0, stat.mtime, 0);
+            handle.error := FALSE;
+         ELSE
+            handle.error := TRUE;
+         END;
+      END;
+   END GetLastModifiedDate;
+   
+   
+   PROCEDURE WriteBody(handle: WebObjects.Handle; body: Streams.Stream);
+   
+      VAR
+         object: WebObjects.Object;
+         s: Streams.Stream;
+         
+   BEGIN
+      object := handle.object;
+      WITH object: Object DO
+         IF UnixFiles.Open(s, object.fileName, UnixFiles.read, Streams.onebuf, 
+               RelatedEvents.null) THEN
+            handle.error := FALSE;
+            IF ~Streams.Copy(s, body, -1) THEN
+               handle.error := TRUE;
+            END;
+            
+            handle.error := ~Streams.Close(s) & handle.error;
+         ELSE 
+            handle.error := TRUE;
+         END;
+      END;
+   END WriteBody;
+   
+   
+   PROCEDURE Create(VAR object: WebObjects.Object; fileName: ARRAY OF CHAR);
+   
+      VAR
+         obj: Object;
+         
+   BEGIN
+      NEW(obj);
+      Services.Init(obj, serviceType);
+      WebObjects.Init(obj, if, caps);
+      COPY(fileName, obj.fileName);
+      object := obj;
+   END Create;
+   
+   
+BEGIN
+   NEW(if);
+   if.createHandle := CreateHandle;
+   if.getLength := GetLength;
+   if.getLastModifiedDate := GetLastModifiedDate;
+   if.writeBody := WriteBody;
+   if.getMediaType := GetMediaType;
+   
+   Services.CreateType(serviceType, "WebFileObjects.Object","WebObjects.Object");
+   
+   extensions[0] := "gif"; types[0] := "image"; subtypes[0] := "gif";
+   extensions[1] := "jpg"; types[1] := "image"; subtypes[1] := "jpeg";
+   extensions[2] := "au"; types[2] := "audio"; subtypes[2] := "basic";
+   extensions[3] := "zip"; types[3] := "application"; subtypes[3] := "zip";
+   extensions[4] := "html"; types[4] := "text"; subtypes[4] := "html";
+   extensions[5] := "txt"; types[5] := "text"; subtypes[5] := "plain";
+   extensions[6] := "mpg"; types[6] := "video"; subtypes[6] := "mpeg";
+END WebFileObjects.

@@ -1,0 +1,61 @@
+MODULE TestPrime;
+
+   IMPORT Conclusions, IntOperations, LargeIntegers, Operations, PrimeGen,
+      Primes, RabinMiller, RandomGenerators, Services, Storage, Streams,
+      SysMonitor, Types, Write;
+
+   CONST
+      nofbits = 2048;
+      monitor = TRUE;
+   VAR
+      prime : LargeIntegers.LargeInteger;
+      n, anz: INTEGER;
+
+   PROCEDURE SetVal(sequence: RandomGenerators.Sequence;
+                    value: Operations.Operand);
+      VAR
+	 bits: INTEGER;
+	 rval, rval32: LargeIntegers.LargeInteger;
+	 int32: Types.Int32;
+   BEGIN
+      bits := nofbits;
+      LargeIntegers.Create(rval);
+      LargeIntegers.Create(rval32);
+      WHILE bits > 0 DO
+	 int32 := RandomGenerators.ValS(sequence, 0, MAX(Types.Int32));
+	 IntOperations.IntToOp(int32, rval32);
+	 IntOperations.Shift2(rval, 31);
+	 Operations.Add2(rval, rval32);
+	 DEC(bits, 31);
+      END;
+      Operations.Assign(value, rval);
+   END SetVal;
+
+   PROCEDURE SupportRG;
+      VAR
+	 type: Services.Type;
+   BEGIN
+      Services.SeekType("LargeIntegers.LargeInteger", type);
+      ASSERT(type # NIL);
+      RandomGenerators.Support(type, SetVal);
+   END SupportRG;
+      
+BEGIN
+   (* Storage.DisableCollection; *)
+   IF Storage.Intensity(4) = 0 THEN END;
+   IF monitor THEN
+      SysMonitor.Start;
+   END;
+   SupportRG;
+   n := 2048;
+   anz := 0;
+   WHILE anz < 1 DO
+      LargeIntegers.Create(prime);
+      PrimeGen.Generate(RabinMiller.test, n, 0.9, prime);
+      LargeIntegers.Write(prime); Write.Ln;
+      INC(anz);
+   END;
+   IF monitor THEN
+      SysMonitor.Stop(Streams.stderr);
+   END;
+END TestPrime.

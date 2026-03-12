@@ -1,0 +1,266 @@
+MODULE WebNames;
+
+   (* As module 'Path' does not support escaping of characters by a %-sign, I
+      have to implement it again. Using relative Names is not neccessary.
+   *)
+   
+   IMPORT
+      ConstStrings, Disciplines, Events, Iterators, LocalSemaphores,
+      NamedObjects, Names, RelatedEvents, Semaphores, Scan, Streams, Strings;
+      
+   TYPE
+      NameSpace = POINTER TO NameSpaceRec;
+      NameSpaceRec =
+      RECORD
+         (Disciplines.ObjectRec)
+         (* private *)
+         root: Names.Node;
+         mutex: Semaphores.Semaphore;
+      END;
+      
+   PROCEDURE StripName(path: Streams.Stream; VAR name: Names.Name;
+                       VAR lastName: BOOLEAN): BOOLEAN;
+      (* Copies the left-most Name of 'path' (starting at the current position)
+         to 'name.' Separator is "/". Two and more successive separators are
+         considerated to be one. Escaped characters (%XX) are transformed to the
+         corresponding octet-version. 'lastName ist TRUE if there are no more
+         parts in 'path'. If 'path' ends with a "/" the last name will be
+         assumed as "index.html". If the current position is 'path.eof' or if
+         there are problems with an escaped character 'StripName' will return
+         FALSE.
+      *)
+      
+      CONST
+         separator = "/";
+         escape = "%";
+         
+      VAR
+         ch: CHAR;
+         s: Streams.Stream;
+         escaped: ARRAY 3 OF CHAR; (* the escape-value *)
+         escapedS: Streams.Stream;
+         finished: BOOLEAN;
+         b: BYTE;
+         
+   BEGIN
+      (* a read must fail to be sure we are at the end of the file *)
+      IF ~Streams.ReadByte(path, ch) THEN
+         RETURN FALSE;
+      END;
+      
+      WHILE (ch = separator) & Streams.ReadByte(path, ch) DO
+      END;
+      
+      
+      IF path.eof THEN
+         ConstStrings.Create(name, "index.html");
+         lastName := TRUE;
+         RETURN TRUE;
+      END;
+      
+      ConstStrings.Init(s);
+      finished := FALSE;
+      WHILE ~finished DO
+         IF ch = separator THEN
+            IF Streams.Back(path) THEN
+               (* separator might be the last character in the stream; back
+                  it to get "index.html" at the next time.
+               *)
+            END;
+            finished := TRUE;
+         ELSE
+            IF ch = escape THEN
+               IF ~Streams.ReadByte(path, escaped[0]) OR
+                     ~Streams.ReadByte(path, escaped[1]) THEN
+                  RETURN FALSE;
+               END;
+               escaped[2] := 0X;
+               Strings.Open(escapedS, escaped);
+               Scan.S1(escapedS, "%x", b);
+               ch := CHR(b);;
+               IF ~escapedS.eof THEN
+                  (* not all characters are valid *)
+                  RETURN FALSE;
+               END;
+               Streams.Release(escapedS);
+            END;
+                    
+            IF ~Streams.WriteByte(s, ch) THEN
+               RETURN FALSE;
+            END;
+            finished := ~Streams.ReadByte(path, ch);
+         END;
+      END;
+      
+      lastName := path.eof;
+      ConstStrings.Close(s, name);
+      RETURN TRUE;
+   END StripName;
+   
+   
+   PROCEDURE GetObject(space: NameSpace; path: Streams.Stream;
+                       VAR obj: NamedObjects.Object): BOOLEAN;
+      (* Fetches object of a given 'path' of name-space 'tree. Returns FALSE if
+         there are errors.
+      *)
+      
+      PROCEDURE Get(path: Streams.Stream; node: Names.Node;
+                       VAR obj: NamedObjects.Object): BOOLEAN;
+         (* Recursivly splits 'path' and returns found object. IF there are
+            errors 'Get' will return FALSE.
+         *)
+         
+         VAR
+            subNode: Names.Node;
+            name: Names.Name;
+            lastName: BOOLEAN;
+            
+      BEGIN
+         IF ~StripName(path, name, lastName) THEN
+            RETURN FALSE
+         END;
+         
+         IF ~Names.GetNode(node, name, NIL, subNode) THEN
+            (* Name does not exist *)
+            RETURN FALSE;
+         END;
+         
+         IF lastName THEN
+            RETURN NamedObjects.Get(subNode, obj, RelatedEvents.null);
+         ELSE
+            RETURN Get(path, subNode, obj);
+         END;
+      END Get;
+      
+   BEGIN
+      Streams.SetPos(path, 0);
+      RETURN Get(path, space.root, obj);
+   END GetObject;
+   
+   
+   PROCEDURE InsertObject(space: NameSpace; path: Streams.Stream;
+                          obj: NamedObjects.Object): BOOLEAN;
+      (* Insert object 'obj' using 'path' into name-space 'space'. Necessary
+         middle-nodes are inserted, too. With a successful insert the result is
+         TRUE.
+      *)
+      
+      VAR
+         result: BOOLEAN;
+         
+      PROCEDURE Insert(path: Streams.Stream; node: Names.Node;
+                       obj: NamedObjects.Object): BOOLEAN;
+         (* Recursivly splits 'path' and if needed inserts the resulting name
+            into name-space within 'node'. With an successful insert the result
+            is TRUE.
+         *)
+         
+         VAR
+            subNode: Names.Node;
+            name: Names.Name;
+            lastName: BOOLEAN;
+            
+      BEGIN
+         IF ~StripName(path, name, lastName) THEN
+            RETURN FALSE
+         END;
+         
+         IF lastName THEN
+            NamedObjects.Create(subNode, obj);
+            IF Names.Insert(node, subNode, name, NIL) THEN
+               RETURN TRUE;
+            ELSE
+               RETURN FALSE;
+            END;
+         ELSE
+            IF ~Names.GetNode(node, name, NIL, subNode) THEN
+               (* middle-node does not exist; create it as simple node *)
+               Names.CreateNode(subNode, NIL, {Names.domainCap});
+               IF ~Names.Insert(node, subNode, name, NIL) THEN
+                  RETURN FALSE;
+               END;
+            END;
+            RETURN Insert(path, subNode, obj);
+         END;
+      END Insert;
+      
+   BEGIN
+      Streams.SetPos(path, 0);
+      Semaphores.P(space.mutex);
+      result := Insert(path, space.root, obj);
+      Semaphores.V(space.mutex);
+      RETURN result;
+   END InsertObject;
+   
+   
+   PROCEDURE DeleteObject(space: NameSpace; path: Streams.Stream): BOOLEAN;
+      (* Deletes object with given 'path' from name-space 'space'. Middle-nodes
+         up to last fork are also deleted. Returns FALSE if there are errors.
+         The name-space may be inconsistent if there is an error in deleting a
+         middle-node.
+      *)
+      
+      VAR
+         result: BOOLEAN;
+         
+      PROCEDURE Delete(path: Streams.Stream; node: Names.Node): BOOLEAN;
+         (* Recursivly splits 'path' and deletes the corresponding object if
+            it exists. Middle-nodes will be deleted, too if there are no more
+            other subnodes.
+         *)
+            
+         VAR
+            subNode: Names.Node;
+            name: Names.Name;
+            lastName: BOOLEAN;
+            obj: NamedObjects.Object;
+            members: Names.Lister;
+            member: Names.Name;
+            
+      BEGIN
+         IF ~StripName(path, name, lastName) THEN
+            RETURN FALSE
+         END;
+         
+         IF ~Names.GetNode(node, name, NIL, subNode) THEN
+            (* Name does not exist *)
+            RETURN FALSE;
+         END;
+         
+         IF lastName THEN
+            RETURN NamedObjects.Get(subNode, obj, RelatedEvents.null) &
+               NamedObjects.Destroy(subNode);
+         ELSE
+            IF Delete(path, subNode) & 
+                  Names.GetMembers(subNode, NIL, members) THEN
+               (* check if subnode must also be deleted *)
+               IF ~Iterators.Get(members, member) THEN
+                  RETURN Names.Destroy(subNode, NIL);
+               END;
+               RETURN TRUE;
+            ELSE
+               RETURN FALSE;
+            END;
+         END;
+      END Delete;
+      
+   BEGIN
+      Streams.SetPos(path, 0);
+      Semaphores.P(space.mutex);
+      result := Delete(path, space.root);
+      Semaphores.V(space.mutex);
+      RETURN result;
+   END DeleteObject;
+   
+   
+   PROCEDURE CreateNameSpace(VAR space: NameSpace);
+      (* Creates a new name-space. *)
+   
+   BEGIN
+      NEW(space);
+      Names.CreateNode(space.root, NIL, Names.allCaps);
+      LocalSemaphores.Create(space.mutex);
+   END CreateNameSpace;
+   
+BEGIN
+END WebNames.
