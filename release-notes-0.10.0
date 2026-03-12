@@ -1,0 +1,60 @@
+# ulmo i386 0.10.0 release notes.
+
+## Overview
+
+This release introduces ulmoc, a database-free build tool for ULM Oberon.
+
+The compiler and its entire library can now be built and used without running pons or cdbd.
+
+ulmoc provides the following interface:
+
+  ulmo [-I srcdir]... sourcefile...              # compile to .o
+  ulmo [-I srcdir]... -m MainModule [-o out] sourcefile...  # compile and link
+  ulmo [-I srcdir]... -S sourcefile...           # emit .tof (text IR)
+
+ulmoc compiles all transitive imports automatically. Any
+  dependency not already in libo.a is found, compiled, and linked.
+
+Program modules with no exports do not need a hand written .od definition file; ulmo shell wrapper (currently shell) creates a minimal stub automatically.
+
+  - -L libdir or OBERON_LIBDIR env var to locate libo.a.
+
+## Build
+
+The build was changed to use ulmoc. It builds all the library modules, binaries and itself. No db dependency during build anymore.
+
+  make DestDir=/path/to/install ulmoinstall
+
+The full build of everything, including 403 library modules takes approximately 2 minutes on my 11th gen intel.
+
+No database infrastructure required at any stage. Pre-built bootstrap binaries (ulmoc, obtofgen) are included in the source tree for bootstrapping; both are replaced by self-hosted binaries produced during the build.
+Yeah, sorry for having binaries, but previously we had all library .tof files in the release, now only the compiler.
+
+## Self-Hosting Compiler
+
+ulmoc is now built from its own source (FilesystemDB.om, Ulmo.om) using ulmo and ulmoc.
+
+The bootstrap copy is used only for the initial library build and is immediately superseded.
+
+## Library Built from Source
+
+libo.a is now built entirely from the Oberon sources (.om files in src/oberon/). As mentioned previously, we got rid of build/tofs.tgz pre-compiled TOF archive, it is removed from distribution.
+
+## Library list changes
+
+Firstly, some modules were moved to src/oberon/unused/
+
+Currently we have moved 8 modules that cannot build on i386 Linux have been moved out of the default build path:
+
+Those are:
+  - Math, TurtleGraphics, XPlotters - require Sun3 FPU (SYS.SQRT)
+  - SysSolarisInfo, SPARCSolarisArchitecture - Solaris-specific
+  - bool, daxpy, x - compiler or source-level defects
+
+Secondly, since before we were trying to preserve the history and which module became which, in our git tree, we ended up with lots of modules that weren't in the Ulm's Oberon compiler latest release. Many of them we were not able to build, so for now we removed those legacy modules. Later we'll try to figure out, and perhaps bring back some of them. Those are also in unused directory.
+
+## tof2elf
+
+Perhaps it makes sense to mention what was already done in previous release: tof2elf has been rewritten to work with modern libelf (elfutils >= 0.190). The old version relied on manual Elf_Data.d_off management that modern libelf ignores.
+The new implementation uses a single growable buffer per section. The tool now builds as a native 64-bit binary with no 32-bit library dependency.
+
